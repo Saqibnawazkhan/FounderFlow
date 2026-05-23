@@ -15,6 +15,7 @@ import {
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { Modal } from "@/components/ui/modal";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TransactionForm } from "@/components/transactions/transaction-form";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -34,6 +35,7 @@ export default function InvestmentsPage() {
   const users = useStore((s) => s.getCompanyUsers());
   const deleteTransaction = useStore((s) => s.deleteTransaction);
   const currentUser = useStore((s) => s.currentUser);
+  const confirm = useConfirm();
 
   const investments = transactions.filter((t) => t.type === "investment");
 
@@ -69,8 +71,14 @@ export default function InvestmentsPage() {
     [investments, users]
   );
 
-  function handleDelete(id: string) {
-    if (!confirm("Delete this investment? This action cannot be undone.")) return;
+  async function handleDelete(id: string) {
+    const ok = await confirm({
+      title: "Delete this investment?",
+      description: "This action cannot be undone.",
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!ok) return;
     deleteTransaction(id);
     toast.success("Investment deleted");
   }

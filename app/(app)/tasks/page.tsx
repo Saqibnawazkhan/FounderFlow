@@ -8,6 +8,7 @@ import {
   CheckSquare,
   CircleDot,
   Clock,
+  GripVertical,
   LayoutGrid,
   LayoutList,
   Plus,
@@ -16,8 +17,22 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { format, isPast, isToday } from "date-fns";
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  closestCorners,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
 import { useStore } from "@/lib/store";
 import { Modal } from "@/components/ui/modal";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TaskForm } from "@/components/tasks/task-form";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -50,6 +65,7 @@ export default function TasksPage() {
   const updateStatus = useStore((s) => s.updateTaskStatus);
   const deleteTask = useStore((s) => s.deleteTask);
   const currentUser = useStore((s) => s.currentUser);
+  const confirm = useConfirm();
 
   const [modalOpen, setModalOpen] = useState(false);
   const [view, setView] = useState<"board" | "list">("board");
@@ -75,10 +91,40 @@ export default function TasksPage() {
     toast.success(`Task marked as ${status.replace("_", " ")}`);
   }
 
-  function handleDelete(id: string) {
-    if (!confirm("Delete this task?")) return;
+  async function handleDelete(id: string) {
+    const ok = await confirm({
+      title: "Delete this task?",
+      description: "This action cannot be undone.",
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!ok) return;
     deleteTask(id);
     toast.success("Task deleted");
+  }
+
+  // DnD: pointer (8px drag-start threshold prevents accidental drags from
+  // clicks) + keyboard sensors for a11y. Space lifts/drops, arrows move.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor)
+  );
+
+  const [draggingTask, setDraggingTask] = useState<Task | null>(null);
+
+  function handleDragStart(e: DragStartEvent) {
+    const t = tasks.find((x) => x.id === e.active.id);
+    if (t) setDraggingTask(t);
+  }
+
+  function handleDragEnd(e: DragEndEvent) {
+    setDraggingTask(null);
+    const taskId = String(e.active.id);
+    const overStatus = e.over?.id as TaskStatus | undefined;
+    if (!overStatus) return;
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task || task.status === overStatus) return;
+    updateStatus(taskId, overStatus);
   }
 
   return (
@@ -152,67 +198,40 @@ export default function TasksPage() {
           />
         </div>
       ) : view === "board" ? (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          {COLUMNS.map((col) => {
-            const toneText =
-              col.tone === "cyan"
-                ? "text-cyan-strong"
-                : col.tone === "pink"
-                  ? "text-pink-strong"
-                  : "text-primary-strong";
-            const toneFill =
-              col.tone === "cyan"
-                ? "bg-cyan/10"
-                : col.tone === "pink"
-                  ? "bg-pink/10"
-                  : "bg-primary/10";
-            return (
-              <section
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCorners}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onDragCancel={() => setDraggingTask(null)}
+        >
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            {COLUMNS.map((col) => (
+              <DroppableColumn
                 key={col.status}
-                aria-label={col.title}
-                className="space-y-3 rounded-2xl border border-border bg-surface p-4"
-              >
-                <div className="flex items-center justify-between px-1">
-                  <div className="flex items-center gap-2">
-                    <div
-                      className={cn(
-                        "flex h-7 w-7 items-center justify-center rounded-lg",
-                        toneFill
-                      )}
-                    >
-                      <col.icon className={cn("h-3.5 w-3.5", toneText)} aria-hidden="true" />
-                    </div>
-                    <h3 className="text-sm font-semibold">{col.title}</h3>
-                  </div>
-                  <span className="rounded-full bg-bg px-2 py-0.5 font-mono text-[10px] font-bold text-fg-muted">
-                    {grouped[col.status].length}
-                  </span>
-                </div>
-                <div className="min-h-[180px] space-y-2.5">
-                  {grouped[col.status].length === 0 ? (
-                    <div className="rounded-xl border-2 border-dashed border-border p-6 text-center">
-                      <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
-                        Nothing here
-                      </p>
-                    </div>
-                  ) : (
-                    grouped[col.status].map((task) => (
-                      <TaskCard
-                        key={task.id}
-                        task={task}
-                        onStatusChange={handleStatusChange}
-                        onDelete={handleDelete}
-                        canDelete={
-                          currentUser?.id === task.assignedBy || currentUser?.role === "admin"
-                        }
-                      />
-                    ))
-                  )}
-                </div>
-              </section>
-            );
-          })}
-        </div>
+                column={col}
+                tasks={grouped[col.status]}
+                onStatusChange={handleStatusChange}
+                onDelete={handleDelete}
+                canDeleteTask={(task) =>
+                  currentUser?.id === task.assignedBy || currentUser?.role === "admin"
+                }
+                isDragActive={draggingTask !== null}
+              />
+            ))}
+          </div>
+          <DragOverlay dropAnimation={null}>
+            {draggingTask && (
+              <TaskCard
+                task={draggingTask}
+                onStatusChange={handleStatusChange}
+                onDelete={handleDelete}
+                canDelete={false}
+                isDragging
+              />
+            )}
+          </DragOverlay>
+        </DndContext>
       ) : (
         <section className="overflow-hidden rounded-2xl border border-border bg-surface">
           <div className="scrollbar-thin overflow-x-auto">
@@ -397,7 +416,87 @@ function SegmentedToggle({
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
-/* TaskCard — kanban card                                                       */
+/* DroppableColumn — wraps a kanban column as a dnd-kit droppable target.       */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+function DroppableColumn({
+  column,
+  tasks,
+  onStatusChange,
+  onDelete,
+  canDeleteTask,
+  isDragActive,
+}: {
+  column: Column;
+  tasks: Task[];
+  onStatusChange: (id: string, status: TaskStatus) => void;
+  onDelete: (id: string) => void;
+  canDeleteTask: (task: Task) => boolean;
+  isDragActive: boolean;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: column.status });
+
+  const toneText =
+    column.tone === "cyan"
+      ? "text-cyan-strong"
+      : column.tone === "pink"
+        ? "text-pink-strong"
+        : "text-primary-strong";
+  const toneFill =
+    column.tone === "cyan" ? "bg-cyan/10" : column.tone === "pink" ? "bg-pink/10" : "bg-primary/10";
+
+  return (
+    <section
+      ref={setNodeRef}
+      aria-label={column.title}
+      className={cn(
+        "space-y-3 rounded-2xl border bg-surface p-4 transition-colors",
+        isOver ? "border-primary/60 bg-primary/[0.04]" : "border-border",
+        isDragActive && !isOver && "border-dashed"
+      )}
+    >
+      <div className="flex items-center justify-between px-1">
+        <div className="flex items-center gap-2">
+          <div className={cn("flex h-7 w-7 items-center justify-center rounded-lg", toneFill)}>
+            <column.icon className={cn("h-3.5 w-3.5", toneText)} aria-hidden="true" />
+          </div>
+          <h3 className="text-sm font-semibold">{column.title}</h3>
+        </div>
+        <span className="rounded-full bg-bg px-2 py-0.5 font-mono text-[10px] font-bold text-fg-muted">
+          {tasks.length}
+        </span>
+      </div>
+      <div className="min-h-[180px] space-y-2.5">
+        {tasks.length === 0 ? (
+          <div
+            className={cn(
+              "rounded-xl border-2 border-dashed p-6 text-center transition-colors",
+              isOver ? "border-primary/60 bg-primary/[0.04]" : "border-border"
+            )}
+          >
+            <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
+              {isOver ? "Drop to move" : "Nothing here"}
+            </p>
+          </div>
+        ) : (
+          tasks.map((task) => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              onStatusChange={onStatusChange}
+              onDelete={onDelete}
+              canDelete={canDeleteTask(task)}
+            />
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* TaskCard — kanban card. Wrapped in useDraggable so it can be lifted by      */
+/* pointer drag or by keyboard (Space to lift, Arrows to move, Space to drop). */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 function TaskCard({
@@ -405,27 +504,67 @@ function TaskCard({
   onStatusChange,
   onDelete,
   canDelete,
+  isDragging: isOverlay = false,
 }: {
   task: Task;
   onStatusChange: (id: string, status: TaskStatus) => void;
   onDelete: (id: string) => void;
   canDelete: boolean;
+  /** Set true when this card is rendered inside the DragOverlay. */
+  isDragging?: boolean;
 }) {
+  const { attributes, listeners, setNodeRef, isDragging, transform } = useDraggable({
+    id: task.id,
+    disabled: isOverlay,
+  });
+
   const deadline = new Date(task.deadline);
   const overdue = isPast(deadline) && task.status !== "completed";
   const dueToday = isToday(deadline);
 
+  // While the real card is being dragged, fade it in place so the overlay
+  // visibly replaces it. The overlay copy uses isOverlay to opt out of dnd
+  // wiring and skip this fade.
+  const style: React.CSSProperties = isOverlay
+    ? { boxShadow: "0 20px 50px rgb(0 0 0 / 0.30)", transform: "rotate(-1.5deg)" }
+    : transform
+      ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
+      : {};
+
   return (
-    <div className="group rounded-xl border border-border bg-bg p-4 transition-colors hover:border-primary/30">
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "group rounded-xl border border-border bg-bg p-4 transition-colors hover:border-primary/30",
+        isDragging && !isOverlay && "opacity-30",
+        isOverlay && "cursor-grabbing border-primary/40 bg-surface"
+      )}
+    >
       <div className="mb-3 flex items-start justify-between gap-2">
-        <span
-          className={cn(
-            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
-            PRIORITY_STYLES[task.priority]
+        <div className="flex items-center gap-1.5">
+          {/* Drag handle — only the handle is draggable so clicks on the
+              card body (e.g. delete button, status select) still work. */}
+          {!isOverlay && (
+            <button
+              type="button"
+              aria-label={`Drag ${task.title} to change status`}
+              {...attributes}
+              {...listeners}
+              className="cursor-grab touch-none rounded-md p-0.5 text-fg-muted/70 transition-colors hover:bg-glass/[0.06] hover:text-fg active:cursor-grabbing"
+            >
+              <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
           )}
-        >
-          {task.priority}
-        </span>
+          <span
+            className={cn(
+              "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+              PRIORITY_STYLES[task.priority]
+            )}
+          >
+            {task.priority}
+          </span>
+        </div>
         {canDelete && (
           <button
             onClick={(e) => {

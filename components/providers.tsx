@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { Toaster } from "react-hot-toast";
 import { useStore } from "@/lib/store";
+import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const init = useStore((s) => s.init);
@@ -21,6 +22,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <>
       {children}
+      <ConfirmDialogHost />
       <Toaster
         position="top-right"
         toastOptions={{

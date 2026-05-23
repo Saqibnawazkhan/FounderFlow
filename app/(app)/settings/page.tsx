@@ -16,6 +16,7 @@ import {
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { Avatar } from "@/components/ui/avatar";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, formatDate } from "@/lib/utils";
 
@@ -26,18 +27,32 @@ export default function SettingsPage() {
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
   const logout = useStore((s) => s.logout);
+  const confirm = useConfirm();
 
   const company = companies.find((c) => c.id === currentUser?.companyId);
 
-  function handleLogout() {
-    if (!confirm("Are you sure you want to sign out?")) return;
+  async function handleLogout() {
+    const ok = await confirm({
+      title: "Sign out?",
+      description: "You can sign back in any time.",
+      confirmLabel: "Sign out",
+      tone: "primary",
+    });
+    if (!ok) return;
     logout();
     toast.success("Signed out");
     router.push("/login");
   }
 
-  function handleResetData() {
-    if (!confirm("Clear all data and reset to demo? This cannot be undone.")) return;
+  async function handleResetData() {
+    const ok = await confirm({
+      title: "Reset workspace data?",
+      description:
+        "All transactions, tasks, activity, and team members will be wiped. This cannot be undone.",
+      confirmLabel: "Reset everything",
+      tone: "danger",
+    });
+    if (!ok) return;
     if (typeof window !== "undefined") {
       localStorage.removeItem("founderflow-storage");
       window.location.href = "/login";

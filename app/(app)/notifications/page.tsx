@@ -5,6 +5,7 @@ import { Bell, CheckCheck, Trash2 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { EmptyState } from "@/components/ui/empty-state";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, formatRelativeTime } from "@/lib/utils";
 
@@ -20,11 +21,19 @@ export default function NotificationsPage() {
   const markRead = useStore((s) => s.markNotificationRead);
   const markAllRead = useStore((s) => s.markAllNotificationsRead);
   const clearAll = useStore((s) => s.clearNotifications);
+  const confirm = useConfirm();
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
-  function handleClearAll() {
-    if (!confirm("Clear all notifications? This cannot be undone.")) return;
+  async function handleClearAll() {
+    const ok = await confirm({
+      title: "Clear all notifications?",
+      description:
+        "This cannot be undone. Read notifications stay readable, unread ones disappear.",
+      confirmLabel: "Clear all",
+      tone: "danger",
+    });
+    if (!ok) return;
     clearAll();
     toast.success("All notifications cleared");
   }

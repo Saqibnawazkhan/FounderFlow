@@ -5,6 +5,7 @@ import { Crown, Mail, Shield, Trash2, User as UserIcon, UserPlus, Users } from "
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { Modal } from "@/components/ui/modal";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
@@ -19,6 +20,7 @@ export default function TeamPage() {
   const currentUser = useStore((s) => s.currentUser);
   const removeUser = useStore((s) => s.removeUser);
   const updateRole = useStore((s) => s.updateUserRole);
+  const confirm = useConfirm();
 
   const [inviteOpen, setInviteOpen] = useState(false);
 
@@ -30,8 +32,14 @@ export default function TeamPage() {
     toast.success("Role updated");
   }
 
-  function handleRemove(userId: string, name: string) {
-    if (!confirm(`Remove ${name} from the team?`)) return;
+  async function handleRemove(userId: string, name: string) {
+    const ok = await confirm({
+      title: `Remove ${name} from the team?`,
+      description: "They lose access immediately. Their past contributions stay in the records.",
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
+    if (!ok) return;
     removeUser(userId);
     toast.success(`${name} removed`);
   }
