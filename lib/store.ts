@@ -28,6 +28,12 @@ interface AppState {
   theme: "light" | "dark";
 
   init: () => void;
+  /**
+   * Adopt a user identity that came from Auth.js (via getSession on mount).
+   * Skips the demo-seed path so a real session never overlaps the local
+   * demo workspace.
+   */
+  hydrateUser: (user: User | null) => void;
   setTheme: (theme: "light" | "dark") => void;
   toggleTheme: () => void;
 
@@ -157,6 +163,17 @@ export const useStore = create<AppState>()(
           activities: state.activities.length === 0 ? seed.activities : state.activities,
           notifications:
             state.notifications.length === 0 ? seed.notifications : state.notifications,
+        });
+      },
+
+      hydrateUser: (user) => {
+        set((state) => {
+          // If we're adopting a real session user, drop any local demo state
+          // that doesn't match their company — prevents mixing scopes.
+          if (user && user.companyId !== state.currentUser?.companyId) {
+            return { currentUser: user };
+          }
+          return { currentUser: user };
         });
       },
 

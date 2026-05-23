@@ -1,0 +1,143 @@
+// FounderFlow schema. SQLite for local dev; swap `provider = "postgresql"`
+// and update DATABASE_URL to ship to Supabase/Neon. The model shape mirrors
+// the TypeScript interfaces in lib/types.ts so the same code can call either
+// path during the Zustand -> server-action migration.
+//
+// Notes on SQLite vs Postgres:
+// - SQLite has no enums; role/type/status fields are stored as strings with
+//   the allowed values documented inline. Zod schemas in lib/schemas/ are
+//   the source of truth at the application boundary.
+// - createdAt uses DateTime (stored as ISO 8601 string in SQLite).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // directUrl is used by `prisma migrate` and introspection; it must bypass
+  // any connection pooler. On Supabase: DATABASE_URL is the transaction
+  // pooler (port 6543), DIRECT_URL is the direct connection (port 5432).
+  // For local dev a single direct URL in both vars works fine.
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String // bcrypt hash, never the raw password
+  role         String // "admin" | "cofounder" | "member"
+  avatar       String?
+  companyId    String
+  createdAt    DateTime @default(now())
+
+  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  ownedCompany  Company?       @relation("CompanyOwner")
+  transactions  Transaction[]
+  assignedTasks Task[]         @relation("TaskAssignee")
+  createdTasks  Task[]         @relation("TaskCreator")
+  activities    Activity[]
+  notifications Notification[]
+
+  @@index([companyId])
+  @@index([email])
+}
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  industry  String
+  currency  String   @default("PKR")
+  // Nullable to break the circular FK with User (User.companyId required,
+  // and Company would also require ownerId). The signup server action
+  // creates the company first, then the owner, then updates ownerId.
+  ownerId   String?  @unique
+  createdAt DateTime @default(now())
+
+  owner         User?          @relation("CompanyOwner", fields: [ownerId], references: [id])
+  users         User[]
+  transactions  Transaction[]
+  tasks         Task[]
+  activities    Activity[]
+  notifications Notification[]
+}
+
+model Transaction {
+  id          String   @id @default(cuid())
+  companyId   String
+  type        String // "expense" | "investment"
+  amount      Float
+  category    String
+  description String
+  date        DateTime
+  addedBy     String
+  addedByName String // denormalized for fast read paths
+  createdAt   DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [addedBy], references: [id], onDelete: Cascade)
+
+  @@index([companyId, date])
+  @@index([companyId, type])
+  @@index([addedBy])
+}
+
+model Task {
+  id             String    @id @default(cuid())
+  companyId      String
+  title          String
+  description    String
+  status         String // "pending" | "in_progress" | "completed"
+  priority       String // "low" | "medium" | "high" | "urgent"
+  assignedTo     String
+  assignedToName String
+  assignedBy     String
+  assignedByName String
+  deadline       DateTime
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  company  Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  assignee User    @relation("TaskAssignee", fields: [assignedTo], references: [id], onDelete: Cascade)
+  creator  User    @relation("TaskCreator", fields: [assignedBy], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status])
+  @@index([assignedTo])
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  companyId String
+  type      String // ActivityType union from lib/types.ts
+  message   String
+  userId    String
+  userName  String
+  metadata  String? // JSON-encoded ActivityMetadata discriminated union
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, createdAt])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  companyId String
+  title     String
+  message   String
+  type      String // "info" | "success" | "warning" | "danger"
+  read      Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+}

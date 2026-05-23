@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
+import { logoutAction } from "@/lib/actions/auth";
 import { Avatar } from "@/components/ui/avatar";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PillBadge } from "@/components/landing/pill-badge";
@@ -39,9 +40,10 @@ export default function SettingsPage() {
       tone: "primary",
     });
     if (!ok) return;
+    await logoutAction();
     logout();
     toast.success("Signed out");
-    router.push("/login");
+    window.location.href = "/login";
   }
 
   async function handleResetData() {

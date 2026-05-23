@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Eye, EyeOff, Sparkles, CheckCircle2 } from "lucide-react";
 import toast from "react-hot-toast";
-import { useStore } from "@/lib/store";
+import { signupAction } from "@/lib/actions/auth";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { StatCard } from "@/components/landing/stat-card";
 import { ThemeToggle } from "@/components/landing/theme-toggle";
@@ -26,7 +26,6 @@ const INDUSTRIES = [
 
 export default function SignupPage() {
   const router = useRouter();
-  const signup = useStore((s) => s.signup);
 
   const nameId = useId();
   const emailId = useId();
@@ -49,7 +48,7 @@ export default function SignupPage() {
     setForm({ ...form, [key]: value });
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (step === 1) {
       if (!form.name || !form.email || !form.password) {
@@ -68,11 +67,12 @@ export default function SignupPage() {
       return;
     }
     setLoading(true);
-    const result = signup(form);
+    const result = await signupAction(form);
     setLoading(false);
     if (result.success) {
       toast.success("Welcome to FounderFlow");
-      router.push("/dashboard");
+      // Full nav so middleware reads the new session cookie.
+      window.location.href = "/dashboard";
     } else {
       toast.error(result.error || "Sign up failed");
     }

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { ArrowRight, Eye, EyeOff, Sparkles, Zap, CheckCircle2 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
+import { loginAction } from "@/lib/actions/auth";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { StatCard } from "@/components/landing/stat-card";
 import { MetricRing } from "@/components/landing/metric-ring";
@@ -13,7 +14,6 @@ import { ThemeToggle } from "@/components/landing/theme-toggle";
 
 export default function LoginPage() {
   const router = useRouter();
-  const login = useStore((s) => s.login);
   const loginDemo = useStore((s) => s.loginDemo);
 
   const emailId = useId();
@@ -24,18 +24,19 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!email || !password) {
       toast.error("Please fill in all fields");
       return;
     }
     setLoading(true);
-    const result = login(email, password);
+    const result = await loginAction({ email, password });
     setLoading(false);
     if (result.success) {
       toast.success("Welcome back");
-      router.push("/dashboard");
+      // Full nav so the server middleware re-reads the new session cookie.
+      window.location.href = "/dashboard";
     } else {
       toast.error(result.error || "Login failed");
     }

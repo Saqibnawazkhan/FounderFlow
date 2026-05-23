@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Bell, ChevronDown, LogOut, Moon, Search, Settings, Sun, User } from "lucide-react";
 import { useStore } from "@/lib/store";
+import { logoutAction } from "@/lib/actions/auth";
 import { formatRelativeTime, cn } from "@/lib/utils";
 import toast from "react-hot-toast";
 
@@ -49,10 +50,13 @@ export function Topbar() {
     };
   }, []);
 
-  function handleLogout() {
+  async function handleLogout() {
+    // Server action clears the Auth.js cookie; local store cleanup follows.
+    await logoutAction();
     logout();
     toast.success("Signed out");
-    router.push("/login");
+    // Full nav so middleware sees the cleared cookie immediately.
+    window.location.href = "/login";
   }
 
   return (

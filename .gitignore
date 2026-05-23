@@ -58,9 +58,17 @@ yarn-error.log*
 .env*
 !.env.example
 
+# local SQLite scratch databases (dev only — real DB is Postgres)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # vercel
 .vercel
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/lib/generated/prisma
