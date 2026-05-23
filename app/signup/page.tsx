@@ -67,14 +67,22 @@ export default function SignupPage() {
       return;
     }
     setLoading(true);
-    const result = await signupAction(form);
-    setLoading(false);
-    if (result.success) {
-      toast.success("Welcome to FounderFlow");
-      // Full nav so middleware reads the new session cookie.
-      window.location.href = "/dashboard";
-    } else {
+    try {
+      const result = await signupAction(form);
+      if (result.success) {
+        toast.success("Welcome to FounderFlow");
+        // Full nav so middleware reads the new session cookie.
+        window.location.href = "/dashboard";
+        return;
+      }
       toast.error(result.error || "Sign up failed");
+    } catch (err) {
+      // Server action threw — usually means a DB / env-var problem on the
+      // server. Surface it instead of leaving the user staring at "Creating…"
+      console.error("signupAction threw:", err);
+      toast.error("We couldn't reach the server. Check your connection and try again.");
+    } finally {
+      setLoading(false);
     }
   }
 

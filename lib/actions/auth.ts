@@ -43,58 +43,69 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
   }
   const { name, email, password, companyName, industry } = parsed.data;
 
-  // Reject duplicate emails up front so the user sees a useful message
-  // instead of a generic Prisma constraint violation.
-  const existing = await db.user.findUnique({ where: { email } });
-  if (existing) {
-    return { success: false, error: "An account with this email already exists" };
-  }
-
-  const passwordHash = await bcrypt.hash(password, 12);
-
-  // Two-step inside a transaction to break the User <-> Company circular FK
-  // (Company.ownerId is nullable; we backfill it after the user is created).
-  await db.$transaction(async (tx) => {
-    const company = await tx.company.create({
-      data: { name: companyName, industry, currency: "PKR" },
-    });
-    const user = await tx.user.create({
-      data: {
-        name,
-        email,
-        passwordHash,
-        role: "admin",
-        companyId: company.id,
-      },
-    });
-    await tx.company.update({
-      where: { id: company.id },
-      data: { ownerId: user.id },
-    });
-    await tx.activity.create({
-      data: {
-        companyId: company.id,
-        type: "company_created",
-        message: `${name} created the company "${companyName}"`,
-        userId: user.id,
-        userName: name,
-      },
-    });
-  });
-
-  // signIn with redirect:false so the caller controls the navigation; if
-  // we let it redirect, the server action throws and the client never gets
-  // the success result.
   try {
-    await signIn("credentials", { email, password, redirect: false });
-  } catch (e) {
-    if (e instanceof AuthError) {
-      return { success: false, error: "Account created but sign-in failed. Try logging in." };
+    // Reject duplicate emails up front so the user sees a useful message
+    // instead of a generic Prisma constraint violation.
+    const existing = await db.user.findUnique({ where: { email } });
+    if (existing) {
+      return { success: false, error: "An account with this email already exists" };
     }
-    throw e;
-  }
 
-  return { success: true };
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    // Two-step inside a transaction to break the User <-> Company circular FK
+    // (Company.ownerId is nullable; we backfill it after the user is created).
+    await db.$transaction(async (tx) => {
+      const company = await tx.company.create({
+        data: { name: companyName, industry, currency: "PKR" },
+      });
+      const user = await tx.user.create({
+        data: {
+          name,
+          email,
+          passwordHash,
+          role: "admin",
+          companyId: company.id,
+        },
+      });
+      await tx.company.update({
+        where: { id: company.id },
+        data: { ownerId: user.id },
+      });
+      await tx.activity.create({
+        data: {
+          companyId: company.id,
+          type: "company_created",
+          message: `${name} created the company "${companyName}"`,
+          userId: user.id,
+          userName: name,
+        },
+      });
+    });
+
+    // signIn with redirect:false so the caller controls the navigation; if
+    // we let it redirect, the server action throws and the client never gets
+    // the success result.
+    try {
+      await signIn("credentials", { email, password, redirect: false });
+    } catch (e) {
+      if (e instanceof AuthError) {
+        return { success: false, error: "Account created but sign-in failed. Try logging in." };
+      }
+      throw e;
+    }
+
+    return { success: true };
+  } catch (e) {
+    // Catch-all so the client never sees an unhandled rejection (which would
+    // hang the loading spinner). Prisma connection failures, missing env vars,
+    // etc. all funnel through here.
+    console.error("signupAction failed:", e);
+    return {
+      success: false,
+      error: "Couldn't create your account right now. The team has been notified.",
+    };
+  }
 }
 
 export async function loginAction(input: unknown): Promise<ActionResult> {
@@ -111,7 +122,8 @@ export async function loginAction(input: unknown): Promise<ActionResult> {
     if (e instanceof AuthError) {
       return { success: false, error: "Invalid email or password" };
     }
-    throw e;
+    console.error("loginAction failed:", e);
+    return { success: false, error: "Couldn't sign you in right now. Try again." };
   }
 }
 

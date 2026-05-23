@@ -31,14 +31,20 @@ export default function LoginPage() {
       return;
     }
     setLoading(true);
-    const result = await loginAction({ email, password });
-    setLoading(false);
-    if (result.success) {
-      toast.success("Welcome back");
-      // Full nav so the server middleware re-reads the new session cookie.
-      window.location.href = "/dashboard";
-    } else {
+    try {
+      const result = await loginAction({ email, password });
+      if (result.success) {
+        toast.success("Welcome back");
+        // Full nav so the server middleware re-reads the new session cookie.
+        window.location.href = "/dashboard";
+        return;
+      }
       toast.error(result.error || "Login failed");
+    } catch (err) {
+      console.error("loginAction threw:", err);
+      toast.error("We couldn't reach the server. Check your connection and try again.");
+    } finally {
+      setLoading(false);
     }
   }
 
