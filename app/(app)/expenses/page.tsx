@@ -1,17 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { motion } from "framer-motion";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
-import {
+  ArrowDown,
+  Calculator,
   Filter,
   Plus,
   Search,
@@ -25,8 +18,14 @@ import { Modal } from "@/components/ui/modal";
 import { TransactionForm } from "@/components/transactions/transaction-form";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
-import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { DashboardStat } from "@/components/ui/dashboard-stat";
+import { PillBadge } from "@/components/landing/pill-badge";
+import { formatCurrency, formatDate } from "@/lib/utils";
 import { EXPENSE_CATEGORIES } from "@/lib/types";
+
+const C_PINK = "#FFB3DB";
+const C_AMBER = "#f59e0b";
+const C_SLATE = "#94a3b8";
 
 export default function ExpensesPage() {
   const transactions = useStore((s) => s.getCompanyTransactions());
@@ -39,17 +38,19 @@ export default function ExpensesPage() {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
 
-  const filtered = useMemo(() => {
-    return expenses.filter((t) => {
-      const matchSearch =
-        !search ||
-        t.description.toLowerCase().includes(search.toLowerCase()) ||
-        t.category.toLowerCase().includes(search.toLowerCase()) ||
-        t.addedByName.toLowerCase().includes(search.toLowerCase());
-      const matchCategory = categoryFilter === "all" || t.category === categoryFilter;
-      return matchSearch && matchCategory;
-    });
-  }, [expenses, search, categoryFilter]);
+  const filtered = useMemo(
+    () =>
+      expenses.filter((t) => {
+        const matchSearch =
+          !search ||
+          t.description.toLowerCase().includes(search.toLowerCase()) ||
+          t.category.toLowerCase().includes(search.toLowerCase()) ||
+          t.addedByName.toLowerCase().includes(search.toLowerCase());
+        const matchCategory = categoryFilter === "all" || t.category === categoryFilter;
+        return matchSearch && matchCategory;
+      }),
+    [expenses, search, categoryFilter]
+  );
 
   const totalExpenses = expenses.reduce((s, t) => s + t.amount, 0);
   const thisMonthExpenses = expenses
@@ -71,122 +72,174 @@ export default function ExpensesPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-[1600px] mx-auto">
+    <div className="mx-auto max-w-[1600px] space-y-8">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Expenses</h1>
-          <p className="text-slate-500 dark:text-slate-400 mt-1">
+          <PillBadge tone="pink">Money out</PillBadge>
+          <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">
+            Expenses
+          </h1>
+          <p className="mt-2 text-sm text-fg-muted md:text-base">
             Track every penny going out of your company.
           </p>
         </div>
-        <button onClick={() => setModalOpen(true)} className="btn-primary">
-          <Plus className="h-4 w-4" /> Log Expense
+        <button
+          onClick={() => setModalOpen(true)}
+          className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+        >
+          <Plus className="h-4 w-4" aria-hidden="true" /> Log expense
         </button>
-      </div>
+      </header>
 
       {/* Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="card p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-slate-500">Total Expenses</p>
-              <p className="text-2xl font-bold mt-1 tabular-nums">{formatCurrency(totalExpenses)}</p>
-            </div>
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white">
-              <TrendingDown className="h-5 w-5" />
-            </div>
-          </div>
-        </div>
-        <div className="card p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-slate-500">This Month</p>
-              <p className="text-2xl font-bold mt-1 tabular-nums">{formatCurrency(thisMonthExpenses)}</p>
-            </div>
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-pink-500 to-rose-500 flex items-center justify-center text-white">
-              <Wallet className="h-5 w-5" />
-            </div>
-          </div>
-        </div>
-        <div className="card p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-slate-500">Avg per transaction</p>
-              <p className="text-2xl font-bold mt-1 tabular-nums">
-                {formatCurrency(expenses.length > 0 ? Math.round(totalExpenses / expenses.length) : 0)}
-              </p>
-            </div>
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-violet-500 to-purple-500 flex items-center justify-center text-white">
-              <TrendingDown className="h-5 w-5" />
-            </div>
-          </div>
-        </div>
-      </div>
+      <section aria-label="Expense metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <DashboardStat
+          label="Total spend"
+          value={formatCurrency(totalExpenses)}
+          icon={TrendingDown}
+          tone="pink"
+          deltaLabel={`${expenses.length} transactions`}
+        />
+        <DashboardStat
+          label="This month"
+          value={formatCurrency(thisMonthExpenses)}
+          icon={Wallet}
+          tone="cyan"
+          delta={thisMonthExpenses > 0 ? "neutral" : "positive"}
+          deltaLabel={
+            thisMonthExpenses > 0
+              ? `${((thisMonthExpenses / Math.max(totalExpenses, 1)) * 100).toFixed(0)}% of all-time`
+              : "Nothing logged yet"
+          }
+        />
+        <DashboardStat
+          label="Avg / transaction"
+          value={formatCurrency(
+            expenses.length > 0 ? Math.round(totalExpenses / expenses.length) : 0
+          )}
+          icon={Calculator}
+          tone="primary"
+          deltaLabel={`Across ${expenses.length} entries`}
+        />
+      </section>
 
       {/* Category chart */}
       {categoryBreakdown.length > 0 && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3 }}
-          className="card p-6"
-        >
-          <h3 className="text-lg font-semibold mb-4">By Category</h3>
+        <section className="rounded-2xl border border-border bg-surface p-6">
+          <div className="mb-5">
+            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
+              Where money goes
+            </p>
+            <h3 className="mt-1 text-lg font-bold tracking-tight">Spend by category</h3>
+          </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={categoryBreakdown} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgb(148 163 184 / 0.2)" vertical={false} />
-                <XAxis dataKey="category" stroke="rgb(148 163 184)" fontSize={11} tickLine={false} axisLine={false} angle={-15} textAnchor="end" height={60} />
-                <YAxis stroke="rgb(148 163 184)" fontSize={11} tickLine={false} axisLine={false} tickFormatter={(v) => (v >= 1000 ? `${v / 1000}K` : v.toString())} />
-                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 10px 30px rgba(0,0,0,0.1)" }} />
-                <Bar dataKey="amount" fill="url(#expenseGrad)" radius={[8, 8, 0, 0]} />
+              <BarChart
+                data={categoryBreakdown}
+                margin={{ top: 5, right: 5, left: 0, bottom: 5 }}
+                role="img"
+                aria-label="Spend grouped by category"
+              >
                 <defs>
                   <linearGradient id="expenseGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#f59e0b" />
-                    <stop offset="100%" stopColor="#f97316" />
+                    <stop offset="0%" stopColor={C_PINK} />
+                    <stop offset="100%" stopColor={C_AMBER} stopOpacity={0.6} />
                   </linearGradient>
                 </defs>
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke={C_SLATE}
+                  strokeOpacity={0.18}
+                  vertical={false}
+                />
+                <XAxis
+                  dataKey="category"
+                  stroke={C_SLATE}
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  angle={-15}
+                  textAnchor="end"
+                  height={60}
+                />
+                <YAxis
+                  stroke={C_SLATE}
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString())}
+                />
+                <Tooltip
+                  formatter={(v: number) => formatCurrency(v)}
+                  contentStyle={{
+                    borderRadius: 12,
+                    border: "1px solid rgb(var(--border))",
+                    background: "rgb(var(--card))",
+                    color: "rgb(var(--fg))",
+                    boxShadow: "0 10px 30px rgb(0 0 0 / 0.18)",
+                  }}
+                />
+                <Bar dataKey="amount" fill="url(#expenseGrad)" radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
-        </motion.div>
+        </section>
       )}
 
       {/* Filters */}
-      <div className="card p-4 flex flex-col sm:flex-row gap-3">
+      <section
+        aria-label="Filter expenses"
+        className="flex flex-col gap-3 rounded-2xl border border-border bg-surface p-4 sm:flex-row"
+      >
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+          <Search
+            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+            aria-hidden="true"
+          />
+          <label htmlFor="expense-search" className="sr-only">
+            Search expenses
+          </label>
           <input
-            placeholder="Search by description, category, or person..."
+            id="expense-search"
+            placeholder="Search description, category, or person…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="input pl-10"
+            className="w-full rounded-xl border border-border bg-bg py-2.5 pl-10 pr-4 text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:border-primary/50 focus:bg-surface focus:outline-none"
           />
         </div>
         <div className="relative">
-          <Filter className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+          <Filter
+            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+            aria-hidden="true"
+          />
+          <label htmlFor="expense-category" className="sr-only">
+            Filter by category
+          </label>
           <select
+            id="expense-category"
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
-            className="input pl-10 pr-10 min-w-[200px]"
+            className="w-full min-w-[200px] appearance-none rounded-xl border border-border bg-bg py-2.5 pl-10 pr-10 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
           >
             <option value="all">All categories</option>
             {EXPENSE_CATEGORIES.map((c) => (
-              <option key={c} value={c}>
+              <option key={c} value={c} className="bg-bg">
                 {c}
               </option>
             ))}
           </select>
         </div>
-      </div>
+      </section>
 
       {/* List */}
-      <div className="card overflow-hidden">
+      <section className="overflow-hidden rounded-2xl border border-border bg-surface">
         {filtered.length === 0 ? (
           <EmptyState
             icon={TrendingDown}
-            title={expenses.length === 0 ? "No expenses logged yet" : "No expenses match your filters"}
+            title={
+              expenses.length === 0 ? "No expenses logged yet" : "No expenses match your filters"
+            }
             description={
               expenses.length === 0
                 ? "Start tracking your spending to see exactly where your money goes."
@@ -194,72 +247,109 @@ export default function ExpensesPage() {
             }
             action={
               expenses.length === 0 && (
-                <button onClick={() => setModalOpen(true)} className="btn-primary">
-                  <Plus className="h-4 w-4" /> Log first expense
+                <button
+                  onClick={() => setModalOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+                >
+                  <Plus className="h-4 w-4" aria-hidden="true" /> Log first expense
                 </button>
               )
             }
           />
         ) : (
-          <div className="overflow-x-auto scrollbar-thin">
+          <div className="scrollbar-thin overflow-x-auto">
             <table className="w-full">
-              <thead>
-                <tr className="border-b border-slate-200 dark:border-slate-800 text-left">
-                  <th className="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Description</th>
-                  <th className="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Category</th>
-                  <th className="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Added By</th>
-                  <th className="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Date</th>
-                  <th className="px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">Amount</th>
-                  <th className="px-6 py-3" />
+              <thead className="sticky top-0 bg-surface">
+                <tr className="border-b border-border">
+                  <th
+                    scope="col"
+                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                  >
+                    Description
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                  >
+                    Category
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                  >
+                    Added by
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                  >
+                    Date
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3.5 text-right font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                  >
+                    Amount
+                  </th>
+                  <th scope="col" className="px-6 py-3.5">
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((t, i) => (
-                  <motion.tr
+                {filtered.map((t) => (
+                  <tr
                     key={t.id}
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ duration: 0.2, delay: Math.min(i * 0.02, 0.3) }}
-                    className="border-b border-slate-100 dark:border-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition"
+                    className="border-b border-border/60 transition-colors last:border-b-0 hover:bg-bg"
                   >
                     <td className="px-6 py-4">
-                      <p className="font-medium text-sm">{t.description}</p>
+                      <p className="text-sm font-medium text-fg">{t.description}</p>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="badge-default">{t.category}</span>
+                      <span className="inline-flex items-center rounded-full border border-border bg-bg px-2.5 py-0.5 text-xs font-medium text-fg-muted">
+                        {t.category}
+                      </span>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2">
                         <Avatar name={t.addedByName} size="xs" />
-                        <span className="text-sm">{t.addedByName}</span>
+                        <span className="text-sm text-fg">{t.addedByName}</span>
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-sm text-slate-500">{formatDate(t.date)}</td>
+                    <td className="px-6 py-4 font-mono text-xs uppercase tracking-wider text-fg-muted">
+                      {formatDate(t.date)}
+                    </td>
                     <td className="px-6 py-4 text-right">
-                      <span className="font-semibold text-amber-600 dark:text-amber-400 tabular-nums">
-                        -{formatCurrency(t.amount)}
+                      <span className="inline-flex items-center gap-1 font-mono text-sm font-bold tabular-nums text-pink-strong">
+                        <ArrowDown className="h-3 w-3" aria-hidden="true" />
+                        {formatCurrency(t.amount)}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
                       {(currentUser?.id === t.addedBy || currentUser?.role === "admin") && (
                         <button
                           onClick={() => handleDelete(t.id)}
-                          className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-500/10 text-slate-400 hover:text-red-500 transition"
-                          aria-label="Delete"
+                          aria-label={`Delete expense ${t.description}`}
+                          className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
                         >
-                          <Trash2 className="h-4 w-4" />
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
                         </button>
                       )}
                     </td>
-                  </motion.tr>
+                  </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-      </div>
+      </section>
 
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Log new expense" description="Track a business expense">
+      <Modal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title="Log new expense"
+        description="Track a business expense"
+      >
         <TransactionForm type="expense" onClose={() => setModalOpen(false)} />
       </Modal>
     </div>

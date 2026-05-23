@@ -1,22 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { motion } from "framer-motion";
-import {
-  Crown,
-  Mail,
-  MoreVertical,
-  Plus,
-  Shield,
-  Trash2,
-  User as UserIcon,
-  UserPlus,
-  Users,
-} from "lucide-react";
+import { useId, useState } from "react";
+import { Crown, Mail, Shield, Trash2, User as UserIcon, UserPlus, Users } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { Modal } from "@/components/ui/modal";
 import { Avatar } from "@/components/ui/avatar";
+import { DashboardStat } from "@/components/ui/dashboard-stat";
+import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, formatDate, formatCurrency } from "@/lib/utils";
 import type { UserRole } from "@/lib/types";
 import { ROLE_LABELS } from "@/lib/types";
@@ -26,7 +17,6 @@ export default function TeamPage() {
   const transactions = useStore((s) => s.getCompanyTransactions());
   const tasks = useStore((s) => s.getCompanyTasks());
   const currentUser = useStore((s) => s.currentUser);
-  const inviteUser = useStore((s) => s.inviteUser);
   const removeUser = useStore((s) => s.removeUser);
   const updateRole = useStore((s) => s.updateUserRole);
 
@@ -47,64 +37,56 @@ export default function TeamPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-[1200px] mx-auto">
+    <div className="mx-auto max-w-[1200px] space-y-8">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Team</h1>
-          <p className="text-slate-500 dark:text-slate-400 mt-1">
+          <PillBadge tone="cyan">Roster</PillBadge>
+          <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">Team</h1>
+          <p className="mt-2 text-sm text-fg-muted md:text-base">
             Manage co-founders and team members.
           </p>
         </div>
         {isAdmin && (
-          <button onClick={() => setInviteOpen(true)} className="btn-primary">
-            <UserPlus className="h-4 w-4" /> Invite Member
+          <button
+            onClick={() => setInviteOpen(true)}
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+          >
+            <UserPlus className="h-4 w-4" aria-hidden="true" /> Invite member
           </button>
         )}
-      </div>
+      </header>
 
       {/* Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="card p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-slate-500">Total Members</p>
-              <p className="text-2xl font-bold mt-1">{users.length}</p>
-            </div>
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-brand-500 to-accent-500 flex items-center justify-center text-white">
-              <Users className="h-5 w-5" />
-            </div>
-          </div>
-        </div>
-        <div className="card p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-slate-500">Co-Founders</p>
-              <p className="text-2xl font-bold mt-1">
-                {users.filter((u) => u.role === "admin" || u.role === "cofounder").length}
-              </p>
-            </div>
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center text-white">
-              <Crown className="h-5 w-5" />
-            </div>
-          </div>
-        </div>
-        <div className="card p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-slate-500">Team Members</p>
-              <p className="text-2xl font-bold mt-1">{users.filter((u) => u.role === "member").length}</p>
-            </div>
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-500 flex items-center justify-center text-white">
-              <UserIcon className="h-5 w-5" />
-            </div>
-          </div>
-        </div>
-      </div>
+      <section aria-label="Team metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <DashboardStat
+          label="Total members"
+          value={users.length.toString()}
+          icon={Users}
+          tone="primary"
+          deltaLabel="In this workspace"
+        />
+        <DashboardStat
+          label="Co-founders"
+          value={users
+            .filter((u) => u.role === "admin" || u.role === "cofounder")
+            .length.toString()}
+          icon={Crown}
+          tone="cyan"
+          deltaLabel="Founder access"
+        />
+        <DashboardStat
+          label="Team members"
+          value={users.filter((u) => u.role === "member").length.toString()}
+          icon={UserIcon}
+          tone="pink"
+          deltaLabel="Limited access"
+        />
+      </section>
 
-      {/* Team list */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {users.map((user, i) => {
+      {/* Member cards */}
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {users.map((user) => {
           const userInvestments = transactions
             .filter((t) => t.addedBy === user.id && t.type === "investment")
             .reduce((s, t) => s + t.amount, 0);
@@ -115,106 +97,139 @@ export default function TeamPage() {
           const completedTasks = userTasks.filter((t) => t.status === "completed").length;
 
           return (
-            <motion.div
+            <article
               key={user.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3, delay: i * 0.05 }}
-              className="card p-6 relative overflow-hidden"
+              className="relative overflow-hidden rounded-2xl border border-border bg-surface p-6"
             >
               {user.role === "admin" && (
-                <div className="absolute top-4 right-4">
-                  <span className="badge bg-gradient-to-r from-amber-500 to-orange-500 text-white">
-                    <Crown className="h-3 w-3" /> Admin
+                <div className="absolute right-4 top-4">
+                  <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-primary-strong">
+                    <Crown className="h-3 w-3" aria-hidden="true" /> Admin
                   </span>
                 </div>
               )}
 
               <div className="flex items-start gap-4">
                 <Avatar name={user.name} size="xl" />
-                <div className="flex-1 min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <h3 className="font-bold text-lg truncate">{user.name}</h3>
+                    <h3 className="truncate text-lg font-bold text-fg">{user.name}</h3>
                     {user.id === currentUser?.id && (
-                      <span className="badge-info text-[10px]">You</span>
+                      <span className="rounded-full bg-glass/[0.06] px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg-muted">
+                        You
+                      </span>
                     )}
                   </div>
-                  <p className="text-sm text-slate-500 truncate flex items-center gap-1 mt-0.5">
-                    <Mail className="h-3 w-3" /> {user.email}
+                  <p className="mt-1 flex items-center gap-1.5 truncate text-sm text-fg-muted">
+                    <Mail className="h-3 w-3" aria-hidden="true" /> {user.email}
                   </p>
-                  <p className="text-xs text-slate-400 mt-1">
+                  <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
                     Joined {formatDate(user.createdAt)}
                   </p>
 
                   {isAdmin && user.id !== currentUser?.id && user.role !== "admin" ? (
-                    <select
-                      value={user.role}
-                      onChange={(e) => handleRoleChange(user.id, e.target.value as UserRole)}
-                      className="mt-3 text-xs font-medium px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800 border-0 focus:outline-none"
-                    >
-                      <option value="cofounder">Co-Founder</option>
-                      <option value="member">Team Member</option>
-                    </select>
+                    <>
+                      <label htmlFor={`role-${user.id}`} className="sr-only">
+                        Change role for {user.name}
+                      </label>
+                      <select
+                        id={`role-${user.id}`}
+                        value={user.role}
+                        onChange={(e) => handleRoleChange(user.id, e.target.value as UserRole)}
+                        className="mt-3 rounded-full border border-border bg-bg px-3 py-1 text-xs font-medium text-fg focus:border-primary/50 focus:outline-none"
+                      >
+                        <option value="cofounder">Co-Founder</option>
+                        <option value="member">Team Member</option>
+                      </select>
+                    </>
                   ) : (
-                    <span className={cn(
-                      "inline-flex items-center gap-1 mt-3 px-3 py-1 rounded-full text-xs font-medium",
-                      user.role === "admin" && "bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300",
-                      user.role === "cofounder" && "bg-brand-100 dark:bg-brand-500/20 text-brand-700 dark:text-brand-300",
-                      user.role === "member" && "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
-                    )}>
-                      {user.role === "admin" && <Crown className="h-3 w-3" />}
-                      {user.role === "cofounder" && <Shield className="h-3 w-3" />}
-                      {user.role === "member" && <UserIcon className="h-3 w-3" />}
+                    <span
+                      className={cn(
+                        "mt-3 inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium",
+                        user.role === "admin" &&
+                          "border-primary/30 bg-primary/10 text-primary-strong",
+                        user.role === "cofounder" && "border-cyan/30 bg-cyan/10 text-cyan-strong",
+                        user.role === "member" && "border-pink/30 bg-pink/10 text-pink-strong"
+                      )}
+                    >
+                      {user.role === "admin" && <Crown className="h-3 w-3" aria-hidden="true" />}
+                      {user.role === "cofounder" && (
+                        <Shield className="h-3 w-3" aria-hidden="true" />
+                      )}
+                      {user.role === "member" && (
+                        <UserIcon className="h-3 w-3" aria-hidden="true" />
+                      )}
                       {ROLE_LABELS[user.role]}
                     </span>
                   )}
                 </div>
               </div>
 
-              <div className="grid grid-cols-3 gap-2 mt-6 pt-6 border-t border-slate-100 dark:border-slate-800">
-                <div>
-                  <p className="text-xs text-slate-500">Invested</p>
-                  <p className="font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums text-sm mt-0.5">
-                    {formatCurrency(userInvestments)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-slate-500">Logged</p>
-                  <p className="font-semibold text-amber-600 dark:text-amber-400 tabular-nums text-sm mt-0.5">
-                    {formatCurrency(userExpenses)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-slate-500">Tasks</p>
-                  <p className="font-semibold text-sm mt-0.5">
-                    {completedTasks}/{userTasks.length}
-                  </p>
-                </div>
+              <div className="mt-6 grid grid-cols-3 gap-2 border-t border-border pt-5">
+                <Cell label="Invested" value={formatCurrency(userInvestments)} tone="primary" />
+                <Cell label="Logged" value={formatCurrency(userExpenses)} tone="pink" />
+                <Cell label="Tasks" value={`${completedTasks}/${userTasks.length}`} tone="cyan" />
               </div>
 
               {isAdmin && user.id !== currentUser?.id && user.role !== "admin" && (
                 <button
                   onClick={() => handleRemove(user.id, user.name)}
-                  className="absolute bottom-4 right-4 p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-500/10 text-slate-400 hover:text-red-500 transition"
-                  aria-label="Remove member"
+                  aria-label={`Remove ${user.name} from the team`}
+                  className="absolute bottom-4 right-4 rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
                 >
-                  <Trash2 className="h-4 w-4" />
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
                 </button>
               )}
-            </motion.div>
+            </article>
           );
         })}
-      </div>
+      </section>
 
-      <Modal open={inviteOpen} onClose={() => setInviteOpen(false)} title="Invite team member" description="Add a co-founder or team member to your workspace">
+      <Modal
+        open={inviteOpen}
+        onClose={() => setInviteOpen(false)}
+        title="Invite team member"
+        description="Add a co-founder or team member to your workspace"
+      >
         <InviteForm onClose={() => setInviteOpen(false)} />
       </Modal>
     </div>
   );
 }
 
+function Cell({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "primary" | "cyan" | "pink";
+}) {
+  const toneClass =
+    tone === "cyan"
+      ? "text-cyan-strong"
+      : tone === "pink"
+        ? "text-pink-strong"
+        : "text-primary-strong";
+  return (
+    <div>
+      <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">{label}</p>
+      <p className={cn("mt-1 font-mono text-sm font-bold tabular-nums", toneClass)}>{value}</p>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* InviteForm                                                                   */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
 function InviteForm({ onClose }: { onClose: () => void }) {
   const invite = useStore((s) => s.inviteUser);
+  const nameId = useId();
+  const emailId = useId();
+  const pwId = useId();
+
   const [form, setForm] = useState({
     name: "",
     email: "",
@@ -245,71 +260,145 @@ function InviteForm({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+      <Field
+        id={nameId}
+        label="Full name"
+        value={form.name}
+        onChange={(v) => setForm({ ...form, name: v })}
+        placeholder="Jane Doe"
+        autoFocus
+      />
+      <Field
+        id={emailId}
+        label="Email"
+        type="email"
+        value={form.email}
+        onChange={(v) => setForm({ ...form, email: v })}
+        placeholder="jane@company.com"
+        autoComplete="email"
+      />
       <div>
-        <label className="label">Full name</label>
+        <label
+          htmlFor={pwId}
+          className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+        >
+          Temporary password
+        </label>
         <input
-          value={form.name}
-          onChange={(e) => setForm({ ...form, name: e.target.value })}
-          className="input"
-          placeholder="Jane Doe"
-          autoFocus
-        />
-      </div>
-      <div>
-        <label className="label">Email</label>
-        <input
-          type="email"
-          value={form.email}
-          onChange={(e) => setForm({ ...form, email: e.target.value })}
-          className="input"
-          placeholder="jane@company.com"
-        />
-      </div>
-      <div>
-        <label className="label">Temporary password</label>
-        <input
+          id={pwId}
           type="text"
           value={form.password}
           onChange={(e) => setForm({ ...form, password: e.target.value })}
-          className="input font-mono"
           placeholder="At least 6 characters"
+          className="w-full rounded-xl border border-border bg-bg px-4 py-2.5 font-mono text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:border-primary/50 focus:bg-surface focus:outline-none"
         />
-        <p className="text-xs text-slate-500 mt-1">They can change this after first login.</p>
+        <p className="mt-1.5 text-xs text-fg-muted">They can change this after first login.</p>
       </div>
+
       <div>
-        <label className="label">Role</label>
+        <p className="mb-2 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted">
+          Role
+        </p>
         <div className="grid grid-cols-2 gap-3">
           {[
-            { value: "cofounder", label: "Co-Founder", desc: "Full access to finances and tasks", icon: Shield },
-            { value: "member", label: "Team Member", desc: "Can view and add tasks", icon: UserIcon },
-          ].map((r) => (
-            <button
-              key={r.value}
-              type="button"
-              onClick={() => setForm({ ...form, role: r.value as UserRole })}
-              className={cn(
-                "p-3 rounded-xl border text-left transition-all",
-                form.role === r.value
-                  ? "border-brand-500 bg-brand-50 dark:bg-brand-500/10 ring-2 ring-brand-500/20"
-                  : "border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600"
-              )}
-            >
-              <r.icon className="h-4 w-4 mb-1 text-brand-500" />
-              <p className="font-medium text-sm">{r.label}</p>
-              <p className="text-xs text-slate-500 mt-0.5">{r.desc}</p>
-            </button>
-          ))}
+            {
+              value: "cofounder",
+              label: "Co-Founder",
+              desc: "Full access to finances and tasks",
+              icon: Shield,
+            },
+            {
+              value: "member",
+              label: "Team Member",
+              desc: "Can view and add tasks",
+              icon: UserIcon,
+            },
+          ].map((r) => {
+            const active = form.role === r.value;
+            return (
+              <button
+                key={r.value}
+                type="button"
+                onClick={() => setForm({ ...form, role: r.value as UserRole })}
+                aria-pressed={active}
+                className={cn(
+                  "rounded-xl border p-3 text-left transition-all",
+                  active
+                    ? "border-primary/50 bg-primary/[0.06] ring-2 ring-primary/20"
+                    : "border-border hover:border-primary/30"
+                )}
+              >
+                <r.icon
+                  className={cn("mb-1.5 h-4 w-4", active ? "text-primary-strong" : "text-fg-muted")}
+                  aria-hidden="true"
+                />
+                <p className="text-sm font-semibold text-fg">{r.label}</p>
+                <p className="mt-0.5 text-xs text-fg-muted">{r.desc}</p>
+              </button>
+            );
+          })}
         </div>
       </div>
+
       <div className="flex gap-3 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary flex-1">
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex-1 rounded-full border border-border bg-bg px-5 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-surface-hover"
+        >
           Cancel
         </button>
-        <button type="submit" disabled={loading} className="btn-primary flex-1">
-          {loading ? "Adding..." : "Add to team"}
+        <button
+          type="submit"
+          disabled={loading}
+          className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+        >
+          {loading ? "Adding…" : "Add to team"}
         </button>
       </div>
     </form>
+  );
+}
+
+function Field({
+  id,
+  label,
+  type = "text",
+  value,
+  onChange,
+  placeholder,
+  autoComplete,
+  autoFocus,
+}: {
+  id: string;
+  label: string;
+  type?: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  autoComplete?: string;
+  autoFocus?: boolean;
+}) {
+  return (
+    <div>
+      <label
+        htmlFor={id}
+        className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+      >
+        {label}
+      </label>
+      <input
+        id={id}
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete={autoComplete}
+        // eslint-disable-next-line jsx-a11y/no-autofocus
+        autoFocus={autoFocus}
+        className="w-full rounded-xl border border-border bg-bg px-4 py-2.5 text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:border-primary/50 focus:bg-surface focus:outline-none"
+      />
+    </div>
   );
 }

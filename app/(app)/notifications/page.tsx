@@ -1,12 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { motion, AnimatePresence } from "framer-motion";
 import { Bell, CheckCheck, Trash2 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { EmptyState } from "@/components/ui/empty-state";
+import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, formatRelativeTime } from "@/lib/utils";
+
+const TYPE_FILL = {
+  success: "bg-success/15 text-success",
+  warning: "bg-warning/15 text-warning",
+  danger: "bg-danger/15 text-danger",
+  info: "bg-info/15 text-info",
+} as const;
 
 export default function NotificationsPage() {
   const notifications = useStore((s) => s.getUserNotifications());
@@ -23,32 +30,48 @@ export default function NotificationsPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
+    <div className="mx-auto max-w-3xl space-y-8">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
-          <p className="text-slate-500 dark:text-slate-400 mt-1">
-            {unreadCount > 0 ? `You have ${unreadCount} unread notification${unreadCount !== 1 ? "s" : ""}` : "You're all caught up"}
+          <PillBadge tone={unreadCount > 0 ? "primary" : "cyan"}>
+            {unreadCount > 0 ? `${unreadCount} unread` : "All caught up"}
+          </PillBadge>
+          <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">
+            Notifications
+          </h1>
+          <p className="mt-2 text-sm text-fg-muted md:text-base">
+            {unreadCount > 0
+              ? `You have ${unreadCount} unread notification${unreadCount !== 1 ? "s" : ""}.`
+              : "You're all caught up."}
           </p>
         </div>
         {notifications.length > 0 && (
           <div className="flex gap-2">
             {unreadCount > 0 && (
-              <button onClick={() => { markAllRead(); toast.success("All marked as read"); }} className="btn-secondary">
-                <CheckCheck className="h-4 w-4" /> Mark all read
+              <button
+                onClick={() => {
+                  markAllRead();
+                  toast.success("All marked as read");
+                }}
+                className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-4 py-2 text-sm font-medium text-fg transition-colors hover:bg-surface-hover"
+              >
+                <CheckCheck className="h-4 w-4" aria-hidden="true" /> Mark all read
               </button>
             )}
-            <button onClick={handleClearAll} className="btn-ghost text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10">
-              <Trash2 className="h-4 w-4" /> Clear all
+            <button
+              onClick={handleClearAll}
+              className="inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-danger transition-colors hover:bg-danger/10"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" /> Clear all
             </button>
           </div>
         )}
-      </div>
+      </header>
 
       {/* List */}
       {notifications.length === 0 ? (
-        <div className="card">
+        <div className="rounded-2xl border border-border bg-surface">
           <EmptyState
             icon={Bell}
             title="No notifications yet"
@@ -56,52 +79,48 @@ export default function NotificationsPage() {
           />
         </div>
       ) : (
-        <div className="space-y-2">
-          <AnimatePresence>
-            {notifications.map((n, i) => (
-              <motion.div
-                key={n.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, x: 100 }}
-                transition={{ duration: 0.2, delay: Math.min(i * 0.03, 0.3) }}
+        <ul className="space-y-2">
+          {notifications.map((n) => (
+            <li key={n.id}>
+              <Link
+                href={n.link || "#"}
+                onClick={() => markRead(n.id)}
+                className={cn(
+                  "group block rounded-2xl border border-border bg-surface p-4 transition-colors hover:border-primary/30",
+                  !n.read && "border-l-2 border-l-primary"
+                )}
               >
-                <Link
-                  href={n.link || "#"}
-                  onClick={() => markRead(n.id)}
-                  className={cn(
-                    "block card p-4 hover:shadow-card-hover transition-all group",
-                    !n.read && "border-l-4 border-l-brand-500"
-                  )}
-                >
-                  <div className="flex items-start gap-4">
-                    <div className={cn(
-                      "h-10 w-10 rounded-xl flex items-center justify-center shrink-0",
-                      n.type === "success" && "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600",
-                      n.type === "warning" && "bg-amber-100 dark:bg-amber-500/20 text-amber-600",
-                      n.type === "danger" && "bg-red-100 dark:bg-red-500/20 text-red-600",
-                      n.type === "info" && "bg-blue-100 dark:bg-blue-500/20 text-blue-600"
-                    )}>
-                      <Bell className="h-4 w-4" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="font-semibold text-sm">{n.title}</p>
-                          <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">{n.message}</p>
-                        </div>
-                        {!n.read && (
-                          <div className="h-2 w-2 rounded-full bg-brand-500 mt-2 shrink-0" />
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-400 mt-2">{formatRelativeTime(n.createdAt)}</p>
-                    </div>
+                <div className="flex items-start gap-4">
+                  <div
+                    className={cn(
+                      "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl",
+                      TYPE_FILL[n.type]
+                    )}
+                  >
+                    <Bell className="h-4 w-4" aria-hidden="true" />
                   </div>
-                </Link>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-fg">{n.title}</p>
+                        <p className="mt-0.5 text-sm text-fg-muted">{n.message}</p>
+                      </div>
+                      {!n.read && (
+                        <span
+                          className="mt-2 h-2 w-2 shrink-0 rounded-full bg-primary"
+                          aria-label="Unread"
+                        />
+                      )}
+                    </div>
+                    <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
+                      {formatRelativeTime(n.createdAt)}
+                    </p>
+                  </div>
+                </div>
+              </Link>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

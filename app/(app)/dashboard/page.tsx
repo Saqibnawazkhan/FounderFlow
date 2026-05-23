@@ -1,15 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { motion } from "framer-motion";
+import { useMemo } from "react";
 import {
   Area,
   AreaChart,
-  Bar,
-  BarChart,
   CartesianGrid,
   Cell,
-  Legend,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -18,9 +15,7 @@ import {
   YAxis,
 } from "recharts";
 import {
-  ArrowDownRight,
   ArrowRight,
-  ArrowUpRight,
   CheckCircle2,
   CircleDot,
   Clock,
@@ -31,8 +26,22 @@ import {
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { formatCurrency, formatRelativeTime, cn } from "@/lib/utils";
-import { format, startOfMonth, subMonths } from "date-fns";
+import { endOfMonth, format, startOfMonth, subMonths } from "date-fns";
 import { Avatar } from "@/components/ui/avatar";
+import { DashboardStat, type DashboardStatProps } from "@/components/ui/dashboard-stat";
+import { PillBadge } from "@/components/landing/pill-badge";
+
+/* Chart series colors — use the brand hexes directly so Recharts can render
+ * them. CSS vars resolve at runtime; for SVG fill/stroke that's brittle, so
+ * we keep the brand hexes here and let them sit visually well on both themes.
+ */
+const C_PRIMARY = "#b6f425"; // lime
+const C_CYAN = "#70E6ED";
+const C_PINK = "#FFB3DB";
+const C_AMBER = "#f59e0b";
+const C_SLATE = "#94a3b8";
+
+const CATEGORY_PALETTE = [C_PRIMARY, C_CYAN, C_PINK, C_AMBER, "#a78bfa", "#34d399"];
 
 export default function DashboardPage() {
   const currentUser = useStore((s) => s.currentUser);
@@ -51,45 +60,63 @@ export default function DashboardPage() {
   const pendingTasks = tasks.filter((t) => t.status !== "completed").length;
   const completedTasks = tasks.filter((t) => t.status === "completed").length;
 
-  // Monthly trend data (last 6 months)
-  const monthlyData = Array.from({ length: 6 }).map((_, i) => {
-    const monthStart = startOfMonth(subMonths(new Date(), 5 - i));
-    const monthEnd = startOfMonth(subMonths(new Date(), 4 - i));
-    const monthTxns = transactions.filter((t) => {
-      const d = new Date(t.date);
-      return d >= monthStart && d < monthEnd;
-    });
-    return {
-      month: format(monthStart, "MMM"),
-      expenses: monthTxns.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0),
-      investments: monthTxns.filter((t) => t.type === "investment").reduce((s, t) => s + t.amount, 0),
-    };
-  });
+  // Runway (months left) — burn-aware metric replaces the misleading "% of capital".
+  const last3MoExpenses = useMemo(() => {
+    const cutoff = subMonths(new Date(), 3);
+    return transactions
+      .filter((t) => t.type === "expense" && new Date(t.date) >= cutoff)
+      .reduce((s, t) => s + t.amount, 0);
+  }, [transactions]);
+  const monthlyBurn = last3MoExpenses / 3;
+  const runwayMonths = monthlyBurn > 0 ? balance / monthlyBurn : Infinity;
 
-  // Founder contributions
-  const founderContributions = users
-    .map((u) => {
-      const invested = transactions
-        .filter((t) => t.addedBy === u.id && t.type === "investment")
-        .reduce((s, t) => s + t.amount, 0);
-      return { name: u.name, amount: invested, role: u.role };
-    })
-    .filter((f) => f.amount > 0)
-    .sort((a, b) => b.amount - a.amount);
+  // Last-6-months trend with proper month boundaries (fixes audit flaw #39).
+  const monthlyData = useMemo(
+    () =>
+      Array.from({ length: 6 }).map((_, i) => {
+        const ref = subMonths(new Date(), 5 - i);
+        const monthStart = startOfMonth(ref);
+        const monthEnd = endOfMonth(ref);
+        const monthTxns = transactions.filter((t) => {
+          const d = new Date(t.date);
+          return d >= monthStart && d <= monthEnd;
+        });
+        return {
+          month: format(monthStart, "MMM"),
+          expenses: monthTxns.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0),
+          investments: monthTxns
+            .filter((t) => t.type === "investment")
+            .reduce((s, t) => s + t.amount, 0),
+        };
+      }),
+    [transactions]
+  );
 
-  // Category breakdown for expenses
-  const categoryMap = new Map<string, number>();
-  transactions
-    .filter((t) => t.type === "expense")
-    .forEach((t) => {
-      categoryMap.set(t.category, (categoryMap.get(t.category) || 0) + t.amount);
-    });
-  const categoryData = Array.from(categoryMap.entries())
-    .map(([name, value]) => ({ name, value }))
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 6);
+  const founderContributions = useMemo(
+    () =>
+      users
+        .map((u) => ({
+          name: u.name,
+          amount: transactions
+            .filter((t) => t.addedBy === u.id && t.type === "investment")
+            .reduce((s, t) => s + t.amount, 0),
+          role: u.role,
+        }))
+        .filter((f) => f.amount > 0)
+        .sort((a, b) => b.amount - a.amount),
+    [users, transactions]
+  );
 
-  const CATEGORY_COLORS = ["#6366f1", "#d946ef", "#ec4899", "#f59e0b", "#10b981", "#06b6d4"];
+  const categoryData = useMemo(() => {
+    const m = new Map<string, number>();
+    transactions
+      .filter((t) => t.type === "expense")
+      .forEach((t) => m.set(t.category, (m.get(t.category) || 0) + t.amount));
+    return Array.from(m.entries())
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 6);
+  }, [transactions]);
 
   const recentActivities = activities.slice(0, 6);
   const upcomingTasks = tasks
@@ -97,231 +124,258 @@ export default function DashboardPage() {
     .sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime())
     .slice(0, 4);
 
-  const stats = [
+  const stats: DashboardStatProps[] = [
     {
-      label: "Total Balance",
+      label: "Balance",
       value: formatCurrency(balance),
       icon: Wallet,
-      gradient: "from-emerald-500 to-teal-500",
-      change: totalInvestments > 0 ? `${Math.round((balance / totalInvestments) * 100)}% of capital` : "—",
-      positive: balance > 0,
+      tone: "primary",
+      delta: balance >= 0 ? "positive" : "negative",
+      deltaLabel:
+        runwayMonths === Infinity ? "No burn recorded" : `${runwayMonths.toFixed(1)} mo runway`,
     },
     {
-      label: "Total Investments",
+      label: "Capital raised",
       value: formatCurrency(totalInvestments),
       icon: TrendingUp,
-      gradient: "from-brand-500 to-accent-500",
-      change: `${transactions.filter((t) => t.type === "investment").length} contributions`,
-      positive: true,
+      tone: "cyan",
+      delta: "positive",
+      deltaLabel: `${transactions.filter((t) => t.type === "investment").length} contributions`,
     },
     {
-      label: "Total Expenses",
+      label: "Total spend",
       value: formatCurrency(totalExpenses),
       icon: TrendingDown,
-      gradient: "from-amber-500 to-orange-500",
-      change: `${transactions.filter((t) => t.type === "expense").length} transactions`,
-      positive: false,
+      tone: "pink",
+      delta: "neutral",
+      deltaLabel: `${transactions.filter((t) => t.type === "expense").length} transactions`,
     },
     {
-      label: "Pending Tasks",
+      label: "Open tasks",
       value: pendingTasks.toString(),
       icon: CheckCircle2,
-      gradient: "from-pink-500 to-rose-500",
-      change: `${completedTasks} completed`,
-      positive: true,
+      tone: "primary",
+      delta: pendingTasks === 0 ? "positive" : "neutral",
+      deltaLabel: `${completedTasks} shipped · ${tasks.length} total`,
     },
   ];
 
   return (
-    <div className="space-y-6 max-w-[1600px] mx-auto">
+    <div className="mx-auto max-w-[1600px] space-y-8">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">
-            Welcome back, {currentUser?.name?.split(" ")[0]} <span className="inline-block animate-pulse">👋</span>
+          <PillBadge>Live workspace</PillBadge>
+          <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">
+            Welcome back,{" "}
+            <span className="text-primary-strong">{currentUser?.name?.split(" ")[0]}</span>.
           </h1>
-          <p className="text-slate-500 dark:text-slate-400 mt-1">
-            Here's how your startup is doing today.
+          <p className="mt-2 text-pretty text-sm text-fg-muted md:text-base">
+            Here&apos;s how your startup is doing today.
           </p>
         </div>
         <div className="flex gap-3">
-          <Link href="/expenses" className="btn-secondary">
-            <TrendingDown className="h-4 w-4" /> Log expense
+          <Link
+            href="/expenses"
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-5 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-surface-hover active:scale-95"
+          >
+            <TrendingDown className="h-4 w-4" aria-hidden="true" /> Log expense
           </Link>
-          <Link href="/investments" className="btn-primary">
-            <TrendingUp className="h-4 w-4" /> Add investment
+          <Link
+            href="/investments"
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+          >
+            <TrendingUp className="h-4 w-4" aria-hidden="true" /> Add investment
           </Link>
         </div>
-      </div>
+      </header>
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {stats.map((stat, i) => (
-          <motion.div
-            key={stat.label}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3, delay: i * 0.05 }}
-            className="card p-5 relative overflow-hidden group"
-          >
-            <div className={cn("absolute -top-12 -right-12 h-32 w-32 rounded-full bg-gradient-to-br opacity-10 group-hover:opacity-20 transition-opacity blur-2xl", stat.gradient)} />
-            <div className="relative flex items-start justify-between">
-              <div>
-                <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">{stat.label}</p>
-                <p className="text-2xl font-bold mt-2 tabular-nums">{stat.value}</p>
-                <div className="flex items-center gap-1 mt-2 text-xs">
-                  {stat.positive ? (
-                    <ArrowUpRight className="h-3 w-3 text-emerald-500" />
-                  ) : (
-                    <ArrowDownRight className="h-3 w-3 text-amber-500" />
-                  )}
-                  <span className="text-slate-500 dark:text-slate-400">{stat.change}</span>
-                </div>
-              </div>
-              <div className={cn("h-10 w-10 rounded-xl bg-gradient-to-br flex items-center justify-center text-white shadow-lg", stat.gradient)}>
-                <stat.icon className="h-5 w-5" />
-              </div>
-            </div>
-          </motion.div>
+      {/* Stats — 4-up Stitch-flavored metric cards */}
+      <section
+        aria-label="Key metrics"
+        className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4"
+      >
+        {stats.map((s) => (
+          <DashboardStat key={s.label} {...s} />
         ))}
-      </div>
+        {/* DashboardStat is now imported from @/components/ui */}
+      </section>
 
-      {/* Main charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Trend chart */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.2 }}
-          className="card p-6 lg:col-span-2"
-        >
-          <div className="flex items-center justify-between mb-6">
+      {/* Main row — cash flow + category breakdown */}
+      <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <div className="rounded-2xl border border-border bg-surface p-6 lg:col-span-2">
+          <div className="mb-6 flex items-start justify-between gap-4">
             <div>
-              <h3 className="text-lg font-semibold">Cash Flow</h3>
-              <p className="text-sm text-slate-500">Last 6 months</p>
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
+                Cash flow
+              </p>
+              <h3 className="mt-1 text-lg font-bold tracking-tight">Last 6 months</h3>
             </div>
             <div className="flex gap-4 text-xs">
-              <div className="flex items-center gap-2">
-                <div className="h-2.5 w-2.5 rounded-full bg-brand-500" />
-                <span className="text-slate-600 dark:text-slate-400">Investments</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="h-2.5 w-2.5 rounded-full bg-amber-500" />
-                <span className="text-slate-600 dark:text-slate-400">Expenses</span>
-              </div>
+              <Legend dot={C_PRIMARY} label="Investments" />
+              <Legend dot={C_PINK} label="Expenses" />
             </div>
           </div>
           <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={monthlyData}>
+              <AreaChart
+                data={monthlyData}
+                role="img"
+                aria-label={`Cash flow over the last 6 months. Investments and expenses by month.`}
+              >
                 <defs>
-                  <linearGradient id="invest" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.4} />
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                  <linearGradient id="g-invest" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={C_PRIMARY} stopOpacity={0.5} />
+                    <stop offset="95%" stopColor={C_PRIMARY} stopOpacity={0} />
                   </linearGradient>
-                  <linearGradient id="expense" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.4} />
-                    <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
+                  <linearGradient id="g-expense" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor={C_PINK} stopOpacity={0.4} />
+                    <stop offset="95%" stopColor={C_PINK} stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgb(148 163 184 / 0.2)" vertical={false} />
-                <XAxis dataKey="month" stroke="rgb(148 163 184)" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis
-                  stroke="rgb(148 163 184)"
-                  fontSize={12}
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke={C_SLATE}
+                  strokeOpacity={0.18}
+                  vertical={false}
+                />
+                <XAxis
+                  dataKey="month"
+                  stroke={C_SLATE}
+                  fontSize={11}
                   tickLine={false}
                   axisLine={false}
-                  tickFormatter={(v) => (v >= 1000 ? `${v / 1000}K` : v.toString())}
+                />
+                <YAxis
+                  stroke={C_SLATE}
+                  fontSize={11}
+                  tickLine={false}
+                  axisLine={false}
+                  tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString())}
                 />
                 <Tooltip
                   formatter={(value: number) => formatCurrency(value)}
-                  contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 10px 30px rgba(0,0,0,0.1)" }}
+                  contentStyle={{
+                    borderRadius: 12,
+                    border: "1px solid rgb(var(--border))",
+                    background: "rgb(var(--card))",
+                    color: "rgb(var(--fg))",
+                    boxShadow: "0 10px 30px rgb(0 0 0 / 0.18)",
+                  }}
                 />
-                <Area type="monotone" dataKey="investments" stroke="#6366f1" strokeWidth={2} fill="url(#invest)" />
-                <Area type="monotone" dataKey="expenses" stroke="#f59e0b" strokeWidth={2} fill="url(#expense)" />
+                <Area
+                  type="monotone"
+                  dataKey="investments"
+                  stroke={C_PRIMARY}
+                  strokeWidth={2}
+                  fill="url(#g-invest)"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="expenses"
+                  stroke={C_PINK}
+                  strokeWidth={2}
+                  fill="url(#g-expense)"
+                />
               </AreaChart>
             </ResponsiveContainer>
           </div>
-        </motion.div>
+        </div>
 
-        {/* Category breakdown */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.3 }}
-          className="card p-6"
-        >
-          <h3 className="text-lg font-semibold mb-1">Spending by Category</h3>
-          <p className="text-sm text-slate-500 mb-4">Top 6 categories</p>
+        <div className="rounded-2xl border border-border bg-surface p-6">
+          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
+            Spend mix
+          </p>
+          <h3 className="mt-1 text-lg font-bold tracking-tight">By category</h3>
           {categoryData.length > 0 ? (
             <>
-              <div className="h-48">
+              <div className="mt-4 h-44">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
-                    <Pie data={categoryData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={3} dataKey="value">
+                    <Pie
+                      data={categoryData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={48}
+                      outerRadius={78}
+                      paddingAngle={3}
+                      dataKey="value"
+                      stroke="rgb(var(--card))"
+                      strokeWidth={2}
+                    >
                       {categoryData.map((_, i) => (
-                        <Cell key={i} fill={CATEGORY_COLORS[i]} />
+                        <Cell key={i} fill={CATEGORY_PALETTE[i % CATEGORY_PALETTE.length]} />
                       ))}
                     </Pie>
-                    <Tooltip formatter={(v: number) => formatCurrency(v)} />
+                    <Tooltip
+                      formatter={(v: number) => formatCurrency(v)}
+                      contentStyle={{
+                        borderRadius: 12,
+                        border: "1px solid rgb(var(--border))",
+                        background: "rgb(var(--card))",
+                        color: "rgb(var(--fg))",
+                      }}
+                    />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
-              <div className="space-y-2 mt-4">
+              <ul className="mt-4 space-y-2">
                 {categoryData.slice(0, 4).map((c, i) => (
-                  <div key={c.name} className="flex items-center justify-between text-xs">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <div className="h-2.5 w-2.5 rounded-full shrink-0" style={{ backgroundColor: CATEGORY_COLORS[i] }} />
-                      <span className="truncate text-slate-600 dark:text-slate-400">{c.name}</span>
+                  <li key={c.name} className="flex items-center justify-between text-xs">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length] }}
+                      />
+                      <span className="truncate text-fg-muted">{c.name}</span>
                     </div>
-                    <span className="font-medium tabular-nums">{formatCurrency(c.value)}</span>
-                  </div>
+                    <span className="font-mono font-semibold tabular-nums text-fg">
+                      {formatCurrency(c.value)}
+                    </span>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </>
           ) : (
-            <div className="h-48 flex items-center justify-center text-sm text-slate-500">No expenses yet</div>
+            <p className="mt-12 text-center text-sm text-fg-muted">No expenses yet</p>
           )}
-        </motion.div>
-      </div>
+        </div>
+      </section>
 
-      {/* Bottom row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Bottom — founder contributions + upcoming tasks + recent activity */}
+      <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Founder contributions */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.4 }}
-          className="card p-6"
-        >
-          <div className="flex items-center justify-between mb-4">
+        <div className="rounded-2xl border border-border bg-surface p-6">
+          <div className="mb-5 flex items-start justify-between gap-4">
             <div>
-              <h3 className="text-lg font-semibold">Founder Contributions</h3>
-              <p className="text-sm text-slate-500">Who's invested what</p>
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
+                Cap table
+              </p>
+              <h3 className="mt-1 text-lg font-bold tracking-tight">Founder contributions</h3>
             </div>
-            <Users className="h-5 w-5 text-slate-400" />
+            <Users className="h-4 w-4 text-fg-muted" aria-hidden="true" />
           </div>
-          <div className="space-y-3">
+          <div className="space-y-4">
             {founderContributions.length === 0 ? (
-              <p className="text-sm text-slate-500 text-center py-6">No investments yet</p>
+              <p className="py-6 text-center text-sm text-fg-muted">No investments yet</p>
             ) : (
-              founderContributions.slice(0, 5).map((f, i) => {
+              founderContributions.slice(0, 5).map((f) => {
                 const pct = totalInvestments > 0 ? (f.amount / totalInvestments) * 100 : 0;
                 return (
-                  <div key={f.name} className="space-y-1.5">
+                  <div key={f.name} className="space-y-2">
                     <div className="flex items-center gap-3">
                       <Avatar name={f.name} size="sm" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{f.name}</p>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{f.name}</p>
                       </div>
-                      <p className="text-sm font-semibold tabular-nums">{formatCurrency(f.amount)}</p>
+                      <p className="font-mono text-sm font-bold tabular-nums">
+                        {formatCurrency(f.amount)}
+                      </p>
                     </div>
-                    <div className="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden ml-10">
-                      <motion.div
-                        initial={{ width: 0 }}
-                        animate={{ width: `${pct}%` }}
-                        transition={{ duration: 0.8, delay: 0.5 + i * 0.1 }}
-                        className="h-full rounded-full bg-gradient-to-r from-brand-500 to-accent-500"
+                    <div className="ml-10 h-1.5 overflow-hidden rounded-full bg-glass/[0.06]">
+                      <div
+                        className="h-full rounded-full bg-primary transition-[width] duration-700"
+                        style={{ width: `${pct}%` }}
                       />
                     </div>
                   </div>
@@ -329,92 +383,113 @@ export default function DashboardPage() {
               })
             )}
           </div>
-        </motion.div>
+        </div>
 
         {/* Upcoming tasks */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.5 }}
-          className="card p-6"
-        >
-          <div className="flex items-center justify-between mb-4">
+        <div className="rounded-2xl border border-border bg-surface p-6">
+          <div className="mb-5 flex items-start justify-between gap-4">
             <div>
-              <h3 className="text-lg font-semibold">Upcoming Tasks</h3>
-              <p className="text-sm text-slate-500">{pendingTasks} pending</p>
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
+                What&apos;s next
+              </p>
+              <h3 className="mt-1 text-lg font-bold tracking-tight">Upcoming tasks</h3>
             </div>
-            <Link href="/tasks" className="text-xs text-brand-600 hover:underline flex items-center gap-1">
-              View all <ArrowRight className="h-3 w-3" />
+            <Link
+              href="/tasks"
+              className="inline-flex items-center gap-1 font-mono text-[10px] font-bold uppercase tracking-widest text-primary-strong hover:underline"
+            >
+              View all <ArrowRight className="h-3 w-3" aria-hidden="true" />
             </Link>
           </div>
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             {upcomingTasks.length === 0 ? (
-              <p className="text-sm text-slate-500 text-center py-6">No pending tasks</p>
+              <p className="py-6 text-center text-sm text-fg-muted">No pending tasks</p>
             ) : (
               upcomingTasks.map((task) => (
                 <Link
                   key={task.id}
                   href="/tasks"
-                  className="block p-3 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-brand-300 dark:hover:border-brand-700 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition group"
+                  className="group block rounded-xl border border-border p-3 transition-colors hover:border-primary/30 hover:bg-surface-hover"
                 >
                   <div className="flex items-start gap-3">
-                    <div className={cn(
-                      "h-7 w-7 rounded-lg flex items-center justify-center shrink-0",
-                      task.priority === "urgent" && "bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-300",
-                      task.priority === "high" && "bg-amber-100 dark:bg-amber-500/20 text-amber-600 dark:text-amber-300",
-                      task.priority === "medium" && "bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-300",
-                      task.priority === "low" && "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
-                    )}>
-                      {task.status === "in_progress" ? <CircleDot className="h-3.5 w-3.5" /> : <Clock className="h-3.5 w-3.5" />}
+                    <div
+                      className={cn(
+                        "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg",
+                        task.priority === "urgent" && "bg-danger/15 text-danger",
+                        task.priority === "high" && "bg-warning/15 text-warning",
+                        task.priority === "medium" && "bg-info/15 text-info",
+                        task.priority === "low" && "bg-glass/[0.06] text-fg-muted"
+                      )}
+                    >
+                      {task.status === "in_progress" ? (
+                        <CircleDot className="h-3.5 w-3.5" aria-hidden="true" />
+                      ) : (
+                        <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                      )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium group-hover:text-brand-600 dark:group-hover:text-brand-400 transition truncate">{task.title}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <p className="text-xs text-slate-500 truncate">{task.assignedToName}</p>
-                        <span className="text-slate-300">·</span>
-                        <p className="text-xs text-slate-500 truncate">Due {format(new Date(task.deadline), "MMM dd")}</p>
-                      </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium transition-colors group-hover:text-primary-strong">
+                        {task.title}
+                      </p>
+                      <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
+                        {task.assignedToName} · Due {format(new Date(task.deadline), "MMM dd")}
+                      </p>
                     </div>
                   </div>
                 </Link>
               ))
             )}
           </div>
-        </motion.div>
+        </div>
 
         {/* Recent activity */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.6 }}
-          className="card p-6"
-        >
-          <div className="flex items-center justify-between mb-4">
+        <div className="rounded-2xl border border-border bg-surface p-6">
+          <div className="mb-5 flex items-start justify-between gap-4">
             <div>
-              <h3 className="text-lg font-semibold">Recent Activity</h3>
-              <p className="text-sm text-slate-500">Live team updates</p>
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
+                Live feed
+              </p>
+              <h3 className="mt-1 text-lg font-bold tracking-tight">Recent activity</h3>
             </div>
-            <Link href="/activities" className="text-xs text-brand-600 hover:underline flex items-center gap-1">
-              View all <ArrowRight className="h-3 w-3" />
+            <Link
+              href="/activities"
+              className="inline-flex items-center gap-1 font-mono text-[10px] font-bold uppercase tracking-widest text-primary-strong hover:underline"
+            >
+              View all <ArrowRight className="h-3 w-3" aria-hidden="true" />
             </Link>
           </div>
-          <div className="space-y-3">
+          <div className="space-y-4">
             {recentActivities.length === 0 ? (
-              <p className="text-sm text-slate-500 text-center py-6">No activity yet</p>
+              <p className="py-6 text-center text-sm text-fg-muted">No activity yet</p>
             ) : (
               recentActivities.map((activity) => (
                 <div key={activity.id} className="flex items-start gap-3">
                   <Avatar name={activity.userName} size="sm" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-slate-700 dark:text-slate-300 leading-tight">{activity.message}</p>
-                    <p className="text-xs text-slate-400 mt-1">{formatRelativeTime(activity.createdAt)}</p>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm leading-snug text-fg">{activity.message}</p>
+                    <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
+                      {formatRelativeTime(activity.createdAt)}
+                    </p>
                   </div>
                 </div>
               ))
             )}
           </div>
-        </motion.div>
-      </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function Legend({ dot, label }: { dot: string; label: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className="h-2.5 w-2.5 rounded-full"
+        style={{ backgroundColor: dot }}
+        aria-hidden="true"
+      />
+      <span className="text-fg-muted">{label}</span>
     </div>
   );
 }

@@ -51,6 +51,26 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
+/**
+ * Sync theme bootstrap — runs in <head> before first paint so we don't flash
+ * the wrong theme. Reads the persisted Zustand snapshot from localStorage and
+ * applies the `dark` class to <html> immediately. Falls back to dark (the
+ * store's initial state) when storage is empty or unavailable.
+ */
+const themeBootstrap = `
+(function () {
+  try {
+    var raw = localStorage.getItem('founderflow-storage');
+    var theme = 'dark';
+    if (raw) {
+      var parsed = JSON.parse(raw);
+      if (parsed && parsed.state && parsed.state.theme) theme = parsed.state.theme;
+    }
+    if (theme === 'dark') document.documentElement.classList.add('dark');
+  } catch (e) {}
+})();
+`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
@@ -58,6 +78,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       suppressHydrationWarning
       className={`${inter.variable} ${mono.variable} ${serif.variable}`}
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
+      </head>
       <body className="min-h-screen bg-bg font-sans text-fg antialiased">
         <Providers>{children}</Providers>
       </body>
