@@ -3,7 +3,7 @@
 // written as a side effect (proves the $transaction wraps everything).
 
 import puppeteer from "puppeteer-core";
-import { PrismaClient } from "../lib/generated/prisma/index.js";
+import { PrismaClient } from "@prisma/client";
 
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const BASE = process.env.BASE ?? "http://localhost:3009";

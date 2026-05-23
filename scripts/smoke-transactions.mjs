@@ -6,7 +6,7 @@
 //   5. verify the row also exists in Supabase via a direct DB count
 
 import puppeteer from "puppeteer-core";
-import { PrismaClient } from "../lib/generated/prisma/index.js";
+import { PrismaClient } from "@prisma/client";
 
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const BASE = process.env.BASE ?? "http://localhost:3008";

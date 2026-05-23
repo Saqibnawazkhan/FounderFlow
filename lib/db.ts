@@ -6,7 +6,7 @@
  * crashes. In prod each lambda gets one client for its lifetime.
  */
 
-import { PrismaClient } from "@/lib/generated/prisma";
+import { PrismaClient } from "@prisma/client";
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;

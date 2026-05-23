@@ -11,7 +11,14 @@
 
 generator client {
   provider = "prisma-client-js"
-  output   = "../lib/generated/prisma"
+  // Generate engines for both the local dev OS (native) AND Vercel's
+  // serverless runtime (Linux + OpenSSL 3). Without the rhel target, the
+  // deployed function throws PrismaClientInitializationError "could not
+  // locate the Query Engine for runtime rhel-openssl-3.0.x".
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+  // No `output` override — keep the default node_modules/.prisma/client
+  // location so Next.js's serverless file tracing auto-includes the .so.node
+  // engine binary in the deployment bundle.
 }
 
 datasource db {

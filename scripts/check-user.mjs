@@ -2,7 +2,7 @@
 // hash matches "demo123". Useful when login mysteriously fails.
 
 import bcrypt from "bcryptjs";
-import { PrismaClient } from "../lib/generated/prisma/index.js";
+import { PrismaClient } from "@prisma/client";
 
 const db = new PrismaClient();
 const email = process.argv[2] ?? "demo@founderflow.app";

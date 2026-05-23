@@ -8,7 +8,7 @@
  * pointing at the dev DB.
  */
 
-import { PrismaClient } from "../lib/generated/prisma/index.js";
+import { PrismaClient } from "@prisma/client";
 
 const db = new PrismaClient();
 
