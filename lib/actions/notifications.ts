@@ -1,0 +1,89 @@
+"use server";
+
+/**
+ * Notification server actions. Reads + read-state mutations.
+ *
+ * Reads are scoped to session.user.id (notifications are per-user, not
+ * per-company). Mutations check the notification belongs to the caller
+ * before touching it — guards against a forged ID.
+ */
+
+import { revalidatePath } from "next/cache";
+import { auth } from "@/lib/auth";
+import { db } from "@/lib/db";
+import type { Notification } from "@/lib/types";
+
+export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+
+function toClient(n: {
+  id: string;
+  userId: string;
+  companyId: string;
+  title: string;
+  message: string;
+  type: string;
+  read: boolean;
+  link: string | null;
+  createdAt: Date;
+}): Notification {
+  return {
+    id: n.id,
+    userId: n.userId,
+    companyId: n.companyId,
+    title: n.title,
+    message: n.message,
+    type: n.type as Notification["type"],
+    read: n.read,
+    link: n.link ?? undefined,
+    createdAt: n.createdAt.toISOString(),
+  };
+}
+
+export async function listNotificationsAction(): Promise<ActionResult<Notification[]>> {
+  const session = await auth();
+  if (!session?.user?.id) return { success: false, error: "Not authenticated" };
+
+  const rows = await db.notification.findMany({
+    where: { userId: session.user.id },
+    orderBy: { createdAt: "desc" },
+    take: 200, // cap; the bell icon shows a count + the dropdown shows top 10
+  });
+  return { success: true, data: rows.map(toClient) };
+}
+
+export async function markNotificationReadAction(id: string): Promise<ActionResult> {
+  const session = await auth();
+  if (!session?.user?.id) return { success: false, error: "Not authenticated" };
+
+  const n = await db.notification.findUnique({ where: { id } });
+  if (!n) return { success: false, error: "Notification not found" };
+  if (n.userId !== session.user.id) return { success: false, error: "Not authorized" };
+
+  await db.notification.update({ where: { id }, data: { read: true } });
+  revalidatePath("/notifications");
+
+  return { success: true, data: undefined };
+}
+
+export async function markAllNotificationsReadAction(): Promise<ActionResult> {
+  const session = await auth();
+  if (!session?.user?.id) return { success: false, error: "Not authenticated" };
+
+  await db.notification.updateMany({
+    where: { userId: session.user.id, read: false },
+    data: { read: true },
+  });
+  revalidatePath("/notifications");
+
+  return { success: true, data: undefined };
+}
+
+export async function clearNotificationsAction(): Promise<ActionResult> {
+  const session = await auth();
+  if (!session?.user?.id) return { success: false, error: "Not authenticated" };
+
+  await db.notification.deleteMany({ where: { userId: session.user.id } });
+  revalidatePath("/notifications");
+
+  return { success: true, data: undefined };
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   Calendar,
@@ -31,6 +31,8 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import { useStore } from "@/lib/store";
+import { deleteTaskAction, listTasksAction, updateTaskStatusAction } from "@/lib/actions/tasks";
+import { listCompanyUsersAction } from "@/lib/actions/team";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TaskForm } from "@/components/tasks/task-form";
@@ -38,7 +40,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn } from "@/lib/utils";
-import type { Task, TaskStatus, TaskPriority } from "@/lib/types";
+import type { Task, TaskStatus, TaskPriority, User } from "@/lib/types";
 
 interface Column {
   status: TaskStatus;
@@ -61,11 +63,29 @@ const PRIORITY_STYLES: Record<TaskPriority, string> = {
 };
 
 export default function TasksPage() {
-  const tasks = useStore((s) => s.getCompanyTasks());
-  const updateStatus = useStore((s) => s.updateTaskStatus);
-  const deleteTask = useStore((s) => s.deleteTask);
   const currentUser = useStore((s) => s.currentUser);
   const confirm = useConfirm();
+
+  // Tasks live in Supabase (Phase 1.C). Users too — fetched once for the
+  // assignee dropdown in TaskForm.
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [version, setVersion] = useState(0);
+  const refresh = useCallback(() => setVersion((v) => v + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([listTasksAction(), listCompanyUsersAction()]).then(([t, u]) => {
+      if (cancelled) return;
+      if (t.success) setTasks(t.data);
+      else toast.error(t.error);
+      if (u.success) setUsers(u.data);
+      else toast.error(u.error);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [view, setView] = useState<"board" | "list">("board");
@@ -86,9 +106,14 @@ export default function TasksPage() {
     [filtered]
   );
 
-  function handleStatusChange(id: string, status: TaskStatus) {
-    updateStatus(id, status);
+  async function handleStatusChange(id: string, status: TaskStatus) {
+    const result = await updateTaskStatusAction({ id, status });
+    if (!result.success) {
+      toast.error(result.error);
+      return;
+    }
     toast.success(`Task marked as ${status.replace("_", " ")}`);
+    refresh();
   }
 
   async function handleDelete(id: string) {
@@ -99,8 +124,13 @@ export default function TasksPage() {
       tone: "danger",
     });
     if (!ok) return;
-    deleteTask(id);
+    const result = await deleteTaskAction(id);
+    if (!result.success) {
+      toast.error(result.error);
+      return;
+    }
     toast.success("Task deleted");
+    refresh();
   }
 
   // DnD: pointer (8px drag-start threshold prevents accidental drags from
@@ -124,7 +154,15 @@ export default function TasksPage() {
     if (!overStatus) return;
     const task = tasks.find((t) => t.id === taskId);
     if (!task || task.status === overStatus) return;
-    updateStatus(taskId, overStatus);
+    // Optimistic — DnD feels snappier without waiting on the round-trip.
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: overStatus } : t)));
+    void updateTaskStatusAction({ id: taskId, status: overStatus }).then((res) => {
+      if (!res.success) {
+        toast.error(res.error);
+        // Roll back on failure.
+        refresh();
+      }
+    });
   }
 
   return (
@@ -362,7 +400,12 @@ export default function TasksPage() {
         description="Assign work to your team"
         size="lg"
       >
-        <TaskForm onClose={() => setModalOpen(false)} />
+        <TaskForm
+          users={users}
+          currentUserId={currentUser?.id}
+          onClose={() => setModalOpen(false)}
+          onSuccess={refresh}
+        />
       </Modal>
     </div>
   );

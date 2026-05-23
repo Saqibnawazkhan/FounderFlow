@@ -26,7 +26,10 @@ import {
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { listTransactionsAction } from "@/lib/actions/transactions";
-import type { Transaction } from "@/lib/types";
+import { listTasksAction } from "@/lib/actions/tasks";
+import { listActivitiesAction } from "@/lib/actions/activities";
+import { listCompanyUsersAction } from "@/lib/actions/team";
+import type { Activity, Task, Transaction, User } from "@/lib/types";
 import { formatCurrency, formatRelativeTime, cn } from "@/lib/utils";
 import { endOfMonth, format, startOfMonth, subMonths } from "date-fns";
 import { Avatar } from "@/components/ui/avatar";
@@ -47,22 +50,31 @@ const CATEGORY_PALETTE = [C_PRIMARY, C_CYAN, C_PINK, C_AMBER, "#a78bfa", "#34d39
 
 export default function DashboardPage() {
   const currentUser = useStore((s) => s.currentUser);
-  const tasks = useStore((s) => s.getCompanyTasks());
-  const activities = useStore((s) => s.getCompanyActivities());
 
-  // Transactions migrated to Supabase in Phase 1.B. Tasks + activities still
-  // live in Zustand (Phase 1.C will move them).
+  // All four reads live in Supabase as of Phase 1.C. One Promise.all on
+  // mount keeps the waterfall flat.
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   useEffect(() => {
     let cancelled = false;
-    listTransactionsAction().then((res) => {
-      if (!cancelled && res.success) setTransactions(res.data);
+    Promise.all([
+      listTransactionsAction(),
+      listTasksAction(),
+      listActivitiesAction(),
+      listCompanyUsersAction(),
+    ]).then(([tx, tk, ac, us]) => {
+      if (cancelled) return;
+      if (tx.success) setTransactions(tx.data);
+      if (tk.success) setTasks(tk.data);
+      if (ac.success) setActivities(ac.data);
+      if (us.success) setUsers(us.data);
     });
     return () => {
       cancelled = true;
     };
   }, []);
-  const users = useStore((s) => s.getCompanyUsers());
 
   const totalInvestments = transactions
     .filter((t) => t.type === "investment")

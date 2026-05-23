@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity as ActivityIcon,
   CheckCircle2,
@@ -16,12 +16,13 @@ import {
   Zap,
   type LucideIcon,
 } from "lucide-react";
-import { useStore } from "@/lib/store";
+import toast from "react-hot-toast";
+import { listActivitiesAction } from "@/lib/actions/activities";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn } from "@/lib/utils";
-import type { ActivityType } from "@/lib/types";
+import type { Activity, ActivityType } from "@/lib/types";
 import { format, isToday, isYesterday, startOfDay } from "date-fns";
 
 type ActivityTone = "primary" | "cyan" | "pink" | "danger" | "warning" | "info";
@@ -51,7 +52,19 @@ const TONE_FILL: Record<ActivityTone, string> = {
 };
 
 export default function ActivitiesPage() {
-  const activities = useStore((s) => s.getCompanyActivities());
+  // Activities on Supabase (Phase 1.C).
+  const [activities, setActivities] = useState<Activity[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    listActivitiesAction().then((res) => {
+      if (cancelled) return;
+      if (res.success) setActivities(res.data);
+      else toast.error(res.error);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");

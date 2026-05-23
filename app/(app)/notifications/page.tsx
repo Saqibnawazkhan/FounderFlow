@@ -1,13 +1,20 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Bell, CheckCheck, Trash2 } from "lucide-react";
 import toast from "react-hot-toast";
-import { useStore } from "@/lib/store";
+import {
+  clearNotificationsAction,
+  listNotificationsAction,
+  markAllNotificationsReadAction,
+  markNotificationReadAction,
+} from "@/lib/actions/notifications";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, formatRelativeTime } from "@/lib/utils";
+import type { Notification } from "@/lib/types";
 
 const TYPE_FILL = {
   success: "bg-success/15 text-success",
@@ -17,13 +24,44 @@ const TYPE_FILL = {
 } as const;
 
 export default function NotificationsPage() {
-  const notifications = useStore((s) => s.getUserNotifications());
-  const markRead = useStore((s) => s.markNotificationRead);
-  const markAllRead = useStore((s) => s.markAllNotificationsRead);
-  const clearAll = useStore((s) => s.clearNotifications);
   const confirm = useConfirm();
 
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [version, setVersion] = useState(0);
+  const refresh = useCallback(() => setVersion((v) => v + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    listNotificationsAction().then((res) => {
+      if (cancelled) return;
+      if (res.success) setNotifications(res.data);
+      else toast.error(res.error);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
+
   const unreadCount = notifications.filter((n) => !n.read).length;
+
+  async function handleMarkRead(id: string) {
+    const result = await markNotificationReadAction(id);
+    if (!result.success) {
+      toast.error(result.error);
+      return;
+    }
+    refresh();
+  }
+
+  async function handleMarkAllRead() {
+    const result = await markAllNotificationsReadAction();
+    if (!result.success) {
+      toast.error(result.error);
+      return;
+    }
+    toast.success("All marked as read");
+    refresh();
+  }
 
   async function handleClearAll() {
     const ok = await confirm({
@@ -34,8 +72,13 @@ export default function NotificationsPage() {
       tone: "danger",
     });
     if (!ok) return;
-    clearAll();
+    const result = await clearNotificationsAction();
+    if (!result.success) {
+      toast.error(result.error);
+      return;
+    }
     toast.success("All notifications cleared");
+    refresh();
   }
 
   return (
@@ -59,10 +102,7 @@ export default function NotificationsPage() {
           <div className="flex gap-2">
             {unreadCount > 0 && (
               <button
-                onClick={() => {
-                  markAllRead();
-                  toast.success("All marked as read");
-                }}
+                onClick={handleMarkAllRead}
                 className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-4 py-2 text-sm font-medium text-fg transition-colors hover:bg-surface-hover"
               >
                 <CheckCheck className="h-4 w-4" aria-hidden="true" /> Mark all read
@@ -93,7 +133,7 @@ export default function NotificationsPage() {
             <li key={n.id}>
               <Link
                 href={n.link || "#"}
-                onClick={() => markRead(n.id)}
+                onClick={() => handleMarkRead(n.id)}
                 className={cn(
                   "group block rounded-2xl border border-border bg-surface p-4 transition-colors hover:border-primary/30",
                   !n.read && "border-l-2 border-l-primary"

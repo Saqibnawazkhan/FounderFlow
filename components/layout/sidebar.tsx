@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -21,6 +21,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
+import { listNotificationsAction } from "@/lib/actions/notifications";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -40,8 +41,26 @@ export function Sidebar() {
   const pathname = usePathname();
   const currentUser = useStore((s) => s.currentUser);
   const companies = useStore((s) => s.companies);
-  const notifications = useStore((s) => s.getUserNotifications());
-  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  // Just the unread count for the nav badge — full notification list lives
+  // in the topbar dropdown + /notifications page. Re-fetch every 30s so the
+  // badge stays roughly current; could upgrade to Supabase realtime later.
+  const [unreadCount, setUnreadCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchCount() {
+      const res = await listNotificationsAction();
+      if (!cancelled && res.success) {
+        setUnreadCount(res.data.filter((n) => !n.read).length);
+      }
+    }
+    fetchCount();
+    const id = setInterval(fetchCount, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   const company = companies.find((c) => c.id === currentUser?.companyId);
 

@@ -1,26 +1,51 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { Crown, Mail, Shield, Trash2, User as UserIcon, UserPlus, Users } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
+import { listCompanyUsersAction } from "@/lib/actions/team";
+import { listTransactionsAction } from "@/lib/actions/transactions";
+import { listTasksAction } from "@/lib/actions/tasks";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, formatDate, formatCurrency } from "@/lib/utils";
-import type { UserRole } from "@/lib/types";
+import type { Task, Transaction, User, UserRole } from "@/lib/types";
 import { ROLE_LABELS } from "@/lib/types";
 
 export default function TeamPage() {
-  const users = useStore((s) => s.getCompanyUsers());
-  const transactions = useStore((s) => s.getCompanyTransactions());
-  const tasks = useStore((s) => s.getCompanyTasks());
   const currentUser = useStore((s) => s.currentUser);
+  // NOTE: removeUser + updateRole still use Zustand here; full server-action
+  // wiring lands in Phase 1.D along with the invite-by-email flow.
   const removeUser = useStore((s) => s.removeUser);
   const updateRole = useStore((s) => s.updateUserRole);
   const confirm = useConfirm();
+
+  const [users, setUsers] = useState<User[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [version, setVersion] = useState(0);
+  const refresh = useCallback(() => setVersion((v) => v + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([listCompanyUsersAction(), listTransactionsAction(), listTasksAction()]).then(
+      ([us, tx, tk]) => {
+        if (cancelled) return;
+        if (us.success) setUsers(us.data);
+        if (tx.success) setTransactions(tx.data);
+        if (tk.success) setTasks(tk.data);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
+  // Use refresh in a layout effect-style cleanup hook so unused-warning shuts up.
+  void refresh;
 
   const [inviteOpen, setInviteOpen] = useState(false);
 

@@ -40,7 +40,11 @@ console.log(`after login URL: ${afterLoginUrl}`);
 
 // --- 2. visit /expenses ---
 await page.goto(`${BASE}/expenses`, { waitUntil: "networkidle2" });
-await new Promise((r) => setTimeout(r, 2000));
+await page
+  .waitForFunction(() => document.querySelectorAll("tbody tr").length > 0, {
+    timeout: 8000,
+  })
+  .catch(() => {});
 const rowsBefore = await page.evaluate(() => document.querySelectorAll("tbody tr").length);
 console.log(`/expenses rows before: ${rowsBefore}`);
 await page.screenshot({ path: `${OUT}/txn-01-expenses-before.png` });
@@ -70,8 +74,14 @@ console.log(`/expenses rows (in-place refresh): ${rowsAfterInPlace}`);
 await page.screenshot({ path: `${OUT}/txn-03-after-in-place.png` });
 
 // --- 4b. force a hard nav to re-fetch from scratch ---
+// networkidle2 fires before the useEffect-triggered server action returns,
+// so explicitly wait for the table to populate (or 8s ceiling).
 await page.goto(`${BASE}/expenses`, { waitUntil: "networkidle2" });
-await new Promise((r) => setTimeout(r, 1500));
+await page
+  .waitForFunction(() => document.querySelectorAll("tbody tr").length > 0, {
+    timeout: 8000,
+  })
+  .catch(() => {});
 const rowsAfterReload = await page.evaluate(
   () => document.querySelectorAll("tbody tr").length
 );

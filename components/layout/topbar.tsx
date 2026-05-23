@@ -1,14 +1,20 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Bell, ChevronDown, LogOut, Moon, Search, Settings, Sun, User } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { logoutAction } from "@/lib/actions/auth";
+import {
+  listNotificationsAction,
+  markAllNotificationsReadAction,
+  markNotificationReadAction,
+} from "@/lib/actions/notifications";
 import { formatRelativeTime, cn } from "@/lib/utils";
 import toast from "react-hot-toast";
+import type { Notification } from "@/lib/types";
 
 export function Topbar() {
   const router = useRouter();
@@ -16,9 +22,32 @@ export function Topbar() {
   const theme = useStore((s) => s.theme);
   const toggleTheme = useStore((s) => s.toggleTheme);
   const logout = useStore((s) => s.logout);
-  const notifications = useStore((s) => s.getUserNotifications());
-  const markRead = useStore((s) => s.markNotificationRead);
-  const markAllRead = useStore((s) => s.markAllNotificationsRead);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notifVersion, setNotifVersion] = useState(0);
+  const refreshNotifs = useCallback(() => setNotifVersion((v) => v + 1), []);
+
+  // Poll on mount; bumping notifVersion re-fetches after a markRead. Could
+  // upgrade to SSE/realtime in a future phase (Supabase has channels).
+  useEffect(() => {
+    let cancelled = false;
+    listNotificationsAction().then((res) => {
+      if (cancelled) return;
+      if (res.success) setNotifications(res.data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [notifVersion]);
+
+  async function markRead(id: string) {
+    const res = await markNotificationReadAction(id);
+    if (res.success) refreshNotifs();
+  }
+
+  async function markAllRead() {
+    const res = await markAllNotificationsReadAction();
+    if (res.success) refreshNotifs();
+  }
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
