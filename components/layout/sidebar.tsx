@@ -50,9 +50,10 @@ export function Sidebar() {
       {/* Mobile toggle */}
       <button
         onClick={() => setMobileOpen(true)}
-        className="lg:hidden fixed top-4 left-4 z-30 h-10 w-10 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-card flex items-center justify-center"
+        aria-label="Open navigation menu"
+        className="fixed left-4 top-4 z-sticky flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-surface shadow-card lg:hidden"
       >
-        <Menu className="h-5 w-5" />
+        <Menu className="h-5 w-5" aria-hidden="true" />
       </button>
 
       {/* Mobile overlay */}
@@ -63,52 +64,64 @@ export function Sidebar() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setMobileOpen(false)}
-            className="lg:hidden fixed inset-0 z-40 bg-slate-900/60 backdrop-blur-sm"
+            className="fixed inset-0 z-overlay bg-bg/70 backdrop-blur-sm lg:hidden"
+            aria-hidden="true"
           />
         )}
       </AnimatePresence>
 
       {/* Sidebar */}
       <aside
+        aria-label="Primary"
         className={cn(
-          "fixed top-0 left-0 h-screen w-64 bg-white dark:bg-[#0d0d18] border-r border-slate-200 dark:border-slate-800 z-50 transition-transform duration-300 flex flex-col",
+          "fixed left-0 top-0 z-modal flex h-screen w-64 flex-col border-r border-border bg-surface transition-transform duration-300",
           mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}
       >
         {/* Brand */}
-        <div className="h-16 flex items-center justify-between px-5 border-b border-slate-200 dark:border-slate-800">
-          <Link href="/dashboard" className="flex items-center gap-2" onClick={() => setMobileOpen(false)}>
-            <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-brand-500 to-accent-500 flex items-center justify-center shadow-glow">
-              <Sparkles className="h-5 w-5 text-white" />
+        <div className="flex h-16 items-center justify-between border-b border-border px-5">
+          <Link
+            href="/dashboard"
+            className="flex items-center gap-2"
+            onClick={() => setMobileOpen(false)}
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary shadow-glow">
+              <Sparkles className="h-5 w-5 text-primary-fg" aria-hidden="true" />
             </div>
             <div>
-              <p className="text-sm font-bold gradient-text">FounderFlow</p>
-              <p className="text-[10px] text-slate-500 uppercase tracking-wider">Workspace</p>
+              <p className="text-sm font-bold">FounderFlow</p>
+              <p className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
+                Workspace
+              </p>
             </div>
           </Link>
           <button
             onClick={() => setMobileOpen(false)}
-            className="lg:hidden h-8 w-8 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center"
+            aria-label="Close navigation menu"
+            className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-surface-hover lg:hidden"
           >
-            <X className="h-4 w-4" />
+            <X className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
 
         {/* Company */}
-        <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800">
-          <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60">
-            <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-brand-500 to-accent-500 flex items-center justify-center text-white font-bold">
+        <div className="border-b border-border px-5 py-4">
+          <div className="flex items-center gap-3 rounded-xl bg-bg p-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary font-bold text-primary-fg">
               {company?.name?.[0] || "C"}
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold truncate">{company?.name || "Your Company"}</p>
-              <p className="text-xs text-slate-500 truncate">{company?.industry}</p>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">{company?.name || "Your Company"}</p>
+              <p className="truncate text-xs text-fg-muted">{company?.industry}</p>
             </div>
           </div>
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 px-3 py-4 overflow-y-auto scrollbar-thin">
+        <nav
+          aria-label="Main navigation"
+          className="scrollbar-thin flex-1 overflow-y-auto px-3 py-4"
+        >
           <div className="space-y-1">
             {navItems.map((item) => {
               const active = pathname === item.href;
@@ -117,25 +130,29 @@ export function Sidebar() {
                 <Link
                   key={item.href}
                   href={item.href}
+                  aria-current={active ? "page" : undefined}
                   onClick={() => setMobileOpen(false)}
                   className={cn(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all relative",
+                    "relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all",
                     active
-                      ? "bg-gradient-to-r from-brand-500/10 to-accent-500/10 text-brand-700 dark:text-brand-300 border border-brand-200/50 dark:border-brand-500/20"
-                      : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/50 hover:text-slate-900 dark:hover:text-slate-100"
+                      ? "border border-primary/30 bg-primary/10 text-fg"
+                      : "text-fg-muted hover:bg-surface-hover hover:text-fg"
                   )}
                 >
                   {active && (
                     <motion.div
                       layoutId="sidebar-active"
-                      className="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-1 rounded-r-full bg-gradient-to-b from-brand-500 to-accent-500"
+                      className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-primary"
                       transition={{ duration: 0.2 }}
                     />
                   )}
-                  <item.icon className="h-4 w-4 shrink-0" />
+                  <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
                   <span className="flex-1">{item.label}</span>
                   {isNotifs && unreadCount > 0 && (
-                    <span className="h-5 min-w-5 px-1.5 rounded-full bg-gradient-to-r from-red-500 to-pink-500 text-white text-[10px] font-bold flex items-center justify-center">
+                    <span
+                      aria-label={`${unreadCount} unread notifications`}
+                      className="flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-[10px] font-bold text-white"
+                    >
                       {unreadCount}
                     </span>
                   )}
@@ -146,22 +163,22 @@ export function Sidebar() {
         </nav>
 
         {/* User */}
-        <div className="p-4 border-t border-slate-200 dark:border-slate-800">
+        <div className="border-t border-border p-4">
           <Link
             href="/settings"
-            className="flex items-center gap-3 p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/50 transition"
+            className="flex items-center gap-3 rounded-xl p-2 transition hover:bg-surface-hover"
           >
-            <div className="h-9 w-9 rounded-full bg-gradient-to-br from-pink-500 to-rose-500 flex items-center justify-center text-white font-semibold text-sm shrink-0">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan text-sm font-semibold text-primary-fg">
               {currentUser?.name?.[0] || "U"}
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold truncate">{currentUser?.name}</p>
-              <p className="text-xs text-slate-500 truncate capitalize">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-semibold">{currentUser?.name}</p>
+              <p className="truncate text-xs capitalize text-fg-muted">
                 {currentUser?.role === "admin"
                   ? "Admin Founder"
                   : currentUser?.role === "cofounder"
-                  ? "Co-Founder"
-                  : "Team Member"}
+                    ? "Co-Founder"
+                    : "Team Member"}
               </p>
             </div>
           </Link>

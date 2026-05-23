@@ -1,17 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { motion } from "framer-motion";
-import { ArrowRight, Eye, EyeOff, Sparkles, Zap } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, Sparkles, Zap, CheckCircle2 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
+import { PillBadge } from "@/components/landing/pill-badge";
+import { StatCard } from "@/components/landing/stat-card";
+import { MetricRing } from "@/components/landing/metric-ring";
+import { ThemeToggle } from "@/components/landing/theme-toggle";
 
 export default function LoginPage() {
   const router = useRouter();
   const login = useStore((s) => s.login);
   const loginDemo = useStore((s) => s.loginDemo);
+
+  const emailId = useId();
+  const pwId = useId();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -28,7 +34,7 @@ export default function LoginPage() {
     const result = login(email, password);
     setLoading(false);
     if (result.success) {
-      toast.success("Welcome back!");
+      toast.success("Welcome back");
       router.push("/dashboard");
     } else {
       toast.error(result.error || "Login failed");
@@ -42,128 +48,170 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex">
-      {/* Left: Form */}
-      <div className="flex-1 flex flex-col justify-center px-6 sm:px-12 lg:px-20 py-12">
-        <div className="w-full max-w-md mx-auto">
-          <Link href="/" className="flex items-center gap-2 mb-12">
-            <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-brand-500 to-accent-500 flex items-center justify-center shadow-glow">
-              <Sparkles className="h-5 w-5 text-white" />
+    <div className="min-h-screen bg-bg text-fg lg:grid lg:grid-cols-[1fr_1.05fr]">
+      {/* Left: form */}
+      <div className="relative flex flex-col justify-center px-6 py-12 sm:px-10 lg:px-16">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top_left,rgb(var(--primary)/0.10),transparent_60%)]"
+        />
+
+        {/* Floating theme toggle — top-right of the form pane */}
+        <div className="absolute right-6 top-6 sm:right-10 lg:right-12">
+          <ThemeToggle size="sm" />
+        </div>
+
+        <Link href="/" className="mb-12 inline-flex w-fit items-center gap-2.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary">
+            <Sparkles className="h-4 w-4 text-primary-fg" aria-hidden="true" />
+          </div>
+          <span className="text-base font-bold tracking-tight">FounderFlow</span>
+        </Link>
+
+        <div className="w-full max-w-sm">
+          <PillBadge>Welcome back</PillBadge>
+
+          <h1 className="mt-5 text-4xl font-bold tracking-tight md:text-5xl">
+            Sign in to your <span className="text-primary-strong">workspace</span>.
+          </h1>
+
+          <p className="mt-3 text-sm text-fg-muted">Pick up where your co-founder left off.</p>
+
+          <form onSubmit={handleSubmit} className="mt-10 space-y-5" noValidate>
+            <div>
+              <label
+                htmlFor={emailId}
+                className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+              >
+                Email
+              </label>
+              <input
+                id={emailId}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@startup.com"
+                autoComplete="email"
+                className="w-full rounded-xl border border-glass/[0.10] bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:border-primary/50 focus:bg-glass/[0.08] focus:outline-none"
+              />
             </div>
-            <span className="text-xl font-bold gradient-text">FounderFlow</span>
-          </Link>
 
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4 }}
-          >
-            <h1 className="text-3xl font-bold tracking-tight">Welcome back</h1>
-            <p className="text-slate-600 dark:text-slate-400 mt-2">
-              Log in to your founder workspace.
-            </p>
-
-            <form onSubmit={handleSubmit} className="mt-8 space-y-5">
-              <div>
-                <label className="label">Email</label>
+            <div>
+              <label
+                htmlFor={pwId}
+                className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+              >
+                Password
+              </label>
+              <div className="relative">
                 <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="input"
-                  placeholder="you@startup.com"
-                  autoComplete="email"
+                  id={pwId}
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Enter your password"
+                  autoComplete="current-password"
+                  className="w-full rounded-xl border border-glass/[0.10] bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:border-primary/50 focus:bg-glass/[0.08] focus:outline-none"
                 />
-              </div>
-
-              <div>
-                <label className="label">Password</label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="input pr-12"
-                    placeholder="Enter your password"
-                    autoComplete="current-password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
-                  >
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <button type="submit" disabled={loading} className="btn-primary w-full py-3">
-                {loading ? "Signing in..." : "Sign in"}
-                <ArrowRight className="h-4 w-4" />
-              </button>
-            </form>
-
-            <div className="relative my-6">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-slate-200 dark:border-slate-800" />
-              </div>
-              <div className="relative flex justify-center text-xs">
-                <span className="px-3 bg-white dark:bg-[#09090f] text-slate-500">or</span>
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg"
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4" aria-hidden="true" />
+                  ) : (
+                    <Eye className="h-4 w-4" aria-hidden="true" />
+                  )}
+                </button>
               </div>
             </div>
 
-            <button onClick={handleDemo} className="btn-secondary w-full py-3">
-              <Zap className="h-4 w-4 text-amber-500" />
-              Try demo workspace
+            <button
+              type="submit"
+              disabled={loading}
+              className="group inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-all hover:scale-[1.01] hover:shadow-[0_0_45px_rgb(182_244_37_/_0.4)] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+            >
+              {loading ? "Signing in…" : "Sign in"}
+              <ArrowRight
+                className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+                aria-hidden="true"
+              />
             </button>
+          </form>
 
-            <p className="mt-6 text-sm text-center text-slate-600 dark:text-slate-400">
-              Don't have an account?{" "}
-              <Link href="/signup" className="text-brand-600 dark:text-brand-400 font-medium hover:underline">
-                Sign up free
-              </Link>
-            </p>
-          </motion.div>
-        </div>
-      </div>
+          <div className="my-6 flex items-center gap-3">
+            <div className="h-px flex-1 bg-glass/[0.05]" />
+            <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
+              or
+            </span>
+            <div className="h-px flex-1 bg-glass/[0.05]" />
+          </div>
 
-      {/* Right: Visual */}
-      <div className="hidden lg:flex flex-1 bg-gradient-to-br from-brand-600 via-brand-500 to-accent-500 relative overflow-hidden">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.2),transparent_50%)]" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(217,70,239,0.4),transparent_50%)]" />
-
-        <div className="relative flex flex-col justify-center px-12 xl:px-20 text-white">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6 }}
+          <button
+            onClick={handleDemo}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-glass/[0.10] bg-glass/[0.05] px-5 py-3.5 text-sm font-medium text-fg backdrop-blur-sm transition-colors hover:bg-glass/[0.10]"
           >
-            <h2 className="text-4xl xl:text-5xl font-bold leading-tight">
-              The financial OS<br />for ambitious teams.
-            </h2>
-            <p className="mt-6 text-lg text-white/80 max-w-md">
-              Track every PKR. Assign every task. Keep every co-founder
-              aligned. No more spreadsheets, no more confusion.
-            </p>
+            <Zap className="h-4 w-4 text-cyan-strong" aria-hidden="true" />
+            Try the live demo
+          </button>
 
-            <div className="mt-10 space-y-4">
-              {[
-                "Real-time expense & investment tracking",
-                "Role-based access for your whole team",
-                "Beautiful reports your investors will love",
-                "Built for startups that move fast",
-              ].map((f) => (
-                <div key={f} className="flex items-center gap-3">
-                  <div className="h-5 w-5 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
-                    <div className="h-2 w-2 rounded-full bg-white" />
-                  </div>
-                  <span className="text-white/90">{f}</span>
-                </div>
-              ))}
-            </div>
-          </motion.div>
+          <p className="mt-8 text-center text-sm text-fg-muted">
+            New here?{" "}
+            <Link href="/signup" className="font-semibold text-primary-strong hover:underline">
+              Create a workspace
+            </Link>
+          </p>
         </div>
       </div>
+
+      {/* Right: showcase panel — Stitch hero mini */}
+      <aside className="relative hidden overflow-hidden border-l border-glass/[0.06] bg-bg/40 lg:flex lg:flex-col lg:justify-center lg:px-16 xl:px-24">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 bg-gradient-mesh opacity-40"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -top-40 right-0 h-96 w-96 rounded-full bg-primary/20 blur-3xl"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-40 left-0 h-96 w-96 rounded-full bg-cyan/20 blur-3xl"
+        />
+
+        <div className="relative max-w-md">
+          <PillBadge tone="cyan">Live workspace</PillBadge>
+          <h2 className="mt-6 text-balance text-4xl font-bold leading-tight tracking-tight xl:text-5xl">
+            One shared source of <span className="text-primary-strong">truth</span>.
+          </h2>
+          <p className="mt-4 text-pretty text-base leading-relaxed text-fg-muted">
+            Every PKR, every task, every founder contribution — synced in real time across your
+            team.
+          </p>
+
+          <div className="mt-10 grid grid-cols-2 gap-3">
+            <StatCard value="PKR 1.5M" label="Tracked" tone="primary" />
+            <StatCard value="84%" label="Runway" tone="cyan">
+              <MetricRing value={0.84} tone="cyan" label="84" className="ml-auto h-14 w-14" />
+            </StatCard>
+          </div>
+
+          <div className="mt-6 space-y-2.5">
+            {[
+              "Real-time expense & investment tracking",
+              "Role-based access for your whole team",
+              "Investor-ready PDF + Excel exports",
+            ].map((f) => (
+              <div key={f} className="flex items-center gap-3 text-sm text-fg-muted">
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-primary-strong" aria-hidden="true" />
+                {f}
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
     </div>
   );
 }

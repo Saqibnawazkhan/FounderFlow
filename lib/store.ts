@@ -142,7 +142,7 @@ export const useStore = create<AppState>()(
       tasks: [],
       activities: [],
       notifications: [],
-      theme: "light",
+      theme: "dark",
 
       init: () => {
         const state = get();

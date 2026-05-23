@@ -2,28 +2,101 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+/* =============================================================================
+ * Design tokens
+ *
+ * Single source of truth for color / radius / z-index. Tailwind theme consumes
+ * these via rgb(var(--token) / <alpha-value>) so utilities like `bg-primary/20`
+ * keep working with arbitrary opacity.
+ * =============================================================================
+ */
 
 :root {
-  --background: 250 250 252;
-  --foreground: 15 23 42;
+  /* =========================================================================
+   * LIGHT THEME — warm off-white surfaces, deep ink, dark glass tint
+   * =========================================================================
+   */
+  --bg: 247 248 245; /* #f7f8f5 warm cream */
+  --surface: 255 255 255; /* pure white cards */
+  --surface-hover: 246 246 244;
   --card: 255 255 255;
-  --card-foreground: 15 23 42;
-  --border: 226 232 240;
+  --fg: 17 17 17; /* near-black */
+  --fg-muted: 100 116 139; /* slate-500 */
+  --border: 226 232 240; /* slate-200 */
   --input: 226 232 240;
-  --muted: 241 245 249;
-  --muted-foreground: 100 116 139;
+  --ring: 132 204 22; /* lime-500 — slightly darker for visibility on white */
+
+  /* Glass — flips inversion per theme.
+   * On light: dark tint (rgb of black). Use with alpha utilities like bg-glass/[0.04].
+   * On dark: light tint (rgb of white).
+   */
+  --glass: 17 17 17;
+  --on-glass: 71 85 105;
+
+  /* Ambient glow opacities — lighter on light, brighter on dark */
+  --ambient-opacity: 0.35;
+  --glow-shadow-opacity: 0.18;
+
+  /* =========================================================================
+   * ACCENTS — same hexes both themes (brand consistency)
+   * =========================================================================
+   */
+  --primary: 182 244 37; /* #b6f425 lime — fills, borders, ring */
+  --primary-fg: 10 10 10; /* black text on top of primary fills */
+  --primary-soft: 202 242 145;
+  --cyan: 112 230 237; /* #70E6ED — fills, borders */
+  --pink: 255 179 219; /* #FFB3DB — fills, borders */
+
+  /* Text-safe accents: darker on light surfaces so contrast hits AA 4.5:1.
+   * Use these for any `text-*` utility; keep --primary/--cyan/--pink for fills.
+   */
+  --primary-strong: 77 124 15; /* lime-700 — ~6.3:1 on #f7f8f5 */
+  --cyan-strong: 14 116 144; /* cyan-700 — ~5.5:1 */
+  --pink-strong: 190 24 93; /* pink-700 — ~5.8:1 */
+
+  /* Semantic */
+  --success: 16 185 129;
+  --warning: 245 158 11;
+  --danger: 239 68 68;
+  --info: 59 130 246;
+
+  /* Radius (Stitch scale) */
+  --radius-sm: 0.5rem;
+  --radius: 1rem;
+  --radius-lg: 2rem;
+  --radius-xl: 3rem;
+
+  /* Easings */
+  --ease-material: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-norris: cubic-bezier(0.65, 0.05, 0, 1);
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .dark {
-  --background: 9 9 16;
-  --foreground: 248 250 252;
-  --card: 17 17 28;
-  --card-foreground: 248 250 252;
-  --border: 39 39 56;
-  --input: 39 39 56;
-  --muted: 24 24 38;
-  --muted-foreground: 148 163 184;
+  /* =========================================================================
+   * DARK THEME — Stitch palette
+   * =========================================================================
+   */
+  --bg: 10 10 10; /* #0a0a0a */
+  --surface: 22 22 22; /* #161616 */
+  --surface-hover: 34 34 34; /* #222222 */
+  --card: 22 22 22;
+  --fg: 247 248 245;
+  --fg-muted: 148 163 184; /* slate-400 */
+  --border: 38 38 50;
+  --input: 38 38 50;
+  --ring: 182 244 37;
+
+  --glass: 255 255 255;
+  --on-glass: 148 163 184;
+
+  --ambient-opacity: 0.5;
+  --glow-shadow-opacity: 0.35;
+
+  /* On dark surfaces the bright brand hexes already exceed 13:1 — match them. */
+  --primary-strong: 182 244 37;
+  --cyan-strong: 112 230 237;
+  --pink-strong: 255 179 219;
 }
 
 * {
@@ -35,97 +108,120 @@ html {
 }
 
 body {
-  background: rgb(var(--background));
-  color: rgb(var(--foreground));
-  font-family: 'Inter', system-ui, sans-serif;
+  background: rgb(var(--bg));
+  color: rgb(var(--fg));
+  font-family: var(--font-sans), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Focus-visible — lime ring, always visible, never hidden */
+:focus-visible {
+  outline: 2px solid rgb(var(--ring));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Reduced motion — kills animation for users who request it */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* =============================================================================
+ * Component utilities
+ * =============================================================================
+ */
+
 @layer components {
   .glass {
-    @apply bg-white/70 dark:bg-slate-900/70 backdrop-blur-xl border border-slate-200/50 dark:border-slate-800/50;
+    @apply border border-white/5 bg-white/70 backdrop-blur-xl dark:bg-white/[0.03];
   }
 
   .glass-card {
-    @apply bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-card;
+    @apply rounded-2xl border border-border bg-card shadow-card;
   }
 
   .gradient-text {
-    @apply bg-gradient-to-r from-brand-600 via-accent-500 to-brand-500 bg-clip-text text-transparent;
+    @apply bg-gradient-to-r from-primary via-cyan to-primary-soft bg-clip-text text-transparent;
   }
 
   .gradient-bg {
-    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #d946ef 100%);
+    background: linear-gradient(135deg, rgb(var(--primary)) 0%, rgb(var(--cyan)) 100%);
   }
 
+  /* ---------- Buttons ---------- */
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-medium text-sm
-           bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-700 hover:to-brand-600
-           text-white shadow-md hover:shadow-glow transition-all duration-200
-           active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-fg shadow-sm transition-all duration-200 hover:bg-primary-soft active:scale-95 disabled:cursor-not-allowed disabled:opacity-50;
   }
 
   .btn-secondary {
-    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-medium text-sm
-           bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700
-           text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-700
-           transition-all duration-200 active:scale-95;
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-border bg-surface px-5 py-2.5 text-sm font-medium text-fg transition-all duration-200 hover:bg-surface-hover active:scale-95;
   }
 
   .btn-ghost {
-    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl font-medium text-sm
-           hover:bg-slate-100 dark:hover:bg-slate-800
-           text-slate-700 dark:text-slate-300 transition-all duration-200 active:scale-95;
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-fg-muted transition-all duration-200 hover:bg-surface-hover hover:text-fg active:scale-95;
   }
 
   .btn-danger {
-    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-medium text-sm
-           bg-red-500 hover:bg-red-600 text-white shadow-md
-           transition-all duration-200 active:scale-95;
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-danger px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all duration-200 hover:bg-danger/90 active:scale-95;
   }
 
+  /* ---------- Inputs ---------- */
   .input {
-    @apply w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-800/50
-           border border-slate-200 dark:border-slate-700
-           text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500
-           focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500
-           transition-all duration-200;
+    @apply w-full rounded-xl border border-border bg-surface px-4 py-2.5 text-sm text-fg transition-all duration-200 placeholder:text-fg-muted/70 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30;
   }
 
   .label {
-    @apply block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5;
+    @apply mb-1.5 block text-sm font-medium text-fg;
   }
 
+  /* ---------- Cards ---------- */
   .card {
-    @apply bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800
-           shadow-card hover:shadow-card-hover transition-all duration-300;
+    @apply rounded-2xl border border-border bg-card shadow-card transition-all duration-300 hover:shadow-card-hover;
   }
 
+  /* ---------- Badges ---------- */
   .badge {
-    @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium;
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
   }
 
   .badge-success {
-    @apply badge bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300;
+    @apply badge bg-success/15 text-success;
   }
 
   .badge-warning {
-    @apply badge bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300;
+    @apply badge bg-warning/15 text-warning;
   }
 
   .badge-danger {
-    @apply badge bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300;
+    @apply badge bg-danger/15 text-danger;
   }
 
   .badge-info {
-    @apply badge bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300;
+    @apply badge bg-info/15 text-info;
   }
 
   .badge-default {
-    @apply badge bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300;
+    @apply badge bg-fg/10 text-fg-muted;
+  }
+
+  /* ---------- Stitch-flavored pill ---------- */
+  .pill-mono {
+    @apply inline-flex w-fit items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-4 py-1.5 font-mono text-xs font-bold uppercase tracking-wider text-primary;
   }
 }
+
+/* =============================================================================
+ * Utilities
+ * =============================================================================
+ */
 
 @layer utilities {
   .scrollbar-thin {
@@ -142,26 +238,35 @@ body {
   }
 
   .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: rgb(148 163 184 / 0.4);
+    background: rgb(var(--fg) / 0.15);
     border-radius: 3px;
   }
 
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-    background: rgb(148 163 184 / 0.6);
+    background: rgb(var(--fg) / 0.3);
   }
 
   .text-balance {
     text-wrap: balance;
   }
+
+  .text-pretty {
+    text-wrap: pretty;
+  }
 }
 
+/* =============================================================================
+ * Recharts overrides — themed tooltips
+ * =============================================================================
+ */
+
 .recharts-tooltip-wrapper {
-  outline: none !important;
+  outline: none;
 }
 
 .recharts-default-tooltip {
-  background: rgb(var(--card)) !important;
-  border: 1px solid rgb(var(--border)) !important;
-  border-radius: 12px !important;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1) !important;
+  background: rgb(var(--card));
+  border: 1px solid rgb(var(--border));
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.18);
 }

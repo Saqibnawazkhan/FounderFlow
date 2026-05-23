@@ -25,21 +25,22 @@ export function Providers({ children }: { children: React.ReactNode }) {
         position="top-right"
         toastOptions={{
           duration: 3500,
+          className: "!font-sans",
           style: {
-            background: theme === "dark" ? "#1e1e2e" : "#fff",
-            color: theme === "dark" ? "#f8fafc" : "#0f172a",
-            border: `1px solid ${theme === "dark" ? "#2e2e44" : "#e2e8f0"}`,
+            background: "rgb(var(--surface))",
+            color: "rgb(var(--fg))",
+            border: "1px solid rgb(var(--border))",
             borderRadius: "12px",
             padding: "12px 16px",
             fontSize: "14px",
             fontWeight: 500,
-            boxShadow: "0 10px 30px rgba(0,0,0,0.12)",
+            boxShadow: "0 10px 30px rgb(0 0 0 / 0.18)",
           },
           success: {
-            iconTheme: { primary: "#10b981", secondary: "#fff" },
+            iconTheme: { primary: "rgb(var(--primary))", secondary: "rgb(var(--primary-fg))" },
           },
           error: {
-            iconTheme: { primary: "#ef4444", secondary: "#fff" },
+            iconTheme: { primary: "rgb(var(--danger))", secondary: "#fff" },
           },
         }}
       />
