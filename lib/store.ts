@@ -9,6 +9,7 @@ import type {
   Transaction,
   Task,
   Activity,
+  ActivityMetadata,
   Notification,
   ActivityType,
   TaskStatus,
@@ -41,19 +42,30 @@ interface AppState {
   logout: () => void;
   loginDemo: () => void;
 
-  inviteUser: (data: {
-    name: string;
-    email: string;
-    password: string;
-    role: User["role"];
-  }) => { success: boolean; error?: string };
+  inviteUser: (data: { name: string; email: string; password: string; role: User["role"] }) => {
+    success: boolean;
+    error?: string;
+  };
   removeUser: (userId: string) => void;
   updateUserRole: (userId: string, role: User["role"]) => void;
 
-  addTransaction: (data: Omit<Transaction, "id" | "companyId" | "addedBy" | "addedByName" | "createdAt">) => void;
+  addTransaction: (
+    data: Omit<Transaction, "id" | "companyId" | "addedBy" | "addedByName" | "createdAt">
+  ) => void;
   deleteTransaction: (id: string) => void;
 
-  addTask: (data: Omit<Task, "id" | "companyId" | "assignedBy" | "assignedByName" | "assignedByName" | "createdAt" | "completedAt">) => void;
+  addTask: (
+    data: Omit<
+      Task,
+      | "id"
+      | "companyId"
+      | "assignedBy"
+      | "assignedByName"
+      | "assignedByName"
+      | "createdAt"
+      | "completedAt"
+    >
+  ) => void;
   updateTaskStatus: (id: string, status: TaskStatus) => void;
   deleteTask: (id: string) => void;
 
@@ -68,11 +80,20 @@ interface AppState {
   getUserNotifications: () => Notification[];
 }
 
+const noopStorage: Storage = {
+  length: 0,
+  clear: () => {},
+  getItem: () => null,
+  key: () => null,
+  removeItem: () => {},
+  setItem: () => {},
+};
+
 function logActivity(
   state: AppState,
   type: ActivityType,
   message: string,
-  metadata?: Record<string, any>
+  metadata?: ActivityMetadata
 ): Activity[] {
   if (!state.currentUser) return state.activities;
   const activity: Activity = {
@@ -134,7 +155,8 @@ export const useStore = create<AppState>()(
           transactions: state.transactions.length === 0 ? seed.transactions : state.transactions,
           tasks: state.tasks.length === 0 ? seed.tasks : state.tasks,
           activities: state.activities.length === 0 ? seed.activities : state.activities,
-          notifications: state.notifications.length === 0 ? seed.notifications : state.notifications,
+          notifications:
+            state.notifications.length === 0 ? seed.notifications : state.notifications,
         });
       },
 
@@ -245,7 +267,7 @@ export const useStore = create<AppState>()(
           state,
           "user_joined",
           `${state.currentUser.name} added ${name} as ${role === "admin" ? "Admin Founder" : role === "cofounder" ? "Co-Founder" : "Team Member"}`,
-          { invitedUser: name, role }
+          { kind: "user", invitedUser: name, role }
         );
         const newNotifs = notifyAllUsers(
           state,
@@ -272,8 +294,9 @@ export const useStore = create<AppState>()(
         if (!user) return;
         const newActivities = logActivity(
           state,
-          "user_joined",
-          `${state.currentUser.name} removed ${user.name} from the team`
+          "user_removed",
+          `${state.currentUser.name} removed ${user.name} from the team`,
+          { kind: "user", invitedUser: user.name, role: user.role }
         );
         set({
           users: state.users.filter((u) => u.id !== userId),
@@ -284,8 +307,17 @@ export const useStore = create<AppState>()(
       updateUserRole: (userId, role) => {
         const state = get();
         if (!state.currentUser || state.currentUser.role !== "admin") return;
+        const target = state.users.find((u) => u.id === userId);
+        if (!target) return;
+        const newActivities = logActivity(
+          state,
+          "user_role_changed",
+          `${state.currentUser.name} changed ${target.name}'s role to ${role}`,
+          { kind: "user", invitedUser: target.name, role, previousRole: target.role }
+        );
         set({
           users: state.users.map((u) => (u.id === userId ? { ...u, role } : u)),
+          activities: newActivities,
         });
       },
 
@@ -308,7 +340,7 @@ export const useStore = create<AppState>()(
           state,
           isExpense ? "expense_added" : "investment_added",
           message,
-          { amount: data.amount, category: data.category }
+          { kind: "transaction", amount: data.amount, category: data.category }
         );
         const newNotifs = notifyAllUsers(
           state,
@@ -441,9 +473,7 @@ export const useStore = create<AppState>()(
 
       markNotificationRead: (id) => {
         set((state) => ({
-          notifications: state.notifications.map((n) =>
-            n.id === id ? { ...n, read: true } : n
-          ),
+          notifications: state.notifications.map((n) => (n.id === id ? { ...n, read: true } : n)),
         }));
       },
 
@@ -461,9 +491,7 @@ export const useStore = create<AppState>()(
         const state = get();
         if (!state.currentUser) return;
         set({
-          notifications: state.notifications.filter(
-            (n) => n.userId !== state.currentUser?.id
-          ),
+          notifications: state.notifications.filter((n) => n.userId !== state.currentUser?.id),
         });
       },
 
@@ -507,7 +535,9 @@ export const useStore = create<AppState>()(
     }),
     {
       name: "founderflow-storage",
-      storage: createJSONStorage(() => (typeof window !== "undefined" ? localStorage : (undefined as any))),
+      storage: createJSONStorage(() =>
+        typeof window !== "undefined" ? window.localStorage : noopStorage
+      ),
       partialize: (state) => ({
         currentUser: state.currentUser,
         users: state.users,

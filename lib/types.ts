@@ -61,9 +61,17 @@ export type ActivityType =
   | "task_completed"
   | "task_updated"
   | "user_joined"
+  | "user_removed"
+  | "user_role_changed"
   | "company_created"
   | "transaction_deleted"
   | "task_deleted";
+
+export type ActivityMetadata =
+  | { kind: "transaction"; amount: number; category: string }
+  | { kind: "task"; taskId: string; title: string }
+  | { kind: "user"; invitedUser?: string; role?: UserRole; previousRole?: UserRole }
+  | { kind: "none" };
 
 export interface Activity {
   id: string;
@@ -72,7 +80,7 @@ export interface Activity {
   message: string;
   userId: string;
   userName: string;
-  metadata?: Record<string, any>;
+  metadata?: ActivityMetadata;
   createdAt: string;
 }
 
