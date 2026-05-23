@@ -243,19 +243,23 @@ export default function TasksPage() {
           onDragEnd={handleDragEnd}
           onDragCancel={() => setDraggingTask(null)}
         >
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          {/* Mobile: horizontal scroll with scroll-snap (swipe between columns)
+              so the user doesn't have to scroll through every column vertically.
+              Desktop: 3-up grid as before. */}
+          <div className="-mx-4 flex snap-x snap-mandatory gap-4 overflow-x-auto px-4 pb-2 md:mx-0 md:grid md:grid-cols-3 md:overflow-visible md:px-0">
             {COLUMNS.map((col) => (
-              <DroppableColumn
-                key={col.status}
-                column={col}
-                tasks={grouped[col.status]}
-                onStatusChange={handleStatusChange}
-                onDelete={handleDelete}
-                canDeleteTask={(task) =>
-                  currentUser?.id === task.assignedBy || currentUser?.role === "admin"
-                }
-                isDragActive={draggingTask !== null}
-              />
+              <div key={col.status} className="w-[85vw] shrink-0 snap-center md:w-auto md:shrink">
+                <DroppableColumn
+                  column={col}
+                  tasks={grouped[col.status]}
+                  onStatusChange={handleStatusChange}
+                  onDelete={handleDelete}
+                  canDeleteTask={(task) =>
+                    currentUser?.id === task.assignedBy || currentUser?.role === "admin"
+                  }
+                  isDragActive={draggingTask !== null}
+                />
+              </div>
             ))}
           </div>
           <DragOverlay dropAnimation={null}>

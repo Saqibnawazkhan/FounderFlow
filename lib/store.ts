@@ -26,8 +26,12 @@ interface AppState {
   activities: Activity[];
   notifications: Notification[];
   theme: "light" | "dark";
+  /** Mobile sidebar open/close. Lifted to the store so the topbar burger can
+   * open the sidebar without prop-drilling through layout. */
+  mobileNavOpen: boolean;
 
   init: () => void;
+  setMobileNavOpen: (open: boolean) => void;
   /**
    * Adopt a user identity that came from Auth.js (via getSession on mount).
    * Skips the demo-seed path so a real session never overlaps the local
@@ -149,6 +153,7 @@ export const useStore = create<AppState>()(
       activities: [],
       notifications: [],
       theme: "dark",
+      mobileNavOpen: false,
 
       init: () => {
         const state = get();
@@ -165,6 +170,8 @@ export const useStore = create<AppState>()(
             state.notifications.length === 0 ? seed.notifications : state.notifications,
         });
       },
+
+      setMobileNavOpen: (open) => set({ mobileNavOpen: open }),
 
       hydrateUser: (user) => {
         const current = get().currentUser;

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Bell, ChevronDown, LogOut, Moon, Search, Settings, Sun, User } from "lucide-react";
+import { Bell, ChevronDown, LogOut, Menu, Moon, Search, Settings, Sun, User } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { logoutAction } from "@/lib/actions/auth";
 import {
@@ -22,6 +22,7 @@ export function Topbar() {
   const theme = useStore((s) => s.theme);
   const toggleTheme = useStore((s) => s.toggleTheme);
   const logout = useStore((s) => s.logout);
+  const setMobileNavOpen = useStore((s) => s.setMobileNavOpen);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [notifVersion, setNotifVersion] = useState(0);
   const refreshNotifs = useCallback(() => setNotifVersion((v) => v + 1), []);
@@ -90,8 +91,25 @@ export function Topbar() {
 
   return (
     <header className="sticky top-0 z-sticky h-16 border-b border-border bg-surface/80 backdrop-blur-xl">
-      <div className="flex h-full items-center justify-between px-4 md:px-6 lg:px-8">
-        <div className="ml-12 max-w-md flex-1 lg:ml-0">
+      <div className="flex h-full items-center gap-2 px-4 md:px-6 lg:px-8">
+        {/* Mobile burger — opens the sidebar drawer. Hidden once the sidebar
+            becomes permanent at lg breakpoint. */}
+        <button
+          onClick={() => setMobileNavOpen(true)}
+          aria-label="Open navigation menu"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-bg text-fg-muted transition hover:bg-surface-hover hover:text-fg lg:hidden"
+        >
+          <Menu className="h-5 w-5" aria-hidden="true" />
+        </button>
+
+        {/* Brand on the smallest screens only — once search shows at sm+
+            we have less room and the burger is already an anchor home. */}
+        <Link href="/dashboard" className="flex items-center gap-2 sm:hidden">
+          <span className="text-sm font-bold tracking-tight">FounderFlow</span>
+        </Link>
+
+        {/* Search — collapses on very small screens to leave room for actions */}
+        <div className="hidden max-w-md flex-1 sm:block">
           <div className="relative">
             <Search
               className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
@@ -108,7 +126,10 @@ export function Topbar() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        {/* Spacer pushes right-side actions to the end when search is hidden */}
+        <div className="flex-1 sm:hidden" />
+
+        <div className="flex items-center gap-1 sm:gap-2">
           <button
             onClick={toggleTheme}
             className="flex h-9 w-9 items-center justify-center rounded-xl text-fg-muted transition hover:bg-surface-hover"

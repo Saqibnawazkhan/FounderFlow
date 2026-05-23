@@ -11,7 +11,6 @@ import {
   FileText,
   Home,
   LayoutDashboard,
-  Menu,
   Settings,
   Sparkles,
   TrendingDown,
@@ -37,10 +36,40 @@ const navItems = [
 ];
 
 export function Sidebar() {
-  const [mobileOpen, setMobileOpen] = useState(false);
+  // Mobile open/close lives in Zustand so the topbar burger can drive it
+  // without prop-drilling. We close on any pathname change so navigating
+  // through the menu auto-dismisses the overlay.
+  const mobileOpen = useStore((s) => s.mobileNavOpen);
+  const setMobileOpen = useStore((s) => s.setMobileNavOpen);
   const pathname = usePathname();
   const currentUser = useStore((s) => s.currentUser);
   const companies = useStore((s) => s.companies);
+
+  // Auto-close the mobile drawer when the route changes.
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname, setMobileOpen]);
+
+  // Lock body scroll while the drawer is open (mobile only).
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (mobileOpen) {
+      document.body.style.overflow = "hidden";
+      return () => {
+        document.body.style.overflow = "";
+      };
+    }
+  }, [mobileOpen]);
+
+  // Close on Escape for keyboard users.
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileOpen(false);
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [mobileOpen, setMobileOpen]);
 
   // Just the unread count for the nav badge — full notification list lives
   // in the topbar dropdown + /notifications page. Re-fetch every 30s so the
@@ -66,16 +95,7 @@ export function Sidebar() {
 
   return (
     <>
-      {/* Mobile toggle */}
-      <button
-        onClick={() => setMobileOpen(true)}
-        aria-label="Open navigation menu"
-        className="fixed left-4 top-4 z-sticky flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-surface shadow-card lg:hidden"
-      >
-        <Menu className="h-5 w-5" aria-hidden="true" />
-      </button>
-
-      {/* Mobile overlay */}
+      {/* Mobile overlay — burger now lives in the topbar */}
       <AnimatePresence>
         {mobileOpen && (
           <motion.div
