@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowUp,
   Calculator,
@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
+import { deleteTransactionAction, listTransactionsAction } from "@/lib/actions/transactions";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TransactionForm } from "@/components/transactions/transaction-form";
@@ -22,7 +23,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { formatCurrency, formatDate } from "@/lib/utils";
-import { INVESTMENT_CATEGORIES } from "@/lib/types";
+import { INVESTMENT_CATEGORIES, type Transaction } from "@/lib/types";
 
 const ROLE_LABEL = {
   admin: "Admin Founder",
@@ -31,13 +32,31 @@ const ROLE_LABEL = {
 } as const;
 
 export default function InvestmentsPage() {
-  const transactions = useStore((s) => s.getCompanyTransactions());
   const users = useStore((s) => s.getCompanyUsers());
-  const deleteTransaction = useStore((s) => s.deleteTransaction);
   const currentUser = useStore((s) => s.currentUser);
   const confirm = useConfirm();
 
-  const investments = transactions.filter((t) => t.type === "investment");
+  // Transactions live in Supabase; refresh via version counter.
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [version, setVersion] = useState(0);
+  const refresh = useCallback(() => setVersion((v) => v + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    listTransactionsAction().then((res) => {
+      if (cancelled) return;
+      if (res.success) setTransactions(res.data);
+      else toast.error(res.error);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
+
+  const investments = useMemo(
+    () => transactions.filter((t) => t.type === "investment"),
+    [transactions]
+  );
 
   const [modalOpen, setModalOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -79,8 +98,13 @@ export default function InvestmentsPage() {
       tone: "danger",
     });
     if (!ok) return;
-    deleteTransaction(id);
+    const result = await deleteTransactionAction(id);
+    if (!result.success) {
+      toast.error(result.error);
+      return;
+    }
     toast.success("Investment deleted");
+    refresh();
   }
 
   return (
@@ -341,7 +365,11 @@ export default function InvestmentsPage() {
         title="Add new investment"
         description="Record capital injected into your company"
       >
-        <TransactionForm type="investment" onClose={() => setModalOpen(false)} />
+        <TransactionForm
+          type="investment"
+          onClose={() => setModalOpen(false)}
+          onSuccess={refresh}
+        />
       </Modal>
     </div>
   );

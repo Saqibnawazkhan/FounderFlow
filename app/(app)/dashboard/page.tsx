@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -25,6 +25,8 @@ import {
   Wallet,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
+import { listTransactionsAction } from "@/lib/actions/transactions";
+import type { Transaction } from "@/lib/types";
 import { formatCurrency, formatRelativeTime, cn } from "@/lib/utils";
 import { endOfMonth, format, startOfMonth, subMonths } from "date-fns";
 import { Avatar } from "@/components/ui/avatar";
@@ -45,9 +47,21 @@ const CATEGORY_PALETTE = [C_PRIMARY, C_CYAN, C_PINK, C_AMBER, "#a78bfa", "#34d39
 
 export default function DashboardPage() {
   const currentUser = useStore((s) => s.currentUser);
-  const transactions = useStore((s) => s.getCompanyTransactions());
   const tasks = useStore((s) => s.getCompanyTasks());
   const activities = useStore((s) => s.getCompanyActivities());
+
+  // Transactions migrated to Supabase in Phase 1.B. Tasks + activities still
+  // live in Zustand (Phase 1.C will move them).
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    listTransactionsAction().then((res) => {
+      if (!cancelled && res.success) setTransactions(res.data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const users = useStore((s) => s.getCompanyUsers());
 
   const totalInvestments = transactions

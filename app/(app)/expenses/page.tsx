@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   ArrowDown,
@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
+import { deleteTransactionAction, listTransactionsAction } from "@/lib/actions/transactions";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TransactionForm } from "@/components/transactions/transaction-form";
@@ -22,19 +23,37 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { formatCurrency, formatDate } from "@/lib/utils";
-import { EXPENSE_CATEGORIES } from "@/lib/types";
+import { EXPENSE_CATEGORIES, type Transaction } from "@/lib/types";
 
 const C_PINK = "#FFB3DB";
 const C_AMBER = "#f59e0b";
 const C_SLATE = "#94a3b8";
 
 export default function ExpensesPage() {
-  const transactions = useStore((s) => s.getCompanyTransactions());
-  const deleteTransaction = useStore((s) => s.deleteTransaction);
   const currentUser = useStore((s) => s.currentUser);
   const confirm = useConfirm();
 
-  const expenses = transactions.filter((t) => t.type === "expense");
+  // Transactions live in Supabase now (Phase 1.B). Pull on mount + after
+  // every mutation via a small version counter so we don't fight Zustand.
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [version, setVersion] = useState(0);
+  const refresh = useCallback(() => setVersion((v) => v + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    listTransactionsAction().then((res) => {
+      if (cancelled) return;
+      if (res.success) setTransactions(res.data);
+      else toast.error(res.error);
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
+
+  const expenses = useMemo(() => transactions.filter((t) => t.type === "expense"), [transactions]);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -75,8 +94,13 @@ export default function ExpensesPage() {
       tone: "danger",
     });
     if (!ok) return;
-    deleteTransaction(id);
+    const result = await deleteTransactionAction(id);
+    if (!result.success) {
+      toast.error(result.error);
+      return;
+    }
     toast.success("Expense deleted");
+    refresh();
   }
 
   return (
@@ -358,7 +382,7 @@ export default function ExpensesPage() {
         title="Log new expense"
         description="Track a business expense"
       >
-        <TransactionForm type="expense" onClose={() => setModalOpen(false)} />
+        <TransactionForm type="expense" onClose={() => setModalOpen(false)} onSuccess={refresh} />
       </Modal>
     </div>
   );

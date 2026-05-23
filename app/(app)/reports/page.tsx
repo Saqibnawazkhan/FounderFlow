@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -16,6 +16,8 @@ import {
 import { FileSpreadsheet, FileText } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
+import { listTransactionsAction } from "@/lib/actions/transactions";
+import type { Transaction } from "@/lib/types";
 import { Avatar } from "@/components/ui/avatar";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { formatCurrency } from "@/lib/utils";
@@ -30,11 +32,22 @@ const C_SLATE = "#94a3b8";
 const PALETTE = [C_PRIMARY, C_CYAN, C_PINK, C_AMBER, "#a78bfa", "#34d399", "#fb7185", "#facc15"];
 
 export default function ReportsPage() {
-  const transactions = useStore((s) => s.getCompanyTransactions());
   const users = useStore((s) => s.getCompanyUsers());
   const companies = useStore((s) => s.companies);
   const currentUser = useStore((s) => s.currentUser);
   const company = companies.find((c) => c.id === currentUser?.companyId);
+
+  // Transactions on Supabase (Phase 1.B).
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    listTransactionsAction().then((res) => {
+      if (!cancelled && res.success) setTransactions(res.data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [period, setPeriod] = useState<"3m" | "6m" | "1y" | "all">("6m");
 
