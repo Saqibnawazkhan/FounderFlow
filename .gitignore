@@ -20,7 +20,33 @@
 
 # misc
 .DS_Store
+Thumbs.db
 *.pem
+
+# editor / IDE configs (personal, don't leak across collaborators)
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+
+# AI assistant configs (project-local, not for sharing)
+.claude/
+.cursor/
+.aider*
+
+# planning / audit / notes (Claude plans and scratch docs)
+analyze-this-*.md
+/plans/
+/notes/
+TODO.md
+NOTES.md
+SCRATCH.md
+*.draft.md
+
+# local screenshots / build artifacts
+/screenshots/
+*.local.png
 
 # debug
 npm-debug.log*
