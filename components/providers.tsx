@@ -39,28 +39,31 @@ function Inner({ children }: { children: React.ReactNode }) {
   // over the locally-stored demo user.
   useEffect(() => {
     if (status === "loading") return;
-    if (session?.user) {
-      // Try to find a matching local user record (the demo seed adds them);
-      // otherwise build a thin shim from the session payload.
-      const sUser = session.user;
-      const local = users.find((u) => u.email.toLowerCase() === sUser.email?.toLowerCase());
-      hydrateUser(
-        local ?? {
-          id: sUser.id,
-          name: sUser.name ?? "",
-          email: sUser.email ?? "",
-          password: "", // never used; bcrypt hash lives server-side only
-          role: sUser.role,
-          companyId: sUser.companyId,
-          createdAt: new Date().toISOString(),
-        }
-      );
-    } else if (status === "unauthenticated" && currentUser) {
-      // Only drop the local user if there's NO real session; this lets the
-      // demo workspace keep working when the user has not signed up.
-      // (We don't auto-logout demo here — only on explicit signOut.)
+    // Defensive try/catch — if the JWT is missing custom claims for any reason
+    // (older sessions before companyId was added, etc.) we'd rather log and
+    // continue than crash the entire layout.
+    try {
+      if (session?.user) {
+        const sUser = session.user;
+        const local = users.find(
+          (u) => u.email.toLowerCase() === (sUser.email ?? "").toLowerCase()
+        );
+        hydrateUser(
+          local ?? {
+            id: sUser.id ?? "",
+            name: sUser.name ?? "",
+            email: sUser.email ?? "",
+            password: "", // never used; bcrypt hash lives server-side only
+            role: sUser.role ?? "member",
+            companyId: sUser.companyId ?? "",
+            createdAt: new Date().toISOString(),
+          }
+        );
+      }
+    } catch (e) {
+      console.error("session hydration failed:", e);
     }
-  }, [session, status, hydrateUser, users, currentUser]);
+  }, [session, status, hydrateUser, users]);
 
   return (
     <>
