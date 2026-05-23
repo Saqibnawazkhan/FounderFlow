@@ -4,7 +4,12 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { Crown, Mail, Shield, Trash2, User as UserIcon, UserPlus, Users } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
-import { listCompanyUsersAction } from "@/lib/actions/team";
+import {
+  inviteUserAction,
+  listCompanyUsersAction,
+  removeUserAction,
+  updateUserRoleAction,
+} from "@/lib/actions/team";
 import { listTransactionsAction } from "@/lib/actions/transactions";
 import { listTasksAction } from "@/lib/actions/tasks";
 import { Modal } from "@/components/ui/modal";
@@ -18,10 +23,6 @@ import { ROLE_LABELS } from "@/lib/types";
 
 export default function TeamPage() {
   const currentUser = useStore((s) => s.currentUser);
-  // NOTE: removeUser + updateRole still use Zustand here; full server-action
-  // wiring lands in Phase 1.D along with the invite-by-email flow.
-  const removeUser = useStore((s) => s.removeUser);
-  const updateRole = useStore((s) => s.updateUserRole);
   const confirm = useConfirm();
 
   const [users, setUsers] = useState<User[]>([]);
@@ -44,17 +45,23 @@ export default function TeamPage() {
       cancelled = true;
     };
   }, [version]);
-  // Use refresh in a layout effect-style cleanup hook so unused-warning shuts up.
-  void refresh;
 
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [pendingUserId, setPendingUserId] = useState<string | null>(null);
 
   const isAdmin = currentUser?.role === "admin";
 
-  function handleRoleChange(userId: string, role: UserRole) {
+  async function handleRoleChange(userId: string, role: UserRole) {
     if (!isAdmin) return;
-    updateRole(userId, role);
-    toast.success("Role updated");
+    setPendingUserId(userId);
+    const res = await updateUserRoleAction({ userId, role });
+    setPendingUserId(null);
+    if (res.success) {
+      toast.success("Role updated");
+      refresh();
+    } else {
+      toast.error(res.error);
+    }
   }
 
   async function handleRemove(userId: string, name: string) {
@@ -65,8 +72,15 @@ export default function TeamPage() {
       tone: "danger",
     });
     if (!ok) return;
-    removeUser(userId);
-    toast.success(`${name} removed`);
+    setPendingUserId(userId);
+    const res = await removeUserAction(userId);
+    setPendingUserId(null);
+    if (res.success) {
+      toast.success(`${name} removed`);
+      refresh();
+    } else {
+      toast.error(res.error);
+    }
   }
 
   return (
@@ -168,8 +182,9 @@ export default function TeamPage() {
                       <select
                         id={`role-${user.id}`}
                         value={user.role}
+                        disabled={pendingUserId === user.id}
                         onChange={(e) => handleRoleChange(user.id, e.target.value as UserRole)}
-                        className="mt-3 rounded-full border border-border bg-bg px-3 py-1 text-xs font-medium text-fg focus:border-primary/50 focus:outline-none"
+                        className="mt-3 rounded-full border border-border bg-bg px-3 py-1 text-xs font-medium text-fg focus:border-primary/50 focus:outline-none disabled:opacity-60"
                       >
                         <option value="cofounder">Co-Founder</option>
                         <option value="member">Team Member</option>
@@ -207,8 +222,9 @@ export default function TeamPage() {
               {isAdmin && user.id !== currentUser?.id && user.role !== "admin" && (
                 <button
                   onClick={() => handleRemove(user.id, user.name)}
+                  disabled={pendingUserId === user.id}
                   aria-label={`Remove ${user.name} from the team`}
-                  className="absolute bottom-4 right-4 rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                  className="absolute bottom-4 right-4 rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40"
                 >
                   <Trash2 className="h-4 w-4" aria-hidden="true" />
                 </button>
@@ -224,7 +240,13 @@ export default function TeamPage() {
         title="Invite team member"
         description="Add a co-founder or team member to your workspace"
       >
-        <InviteForm onClose={() => setInviteOpen(false)} />
+        <InviteForm
+          onClose={() => setInviteOpen(false)}
+          onInvited={() => {
+            refresh();
+            setInviteOpen(false);
+          }}
+        />
       </Modal>
     </div>
   );
@@ -257,8 +279,7 @@ function Cell({
 /* InviteForm                                                                   */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-function InviteForm({ onClose }: { onClose: () => void }) {
-  const invite = useStore((s) => s.inviteUser);
+function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: () => void }) {
   const nameId = useId();
   const emailId = useId();
   const pwId = useId();
@@ -267,13 +288,14 @@ function InviteForm({ onClose }: { onClose: () => void }) {
     name: "",
     email: "",
     password: "",
-    role: "cofounder" as UserRole,
+    role: "cofounder" as Exclude<UserRole, "admin">,
   });
   const [loading, setLoading] = useState(false);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.name || !form.email || !form.password) {
+    // Light client check; server is the source of truth via zod.
+    if (!form.name.trim() || !form.email.trim() || !form.password) {
       toast.error("Please fill in all fields");
       return;
     }
@@ -282,13 +304,16 @@ function InviteForm({ onClose }: { onClose: () => void }) {
       return;
     }
     setLoading(true);
-    const result = invite(form);
-    setLoading(false);
-    if (result.success) {
-      toast.success(`${form.name} has been added to the team`);
-      onClose();
-    } else {
-      toast.error(result.error || "Failed to add member");
+    try {
+      const res = await inviteUserAction(form);
+      if (res.success) {
+        toast.success(`${form.name} has been added to the team`);
+        onInvited();
+      } else {
+        toast.error(res.error);
+      }
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -353,7 +378,7 @@ function InviteForm({ onClose }: { onClose: () => void }) {
               <button
                 key={r.value}
                 type="button"
-                onClick={() => setForm({ ...form, role: r.value as UserRole })}
+                onClick={() => setForm({ ...form, role: r.value as Exclude<UserRole, "admin"> })}
                 aria-pressed={active}
                 className={cn(
                   "rounded-xl border p-3 text-left transition-all",
