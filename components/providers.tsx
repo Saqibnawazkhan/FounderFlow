@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { SessionProvider, useSession } from "next-auth/react";
 import { Toaster } from "react-hot-toast";
 import { useStore } from "@/lib/store";
@@ -18,13 +18,9 @@ function Inner({ children }: { children: React.ReactNode }) {
   const init = useStore((s) => s.init);
   const theme = useStore((s) => s.theme);
   const hydrateUser = useStore((s) => s.hydrateUser);
-  const currentUser = useStore((s) => s.currentUser);
-  const users = useStore((s) => s.users);
   const { data: session, status } = useSession();
 
   useEffect(() => {
-    // Seed local demo data so the existing pages still render — we'll
-    // migrate each page off this in follow-up commits.
     init();
   }, [init]);
 
@@ -34,18 +30,25 @@ function Inner({ children }: { children: React.ReactNode }) {
     }
   }, [theme]);
 
-  // Hydrate the Zustand `currentUser` from the Auth.js session so the existing
-  // store-backed UI keeps working. When a real session is present, prefer it
-  // over the locally-stored demo user.
+  // Hydrate Zustand `currentUser` once per session id. The previous
+  // implementation included `users` in the dep array and constructed a fresh
+  // object with `createdAt: new Date()` each run, which made the effect
+  // re-fire on every state change and triggered React error #185 (max update
+  // depth) in production. We now track the hydrated user id in a ref and
+  // bail out if we've already adopted that identity.
+  const hydratedUserIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (status === "loading") return;
-    // Defensive try/catch — if the JWT is missing custom claims for any reason
-    // (older sessions before companyId was added, etc.) we'd rather log and
-    // continue than crash the entire layout.
     try {
-      if (session?.user) {
-        const sUser = session.user;
-        const local = users.find(
+      const sUser = session?.user;
+      const newId = sUser?.id ?? null;
+      if (hydratedUserIdRef.current === newId) return;
+
+      if (sUser) {
+        // Read users via getState() so Zustand subscriptions don't pull this
+        // effect into a render loop when the seed populates.
+        const localUsers = useStore.getState().users;
+        const local = localUsers.find(
           (u) => u.email.toLowerCase() === (sUser.email ?? "").toLowerCase()
         );
         hydrateUser(
@@ -53,17 +56,21 @@ function Inner({ children }: { children: React.ReactNode }) {
             id: sUser.id ?? "",
             name: sUser.name ?? "",
             email: sUser.email ?? "",
-            password: "", // never used; bcrypt hash lives server-side only
+            password: "",
             role: sUser.role ?? "member",
             companyId: sUser.companyId ?? "",
             createdAt: new Date().toISOString(),
           }
         );
+      } else {
+        // Genuinely unauthenticated — wipe any stale local identity.
+        hydrateUser(null);
       }
+      hydratedUserIdRef.current = newId;
     } catch (e) {
       console.error("session hydration failed:", e);
     }
-  }, [session, status, hydrateUser, users]);
+  }, [session, status, hydrateUser]);
 
   return (
     <>

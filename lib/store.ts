@@ -167,14 +167,17 @@ export const useStore = create<AppState>()(
       },
 
       hydrateUser: (user) => {
-        set((state) => {
-          // If we're adopting a real session user, drop any local demo state
-          // that doesn't match their company — prevents mixing scopes.
-          if (user && user.companyId !== state.currentUser?.companyId) {
-            return { currentUser: user };
-          }
-          return { currentUser: user };
-        });
+        const current = get().currentUser;
+        // Skip the set() call entirely when nothing meaningful changed —
+        // the Providers effect can fire repeatedly during session refresh,
+        // and an unconditional set was looping subscribers (React #185).
+        const sameIdentity =
+          current?.id === user?.id &&
+          current?.email === user?.email &&
+          current?.companyId === user?.companyId &&
+          current?.role === user?.role;
+        if (sameIdentity) return;
+        set({ currentUser: user });
       },
 
       setTheme: (theme) => {
