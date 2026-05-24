@@ -51,6 +51,8 @@ model User {
   recurringRules RecurringRule[]
   budgets        Budget[]
   comments       Comment[]       @relation("CommentAuthor")
+  timeEntries    TimeEntry[]     @relation("TimeEntryUser")
+  editedEntries  TimeEntry[]     @relation("TimeEntryEditor")
 
   @@index([companyId])
   @@index([email])
@@ -77,6 +79,7 @@ model Company {
   recurringRules RecurringRule[]
   budgets        Budget[]
   comments       Comment[]
+  timeEntries    TimeEntry[]
 }
 
 model Transaction {
@@ -162,10 +165,11 @@ model Task {
   createdAt      DateTime  @default(now())
   completedAt    DateTime?
 
-  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  assignee User      @relation("TaskAssignee", fields: [assignedTo], references: [id], onDelete: Cascade)
-  creator  User      @relation("TaskCreator", fields: [assignedBy], references: [id], onDelete: Cascade)
-  comments Comment[]
+  company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  assignee    User        @relation("TaskAssignee", fields: [assignedTo], references: [id], onDelete: Cascade)
+  creator     User        @relation("TaskCreator", fields: [assignedBy], references: [id], onDelete: Cascade)
+  comments    Comment[]
+  timeEntries TimeEntry[]
 
   @@index([companyId, status])
   @@index([assignedTo])
@@ -297,4 +301,54 @@ model Comment {
   @@index([transactionId, createdAt])
   @@index([companyId, createdAt])
   @@index([authorId])
+}
+
+// Per-user work session. `clockOutAt = null` means "currently clocked in".
+//
+// Auto-close pipeline:
+//   • Client heartbeats lastActivityAt every 5 minutes while clocked in.
+//   • At 12h since lastActivityAt, the client shows a "still working?" modal.
+//   • If the user doesn't respond within 30 min, the client auto-clocks-out
+//     with clockOutAt = lastActivityAt (so AFK time isn't credited).
+//   • An hourly server cron sweeps any entry where lastActivityAt < now - 12.5h
+//     and closes it the same way — safety net for a closed browser tab.
+//
+// Permissions in lib/actions/time.ts:
+//   • Members can clock in/out and delete their own entries — they CANNOT
+//     adjust clockInAt/clockOutAt manually.
+//   • Admin and cofounder can edit any entry's times (audit-trailed via
+//     editedBy + editedAt) and see the whole company's entries.
+model TimeEntry {
+  id             String    @id @default(cuid())
+  companyId      String
+  userId         String
+  userName       String // denormalized — survives user rename
+  taskId         String? // optional — entry can be "untagged" general work
+  taskTitle      String? // denormalized snapshot of the task name at clock-in
+  note           String?
+  clockInAt      DateTime  @default(now())
+  clockOutAt     DateTime? // null = currently active
+  // Heartbeat target — every successful client heartbeat sets this to now().
+  // Drives both the in-app warning trigger AND the cron auto-close cutoff.
+  lastActivityAt DateTime  @default(now())
+  // Set to true when either the client idle handler OR the server cron
+  // closed the entry instead of the user clicking clock-out. Lets the UI
+  // show an "auto-closed" hint and helps debugging.
+  autoClosed     Boolean   @default(false)
+  // Manual edit audit trail. Set whenever admin/cofounder adjusts the times.
+  editedBy       String?
+  editedByName   String?
+  editedAt       DateTime?
+  createdAt      DateTime  @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation("TimeEntryUser", fields: [userId], references: [id], onDelete: Cascade)
+  editor  User?   @relation("TimeEntryEditor", fields: [editedBy], references: [id], onDelete: SetNull)
+  task    Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([userId, clockInAt])
+  @@index([companyId, clockInAt])
+  @@index([taskId])
+  // Lets the cron find open entries to auto-close without scanning every row.
+  @@index([clockOutAt, lastActivityAt])
 }

@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/materialize-recurring",
       "schedule": "5 0 * * *"
+    },
+    {
+      "path": "/api/cron/sweep-time-entries",
+      "schedule": "0 * * * *"
     }
   ]
 }

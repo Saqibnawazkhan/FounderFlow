@@ -16,6 +16,7 @@ import { formatRelativeTime, cn } from "@/lib/utils";
 import toast from "react-hot-toast";
 import type { Notification } from "@/lib/types";
 import { useT } from "@/lib/i18n/use-t";
+import { ClockWidget } from "@/components/time/clock-widget";
 
 export function Topbar() {
   const router = useRouter();
@@ -132,6 +133,8 @@ export function Topbar() {
         <div className="flex-1 sm:hidden" />
 
         <div className="flex items-center gap-1 sm:gap-2">
+          <ClockWidget />
+
           <button
             onClick={toggleTheme}
             className="flex h-9 w-9 items-center justify-center rounded-xl text-fg-muted transition hover:bg-surface-hover"
