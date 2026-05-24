@@ -49,4 +49,10 @@ const nextConfig = {
   },
 };
 
-module.exports = nextConfig;
+// Wrap with @next/bundle-analyzer when ANALYZE=true so `npm run analyze`
+// opens the treemap visualization at build time. No-op in normal builds.
+const withBundleAnalyzer = require("@next/bundle-analyzer")({
+  enabled: process.env.ANALYZE === "true",
+});
+
+module.exports = withBundleAnalyzer(nextConfig);

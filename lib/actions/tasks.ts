@@ -19,6 +19,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { NewTaskSchema, TaskStatusUpdateSchema } from "@/lib/schemas/task";
+import { limiters } from "@/lib/rate-limit";
 import type { Task, TaskStatus } from "@/lib/types";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
@@ -79,6 +80,9 @@ export async function addTaskAction(input: unknown): Promise<ActionResult<Task>>
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
   }
+
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   const parsed = NewTaskSchema.safeParse(input);
   if (!parsed.success) {

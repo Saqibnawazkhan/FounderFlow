@@ -57,8 +57,30 @@ await page.evaluate(() => {
 // Modal mount + Framer Motion enter takes ~300-1500ms on cold dev. Wait for
 // the form's number input to exist rather than racing on a fixed timeout.
 await page.waitForSelector('[role="dialog"] input[type="number"]', { timeout: 5000 });
-await page.type('[role="dialog"] input[type="number"]', "12345");
-await page.type('[role="dialog"] textarea', "Smoke-test expense from puppeteer");
+// Fill via the prototype-descriptor trick — page.type silently no-ops on
+// some Chromium / RHF combinations for number inputs even after focus().
+// Setting via the descriptor + dispatching `input` is the canonical way to
+// drive a controlled/registered field.
+await page.evaluate(() => {
+  const dialog = document.querySelector('[role="dialog"]');
+  const amount = dialog?.querySelector('input[type="number"]');
+  const desc = dialog?.querySelector("textarea");
+  const setInput = (el, v) => {
+    if (!el) return;
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set?.call(el, v);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const setTextarea = (el, v) => {
+    if (!el) return;
+    Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set?.call(
+      el,
+      v
+    );
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  setInput(amount, "12345");
+  setTextarea(desc, "Smoke-test expense from puppeteer");
+});
 await page.screenshot({ path: `${OUT}/txn-02-modal.png` });
 
 await page.evaluate(() => {

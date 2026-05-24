@@ -21,6 +21,7 @@ import bcrypt from "bcryptjs";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { InviteUserSchema, UpdateRoleSchema } from "@/lib/schemas/user";
+import { limiters } from "@/lib/rate-limit";
 import type { User } from "@/lib/types";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
@@ -84,6 +85,9 @@ async function requireAdmin() {
 export async function inviteUserAction(input: unknown): Promise<ActionResult<User>> {
   const gate = await requireAdmin();
   if (!gate.ok) return { success: false, error: gate.error };
+
+  const rl = limiters.write.consume(gate.userId);
+  if (!rl.allowed) return { success: false, error: rl.error ?? "Too many requests" };
 
   const parsed = InviteUserSchema.safeParse(input);
   if (!parsed.success) {

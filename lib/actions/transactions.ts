@@ -21,6 +21,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { NewTransactionSchema } from "@/lib/schemas/transaction";
+import { limiters } from "@/lib/rate-limit";
 import type { Transaction } from "@/lib/types";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
@@ -77,6 +78,10 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
   }
+
+  // Spam guard: 60 writes/user/min covers any plausible human, blocks scripted abuse.
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   const parsed = NewTransactionSchema.safeParse(input);
   if (!parsed.success) {

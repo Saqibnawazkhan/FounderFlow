@@ -20,10 +20,20 @@ import { AuthError } from "next-auth";
 import { signIn, signOut } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { LoginSchema, SignupSchema } from "@/lib/schemas/auth";
+import { limiters } from "@/lib/rate-limit";
+import { getClientIp } from "@/lib/client-ip";
 
 export type ActionResult = { success: boolean; error?: string };
 
 export async function signupAction(input: unknown): Promise<ActionResult> {
+  // Brute-force / signup-spam guard. 5/min/IP — covers a tab-spam attacker
+  // but is well above any human signup rate.
+  const ip = await getClientIp();
+  const gate = limiters.auth.consume(ip);
+  if (!gate.allowed) {
+    return { success: false, error: gate.error };
+  }
+
   const parsed = SignupSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid input" };
@@ -96,6 +106,14 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
 }
 
 export async function loginAction(input: unknown): Promise<ActionResult> {
+  // Same auth bucket as signup — 5 failed credential attempts per IP per
+  // minute is the classic brute-force threshold.
+  const ip = await getClientIp();
+  const gate = limiters.auth.consume(ip);
+  if (!gate.allowed) {
+    return { success: false, error: gate.error };
+  }
+
   const parsed = LoginSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: "Email and password are required" };
