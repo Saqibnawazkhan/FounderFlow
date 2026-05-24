@@ -6,6 +6,7 @@
 import type { Metadata } from "next";
 import { getCurrentUser } from "@/lib/queries/users";
 import { getCurrentCompany } from "@/lib/queries/company";
+import { getAccountStats } from "@/lib/queries/stats";
 import { SettingsClient } from "./settings-client";
 
 export const metadata: Metadata = {
@@ -14,6 +15,13 @@ export const metadata: Metadata = {
 };
 
 export default async function SettingsPage() {
-  const [user, company] = await Promise.all([getCurrentUser(), getCurrentCompany()]);
-  return <SettingsClient user={user} company={company} />;
+  // Stats are per-user; company is per-workspace. Member view in the
+  // client hides the company section, but we still fetch it because the
+  // current-user query depends on it for the workspace name + currency.
+  const [user, company, stats] = await Promise.all([
+    getCurrentUser(),
+    getCurrentCompany(),
+    getAccountStats(),
+  ]);
+  return <SettingsClient user={user} company={company} stats={stats} />;
 }

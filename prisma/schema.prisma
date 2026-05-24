@@ -32,14 +32,18 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   name         String
-  email        String   @unique
+  email        String    @unique
   passwordHash String // bcrypt hash, never the raw password
   role         String // "admin" | "cofounder" | "member"
   avatar       String?
   companyId    String
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
+  // Updated by the Auth.js signIn callback. Surfaces on /settings as
+  // "Last sign-in" so the user can spot rogue logins. Nullable for
+  // legacy rows that predate the column.
+  lastSignInAt DateTime?
 
   company        Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
   ownedCompany   Company?        @relation("CompanyOwner")

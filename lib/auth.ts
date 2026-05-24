@@ -60,6 +60,14 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
         const ok = await bcrypt.compare(password, user.passwordHash);
         if (!ok) return null;
 
+        // Stamp last-sign-in for the /settings audit row. Fire-and-forget
+        // is fine — a logged-in user shouldn't see auth() fail because
+        // the timestamp didn't land. We swallow errors to keep auth resilient
+        // (it's defensive — bad password is the only realistic block here).
+        db.user
+          .update({ where: { id: user.id }, data: { lastSignInAt: new Date() } })
+          .catch(() => {});
+
         return {
           id: user.id,
           name: user.name,

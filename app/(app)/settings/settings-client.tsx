@@ -1,18 +1,38 @@
 "use client";
 
+/**
+ * Settings client. Sections, in order:
+ *   1. Header + 3 stat cards (time tracked, last sign-in, member since)
+ *   2. Profile — read-only summary + "Edit profile" + "Change password" buttons
+ *   3. Company — read-only summary + "Edit company" button (admin/cofounder ONLY)
+ *   4. Appearance, Language, Data & storage, Sign out
+ *
+ * Members never see the Company section — they can't see finances and the
+ * company card includes currency, which is finance-adjacent context. The
+ * server action enforces the same rule; this is the visual half.
+ */
+
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   Building2,
+  CalendarDays,
+  Clock,
   Crown,
   Database,
+  KeyRound,
   Languages,
+  LogIn,
   LogOut,
   Moon,
   Palette,
+  Pencil,
   Shield,
   Sun,
   User,
   type LucideIcon,
 } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { logoutAction } from "@/lib/actions/auth";
@@ -23,13 +43,21 @@ import { cn, formatDate } from "@/lib/utils";
 import type { Company, User as UserType } from "@/lib/types";
 import { useT } from "@/lib/i18n/use-t";
 import type { Locale } from "@/lib/i18n/strings";
+import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
+import { formatDuration } from "@/lib/time/thresholds";
+import type { AccountStats } from "@/lib/queries/stats";
+import { EditProfileModal } from "./edit-profile-modal";
+import { ChangePasswordModal } from "./change-password-modal";
+import { EditCompanyModal } from "./edit-company-modal";
 
 type Props = {
   user: UserType;
   company: Company;
+  stats: AccountStats;
 };
 
-export function SettingsClient({ user, company }: Props) {
+export function SettingsClient({ user, company, stats }: Props) {
+  const router = useRouter();
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
   const locale = useStore((s) => s.locale);
@@ -37,6 +65,17 @@ export function SettingsClient({ user, company }: Props) {
   const logout = useStore((s) => s.logout);
   const confirm = useConfirm();
   const t = useT();
+  const [, startTransition] = useTransition();
+
+  const canEditCompany = canSeeFinances(user.role as Role);
+
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [companyOpen, setCompanyOpen] = useState(false);
+
+  function refresh() {
+    startTransition(() => router.refresh());
+  }
 
   async function handleLogout() {
     const ok = await confirm({
@@ -60,8 +99,6 @@ export function SettingsClient({ user, company }: Props) {
       tone: "danger",
     });
     if (!ok) return;
-    // Local-storage reset is a holdover from the prototype; real data lives in
-    // Supabase now so this only clears UI prefs. Wipe + redirect for a clean slate.
     if (typeof window !== "undefined") {
       localStorage.removeItem("founderflow-storage");
       window.location.href = "/login";
@@ -78,12 +115,66 @@ export function SettingsClient({ user, company }: Props) {
         <p className="mt-2 text-sm text-fg-muted md:text-base">{t.settings.subtitle}</p>
       </header>
 
-      <Section icon={User} label={t.settings.profile}>
+      {/* Stats — keeps the page useful at-a-glance even for members. */}
+      <section aria-label={t.settings.stats} className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <StatCard
+          icon={Clock}
+          label={t.settings.totalTracked}
+          value={formatDuration(stats.totalTrackedMs)}
+          desc={`${stats.sessionCount} ${t.settings.sessionCount.toLowerCase()}`}
+          tone="primary"
+        />
+        <StatCard
+          icon={LogIn}
+          label={t.settings.lastSignIn}
+          value={
+            stats.lastSignInAt
+              ? formatDistanceToNow(new Date(stats.lastSignInAt), { addSuffix: true })
+              : t.settings.lastSignInNever
+          }
+          desc={
+            stats.lastSignInAt
+              ? new Date(stats.lastSignInAt).toLocaleString()
+              : t.settings.lastSignInNever
+          }
+          tone="cyan"
+        />
+        <StatCard
+          icon={CalendarDays}
+          label={t.settings.memberSince}
+          value={formatDate(stats.memberSince)}
+          desc={formatDistanceToNow(new Date(stats.memberSince), { addSuffix: true })}
+          tone="pink"
+        />
+      </section>
+
+      <Section
+        icon={User}
+        label={t.settings.profile}
+        action={
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setPasswordOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg-muted transition hover:bg-surface-hover hover:text-fg"
+            >
+              <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+              {t.settings.changePassword}
+            </button>
+            <button
+              onClick={() => setProfileOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-bold text-primary-fg transition-transform hover:scale-[1.02] active:scale-95"
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+              {t.settings.editProfile}
+            </button>
+          </div>
+        }
+      >
         <div className="flex items-center gap-4">
           <Avatar name={user.name} size="xl" />
-          <div>
-            <p className="text-lg font-bold text-fg">{user.name}</p>
-            <p className="text-sm text-fg-muted">{user.email}</p>
+          <div className="min-w-0">
+            <p className="truncate text-lg font-bold text-fg">{user.name}</p>
+            <p className="truncate text-sm text-fg-muted">{user.email}</p>
             <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
               {t.settings.joined} {formatDate(user.createdAt)}
             </p>
@@ -116,24 +207,39 @@ export function SettingsClient({ user, company }: Props) {
         </div>
       </Section>
 
-      <Section icon={Building2} label={t.settings.company}>
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-          <DataCell label={t.settings.name}>
-            <p className="text-sm font-semibold text-fg">{company.name}</p>
-          </DataCell>
-          <DataCell label={t.settings.industryLabel}>
-            <p className="text-sm font-semibold text-fg">{company.industry}</p>
-          </DataCell>
-          <DataCell label={t.settings.currency}>
-            <p className="font-mono text-sm font-bold text-primary-strong">{company.currency}</p>
-          </DataCell>
-          <DataCell label={t.settings.created}>
-            <p className="font-mono text-xs uppercase tracking-wider text-fg">
-              {formatDate(company.createdAt)}
-            </p>
-          </DataCell>
-        </div>
-      </Section>
+      {/* Members can't see / edit company info — see lib/auth/role-gates. */}
+      {canEditCompany && (
+        <Section
+          icon={Building2}
+          label={t.settings.company}
+          action={
+            <button
+              onClick={() => setCompanyOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-bold text-primary-fg transition-transform hover:scale-[1.02] active:scale-95"
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+              {t.settings.editCompany}
+            </button>
+          }
+        >
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+            <DataCell label={t.settings.name}>
+              <p className="text-sm font-semibold text-fg">{company.name}</p>
+            </DataCell>
+            <DataCell label={t.settings.industryLabel}>
+              <p className="text-sm font-semibold text-fg">{company.industry}</p>
+            </DataCell>
+            <DataCell label={t.settings.currency}>
+              <p className="font-mono text-sm font-bold text-primary-strong">{company.currency}</p>
+            </DataCell>
+            <DataCell label={t.settings.created}>
+              <p className="font-mono text-xs uppercase tracking-wider text-fg">
+                {formatDate(company.createdAt)}
+              </p>
+            </DataCell>
+          </div>
+        </Section>
+      )}
 
       <Section icon={Palette} label={t.settings.appearance}>
         <p className="mb-4 text-sm text-fg-muted">{t.settings.appearanceNote}</p>
@@ -196,32 +302,67 @@ export function SettingsClient({ user, company }: Props) {
           </button>
         </div>
       </Section>
+
+      {/* Modals */}
+      <EditProfileModal
+        open={profileOpen}
+        onClose={() => setProfileOpen(false)}
+        defaultName={user.name}
+        defaultEmail={user.email}
+        onSaved={() => {
+          setProfileOpen(false);
+          refresh();
+        }}
+      />
+      <ChangePasswordModal open={passwordOpen} onClose={() => setPasswordOpen(false)} />
+      {canEditCompany && (
+        <EditCompanyModal
+          open={companyOpen}
+          onClose={() => setCompanyOpen(false)}
+          defaultName={company.name}
+          defaultIndustry={company.industry}
+          defaultCurrency={company.currency}
+          onSaved={() => {
+            setCompanyOpen(false);
+            refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
+
+/* ─────────────────────────────────────────────────────────────────────── */
+/* Layout helpers                                                          */
+/* ─────────────────────────────────────────────────────────────────────── */
 
 function Section({
   icon: Icon,
   label,
   tone = "primary",
+  action,
   children,
 }: {
   icon: LucideIcon;
   label: string;
   tone?: "primary" | "danger";
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const toneText = tone === "danger" ? "text-danger" : "text-primary-strong";
   const toneFill = tone === "danger" ? "bg-danger/10" : "bg-primary/10";
   return (
     <section className="rounded-2xl border border-border bg-surface p-6">
-      <div className="mb-5 flex items-center gap-3">
-        <div className={cn("flex h-9 w-9 items-center justify-center rounded-lg", toneFill)}>
-          <Icon className={cn("h-4 w-4", toneText)} aria-hidden="true" />
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className={cn("flex h-9 w-9 items-center justify-center rounded-lg", toneFill)}>
+            <Icon className={cn("h-4 w-4", toneText)} aria-hidden="true" />
+          </div>
+          <h2 className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-fg-muted">
+            {label}
+          </h2>
         </div>
-        <h2 className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-fg-muted">
-          {label}
-        </h2>
+        {action}
       </div>
       {children}
     </section>
@@ -233,6 +374,45 @@ function DataCell({ label, children }: { label: string; children: React.ReactNod
     <div>
       <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">{label}</p>
       <div className="mt-1.5">{children}</div>
+    </div>
+  );
+}
+
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  desc,
+  tone,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  desc: string;
+  tone: "primary" | "cyan" | "pink";
+}) {
+  const toneText =
+    tone === "cyan"
+      ? "text-cyan-strong"
+      : tone === "pink"
+        ? "text-pink-strong"
+        : "text-primary-strong";
+  const toneFill =
+    tone === "cyan" ? "bg-cyan/10" : tone === "pink" ? "bg-pink/10" : "bg-primary/10";
+  return (
+    <div className="rounded-2xl border border-border bg-surface p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted">
+          {label}
+        </p>
+        <div className={cn("flex h-7 w-7 items-center justify-center rounded-lg", toneFill)}>
+          <Icon className={cn("h-3.5 w-3.5", toneText)} aria-hidden="true" />
+        </div>
+      </div>
+      <p className="font-mono text-2xl font-bold tabular-nums text-fg">{value}</p>
+      <p className="mt-1 truncate text-xs text-fg-muted" title={desc}>
+        {desc}
+      </p>
     </div>
   );
 }
@@ -274,9 +454,6 @@ function ThemeChoice({
   );
 }
 
-// LocaleChoice mirrors ThemeChoice but renders the language code as a 2-char
-// badge instead of an icon — keeps the toggle compact and recognisable across
-// scripts (EN renders LTR Latin, اردو needs RTL).
 function LocaleChoice({
   active,
   onSelect,
