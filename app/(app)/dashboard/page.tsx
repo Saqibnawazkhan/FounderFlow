@@ -5,12 +5,19 @@
  * pass instead of waterfalling client-side.
  */
 
+import type { Metadata } from "next";
 import { getTransactions } from "@/lib/queries/transactions";
 import { getTasks } from "@/lib/queries/tasks";
 import { getActivities } from "@/lib/queries/activities";
 import { getCompanyUsers } from "@/lib/queries/users";
 import { requireScopedSession } from "@/lib/queries/session";
 import { DashboardClient } from "./dashboard-client";
+
+export const metadata: Metadata = {
+  title: "Dashboard",
+  description:
+    "Your startup at a glance — balance, runway, upcoming tasks, and live team activity.",
+};
 
 export default async function DashboardPage() {
   const [session, transactions, tasks, activities, users] = await Promise.all([

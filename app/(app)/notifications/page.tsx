@@ -7,8 +7,14 @@
  * client calls router.refresh() to pull fresh props into this RSC tree.
  */
 
+import type { Metadata } from "next";
 import { getNotifications } from "@/lib/queries/notifications";
 import { NotificationsClient } from "./notifications-client";
+
+export const metadata: Metadata = {
+  title: "Notifications",
+  description: "Updates from your team — invites, role changes, new transactions, and tasks.",
+};
 
 export default async function NotificationsPage() {
   const notifications = await getNotifications();

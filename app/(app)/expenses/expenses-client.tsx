@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import dynamic from "next/dynamic";
 import {
   ArrowDown,
   Calculator,
@@ -22,12 +22,15 @@ import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { EXPENSE_CATEGORIES, type Transaction } from "@/lib/types";
 
-const C_PINK = "#FFB3DB";
-const C_AMBER = "#f59e0b";
-const C_SLATE = "#94a3b8";
+// Recharts is ~200KB. Lazy-load to keep /expenses initial bundle lean.
+const CategoryBreakdownBar = dynamic(
+  () => import("./expenses-charts").then((m) => ({ default: m.CategoryBreakdownBar })),
+  { ssr: false, loading: () => <Skeleton className="h-full w-full rounded-xl" /> }
+);
 
 type Props = {
   /** All company transactions — we filter to expenses inside. */
@@ -155,56 +158,25 @@ export function ExpensesClient({ transactions, currentUserId, currentUserRole }:
             <h3 className="mt-1 text-lg font-bold tracking-tight">Spend by category</h3>
           </div>
           <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={categoryBreakdown}
-                margin={{ top: 5, right: 5, left: 0, bottom: 5 }}
-                role="img"
-                aria-label="Spend grouped by category"
-              >
-                <defs>
-                  <linearGradient id="expenseGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={C_PINK} />
-                    <stop offset="100%" stopColor={C_AMBER} stopOpacity={0.6} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke={C_SLATE}
-                  strokeOpacity={0.18}
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="category"
-                  stroke={C_SLATE}
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                  angle={-15}
-                  textAnchor="end"
-                  height={60}
-                />
-                <YAxis
-                  stroke={C_SLATE}
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                  tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString())}
-                />
-                <Tooltip
-                  formatter={(v: number) => formatCurrency(v)}
-                  contentStyle={{
-                    borderRadius: 12,
-                    border: "1px solid rgb(var(--border))",
-                    background: "rgb(var(--card))",
-                    color: "rgb(var(--fg))",
-                    boxShadow: "0 10px 30px rgb(0 0 0 / 0.18)",
-                  }}
-                />
-                <Bar dataKey="amount" fill="url(#expenseGrad)" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            <CategoryBreakdownBar data={categoryBreakdown} />
           </div>
+          <table className="sr-only">
+            <caption>Spend by category</caption>
+            <thead>
+              <tr>
+                <th scope="col">Category</th>
+                <th scope="col">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {categoryBreakdown.map((c) => (
+                <tr key={c.category}>
+                  <th scope="row">{c.category}</th>
+                  <td>{formatCurrency(c.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </section>
       )}
 

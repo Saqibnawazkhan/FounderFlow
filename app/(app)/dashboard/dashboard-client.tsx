@@ -2,18 +2,7 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import dynamic from "next/dynamic";
 import {
   ArrowRight,
   CheckCircle2,
@@ -30,12 +19,26 @@ import { endOfMonth, format, startOfMonth, subMonths } from "date-fns";
 import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat, type DashboardStatProps } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
+import { Skeleton } from "@/components/ui/skeleton";
+
+// Recharts is ~200KB. Lazy it so the dashboard's initial bundle stays lean;
+// the chart skeleton from Phase 2 doubles as the loading placeholder.
+// NOTE: don't import named constants from dashboard-charts at top level —
+// that pulls the whole module (and recharts) into the initial chunk and
+// defeats the split. Inline the palette here instead.
+const CashFlowChart = dynamic(
+  () => import("./dashboard-charts").then((m) => ({ default: m.CashFlowChart })),
+  { ssr: false, loading: () => <Skeleton className="h-full w-full rounded-xl" /> }
+);
+const CategoryPieChart = dynamic(
+  () => import("./dashboard-charts").then((m) => ({ default: m.CategoryPieChart })),
+  { ssr: false, loading: () => <Skeleton className="h-full w-full rounded-xl" /> }
+);
 
 const C_PRIMARY = "#b6f425";
 const C_CYAN = "#70E6ED";
 const C_PINK = "#FFB3DB";
 const C_AMBER = "#f59e0b";
-const C_SLATE = "#94a3b8";
 const CATEGORY_PALETTE = [C_PRIMARY, C_CYAN, C_PINK, C_AMBER, "#a78bfa", "#34d399"];
 
 type Props = {
@@ -214,69 +217,28 @@ export function DashboardClient({
             </div>
           </div>
           <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart
-                data={monthlyData}
-                role="img"
-                aria-label="Cash flow over the last 6 months. Investments and expenses by month."
-              >
-                <defs>
-                  <linearGradient id="g-invest" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={C_PRIMARY} stopOpacity={0.5} />
-                    <stop offset="95%" stopColor={C_PRIMARY} stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="g-expense" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={C_PINK} stopOpacity={0.4} />
-                    <stop offset="95%" stopColor={C_PINK} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke={C_SLATE}
-                  strokeOpacity={0.18}
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="month"
-                  stroke={C_SLATE}
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis
-                  stroke={C_SLATE}
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                  tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString())}
-                />
-                <Tooltip
-                  formatter={(value: number) => formatCurrency(value)}
-                  contentStyle={{
-                    borderRadius: 12,
-                    border: "1px solid rgb(var(--border))",
-                    background: "rgb(var(--card))",
-                    color: "rgb(var(--fg))",
-                    boxShadow: "0 10px 30px rgb(0 0 0 / 0.18)",
-                  }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="investments"
-                  stroke={C_PRIMARY}
-                  strokeWidth={2}
-                  fill="url(#g-invest)"
-                />
-                <Area
-                  type="monotone"
-                  dataKey="expenses"
-                  stroke={C_PINK}
-                  strokeWidth={2}
-                  fill="url(#g-expense)"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+            <CashFlowChart data={monthlyData} />
           </div>
+          {/* SR-only data table — gives screen readers the numbers Recharts hides. */}
+          <table className="sr-only">
+            <caption>Cash flow by month: investments vs expenses</caption>
+            <thead>
+              <tr>
+                <th scope="col">Month</th>
+                <th scope="col">Investments</th>
+                <th scope="col">Expenses</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthlyData.map((m) => (
+                <tr key={m.month}>
+                  <th scope="row">{m.month}</th>
+                  <td>{formatCurrency(m.investments)}</td>
+                  <td>{formatCurrency(m.expenses)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
 
         <div className="rounded-2xl border border-border bg-surface p-6">
@@ -287,34 +249,7 @@ export function DashboardClient({
           {categoryData.length > 0 ? (
             <>
               <div className="mt-4 h-44">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={categoryData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={48}
-                      outerRadius={78}
-                      paddingAngle={3}
-                      dataKey="value"
-                      stroke="rgb(var(--card))"
-                      strokeWidth={2}
-                    >
-                      {categoryData.map((_, i) => (
-                        <Cell key={i} fill={CATEGORY_PALETTE[i % CATEGORY_PALETTE.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      formatter={(v: number) => formatCurrency(v)}
-                      contentStyle={{
-                        borderRadius: 12,
-                        border: "1px solid rgb(var(--border))",
-                        background: "rgb(var(--card))",
-                        color: "rgb(var(--fg))",
-                      }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
+                <CategoryPieChart data={categoryData} />
               </div>
               <ul className="mt-4 space-y-2">
                 {categoryData.slice(0, 4).map((c, i) => (

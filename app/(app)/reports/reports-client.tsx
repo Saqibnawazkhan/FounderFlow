@@ -1,32 +1,48 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import dynamic from "next/dynamic";
 import { FileSpreadsheet, FileText } from "lucide-react";
 import toast from "react-hot-toast";
 import { Avatar } from "@/components/ui/avatar";
 import { PillBadge } from "@/components/landing/pill-badge";
+import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency, cn } from "@/lib/utils";
 import type { Company, Transaction, User } from "@/lib/types";
 import { endOfMonth, format, startOfMonth, subMonths } from "date-fns";
 
+// Inlined palette — must NOT import named constants from reports-charts.tsx
+// at top level, that pulls recharts into the initial chunk and defeats the
+// dynamic split below.
+const PALETTE = [
+  "#b6f425",
+  "#70E6ED",
+  "#FFB3DB",
+  "#f59e0b",
+  "#a78bfa",
+  "#34d399",
+  "#fb7185",
+  "#facc15",
+];
+
+// Recharts is ~200KB. Lazy-load each chart so /reports' initial bundle stays
+// lean; the chart skeleton from Phase 2 fills the space during the fetch.
+const chartLoading = () => <Skeleton className="h-full w-full rounded-xl" />;
+const CashFlowBarChart = dynamic(
+  () => import("./reports-charts").then((m) => ({ default: m.CashFlowBarChart })),
+  { ssr: false, loading: chartLoading }
+);
+const CategoriesPieChart = dynamic(
+  () => import("./reports-charts").then((m) => ({ default: m.CategoriesPieChart })),
+  { ssr: false, loading: chartLoading }
+);
+const FoundersHorizontalBar = dynamic(
+  () => import("./reports-charts").then((m) => ({ default: m.FoundersHorizontalBar })),
+  { ssr: false, loading: chartLoading }
+);
+
 const C_PRIMARY = "#b6f425";
-const C_CYAN = "#70E6ED";
 const C_PINK = "#FFB3DB";
-const C_AMBER = "#f59e0b";
-const C_SLATE = "#94a3b8";
-const PALETTE = [C_PRIMARY, C_CYAN, C_PINK, C_AMBER, "#a78bfa", "#34d399", "#fb7185", "#facc15"];
 
 type Props = {
   transactions: Transaction[];
@@ -312,48 +328,7 @@ export function ReportsClient({ transactions, users, company }: Props) {
           </div>
         </div>
         <div className="h-80">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={monthlyData}
-              role="img"
-              aria-label="Monthly investments versus expenses"
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke={C_SLATE}
-                strokeOpacity={0.18}
-                vertical={false}
-              />
-              <XAxis
-                dataKey="month"
-                stroke={C_SLATE}
-                fontSize={11}
-                tickLine={false}
-                axisLine={false}
-              />
-              <YAxis
-                stroke={C_SLATE}
-                fontSize={11}
-                tickLine={false}
-                axisLine={false}
-                tickFormatter={(v) =>
-                  Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString()
-                }
-              />
-              <Tooltip
-                formatter={(v: number) => formatCurrency(v)}
-                contentStyle={{
-                  borderRadius: 12,
-                  border: "1px solid rgb(var(--border))",
-                  background: "rgb(var(--card))",
-                  color: "rgb(var(--fg))",
-                  boxShadow: "0 10px 30px rgb(0 0 0 / 0.18)",
-                }}
-              />
-              <Bar dataKey="investments" fill={C_PRIMARY} radius={[8, 8, 0, 0]} />
-              <Bar dataKey="expenses" fill={C_PINK} radius={[8, 8, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          <CashFlowBarChart data={monthlyData} />
         </div>
       </section>
 
@@ -366,34 +341,7 @@ export function ReportsClient({ transactions, users, company }: Props) {
           {categoryData.length > 0 ? (
             <div className="mt-5 grid grid-cols-1 items-center gap-4 md:grid-cols-2">
               <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={categoryData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={50}
-                      outerRadius={90}
-                      paddingAngle={2}
-                      dataKey="value"
-                      stroke="rgb(var(--card))"
-                      strokeWidth={2}
-                    >
-                      {categoryData.map((_, i) => (
-                        <Cell key={i} fill={PALETTE[i % PALETTE.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      formatter={(v: number) => formatCurrency(v)}
-                      contentStyle={{
-                        borderRadius: 12,
-                        border: "1px solid rgb(var(--border))",
-                        background: "rgb(var(--card))",
-                        color: "rgb(var(--fg))",
-                      }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
+                <CategoriesPieChart data={categoryData} />
               </div>
               <ul className="space-y-2">
                 {categoryData.map((c, i) => {
@@ -432,50 +380,7 @@ export function ReportsClient({ transactions, users, company }: Props) {
           </p>
           <h3 className="mt-1 text-lg font-bold tracking-tight">Team contributions</h3>
           <div className="mt-5 h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={founderData}
-                layout="vertical"
-                margin={{ left: 20 }}
-                role="img"
-                aria-label="Investments and expenses by team member"
-              >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke={C_SLATE}
-                  strokeOpacity={0.18}
-                  horizontal={false}
-                />
-                <XAxis
-                  type="number"
-                  stroke={C_SLATE}
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                  tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString())}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="name"
-                  stroke={C_SLATE}
-                  fontSize={11}
-                  tickLine={false}
-                  axisLine={false}
-                  width={70}
-                />
-                <Tooltip
-                  formatter={(v: number) => formatCurrency(v)}
-                  contentStyle={{
-                    borderRadius: 12,
-                    border: "1px solid rgb(var(--border))",
-                    background: "rgb(var(--card))",
-                    color: "rgb(var(--fg))",
-                  }}
-                />
-                <Bar dataKey="investments" fill={C_PRIMARY} radius={[0, 4, 4, 0]} />
-                <Bar dataKey="expenses" fill={C_PINK} radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            <FoundersHorizontalBar data={founderData} />
           </div>
         </section>
       </div>

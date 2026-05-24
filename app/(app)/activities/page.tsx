@@ -6,9 +6,15 @@
  * shows that skeleton while this async function awaits Prisma.
  */
 
+import type { Metadata } from "next";
 import { getActivities } from "@/lib/queries/activities";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { ActivitiesClient } from "./activities-client";
+
+export const metadata: Metadata = {
+  title: "Activity",
+  description: "A live timeline of every action your team takes, grouped by day.",
+};
 
 export default async function ActivitiesPage() {
   const activities = await getActivities();

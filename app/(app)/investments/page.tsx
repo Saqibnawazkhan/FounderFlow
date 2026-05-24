@@ -4,10 +4,16 @@
  * without a second client-side fetch.
  */
 
+import type { Metadata } from "next";
 import { getTransactions } from "@/lib/queries/transactions";
 import { getCompanyUsers } from "@/lib/queries/users";
 import { requireScopedSession } from "@/lib/queries/session";
 import { InvestmentsClient } from "./investments-client";
+
+export const metadata: Metadata = {
+  title: "Investments",
+  description: "Capital injected by founders and outside investors, broken down by contributor.",
+};
 
 export default async function InvestmentsPage() {
   const [session, transactions, users] = await Promise.all([
