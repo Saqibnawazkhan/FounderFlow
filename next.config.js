@@ -33,6 +33,11 @@ const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   compress: true,
+  // Required in Next.js 14 for instrumentation.ts to load. Becomes the
+  // default (and removed from the config) when we upgrade to Next 15+.
+  experimental: {
+    instrumentationHook: true,
+  },
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "ui-avatars.com" },
