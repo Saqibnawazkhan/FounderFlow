@@ -23,20 +23,29 @@ import {
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { listNotificationsAction } from "@/lib/actions/notifications";
+import { useT } from "@/lib/i18n/use-t";
+import type { Strings } from "@/lib/i18n/strings";
 import { cn } from "@/lib/utils";
 
-const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/expenses", label: "Expenses", icon: TrendingDown },
-  { href: "/investments", label: "Investments", icon: TrendingUp },
-  { href: "/recurring", label: "Recurring", icon: Repeat },
-  { href: "/budgets", label: "Budgets", icon: Target },
-  { href: "/tasks", label: "Tasks", icon: CheckSquare },
-  { href: "/activities", label: "Activity", icon: Zap },
-  { href: "/team", label: "Team", icon: Users },
-  { href: "/reports", label: "Reports", icon: BarChart3 },
-  { href: "/notifications", label: "Notifications", icon: Bell },
-  { href: "/settings", label: "Settings", icon: Settings },
+// nav items pair href + icon + a function that returns the localized label.
+// We deliberately don't bake the strings in at module scope — that'd
+// freeze them at English on first render.
+const navItems: {
+  href: string;
+  icon: typeof LayoutDashboard;
+  labelKey: keyof Strings["nav"];
+}[] = [
+  { href: "/dashboard", icon: LayoutDashboard, labelKey: "dashboard" },
+  { href: "/expenses", icon: TrendingDown, labelKey: "expenses" },
+  { href: "/investments", icon: TrendingUp, labelKey: "investments" },
+  { href: "/recurring", icon: Repeat, labelKey: "recurring" },
+  { href: "/budgets", icon: Target, labelKey: "budgets" },
+  { href: "/tasks", icon: CheckSquare, labelKey: "tasks" },
+  { href: "/activities", icon: Zap, labelKey: "activity" },
+  { href: "/team", icon: Users, labelKey: "team" },
+  { href: "/reports", icon: BarChart3, labelKey: "reports" },
+  { href: "/notifications", icon: Bell, labelKey: "notifications" },
+  { href: "/settings", icon: Settings, labelKey: "settings" },
 ];
 
 export function Sidebar() {
@@ -48,6 +57,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const currentUser = useStore((s) => s.currentUser);
   const companies = useStore((s) => s.companies);
+  const t = useT();
 
   // Auto-close the mobile drawer when the route changes.
   useEffect(() => {
@@ -134,7 +144,7 @@ export function Sidebar() {
             <div>
               <p className="text-sm font-bold">FounderFlow</p>
               <p className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
-                Workspace
+                {t.common.workspace}
               </p>
             </div>
           </Link>
@@ -190,7 +200,7 @@ export function Sidebar() {
                     />
                   )}
                   <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  <span className="flex-1">{item.label}</span>
+                  <span className="flex-1">{t.nav[item.labelKey]}</span>
                   {isNotifs && unreadCount > 0 && (
                     <span
                       aria-label={`${unreadCount} unread notifications`}

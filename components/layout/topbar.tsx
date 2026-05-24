@@ -15,6 +15,7 @@ import {
 import { formatRelativeTime, cn } from "@/lib/utils";
 import toast from "react-hot-toast";
 import type { Notification } from "@/lib/types";
+import { useT } from "@/lib/i18n/use-t";
 
 export function Topbar() {
   const router = useRouter();
@@ -26,6 +27,7 @@ export function Topbar() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [notifVersion, setNotifVersion] = useState(0);
   const refreshNotifs = useCallback(() => setNotifVersion((v) => v + 1), []);
+  const t = useT();
 
   // Poll on mount; bumping notifVersion re-fetches after a markRead. Could
   // upgrade to SSE/realtime in a future phase (Supabase has channels).
@@ -84,7 +86,7 @@ export function Topbar() {
     // Server action clears the Auth.js cookie; local store cleanup follows.
     await logoutAction();
     logout();
-    toast.success("Signed out");
+    toast.success(t.topbar.signedOutToast);
     // Full nav so middleware sees the cleared cookie immediately.
     window.location.href = "/login";
   }
@@ -96,7 +98,7 @@ export function Topbar() {
             becomes permanent at lg breakpoint. */}
         <button
           onClick={() => setMobileNavOpen(true)}
-          aria-label="Open navigation menu"
+          aria-label={t.topbar.openMenu}
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-bg text-fg-muted transition hover:bg-surface-hover hover:text-fg lg:hidden"
         >
           <Menu className="h-5 w-5" aria-hidden="true" />
@@ -116,11 +118,11 @@ export function Topbar() {
               aria-hidden="true"
             />
             <label htmlFor="topbar-search" className="sr-only">
-              Search expenses, tasks, and team
+              {t.common.search}
             </label>
             <input
               id="topbar-search"
-              placeholder="Search expenses, tasks, team..."
+              placeholder={t.common.search}
               className="w-full rounded-xl border border-transparent bg-bg py-2 pl-10 pr-4 text-sm transition-all focus:border-primary/30 focus:bg-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
             />
           </div>
@@ -165,7 +167,9 @@ export function Topbar() {
             <button
               onClick={() => setNotifOpen(!notifOpen)}
               aria-label={
-                unreadCount > 0 ? `Notifications, ${unreadCount} unread` : "Notifications"
+                unreadCount > 0
+                  ? `${t.topbar.notificationsLabel}, ${unreadCount}`
+                  : t.topbar.notificationsLabel
               }
               aria-expanded={notifOpen}
               aria-haspopup="menu"
@@ -188,13 +192,13 @@ export function Topbar() {
                   className="absolute right-0 top-12 z-popover w-80 overflow-hidden rounded-2xl border border-border bg-surface shadow-card-hover md:w-96"
                 >
                   <div className="flex items-center justify-between border-b border-border p-4">
-                    <h3 className="font-semibold">Notifications</h3>
+                    <h3 className="font-semibold">{t.topbar.notificationsLabel}</h3>
                     {unreadCount > 0 && (
                       <button
                         onClick={markAllRead}
                         className="text-xs font-medium text-primary-strong hover:underline"
                       >
-                        Mark all read
+                        {t.topbar.markAllRead}
                       </button>
                     )}
                   </div>
@@ -205,7 +209,7 @@ export function Topbar() {
                           className="mx-auto mb-2 h-10 w-10 text-fg-muted/40"
                           aria-hidden="true"
                         />
-                        <p className="text-sm text-fg-muted">No notifications yet</p>
+                        <p className="text-sm text-fg-muted">{t.topbar.noNotifications}</p>
                       </div>
                     ) : (
                       notifications.slice(0, 10).map((n) => (
@@ -247,7 +251,7 @@ export function Topbar() {
                     onClick={() => setNotifOpen(false)}
                     className="block border-t border-border p-3 text-center text-sm font-medium text-primary-strong hover:bg-surface-hover"
                   >
-                    View all notifications
+                    {t.topbar.viewAll}
                   </Link>
                 </motion.div>
               )}
@@ -258,7 +262,7 @@ export function Topbar() {
           <div ref={profileRef} className="relative">
             <button
               onClick={() => setProfileOpen(!profileOpen)}
-              aria-label="Account menu"
+              aria-label={t.topbar.accountMenu}
               aria-expanded={profileOpen}
               aria-haspopup="menu"
               className="flex items-center gap-2 rounded-xl px-2 py-1.5 transition hover:bg-surface-hover"
@@ -293,7 +297,7 @@ export function Topbar() {
                       className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition hover:bg-surface-hover"
                     >
                       <User className="h-4 w-4" aria-hidden="true" />
-                      Profile & settings
+                      {t.topbar.profileSettings}
                     </Link>
                     <Link
                       href="/team"
@@ -301,7 +305,7 @@ export function Topbar() {
                       className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition hover:bg-surface-hover"
                     >
                       <Settings className="h-4 w-4" aria-hidden="true" />
-                      Team management
+                      {t.topbar.teamManagement}
                     </Link>
                   </div>
                   <div className="border-t border-border p-2">
@@ -310,7 +314,7 @@ export function Topbar() {
                       className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-danger transition hover:bg-danger/10"
                     >
                       <LogOut className="h-4 w-4" aria-hidden="true" />
-                      Sign out
+                      {t.common.signOut}
                     </button>
                   </div>
                 </motion.div>

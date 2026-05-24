@@ -4,6 +4,7 @@ import {
   Building2,
   Crown,
   Database,
+  Languages,
   LogOut,
   Moon,
   Palette,
@@ -20,6 +21,8 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, formatDate } from "@/lib/utils";
 import type { Company, User as UserType } from "@/lib/types";
+import { useT } from "@/lib/i18n/use-t";
+import type { Locale } from "@/lib/i18n/strings";
 
 type Props = {
   user: UserType;
@@ -29,29 +32,31 @@ type Props = {
 export function SettingsClient({ user, company }: Props) {
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+  const locale = useStore((s) => s.locale);
+  const setLocale = useStore((s) => s.setLocale);
   const logout = useStore((s) => s.logout);
   const confirm = useConfirm();
+  const t = useT();
 
   async function handleLogout() {
     const ok = await confirm({
-      title: "Sign out?",
-      description: "You can sign back in any time.",
-      confirmLabel: "Sign out",
+      title: t.settings.signOutConfirmTitle,
+      description: t.settings.signOutConfirmDesc,
+      confirmLabel: t.common.signOut,
       tone: "primary",
     });
     if (!ok) return;
     await logoutAction();
     logout();
-    toast.success("Signed out");
+    toast.success(t.settings.signedOutToast);
     window.location.href = "/login";
   }
 
   async function handleResetData() {
     const ok = await confirm({
-      title: "Reset workspace data?",
-      description:
-        "All transactions, tasks, activity, and team members will be wiped. This cannot be undone.",
-      confirmLabel: "Reset everything",
+      title: t.settings.resetConfirmTitle,
+      description: t.settings.resetConfirmDesc,
+      confirmLabel: t.settings.resetConfirmLabel,
       tone: "danger",
     });
     if (!ok) return;
@@ -66,28 +71,26 @@ export function SettingsClient({ user, company }: Props) {
   return (
     <div className="mx-auto max-w-3xl space-y-8">
       <header>
-        <PillBadge tone="cyan">Workspace</PillBadge>
+        <PillBadge tone="cyan">{t.settings.workspaceBadge}</PillBadge>
         <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">
-          Settings
+          {t.settings.title}
         </h1>
-        <p className="mt-2 text-sm text-fg-muted md:text-base">
-          Manage your account, workspace, and preferences.
-        </p>
+        <p className="mt-2 text-sm text-fg-muted md:text-base">{t.settings.subtitle}</p>
       </header>
 
-      <Section icon={User} label="Profile">
+      <Section icon={User} label={t.settings.profile}>
         <div className="flex items-center gap-4">
           <Avatar name={user.name} size="xl" />
           <div>
             <p className="text-lg font-bold text-fg">{user.name}</p>
             <p className="text-sm text-fg-muted">{user.email}</p>
             <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
-              Joined {formatDate(user.createdAt)}
+              {t.settings.joined} {formatDate(user.createdAt)}
             </p>
           </div>
         </div>
         <div className="mt-6 grid grid-cols-2 gap-6 border-t border-border pt-5">
-          <DataCell label="Role">
+          <DataCell label={t.settings.role}>
             <div className="flex items-center gap-2">
               {user.role === "admin" && (
                 <Crown className="h-4 w-4 text-primary-strong" aria-hidden="true" />
@@ -100,31 +103,31 @@ export function SettingsClient({ user, company }: Props) {
               )}
               <p className="text-sm font-semibold text-fg">
                 {user.role === "admin"
-                  ? "Admin Founder"
+                  ? t.settings.adminFounderRole
                   : user.role === "cofounder"
-                    ? "Co-Founder"
-                    : "Team Member"}
+                    ? t.settings.cofounderRole
+                    : t.settings.teamMemberRole}
               </p>
             </div>
           </DataCell>
-          <DataCell label="User ID">
+          <DataCell label={t.settings.userId}>
             <p className="font-mono text-xs text-fg-muted">{user.id.slice(0, 12)}…</p>
           </DataCell>
         </div>
       </Section>
 
-      <Section icon={Building2} label="Company">
+      <Section icon={Building2} label={t.settings.company}>
         <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-          <DataCell label="Name">
+          <DataCell label={t.settings.name}>
             <p className="text-sm font-semibold text-fg">{company.name}</p>
           </DataCell>
-          <DataCell label="Industry">
+          <DataCell label={t.settings.industryLabel}>
             <p className="text-sm font-semibold text-fg">{company.industry}</p>
           </DataCell>
-          <DataCell label="Currency">
+          <DataCell label={t.settings.currency}>
             <p className="font-mono text-sm font-bold text-primary-strong">{company.currency}</p>
           </DataCell>
-          <DataCell label="Created">
+          <DataCell label={t.settings.created}>
             <p className="font-mono text-xs uppercase tracking-wider text-fg">
               {formatDate(company.createdAt)}
             </p>
@@ -132,47 +135,64 @@ export function SettingsClient({ user, company }: Props) {
         </div>
       </Section>
 
-      <Section icon={Palette} label="Appearance">
-        <p className="mb-4 text-sm text-fg-muted">Choose how FounderFlow looks for you.</p>
+      <Section icon={Palette} label={t.settings.appearance}>
+        <p className="mb-4 text-sm text-fg-muted">{t.settings.appearanceNote}</p>
         <div className="grid grid-cols-2 gap-3">
           <ThemeChoice
             active={theme === "light"}
             onSelect={() => setTheme("light")}
             icon={Sun}
-            label="Light"
-            desc="Clean, classic, energizing"
+            label={t.settings.light}
+            desc={t.settings.lightDesc}
           />
           <ThemeChoice
             active={theme === "dark"}
             onSelect={() => setTheme("dark")}
             icon={Moon}
-            label="Dark"
-            desc="Easy on the eyes for long sessions"
+            label={t.settings.dark}
+            desc={t.settings.darkDesc}
           />
         </div>
       </Section>
 
-      <Section icon={Database} label="Data & storage">
-        <p className="mb-4 text-sm text-fg-muted">
-          Your workspace data lives in Supabase. Clearing local data only wipes UI prefs (theme,
-          sidebar state) — it does not delete server data.
-        </p>
+      <Section icon={Languages} label={t.settings.language}>
+        <p className="mb-4 text-sm text-fg-muted">{t.settings.languageNote}</p>
+        <div className="grid grid-cols-2 gap-3">
+          <LocaleChoice
+            active={locale === "en"}
+            onSelect={() => setLocale("en")}
+            code="en"
+            label={t.settings.english}
+            desc={t.settings.englishDesc}
+          />
+          <LocaleChoice
+            active={locale === "ur"}
+            onSelect={() => setLocale("ur")}
+            code="ur"
+            label={t.settings.urdu}
+            desc={t.settings.urduDesc}
+          />
+        </div>
+      </Section>
+
+      <Section icon={Database} label={t.settings.dataStorage}>
+        <p className="mb-4 text-sm text-fg-muted">{t.settings.dataNote}</p>
         <button
           onClick={handleResetData}
           className="inline-flex items-center gap-2 rounded-full border border-danger/30 bg-danger/10 px-5 py-2.5 text-sm font-medium text-danger transition-colors hover:bg-danger/15"
         >
-          Reset local preferences
+          {t.settings.resetLocalPrefs}
         </button>
       </Section>
 
-      <Section icon={LogOut} label="Sign out" tone="danger">
+      <Section icon={LogOut} label={t.settings.signOutSection} tone="danger">
         <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-fg-muted">Sign out of your FounderFlow workspace.</p>
+          <p className="text-sm text-fg-muted">{t.settings.signOutNote}</p>
           <button
             onClick={handleLogout}
             className="inline-flex items-center gap-2 rounded-full bg-danger px-5 py-2.5 text-sm font-bold text-white shadow-sm transition-colors hover:bg-danger/90 active:scale-95"
           >
-            <LogOut className="h-4 w-4" aria-hidden="true" /> Sign out
+            <LogOut className="h-4 w-4" aria-hidden="true" /> {t.common.signOut}
           </button>
         </div>
       </Section>
@@ -246,6 +266,51 @@ function ThemeChoice({
           className={cn("h-5 w-5", active ? "text-primary-strong" : "text-fg-muted")}
           aria-hidden="true"
         />
+        {active && <span className="h-2 w-2 rounded-full bg-primary" />}
+      </div>
+      <p className="text-sm font-semibold text-fg">{label}</p>
+      <p className="mt-1 text-xs text-fg-muted">{desc}</p>
+    </button>
+  );
+}
+
+// LocaleChoice mirrors ThemeChoice but renders the language code as a 2-char
+// badge instead of an icon — keeps the toggle compact and recognisable across
+// scripts (EN renders LTR Latin, اردو needs RTL).
+function LocaleChoice({
+  active,
+  onSelect,
+  code,
+  label,
+  desc,
+}: {
+  active: boolean;
+  onSelect: () => void;
+  code: Locale;
+  label: string;
+  desc: string;
+}) {
+  return (
+    <button
+      onClick={onSelect}
+      aria-pressed={active}
+      lang={code}
+      className={cn(
+        "rounded-xl border p-4 text-left transition-all",
+        active
+          ? "border-primary/50 bg-primary/[0.06] ring-2 ring-primary/20"
+          : "border-border hover:border-primary/30"
+      )}
+    >
+      <div className="mb-3 flex items-center justify-between">
+        <span
+          className={cn(
+            "font-mono text-[10px] font-bold uppercase tracking-[0.18em]",
+            active ? "text-primary-strong" : "text-fg-muted"
+          )}
+        >
+          {code}
+        </span>
         {active && <span className="h-2 w-2 rounded-full bg-primary" />}
       </div>
       <p className="text-sm font-semibold text-fg">{label}</p>

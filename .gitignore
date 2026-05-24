@@ -46,6 +46,7 @@ SCRATCH.md
 
 # local screenshots / build artifacts
 /screenshots/
+/artifacts/
 *.local.png
 
 # debug

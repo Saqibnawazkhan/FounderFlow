@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { SessionProvider, useSession } from "next-auth/react";
 import { Toaster } from "react-hot-toast";
 import { useStore } from "@/lib/store";
+import { getDirForLocale } from "@/lib/i18n/strings";
 import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
 
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -17,6 +18,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 function Inner({ children }: { children: React.ReactNode }) {
   const init = useStore((s) => s.init);
   const theme = useStore((s) => s.theme);
+  const locale = useStore((s) => s.locale);
   const hydrateUser = useStore((s) => s.hydrateUser);
   const { data: session, status } = useSession();
 
@@ -49,6 +51,14 @@ function Inner({ children }: { children: React.ReactNode }) {
       document.documentElement.classList.toggle("dark", theme === "dark");
     }
   }, [theme]);
+
+  // Sync <html lang + dir> with the active locale so RTL flips text + flow
+  // automatically (and screen readers + spell-check pick the right language).
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.lang = locale;
+    document.documentElement.dir = getDirForLocale(locale);
+  }, [locale]);
 
   // Hydrate Zustand `currentUser` once per session id. The previous
   // implementation included `users` in the dep array and constructed a fresh

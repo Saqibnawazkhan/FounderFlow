@@ -12,6 +12,7 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { StatCard } from "@/components/landing/stat-card";
 import { ThemeToggle } from "@/components/landing/theme-toggle";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n/use-t";
 
 const INDUSTRIES = [
   "SaaS / B2B Software",
@@ -31,6 +32,7 @@ const INDUSTRIES = [
 const STEP_1_FIELDS = ["name", "email", "password"] as const;
 
 export default function SignupPage() {
+  const t = useT();
   const nameId = useId();
   const emailId = useId();
   const pwId = useId();
@@ -68,17 +70,17 @@ export default function SignupPage() {
     try {
       const result = await signupAction(data);
       if (result.success) {
-        toast.success("Welcome to FounderFlow");
+        toast.success(t.auth.welcomeToFFToast);
         // Full nav so middleware reads the new session cookie.
         window.location.href = "/dashboard";
         return;
       }
-      toast.error(result.error || "Sign up failed");
+      toast.error(result.error || t.auth.signupFailedToast);
     } catch (err) {
       // Server action threw — usually means a DB / env-var problem on the
       // server. Surface it instead of leaving the user staring at "Creating…"
       console.error("signupAction threw:", err);
-      toast.error("We couldn't reach the server. Check your connection and try again.");
+      toast.error(t.auth.networkErrorToast);
     }
   }
 
@@ -100,20 +102,21 @@ export default function SignupPage() {
         />
 
         <div className="relative max-w-md">
-          <PillBadge tone="cyan">Free for early-stage teams</PillBadge>
+          <PillBadge tone="cyan">{t.auth.signUpShowcaseBadge}</PillBadge>
           <h2 className="mt-6 text-balance text-4xl font-bold leading-tight tracking-tight xl:text-5xl">
-            Aligned co-founders in <span className="text-primary-strong">under a minute</span>.
+            {t.auth.signUpShowcaseHeadingPre}
+            <span className="text-primary-strong">{t.auth.signUpShowcaseHeadingEm}</span>
+            {t.auth.signUpShowcaseHeadingPost}
           </h2>
           <p className="mt-4 text-pretty text-base leading-relaxed text-fg-muted">
-            Set up your company, invite your co-founders, and start tracking every PKR and task —
-            together, in real time.
+            {t.auth.signUpShowcaseDesc}
           </p>
 
           <div className="mt-10 grid grid-cols-2 gap-3">
-            <StatCard value="2,500+" label="Startups" tone="primary" />
-            <StatCard value="PKR 1.2B" label="Tracked" tone="cyan" />
-            <StatCard value="50K+" label="Tasks done" tone="pink" />
-            <StatCard value="5K+" label="Co-founder duos" tone="primary" />
+            <StatCard value="2,500+" label={t.auth.startupsLabel} tone="primary" />
+            <StatCard value="PKR 1.2B" label={t.auth.trackedLabel} tone="cyan" />
+            <StatCard value="50K+" label={t.auth.tasksDoneLabel} tone="pink" />
+            <StatCard value="5K+" label={t.auth.cofounderDuosLabel} tone="primary" />
           </div>
         </div>
       </aside>
@@ -140,31 +143,39 @@ export default function SignupPage() {
         <div className="w-full max-w-sm">
           {/* Step indicator */}
           <div className="mb-8 flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.2em]">
-            <span className={cn("text-primary-strong", step === 1 && "font-bold")}>01 · You</span>
+            <span className={cn("text-primary-strong", step === 1 && "font-bold")}>
+              {t.auth.stepYou}
+            </span>
             <span className="h-px flex-1 bg-glass/[0.10]" />
             <span className={cn(step === 2 ? "font-bold text-primary-strong" : "text-fg-muted")}>
-              02 · Company
+              {t.auth.stepCompany}
             </span>
           </div>
 
-          <PillBadge tone={step === 1 ? "primary" : "cyan"}>Step {step} of 2</PillBadge>
+          <PillBadge tone={step === 1 ? "primary" : "cyan"}>
+            {t.auth.stepBadgePre}
+            {step}
+            {t.auth.stepBadgePost}
+          </PillBadge>
 
           <h1 className="mt-5 text-4xl font-bold tracking-tight md:text-5xl">
             {step === 1 ? (
               <>
-                Create your <span className="text-primary-strong">account</span>.
+                {t.auth.signUpHeading1Pre}
+                <span className="text-primary-strong">{t.auth.signUpHeading1Em}</span>
+                {t.auth.signUpHeading1Post}
               </>
             ) : (
               <>
-                Tell us about your <span className="text-primary-strong">company</span>.
+                {t.auth.signUpHeading2Pre}
+                <span className="text-primary-strong">{t.auth.signUpHeading2Em}</span>
+                {t.auth.signUpHeading2Post}
               </>
             )}
           </h1>
 
           <p className="mt-3 text-sm text-fg-muted">
-            {step === 1
-              ? "We'll use this to set up your founder profile."
-              : "You'll be the Admin Founder and can invite others next."}
+            {step === 1 ? t.auth.signUpStep1Note : t.auth.signUpStep2Note}
           </p>
 
           <form onSubmit={handleSubmit(onSubmit)} className="mt-10 space-y-5" noValidate>
@@ -173,17 +184,17 @@ export default function SignupPage() {
             <div className={cn(step === 1 ? "space-y-5" : "hidden")}>
               <RegField
                 id={nameId}
-                label="Full name"
-                placeholder="Saqib Nawaz"
+                label={t.auth.fullName}
+                placeholder={t.auth.fullNamePlaceholder}
                 autoComplete="name"
                 error={errors.name?.message}
                 {...register("name")}
               />
               <RegField
                 id={emailId}
-                label="Work email"
+                label={t.auth.workEmail}
                 type="email"
-                placeholder="you@startup.com"
+                placeholder={t.auth.emailPlaceholder}
                 autoComplete="email"
                 error={errors.email?.message}
                 {...register("email")}
@@ -193,13 +204,13 @@ export default function SignupPage() {
                   htmlFor={pwId}
                   className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                 >
-                  Password
+                  {t.auth.password}
                 </label>
                 <div className="relative">
                   <input
                     id={pwId}
                     type={showPassword ? "text" : "password"}
-                    placeholder="At least 6 characters"
+                    placeholder={t.auth.passwordPlaceholderSignup}
                     autoComplete="new-password"
                     aria-invalid={errors.password ? true : undefined}
                     aria-describedby={errors.password ? `${pwId}-err` : undefined}
@@ -214,7 +225,7 @@ export default function SignupPage() {
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    aria-label={showPassword ? t.auth.hidePassword : t.auth.showPassword}
                     className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg"
                   >
                     {showPassword ? (
@@ -235,8 +246,8 @@ export default function SignupPage() {
             <div className={cn(step === 2 ? "space-y-5" : "hidden")}>
               <RegField
                 id={companyId}
-                label="Company name"
-                placeholder="Nimbus Labs"
+                label={t.auth.companyName}
+                placeholder={t.auth.companyNamePlaceholder}
                 error={errors.companyName?.message}
                 {...register("companyName")}
               />
@@ -245,7 +256,7 @@ export default function SignupPage() {
                   htmlFor={industryId}
                   className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                 >
-                  Industry
+                  {t.auth.industry}
                 </label>
                 <select
                   id={industryId}
@@ -275,11 +286,8 @@ export default function SignupPage() {
                   aria-hidden="true"
                 />
                 <p className="text-fg">
-                  <span className="font-semibold">You&apos;ll be the Admin Founder.</span>
-                  <span className="text-fg-muted">
-                    {" "}
-                    You can invite co-founders and team members from the dashboard.
-                  </span>
+                  <span className="font-semibold">{t.auth.adminFounderNoteTitle}</span>
+                  <span className="text-fg-muted">{t.auth.adminFounderNoteBody}</span>
                 </p>
               </div>
             </div>
@@ -291,7 +299,7 @@ export default function SignupPage() {
                   onClick={() => setStep(1)}
                   className="flex-1 rounded-full border border-glass/[0.10] bg-glass/[0.05] px-5 py-3.5 text-sm font-medium text-fg transition-colors hover:bg-glass/[0.10]"
                 >
-                  Back
+                  {t.auth.back}
                 </button>
               )}
               {step === 1 ? (
@@ -300,7 +308,7 @@ export default function SignupPage() {
                   onClick={handleContinue}
                   className="group inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-all hover:scale-[1.01] hover:shadow-[0_0_45px_rgb(182_244_37_/_0.4)] active:scale-95"
                 >
-                  Continue
+                  {t.auth.continue}
                   <ArrowRight
                     className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
                     aria-hidden="true"
@@ -312,7 +320,7 @@ export default function SignupPage() {
                   disabled={isSubmitting}
                   className="group inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-all hover:scale-[1.01] hover:shadow-[0_0_45px_rgb(182_244_37_/_0.4)] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
                 >
-                  {isSubmitting ? "Creating…" : "Create workspace"}
+                  {isSubmitting ? t.auth.creatingLoading : t.auth.createWorkspaceCta}
                   <ArrowRight
                     className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
                     aria-hidden="true"
@@ -323,9 +331,9 @@ export default function SignupPage() {
           </form>
 
           <p className="mt-8 text-center text-sm text-fg-muted">
-            Already have an account?{" "}
+            {t.auth.haveAccount}{" "}
             <Link href="/login" className="font-semibold text-primary-strong hover:underline">
-              Sign in
+              {t.auth.signIn}
             </Link>
           </p>
         </div>

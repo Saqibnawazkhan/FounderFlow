@@ -1,0 +1,353 @@
+/**
+ * Lightweight i18n. Flat dictionary keyed by [locale][namespace.key]. No
+ * next-intl, no [locale] route segment — locale lives in the Zustand store
+ * (gets persisted in localStorage), html lang/dir is synced from Providers.
+ *
+ * Translating a new string:
+ *   1. Add it to both `en` and `ur` below under an appropriate namespace
+ *   2. Call `useT().nav.dashboard` (or whatever) in the component
+ *
+ * Translating a new page:
+ *   • Open the page, find every string in JSX, add to dict, replace inline
+ *   • Run `npm run typecheck` — TS will yell if a key is missing in either
+ *     locale (because the type is derived from `en`)
+ *
+ * Why not next-intl: this app's pages are mostly auth-gated and not crawled,
+ * so URL-based locale routing has no SEO upside. Cookie/store-based switch
+ * + a flat dict is simpler to maintain for a ~50-string surface.
+ */
+
+export type Locale = "en" | "ur";
+
+export const SUPPORTED_LOCALES: { code: Locale; label: string; dir: "ltr" | "rtl" }[] = [
+  { code: "en", label: "English", dir: "ltr" },
+  // اردو is right-to-left. Setting `dir: "rtl"` flips text alignment + most
+  // inline flow automatically; absolute-positioned UI (sidebar drawer) gets
+  // hand-touched in the components where it matters.
+  { code: "ur", label: "اردو", dir: "rtl" },
+];
+
+/* English is the source of truth — the Strings type is derived from it, so
+ * a missing key in `ur` is a TypeScript error. */
+export const en = {
+  common: {
+    save: "Save",
+    cancel: "Cancel",
+    delete: "Delete",
+    confirm: "Confirm",
+    loading: "Loading…",
+    search: "Search expenses, tasks, team...",
+    workspace: "Workspace",
+    signOut: "Sign out",
+    yes: "Yes",
+    no: "No",
+  },
+  nav: {
+    dashboard: "Dashboard",
+    expenses: "Expenses",
+    investments: "Investments",
+    recurring: "Recurring",
+    budgets: "Budgets",
+    tasks: "Tasks",
+    activity: "Activity",
+    team: "Team",
+    reports: "Reports",
+    notifications: "Notifications",
+    settings: "Settings",
+  },
+  auth: {
+    // Login form (3-part headings let us keep the inline lime emphasis word
+    // distinct from the surrounding prose in both English and Urdu)
+    welcomeBack: "Welcome back",
+    signInHeadingPre: "Sign in to your ",
+    signInHeadingEm: "workspace",
+    signInHeadingPost: ".",
+    signInTagline: "Pick up where your co-founder left off.",
+    email: "Email",
+    password: "Password",
+    emailPlaceholder: "you@startup.com",
+    passwordPlaceholderLogin: "Enter your password",
+    showPassword: "Show password",
+    hidePassword: "Hide password",
+    signIn: "Sign in",
+    signInLoading: "Signing in…",
+    or: "or",
+    tryDemo: "Try the live demo",
+    newHere: "New here?",
+    createWorkspace: "Create a workspace",
+    welcomeBackToast: "Welcome back",
+    loginFailedToast: "Login failed",
+    networkErrorToast: "We couldn't reach the server. Check your connection and try again.",
+    demoLoadedToast: "Loaded demo workspace",
+    // Login showcase (right pane)
+    loginShowcaseBadge: "Live workspace",
+    loginShowcaseHeadingPre: "One shared source of ",
+    loginShowcaseHeadingEm: "truth",
+    loginShowcaseHeadingPost: ".",
+    loginShowcaseDesc:
+      "Every PKR, every task, every founder contribution — synced in real time across your team.",
+    trackedLabel: "Tracked",
+    runwayLabel: "Runway",
+    loginFeature1: "Real-time expense & investment tracking",
+    loginFeature2: "Role-based access for your whole team",
+    loginFeature3: "Investor-ready PDF + Excel exports",
+
+    // Signup form
+    signUpShowcaseBadge: "Free for early-stage teams",
+    signUpShowcaseHeadingPre: "Aligned co-founders in ",
+    signUpShowcaseHeadingEm: "under a minute",
+    signUpShowcaseHeadingPost: ".",
+    signUpShowcaseDesc:
+      "Set up your company, invite your co-founders, and start tracking every PKR and task — together, in real time.",
+    startupsLabel: "Startups",
+    tasksDoneLabel: "Tasks done",
+    cofounderDuosLabel: "Co-founder duos",
+    stepYou: "01 · You",
+    stepCompany: "02 · Company",
+    stepBadgePre: "Step ",
+    stepBadgePost: " of 2",
+    signUpHeading1Pre: "Create your ",
+    signUpHeading1Em: "account",
+    signUpHeading1Post: ".",
+    signUpHeading2Pre: "Tell us about your ",
+    signUpHeading2Em: "company",
+    signUpHeading2Post: ".",
+    signUpStep1Note: "We'll use this to set up your founder profile.",
+    signUpStep2Note: "You'll be the Admin Founder and can invite others next.",
+    fullName: "Full name",
+    fullNamePlaceholder: "Saqib Nawaz",
+    workEmail: "Work email",
+    passwordPlaceholderSignup: "At least 6 characters",
+    companyName: "Company name",
+    companyNamePlaceholder: "Nimbus Labs",
+    industry: "Industry",
+    back: "Back",
+    continue: "Continue",
+    createWorkspaceCta: "Create workspace",
+    creatingLoading: "Creating…",
+    adminFounderNoteTitle: "You'll be the Admin Founder.",
+    adminFounderNoteBody: " You can invite co-founders and team members from the dashboard.",
+    haveAccount: "Already have an account?",
+    welcomeToFFToast: "Welcome to FounderFlow",
+    signupFailedToast: "Sign up failed",
+  },
+  topbar: {
+    profileSettings: "Profile & settings",
+    teamManagement: "Team management",
+    accountMenu: "Account menu",
+    notificationsLabel: "Notifications",
+    openMenu: "Open navigation menu",
+    markAllRead: "Mark all read",
+    noNotifications: "No notifications yet",
+    viewAll: "View all notifications",
+    signedOutToast: "Signed out",
+  },
+  settings: {
+    workspaceBadge: "Workspace",
+    title: "Settings",
+    subtitle: "Manage your account, workspace, and preferences.",
+    profile: "Profile",
+    joined: "Joined",
+    company: "Company",
+    industryLabel: "Industry",
+    appearance: "Appearance",
+    appearanceNote: "Choose how FounderFlow looks for you.",
+    light: "Light",
+    lightDesc: "Clean, classic, energizing",
+    dark: "Dark",
+    darkDesc: "Easy on the eyes for long sessions",
+    language: "Language",
+    languageNote: "Change the language of the interface. Page data stays as you entered it.",
+    english: "English",
+    urdu: "اردو",
+    englishDesc: "Default left-to-right layout",
+    urduDesc: "Right-to-left, Pakistani business style",
+    dataStorage: "Data & storage",
+    dataNote:
+      "Your workspace data lives in Supabase. Clearing local data only wipes UI prefs (theme, sidebar state) — it does not delete server data.",
+    resetLocalPrefs: "Reset local preferences",
+    signOutSection: "Sign out",
+    signOutNote: "Sign out of your FounderFlow workspace.",
+    role: "Role",
+    userId: "User ID",
+    name: "Name",
+    currency: "Currency",
+    created: "Created",
+    adminFounderRole: "Admin Founder",
+    cofounderRole: "Co-Founder",
+    teamMemberRole: "Team Member",
+    // Confirm dialogs
+    signOutConfirmTitle: "Sign out?",
+    signOutConfirmDesc: "You can sign back in any time.",
+    resetConfirmTitle: "Reset workspace data?",
+    resetConfirmDesc:
+      "All transactions, tasks, activity, and team members will be wiped. This cannot be undone.",
+    resetConfirmLabel: "Reset everything",
+    signedOutToast: "Signed out",
+  },
+};
+
+/* Urdu translations. Style: conversational, modern, mixes English loan-words
+ * where they're standard in Pakistani business usage (e.g. "Dashboard",
+ * "Email", "Password"). This keeps the UI feeling native without sounding
+ * like a 1990s government form. */
+export const ur: typeof en = {
+  common: {
+    save: "محفوظ کریں",
+    cancel: "منسوخ",
+    delete: "حذف کریں",
+    confirm: "تصدیق کریں",
+    loading: "لوڈ ہو رہا ہے…",
+    search: "اخراجات، کام، ٹیم تلاش کریں...",
+    workspace: "ورک اسپیس",
+    signOut: "سائن آؤٹ",
+    yes: "ہاں",
+    no: "نہیں",
+  },
+  nav: {
+    dashboard: "ڈیش بورڈ",
+    expenses: "اخراجات",
+    investments: "سرمایہ کاری",
+    recurring: "تکراری",
+    budgets: "بجٹ",
+    tasks: "کام",
+    activity: "سرگرمی",
+    team: "ٹیم",
+    reports: "رپورٹس",
+    notifications: "اطلاعات",
+    settings: "ترتیبات",
+  },
+  auth: {
+    welcomeBack: "خوش آمدید",
+    signInHeadingPre: "اپنے ",
+    signInHeadingEm: "ورک اسپیس",
+    signInHeadingPost: " میں سائن ان کریں۔",
+    signInTagline: "وہیں سے دوبارہ شروع کریں جہاں آپ کے کو فاؤنڈر نے چھوڑا تھا۔",
+    email: "ای میل",
+    password: "پاس ورڈ",
+    emailPlaceholder: "you@startup.com",
+    passwordPlaceholderLogin: "اپنا پاس ورڈ درج کریں",
+    showPassword: "پاس ورڈ دکھائیں",
+    hidePassword: "پاس ورڈ چھپائیں",
+    signIn: "سائن ان",
+    signInLoading: "سائن ان ہو رہا ہے…",
+    or: "یا",
+    tryDemo: "ڈیمو آزمائیں",
+    newHere: "نئے یہاں؟",
+    createWorkspace: "ورک اسپیس بنائیں",
+    welcomeBackToast: "خوش آمدید",
+    loginFailedToast: "سائن ان ناکام",
+    networkErrorToast: "سرور تک رسائی نہیں ہو سکی۔ اپنا انٹرنیٹ چیک کریں اور دوبارہ کوشش کریں۔",
+    demoLoadedToast: "ڈیمو ورک اسپیس لوڈ ہو گیا",
+    loginShowcaseBadge: "لائیو ورک اسپیس",
+    loginShowcaseHeadingPre: "ایک مشترکہ ",
+    loginShowcaseHeadingEm: "سچائی",
+    loginShowcaseHeadingPost: " کا ذریعہ۔",
+    loginShowcaseDesc:
+      "ہر روپیہ، ہر کام، ہر فاؤنڈر کی شراکت — آپ کی ٹیم میں حقیقی وقت میں ہم آہنگ۔",
+    trackedLabel: "ٹریک کردہ",
+    runwayLabel: "رن وے",
+    loginFeature1: "اخراجات اور سرمایہ کاری کی ریئل ٹائم ٹریکنگ",
+    loginFeature2: "پوری ٹیم کے لیے رول بیسڈ رسائی",
+    loginFeature3: "انویسٹر ریڈی PDF اور ایکسل ایکسپورٹس",
+
+    signUpShowcaseBadge: "ابتدائی ٹیموں کے لیے مفت",
+    signUpShowcaseHeadingPre: "ایک منٹ سے کم میں ",
+    signUpShowcaseHeadingEm: "ہم آہنگ",
+    signUpShowcaseHeadingPost: " کو فاؤنڈرز۔",
+    signUpShowcaseDesc:
+      "اپنی کمپنی سیٹ اپ کریں، کو فاؤنڈرز کو دعوت دیں، اور ہر روپیہ اور کام کو ساتھ مل کر، حقیقی وقت میں ٹریک کریں۔",
+    startupsLabel: "اسٹارٹ اپس",
+    tasksDoneLabel: "مکمل کام",
+    cofounderDuosLabel: "کو فاؤنڈر جوڑے",
+    stepYou: "01 · آپ",
+    stepCompany: "02 · کمپنی",
+    stepBadgePre: "مرحلہ ",
+    stepBadgePost: " از 2",
+    signUpHeading1Pre: "اپنا ",
+    signUpHeading1Em: "اکاؤنٹ",
+    signUpHeading1Post: " بنائیں۔",
+    signUpHeading2Pre: "ہمیں اپنی ",
+    signUpHeading2Em: "کمپنی",
+    signUpHeading2Post: " کے بارے میں بتائیں۔",
+    signUpStep1Note: "ہم اسے آپ کا فاؤنڈر پروفائل بنانے کے لیے استعمال کریں گے۔",
+    signUpStep2Note: "آپ ایڈمن فاؤنڈر ہوں گے اور دوسروں کو دعوت دے سکیں گے۔",
+    fullName: "پورا نام",
+    fullNamePlaceholder: "ثاقب نواز",
+    workEmail: "آفس ای میل",
+    passwordPlaceholderSignup: "کم از کم 6 حروف",
+    companyName: "کمپنی کا نام",
+    companyNamePlaceholder: "نمبس لیبز",
+    industry: "صنعت",
+    back: "واپس",
+    continue: "جاری رکھیں",
+    createWorkspaceCta: "ورک اسپیس بنائیں",
+    creatingLoading: "بن رہا ہے…",
+    adminFounderNoteTitle: "آپ ایڈمن فاؤنڈر ہوں گے۔",
+    adminFounderNoteBody: " آپ ڈیش بورڈ سے کو فاؤنڈرز اور ٹیم ممبران کو دعوت دے سکتے ہیں۔",
+    haveAccount: "پہلے سے اکاؤنٹ ہے؟",
+    welcomeToFFToast: "FounderFlow میں خوش آمدید",
+    signupFailedToast: "اکاؤنٹ نہیں بن سکا",
+  },
+  topbar: {
+    profileSettings: "پروفائل اور ترتیبات",
+    teamManagement: "ٹیم منیجمنٹ",
+    accountMenu: "اکاؤنٹ مینو",
+    notificationsLabel: "اطلاعات",
+    openMenu: "نیویگیشن مینو کھولیں",
+    markAllRead: "سب پڑھا ہوا نشان زد کریں",
+    noNotifications: "ابھی کوئی اطلاع نہیں",
+    viewAll: "تمام اطلاعات دیکھیں",
+    signedOutToast: "سائن آؤٹ ہو گیا",
+  },
+  settings: {
+    workspaceBadge: "ورک اسپیس",
+    title: "ترتیبات",
+    subtitle: "اپنا اکاؤنٹ، ورک اسپیس، اور ترجیحات کا انتظام کریں۔",
+    profile: "پروفائل",
+    joined: "شامل ہوئے",
+    company: "کمپنی",
+    industryLabel: "صنعت",
+    appearance: "ظاہری شکل",
+    appearanceNote: "اپنے لیے FounderFlow کی شکل منتخب کریں۔",
+    light: "لائٹ",
+    lightDesc: "صاف، کلاسک، توانائی بخش",
+    dark: "ڈارک",
+    darkDesc: "طویل کام کے لیے آنکھوں پر نرم",
+    language: "زبان",
+    languageNote: "انٹرفیس کی زبان تبدیل کریں۔ آپ کا ڈیٹا اسی طرح رہے گا جیسے آپ نے درج کیا۔",
+    english: "English",
+    urdu: "اردو",
+    englishDesc: "ڈیفالٹ بائیں سے دائیں ترتیب",
+    urduDesc: "دائیں سے بائیں، پاکستانی بزنس انداز",
+    dataStorage: "ڈیٹا اور اسٹوریج",
+    dataNote:
+      "آپ کا ورک اسپیس ڈیٹا Supabase پر محفوظ ہے۔ لوکل ڈیٹا صاف کرنا صرف UI ترجیحات (تھیم، سائڈبار اسٹیٹ) کو مٹاتا ہے — سرور ڈیٹا متاثر نہیں ہوتا۔",
+    resetLocalPrefs: "لوکل ترجیحات ری سیٹ کریں",
+    signOutSection: "سائن آؤٹ",
+    signOutNote: "اپنے FounderFlow ورک اسپیس سے سائن آؤٹ کریں۔",
+    role: "کردار",
+    userId: "یوزر ID",
+    name: "نام",
+    currency: "کرنسی",
+    created: "بنایا گیا",
+    adminFounderRole: "ایڈمن فاؤنڈر",
+    cofounderRole: "کو فاؤنڈر",
+    teamMemberRole: "ٹیم ممبر",
+    signOutConfirmTitle: "سائن آؤٹ کریں؟",
+    signOutConfirmDesc: "آپ کسی بھی وقت دوبارہ سائن ان کر سکتے ہیں۔",
+    resetConfirmTitle: "ورک اسپیس ڈیٹا ری سیٹ کریں؟",
+    resetConfirmDesc:
+      "تمام ٹرانزیکشنز، کام، سرگرمی، اور ٹیم ممبران مٹا دیے جائیں گے۔ یہ واپس نہیں ہو سکتا۔",
+    resetConfirmLabel: "سب کچھ ری سیٹ کریں",
+    signedOutToast: "سائن آؤٹ ہو گیا",
+  },
+};
+
+export type Strings = typeof en;
+
+export const DICTIONARIES: Record<Locale, Strings> = { en, ur };
+
+export function getDirForLocale(locale: Locale): "ltr" | "rtl" {
+  return SUPPORTED_LOCALES.find((l) => l.code === locale)?.dir ?? "ltr";
+}

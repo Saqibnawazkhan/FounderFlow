@@ -15,6 +15,7 @@ import type {
   TaskStatus,
 } from "./types";
 import { seedData } from "./seed";
+import type { Locale } from "@/lib/i18n/strings";
 
 interface AppState {
   initialized: boolean;
@@ -26,12 +27,15 @@ interface AppState {
   activities: Activity[];
   notifications: Notification[];
   theme: "light" | "dark";
+  /** UI locale — drives the string dictionary + html lang/dir. */
+  locale: Locale;
   /** Mobile sidebar open/close. Lifted to the store so the topbar burger can
    * open the sidebar without prop-drilling through layout. */
   mobileNavOpen: boolean;
 
   init: () => void;
   setMobileNavOpen: (open: boolean) => void;
+  setLocale: (locale: Locale) => void;
   /**
    * Adopt a user identity that came from Auth.js (via getSession on mount).
    * Skips the demo-seed path so a real session never overlaps the local
@@ -153,6 +157,7 @@ export const useStore = create<AppState>()(
       activities: [],
       notifications: [],
       theme: "dark",
+      locale: "en" as Locale,
       mobileNavOpen: false,
 
       init: () => {
@@ -172,6 +177,8 @@ export const useStore = create<AppState>()(
       },
 
       setMobileNavOpen: (open) => set({ mobileNavOpen: open }),
+
+      setLocale: (locale) => set({ locale }),
 
       hydrateUser: (user) => {
         const current = get().currentUser;
@@ -574,6 +581,7 @@ export const useStore = create<AppState>()(
         activities: state.activities,
         notifications: state.notifications,
         theme: state.theme,
+        locale: state.locale,
         initialized: state.initialized,
       }),
     }
