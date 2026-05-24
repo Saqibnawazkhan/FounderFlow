@@ -42,6 +42,7 @@ export const authConfig = {
         pathname === "/" ||
         pathname.startsWith("/login") ||
         pathname.startsWith("/signup") ||
+        pathname.startsWith("/invite/") || // /invite/[token] for email-link onboarding
         pathname.startsWith("/api/auth") ||
         pathname === "/robots.txt" ||
         pathname === "/sitemap.xml" ||

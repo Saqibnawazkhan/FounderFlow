@@ -266,7 +266,6 @@ function Cell({
 function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: () => void }) {
   const nameId = useId();
   const emailId = useId();
-  const pwId = useId();
 
   const {
     register,
@@ -278,7 +277,7 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
     resolver: zodResolver(InviteUserSchema),
     mode: "onSubmit",
     reValidateMode: "onChange",
-    defaultValues: { name: "", email: "", password: "", role: "cofounder" },
+    defaultValues: { name: "", email: "", role: "cofounder" },
   });
 
   const role = watch("role");
@@ -287,7 +286,18 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
   async function onSubmit(data: InviteUserInput) {
     const res = await inviteUserAction(data);
     if (res.success) {
-      toast.success(`${data.name} has been added to the team`);
+      // res.data.emailSent === false in dev (no RESEND_API_KEY) — surface
+      // the invite URL so the admin can copy it manually for testing.
+      if (res.data.emailSent) {
+        toast.success(`Invite emailed to ${res.data.email}`);
+      } else {
+        toast.success(`Invite link ready (no email service in dev). Copy: ${res.data.inviteUrl}`, {
+          duration: 12_000,
+        });
+        // Also drop it into the dev console for an easy copy-paste.
+        // eslint-disable-next-line no-console
+        console.info("[invite] dev URL:", res.data.inviteUrl);
+      }
       onInvited();
     } else {
       toast.error(res.error);
@@ -313,35 +323,10 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
         error={errors.email?.message}
         {...register("email")}
       />
-      <div>
-        <label
-          htmlFor={pwId}
-          className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-        >
-          Temporary password
-        </label>
-        <input
-          id={pwId}
-          type="text"
-          placeholder="At least 6 characters"
-          aria-invalid={errors.password ? true : undefined}
-          aria-describedby={errors.password ? `${pwId}-err` : undefined}
-          {...register("password")}
-          className={cn(
-            "w-full rounded-xl border bg-bg px-4 py-2.5 font-mono text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:bg-surface focus:outline-none",
-            errors.password
-              ? "border-danger/60 focus:border-danger"
-              : "border-border focus:border-primary/50"
-          )}
-        />
-        {errors.password ? (
-          <p id={`${pwId}-err`} className="mt-1.5 text-xs text-danger">
-            {errors.password.message}
-          </p>
-        ) : (
-          <p className="mt-1.5 text-xs text-fg-muted">They can change this after first login.</p>
-        )}
-      </div>
+      <p className="-mt-2 text-xs text-fg-muted">
+        We&apos;ll email them a one-time link to set their own password. The invite expires in 7
+        days.
+      </p>
 
       <div>
         <p className="mb-2 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted">

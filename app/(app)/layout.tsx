@@ -1,21 +1,23 @@
 "use client";
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+/**
+ * Authenticated app shell — sidebar + topbar wrapping every protected page.
+ *
+ * Auth is enforced by middleware.ts (server-side, runs before any RSC paints),
+ * so this layout DOESN'T re-gate on `currentUser`. The old `useEffect → router.replace("/login")`
+ * guard raced with providers.tsx's session hydration and bounced legit users
+ * to /dashboard via the /login redirect-when-signed-in layout.
+ *
+ * If `currentUser` is briefly empty (Zustand hydrating from session), we show
+ * a tiny loading state so the layout doesn't flash with an empty avatar.
+ */
+
 import { useStore } from "@/lib/store";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
   const currentUser = useStore((s) => s.currentUser);
-  const initialized = useStore((s) => s.initialized);
-
-  useEffect(() => {
-    if (initialized && !currentUser) {
-      router.replace("/login");
-    }
-  }, [currentUser, initialized, router]);
 
   if (!currentUser) {
     return (

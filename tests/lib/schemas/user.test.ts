@@ -1,15 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { InviteUserSchema, UpdateRoleSchema } from "@/lib/schemas/user";
+import { AcceptInviteSchema, InviteUserSchema, UpdateRoleSchema } from "@/lib/schemas/user";
 
 describe("InviteUserSchema", () => {
   const valid = {
     name: "Jane Doe",
     email: "jane@company.com",
-    password: "tmp-pass",
     role: "cofounder" as const,
   };
 
-  it("accepts cofounder + member roles", () => {
+  it("accepts cofounder + member roles (no password field)", () => {
     expect(InviteUserSchema.safeParse(valid).success).toBe(true);
     expect(InviteUserSchema.safeParse({ ...valid, role: "member" }).success).toBe(true);
   });
@@ -23,8 +22,15 @@ describe("InviteUserSchema", () => {
     expect(InviteUserSchema.safeParse({ ...valid, role: "owner" }).success).toBe(false);
   });
 
-  it("requires a password of at least 6 chars", () => {
-    expect(InviteUserSchema.safeParse({ ...valid, password: "abc" }).success).toBe(false);
+  it("strips password field if accidentally included (admin no longer sets pw)", () => {
+    // zod default behavior: extra fields pass but get dropped. The action
+    // never reads input.password, so even if a stale client sends one it's
+    // ignored.
+    const result = InviteUserSchema.safeParse({ ...valid, password: "shouldnt-be-here" });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect((result.data as Record<string, unknown>).password).toBeUndefined();
+    }
   });
 
   it("normalizes email to lowercase", () => {
@@ -37,6 +43,32 @@ describe("InviteUserSchema", () => {
     const result = InviteUserSchema.safeParse({ ...valid, name: "  Jane  " });
     expect(result.success).toBe(true);
     if (result.success) expect(result.data.name).toBe("Jane");
+  });
+});
+
+describe("AcceptInviteSchema", () => {
+  const valid = { token: "abc123def456", password: "newpass123" };
+
+  it("accepts a valid token + password", () => {
+    expect(AcceptInviteSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it("rejects empty token", () => {
+    expect(AcceptInviteSchema.safeParse({ ...valid, token: "" }).success).toBe(false);
+  });
+
+  it("rejects passwords shorter than 6 chars", () => {
+    const result = AcceptInviteSchema.safeParse({ ...valid, password: "abc" });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].message).toMatch(/at least 6/);
+    }
+  });
+
+  it("caps password length at 120 chars", () => {
+    expect(AcceptInviteSchema.safeParse({ ...valid, password: "a".repeat(121) }).success).toBe(
+      false
+    );
   });
 });
 

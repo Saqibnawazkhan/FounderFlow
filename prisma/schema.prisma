@@ -70,6 +70,7 @@ model Company {
   tasks         Task[]
   activities    Activity[]
   notifications Notification[]
+  inviteTokens  InviteToken[]
 }
 
 model Transaction {
@@ -147,4 +148,31 @@ model Notification {
 
   @@index([userId, read])
   @@index([userId, createdAt])
+}
+
+// Closes audit flaw #7: admins no longer set temp passwords directly. The
+// invite action stores a row here + emails a one-time link; the recipient
+// sets their own password on accept. Rows are single-use (usedAt set on
+// accept) and expire after 7 days (expiresAt checked at accept-time).
+//
+// We deliberately do NOT create the User row at invite-time — that would
+// leave a placeholder account with no password if the invite is never
+// accepted, and it'd block the same email from re-inviting later.
+model InviteToken {
+  id         String    @id @default(cuid())
+  token      String    @unique // random ~32-char, used in the email URL
+  email      String // lowercased, what the invitee will sign in with
+  name       String
+  role       String // "cofounder" | "member"  (never "admin" — separate flow)
+  companyId  String
+  invitedBy  String // userId of the admin who sent the invite
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([email])
+  @@index([companyId])
 }
