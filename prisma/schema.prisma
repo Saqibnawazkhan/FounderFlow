@@ -49,6 +49,7 @@ model User {
   activities     Activity[]
   notifications  Notification[]
   recurringRules RecurringRule[]
+  budgets        Budget[]
 
   @@index([companyId])
   @@index([email])
@@ -73,6 +74,7 @@ model Company {
   notifications  Notification[]
   inviteTokens   InviteToken[]
   recurringRules RecurringRule[]
+  budgets        Budget[]
 }
 
 model Transaction {
@@ -224,4 +226,34 @@ model InviteToken {
   @@index([token])
   @@index([email])
   @@index([companyId])
+}
+
+// Per-category monthly spending caps. Threshold check happens inside
+// addTransactionAction: after the txn commits, sum month-to-date expenses
+// for that category and fan out a notification to all company members if
+// we crossed 80% (warning) or 100% (alert). Both thresholds fire once per
+// month per budget — `lastWarnedMonth` and `lastAlertedMonth` track which
+// "YYYY-MM" string the budget last fired for so we don't spam.
+model Budget {
+  id               String   @id @default(cuid())
+  companyId        String
+  category         String // single expense category, e.g. "Office Rent"
+  monthlyLimit     Float
+  createdBy        String
+  createdByName    String
+  active           Boolean  @default(true)
+  // "2026-05" sentinels — set when the corresponding threshold fired this
+  // calendar month; cleared/rotated on first hit of the next month.
+  lastWarnedMonth  String? // 80%+ fired in this YYYY-MM
+  lastAlertedMonth String? // 100%+ fired in this YYYY-MM
+  createdAt        DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+
+  // One active budget per category per company (paused budgets are excluded
+  // via partial-unique-emulation in the action layer; SQL unique can't be
+  // conditional on `active` in Postgres without an expression index).
+  @@index([companyId, active])
+  @@index([companyId, category])
 }

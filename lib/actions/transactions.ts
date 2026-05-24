@@ -22,6 +22,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { NewTransactionSchema } from "@/lib/schemas/transaction";
 import { limiters } from "@/lib/rate-limit";
+import { checkBudgetThresholdAfterExpense } from "@/lib/budgets/check";
 import type { Transaction } from "@/lib/types";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
@@ -152,6 +153,17 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
   revalidatePath("/dashboard");
   revalidatePath("/reports");
   revalidatePath("/activities");
+
+  // Budget threshold check fires only for expenses (investments don't count
+  // against caps). Awaited so the notifications land before we return — the
+  // user sees the bell badge update on the next router.refresh().
+  // Wrapped internally in try/catch so a budget failure never poisons the
+  // transaction insert above.
+  if (type === "expense") {
+    await checkBudgetThresholdAfterExpense({ companyId, category });
+    revalidatePath("/budgets");
+    revalidatePath("/notifications");
+  }
 
   return { success: true, data: toClient(created) };
 }
