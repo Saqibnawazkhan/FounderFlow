@@ -41,13 +41,14 @@ model User {
   companyId    String
   createdAt    DateTime @default(now())
 
-  company       Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  ownedCompany  Company?       @relation("CompanyOwner")
-  transactions  Transaction[]
-  assignedTasks Task[]         @relation("TaskAssignee")
-  createdTasks  Task[]         @relation("TaskCreator")
-  activities    Activity[]
-  notifications Notification[]
+  company        Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  ownedCompany   Company?        @relation("CompanyOwner")
+  transactions   Transaction[]
+  assignedTasks  Task[]          @relation("TaskAssignee")
+  createdTasks   Task[]          @relation("TaskCreator")
+  activities     Activity[]
+  notifications  Notification[]
+  recurringRules RecurringRule[]
 
   @@index([companyId])
   @@index([email])
@@ -64,13 +65,14 @@ model Company {
   ownerId   String?  @unique
   createdAt DateTime @default(now())
 
-  owner         User?          @relation("CompanyOwner", fields: [ownerId], references: [id])
-  users         User[]
-  transactions  Transaction[]
-  tasks         Task[]
-  activities    Activity[]
-  notifications Notification[]
-  inviteTokens  InviteToken[]
+  owner          User?           @relation("CompanyOwner", fields: [ownerId], references: [id])
+  users          User[]
+  transactions   Transaction[]
+  tasks          Task[]
+  activities     Activity[]
+  notifications  Notification[]
+  inviteTokens   InviteToken[]
+  recurringRules RecurringRule[]
 }
 
 model Transaction {
@@ -85,12 +87,59 @@ model Transaction {
   addedByName String // denormalized for fast read paths
   createdAt   DateTime @default(now())
 
+  // Set when this row was materialized from a RecurringRule. Lets the UI
+  // show a 🔁 badge and lets the user audit which rule generated what.
+  // Null for manually-created transactions. SetNull on rule delete so the
+  // history survives if the user removes the rule.
+  ruleId String?
+  rule   RecurringRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   user    User    @relation(fields: [addedBy], references: [id], onDelete: Cascade)
 
   @@index([companyId, date])
   @@index([companyId, type])
   @@index([addedBy])
+  @@index([ruleId])
+}
+
+// Repeating-transaction template. A daily cron at /api/cron/materialize-recurring
+// scans active rules and creates a Transaction whenever today matches the
+// rule's frequency window AND we haven't already materialized today.
+//
+// frequency = "monthly" → uses dayOfMonth (1-31; clamped to month length
+//                          so dayOfMonth=31 fires on Feb 28/29)
+// frequency = "weekly"  → uses dayOfWeek (0=Sun … 6=Sat)
+//
+// We keep both day fields nullable to avoid a column-per-frequency table —
+// the materializer + zod schema enforce that the right one is set.
+model RecurringRule {
+  id            String  @id @default(cuid())
+  companyId     String
+  type          String // "expense" | "investment"
+  amount        Float
+  category      String
+  description   String
+  addedBy       String // userId who created the rule
+  addedByName   String // denormalized (same pattern as Transaction)
+  frequency     String // "monthly" | "weekly"
+  dayOfMonth    Int? // 1-31 (when frequency=monthly)
+  dayOfWeek     Int? // 0-6  (when frequency=weekly)
+  active        Boolean @default(true)
+  // First-fire date — also the date used for the immediate "seed" transaction
+  // we create at rule-creation time so the user gets instant feedback.
+  startDate     DateTime
+  // Set on every successful materialization so the cron can detect "already
+  // ran today" and stay idempotent if it fires twice in a 24h window.
+  lastMaterializedAt DateTime?
+  createdAt     DateTime @default(now())
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [addedBy], references: [id], onDelete: Cascade)
+  transactions Transaction[] // materialized children — survives rule deletion
+
+  @@index([companyId, active])
+  @@index([active, frequency])
 }
 
 model Task {
