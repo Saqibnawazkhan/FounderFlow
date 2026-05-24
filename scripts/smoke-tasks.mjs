@@ -40,13 +40,15 @@ await page
   .catch(() => {});
 console.log(`signed in -> ${page.url()}`);
 
-// /tasks
-await page.goto(`${BASE}/tasks`, { waitUntil: "networkidle2" });
-// Wait for at least one task card to render (kanban view default).
+// /tasks. Give the post-login state a beat so cookies settle.
+await new Promise((r) => setTimeout(r, 1000));
+await page.goto(`${BASE}/tasks`, { waitUntil: "domcontentloaded" });
+// Wait for at least one task card to render (kanban view default). Bumped to
+// 20s — dev-mode RSC + Supabase cold start can run long.
 await page
   .waitForFunction(
     () => document.querySelectorAll("h4, tbody tr").length > 0,
-    { timeout: 8000 }
+    { timeout: 20_000 }
   )
   .catch(() => {});
 const cardsBefore = await page.evaluate(
