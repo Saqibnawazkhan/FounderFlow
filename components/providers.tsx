@@ -24,6 +24,26 @@ function Inner({ children }: { children: React.ReactNode }) {
     init();
   }, [init]);
 
+  // PWA: register the service worker in production only. Dev gets weird
+  // when SW caches Next.js hot-reload chunks. The browser scopes the worker
+  // to "/" automatically because sw.js is served from the origin root.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (process.env.NODE_ENV !== "production") return;
+    if (!("serviceWorker" in navigator)) return;
+    // Defer until after the page is interactive so registration doesn't
+    // contend with the initial paint.
+    const register = () => {
+      navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch((err) => {
+        // Failed registration is non-fatal — the app still works, just no
+        // offline support. Log so we can spot persistent breakage.
+        console.warn("[pwa] service worker registration failed:", err);
+      });
+    };
+    if (document.readyState === "complete") register();
+    else window.addEventListener("load", register, { once: true });
+  }, []);
+
   useEffect(() => {
     if (typeof document !== "undefined") {
       document.documentElement.classList.toggle("dark", theme === "dark");

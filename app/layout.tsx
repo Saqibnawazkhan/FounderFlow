@@ -31,6 +31,15 @@ export const metadata: Metadata = {
     "Manage and track every part of your startup in one place. Built for co-founders to align on finances, tasks, and momentum.",
   keywords: ["startup", "co-founder", "management", "expense tracker", "task management"],
   manifest: "/manifest.json",
+  applicationName: "FounderFlow",
+  // PWA / iOS: tell Safari this is a standalone web app so the user gets the
+  // "Add to Home Screen" experience without browser chrome on launch.
+  appleWebApp: {
+    capable: true,
+    title: "FounderFlow",
+    statusBarStyle: "black-translucent",
+  },
+  formatDetection: { telephone: false },
   openGraph: {
     title: "FounderFlow — Co-Founder Company Management",
     description: "Finances, tasks, and momentum in one place. Built for co-founders.",
@@ -46,9 +55,14 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#b6f425",
+  // Match the manifest background so the iOS status bar / Android nav-bar
+  // blend seamlessly with the app shell in installed PWA mode.
+  themeColor: "#0a0a0a",
   width: "device-width",
   initialScale: 1,
+  // Disable user-zoom only on installed PWA — feels app-like, not webby.
+  // Browser still allows zoom on the regular browser visit.
+  viewportFit: "cover",
 };
 
 /**

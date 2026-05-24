@@ -40,6 +40,7 @@ export const authConfig = {
       const { pathname } = request.nextUrl;
       const isPublic =
         pathname === "/" ||
+        pathname === "/offline" || // PWA offline fallback — must work without a session
         pathname.startsWith("/login") ||
         pathname.startsWith("/signup") ||
         pathname.startsWith("/invite/") || // /invite/[token] for email-link onboarding
@@ -48,7 +49,9 @@ export const authConfig = {
         pathname === "/robots.txt" ||
         pathname === "/sitemap.xml" ||
         pathname === "/icon.svg" ||
-        pathname === "/manifest.json";
+        pathname === "/icon-maskable.svg" ||
+        pathname === "/manifest.json" ||
+        pathname === "/sw.js";
       return isPublic || !!auth;
     },
   },

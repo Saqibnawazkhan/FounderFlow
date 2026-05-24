@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Full-bleed background so Android adaptive-icon masks always paint corner-to-corner. -->
+  <rect width="512" height="512" fill="#0a0a0a"/>
+  <!-- "F" mark centered inside the recommended 80% safe zone (51px padding on all sides).
+       Path is scaled from the original 32×32 icon (M9 8 → 144 128 at 16× scale). -->
+  <g transform="translate(144 128) scale(16)">
+    <path d="M0 0h14v3.5H3.5v4.25h9V11.25h-9V16H0V0z" fill="#b6f425"/>
+  </g>
+</svg>
