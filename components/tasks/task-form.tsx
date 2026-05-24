@@ -1,8 +1,11 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import toast from "react-hot-toast";
 import { addTaskAction } from "@/lib/actions/tasks";
+import { NewTaskSchema, type NewTaskInput } from "@/lib/schemas/task";
 import type { TaskPriority, TaskStatus, User } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -34,37 +37,56 @@ export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
   const assigneeId = useId();
   const deadlineId = useId();
 
-  const [form, setForm] = useState({
-    title: "",
-    description: "",
-    assignedTo: currentUserId || users[0]?.id || "",
-    priority: "medium" as TaskPriority,
-    status: "pending" as TaskStatus,
-    deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+  const today = new Date().toISOString().slice(0, 10);
+  const defaultDeadline = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const {
+    register,
+    handleSubmit,
+    watch,
+    setValue,
+    formState: { errors, isSubmitting },
+  } = useForm<NewTaskInput>({
+    resolver: zodResolver(NewTaskSchema),
+    mode: "onSubmit",
+    reValidateMode: "onChange",
+    defaultValues: {
+      title: "",
+      description: "",
+      assignedTo: currentUserId || users[0]?.id || "",
+      priority: "medium",
+      status: "pending",
+      deadline: defaultDeadline,
+    },
   });
-  const [loading, setLoading] = useState(false);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!form.title.trim()) {
-      toast.error("Please add a task title");
-      return;
-    }
-    if (!form.assignedTo) {
-      toast.error("Please select an assignee");
-      return;
-    }
-    setLoading(true);
+  // The parent fetches `users` asynchronously, so on first mount the list may
+  // still be empty and assignedTo's default is "". Once users arrive, fill it
+  // in (without marking dirty) if the user hasn't already touched the field.
+  useEffect(() => {
+    if (users.length === 0) return;
+    const fallback = currentUserId || users[0]?.id;
+    if (!fallback) return;
+    if (watch("assignedTo")) return;
+    setValue("assignedTo", fallback);
+    // We intentionally only re-sync when the user list changes; otherwise
+    // watching `assignedTo` would cause an update loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [users.length, currentUserId]);
+
+  // Pill-button groups (priority/status) aren't native form controls — we
+  // mirror their value via watch() and write via setValue() so RHF still owns
+  // the source of truth and zod still gates submit.
+  const priority = watch("priority");
+  const status = watch("status");
+
+  async function onSubmit(data: NewTaskInput) {
     const result = await addTaskAction({
-      title: form.title.trim(),
-      description: form.description.trim(),
-      status: form.status,
-      priority: form.priority,
-      assignedTo: form.assignedTo,
-      deadline: new Date(form.deadline).toISOString(),
+      ...data,
+      title: data.title.trim(),
+      description: data.description.trim(),
+      deadline: new Date(data.deadline).toISOString(),
     });
-    setLoading(false);
-
     if (!result.success) {
       toast.error(result.error);
       return;
@@ -76,24 +98,35 @@ export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
 
   const labelClass =
     "mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted";
-  const inputClass =
-    "w-full rounded-xl border border-border bg-bg px-4 py-2.5 text-sm text-fg placeholder:text-fg-muted/60 transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none";
+
+  function inputClass(hasError: boolean) {
+    return cn(
+      "w-full rounded-xl border bg-bg px-4 py-2.5 text-sm text-fg placeholder:text-fg-muted/60 transition-colors focus:bg-surface focus:outline-none",
+      hasError ? "border-danger/60 focus:border-danger" : "border-border focus:border-primary/50"
+    );
+  }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
       <div>
         <label htmlFor={titleId} className={labelClass}>
           Title
         </label>
         <input
           id={titleId}
-          value={form.title}
-          onChange={(e) => setForm({ ...form, title: e.target.value })}
-          className={inputClass}
           placeholder="What needs to be done?"
+          aria-invalid={errors.title ? true : undefined}
+          aria-describedby={errors.title ? `${titleId}-err` : undefined}
           // eslint-disable-next-line jsx-a11y/no-autofocus
           autoFocus
+          {...register("title")}
+          className={inputClass(!!errors.title)}
         />
+        {errors.title && (
+          <p id={`${titleId}-err`} className="mt-1.5 text-xs text-danger">
+            {errors.title.message}
+          </p>
+        )}
       </div>
 
       <div>
@@ -102,11 +135,14 @@ export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
         </label>
         <textarea
           id={descId}
-          value={form.description}
-          onChange={(e) => setForm({ ...form, description: e.target.value })}
-          className={cn(inputClass, "min-h-[80px] resize-none")}
           placeholder="Add more context…"
+          aria-invalid={errors.description ? true : undefined}
+          {...register("description")}
+          className={cn(inputClass(!!errors.description), "min-h-[80px] resize-none")}
         />
+        {errors.description && (
+          <p className="mt-1.5 text-xs text-danger">{errors.description.message}</p>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -116,9 +152,9 @@ export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
           </label>
           <select
             id={assigneeId}
-            value={form.assignedTo}
-            onChange={(e) => setForm({ ...form, assignedTo: e.target.value })}
-            className={cn(inputClass, "appearance-none")}
+            aria-invalid={errors.assignedTo ? true : undefined}
+            {...register("assignedTo")}
+            className={cn(inputClass(!!errors.assignedTo), "appearance-none")}
           >
             {users.length === 0 && <option value="">No users in this company</option>}
             {users.map((u) => (
@@ -127,6 +163,9 @@ export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
               </option>
             ))}
           </select>
+          {errors.assignedTo && (
+            <p className="mt-1.5 text-xs text-danger">{errors.assignedTo.message}</p>
+          )}
         </div>
         <div>
           <label htmlFor={deadlineId} className={labelClass}>
@@ -135,11 +174,17 @@ export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
           <input
             id={deadlineId}
             type="date"
-            value={form.deadline}
-            onChange={(e) => setForm({ ...form, deadline: e.target.value })}
-            className={inputClass}
-            min={new Date().toISOString().slice(0, 10)}
+            min={today}
+            aria-invalid={errors.deadline ? true : undefined}
+            aria-describedby={errors.deadline ? `${deadlineId}-err` : undefined}
+            {...register("deadline")}
+            className={inputClass(!!errors.deadline)}
           />
+          {errors.deadline && (
+            <p id={`${deadlineId}-err`} className="mt-1.5 text-xs text-danger">
+              {errors.deadline.message}
+            </p>
+          )}
         </div>
       </div>
 
@@ -147,12 +192,14 @@ export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
         <p className={labelClass}>Priority</p>
         <div className="grid grid-cols-4 gap-2">
           {PRIORITIES.map((p) => {
-            const active = form.priority === p.value;
+            const active = priority === p.value;
             return (
               <button
                 key={p.value}
                 type="button"
-                onClick={() => setForm({ ...form, priority: p.value })}
+                onClick={() =>
+                  setValue("priority", p.value, { shouldValidate: true, shouldDirty: true })
+                }
                 aria-pressed={active}
                 className={cn(
                   "rounded-xl border px-3 py-2.5 text-sm font-medium transition-all",
@@ -175,12 +222,14 @@ export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
         <p className={labelClass}>Initial status</p>
         <div className="grid grid-cols-3 gap-2">
           {STATUSES.map((s) => {
-            const active = form.status === s.value;
+            const active = status === s.value;
             return (
               <button
                 key={s.value}
                 type="button"
-                onClick={() => setForm({ ...form, status: s.value })}
+                onClick={() =>
+                  setValue("status", s.value, { shouldValidate: true, shouldDirty: true })
+                }
                 aria-pressed={active}
                 className={cn(
                   "rounded-xl border px-3 py-2 text-sm font-medium transition-all",
@@ -206,10 +255,10 @@ export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
         </button>
         <button
           type="submit"
-          disabled={loading}
+          disabled={isSubmitting}
           className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
         >
-          {loading ? "Creating…" : "Create task"}
+          {isSubmitting ? "Creating…" : "Create task"}
         </button>
       </div>
     </form>

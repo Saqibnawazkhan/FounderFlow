@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useId, useState } from "react";
+import { forwardRef, useCallback, useEffect, useId, useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { Crown, Mail, Shield, Trash2, User as UserIcon, UserPlus, Users } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
@@ -12,6 +14,7 @@ import {
 } from "@/lib/actions/team";
 import { listTransactionsAction } from "@/lib/actions/transactions";
 import { listTasksAction } from "@/lib/actions/tasks";
+import { InviteUserSchema, type InviteUserInput } from "@/lib/schemas/user";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Avatar } from "@/components/ui/avatar";
@@ -284,57 +287,51 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
   const emailId = useId();
   const pwId = useId();
 
-  const [form, setForm] = useState({
-    name: "",
-    email: "",
-    password: "",
-    role: "cofounder" as Exclude<UserRole, "admin">,
+  const {
+    register,
+    handleSubmit,
+    watch,
+    setValue,
+    formState: { errors, isSubmitting },
+  } = useForm<InviteUserInput>({
+    resolver: zodResolver(InviteUserSchema),
+    mode: "onSubmit",
+    reValidateMode: "onChange",
+    defaultValues: { name: "", email: "", password: "", role: "cofounder" },
   });
-  const [loading, setLoading] = useState(false);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    // Light client check; server is the source of truth via zod.
-    if (!form.name.trim() || !form.email.trim() || !form.password) {
-      toast.error("Please fill in all fields");
-      return;
-    }
-    if (form.password.length < 6) {
-      toast.error("Password must be at least 6 characters");
-      return;
-    }
-    setLoading(true);
-    try {
-      const res = await inviteUserAction(form);
-      if (res.success) {
-        toast.success(`${form.name} has been added to the team`);
-        onInvited();
-      } else {
-        toast.error(res.error);
-      }
-    } finally {
-      setLoading(false);
+  // Role is a pill-button group, not a native control — mirror via watch/setValue.
+  const role = watch("role");
+  const nameValue = watch("name");
+
+  async function onSubmit(data: InviteUserInput) {
+    const res = await inviteUserAction(data);
+    if (res.success) {
+      toast.success(`${data.name} has been added to the team`);
+      onInvited();
+    } else {
+      toast.error(res.error);
     }
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5" noValidate>
-      <Field
+    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
+      <TeamField
         id={nameId}
         label="Full name"
-        value={form.name}
-        onChange={(v) => setForm({ ...form, name: v })}
         placeholder="Jane Doe"
-        autoFocus
+        autoFocusInput
+        error={errors.name?.message}
+        {...register("name")}
       />
-      <Field
+      <TeamField
         id={emailId}
         label="Email"
         type="email"
-        value={form.email}
-        onChange={(v) => setForm({ ...form, email: v })}
         placeholder="jane@company.com"
         autoComplete="email"
+        error={errors.email?.message}
+        {...register("email")}
       />
       <div>
         <label
@@ -346,12 +343,24 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
         <input
           id={pwId}
           type="text"
-          value={form.password}
-          onChange={(e) => setForm({ ...form, password: e.target.value })}
           placeholder="At least 6 characters"
-          className="w-full rounded-xl border border-border bg-bg px-4 py-2.5 font-mono text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:border-primary/50 focus:bg-surface focus:outline-none"
+          aria-invalid={errors.password ? true : undefined}
+          aria-describedby={errors.password ? `${pwId}-err` : undefined}
+          {...register("password")}
+          className={cn(
+            "w-full rounded-xl border bg-bg px-4 py-2.5 font-mono text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:bg-surface focus:outline-none",
+            errors.password
+              ? "border-danger/60 focus:border-danger"
+              : "border-border focus:border-primary/50"
+          )}
         />
-        <p className="mt-1.5 text-xs text-fg-muted">They can change this after first login.</p>
+        {errors.password ? (
+          <p id={`${pwId}-err`} className="mt-1.5 text-xs text-danger">
+            {errors.password.message}
+          </p>
+        ) : (
+          <p className="mt-1.5 text-xs text-fg-muted">They can change this after first login.</p>
+        )}
       </div>
 
       <div>
@@ -361,24 +370,26 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
         <div className="grid grid-cols-2 gap-3">
           {[
             {
-              value: "cofounder",
+              value: "cofounder" as const,
               label: "Co-Founder",
               desc: "Full access to finances and tasks",
               icon: Shield,
             },
             {
-              value: "member",
+              value: "member" as const,
               label: "Team Member",
               desc: "Can view and add tasks",
               icon: UserIcon,
             },
           ].map((r) => {
-            const active = form.role === r.value;
+            const active = role === r.value;
             return (
               <button
                 key={r.value}
                 type="button"
-                onClick={() => setForm({ ...form, role: r.value as Exclude<UserRole, "admin"> })}
+                onClick={() =>
+                  setValue("role", r.value, { shouldValidate: true, shouldDirty: true })
+                }
                 aria-pressed={active}
                 className={cn(
                   "rounded-xl border p-3 text-left transition-all",
@@ -409,35 +420,33 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
         </button>
         <button
           type="submit"
-          disabled={loading}
+          disabled={isSubmitting}
           className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
         >
-          {loading ? "Adding…" : "Add to team"}
+          {isSubmitting
+            ? "Adding…"
+            : nameValue?.trim()
+              ? `Add ${nameValue.trim().split(" ")[0]} to team`
+              : "Add to team"}
         </button>
       </div>
     </form>
   );
 }
 
-function Field({
-  id,
-  label,
-  type = "text",
-  value,
-  onChange,
-  placeholder,
-  autoComplete,
-  autoFocus,
-}: {
+// Forward-ref input wrapper so RHF's `register()` can hook the underlying
+// <input>. autoFocusInput renamed off the conflicting `autoFocus` HTML prop.
+type TeamFieldProps = {
   id: string;
   label: string;
-  type?: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  autoComplete?: string;
-  autoFocus?: boolean;
-}) {
+  error?: string;
+  autoFocusInput?: boolean;
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, "autoFocus">;
+
+const TeamField = forwardRef<HTMLInputElement, TeamFieldProps>(function TeamField(
+  { id, label, error, type = "text", autoFocusInput, ...rest },
+  ref
+) {
   return (
     <div>
       <label
@@ -449,14 +458,22 @@ function Field({
       <input
         id={id}
         type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        autoComplete={autoComplete}
+        ref={ref}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-err` : undefined}
         // eslint-disable-next-line jsx-a11y/no-autofocus
-        autoFocus={autoFocus}
-        className="w-full rounded-xl border border-border bg-bg px-4 py-2.5 text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:border-primary/50 focus:bg-surface focus:outline-none"
+        autoFocus={autoFocusInput}
+        {...rest}
+        className={cn(
+          "w-full rounded-xl border bg-bg px-4 py-2.5 text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:bg-surface focus:outline-none",
+          error ? "border-danger/60 focus:border-danger" : "border-border focus:border-primary/50"
+        )}
       />
+      {error && (
+        <p id={`${id}-err`} className="mt-1.5 text-xs text-danger">
+          {error}
+        </p>
+      )}
     </div>
   );
-}
+});

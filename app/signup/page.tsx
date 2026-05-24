@@ -1,11 +1,13 @@
 "use client";
 
-import { useId, useState } from "react";
+import { forwardRef, useId, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { ArrowRight, Eye, EyeOff, Sparkles, CheckCircle2 } from "lucide-react";
 import toast from "react-hot-toast";
 import { signupAction } from "@/lib/actions/auth";
+import { SignupSchema, type SignupInput } from "@/lib/schemas/auth";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { StatCard } from "@/components/landing/stat-card";
 import { ThemeToggle } from "@/components/landing/theme-toggle";
@@ -24,51 +26,47 @@ const INDUSTRIES = [
   "Other",
 ];
 
-export default function SignupPage() {
-  const router = useRouter();
+// Field names that live on step 1 — used by RHF.trigger() to gate the
+// "Continue" button without touching the company fields.
+const STEP_1_FIELDS = ["name", "email", "password"] as const;
 
+export default function SignupPage() {
   const nameId = useId();
   const emailId = useId();
   const pwId = useId();
   const companyId = useId();
   const industryId = useId();
 
-  const [step, setStep] = useState(1);
-  const [form, setForm] = useState({
-    name: "",
-    email: "",
-    password: "",
-    companyName: "",
-    industry: INDUSTRIES[0],
-  });
+  const [step, setStep] = useState<1 | 2>(1);
   const [showPassword, setShowPassword] = useState(false);
-  const [loading, setLoading] = useState(false);
 
-  function update<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
-    setForm({ ...form, [key]: value });
+  const {
+    register,
+    handleSubmit,
+    trigger,
+    formState: { errors, isSubmitting },
+  } = useForm<SignupInput>({
+    resolver: zodResolver(SignupSchema),
+    mode: "onSubmit",
+    reValidateMode: "onChange",
+    defaultValues: {
+      name: "",
+      email: "",
+      password: "",
+      companyName: "",
+      industry: INDUSTRIES[0],
+    },
+  });
+
+  async function handleContinue() {
+    // Validate just the step-1 subset. If clean, advance.
+    const ok = await trigger([...STEP_1_FIELDS]);
+    if (ok) setStep(2);
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (step === 1) {
-      if (!form.name || !form.email || !form.password) {
-        toast.error("Please fill in all fields");
-        return;
-      }
-      if (form.password.length < 6) {
-        toast.error("Password must be at least 6 characters");
-        return;
-      }
-      setStep(2);
-      return;
-    }
-    if (!form.companyName || !form.industry) {
-      toast.error("Please fill in company details");
-      return;
-    }
-    setLoading(true);
+  async function onSubmit(data: SignupInput) {
     try {
-      const result = await signupAction(form);
+      const result = await signupAction(data);
       if (result.success) {
         toast.success("Welcome to FounderFlow");
         // Full nav so middleware reads the new session cookie.
@@ -81,8 +79,6 @@ export default function SignupPage() {
       // server. Surface it instead of leaving the user staring at "Creating…"
       console.error("signupAction threw:", err);
       toast.error("We couldn't reach the server. Check your connection and try again.");
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -171,103 +167,122 @@ export default function SignupPage() {
               : "You'll be the Admin Founder and can invite others next."}
           </p>
 
-          <form onSubmit={handleSubmit} className="mt-10 space-y-5" noValidate>
-            {step === 1 ? (
-              <>
-                <Field
-                  id={nameId}
-                  label="Full name"
-                  value={form.name}
-                  onChange={(v) => update("name", v)}
-                  placeholder="Saqib Nawaz"
-                  autoComplete="name"
-                />
-                <Field
-                  id={emailId}
-                  label="Work email"
-                  type="email"
-                  value={form.email}
-                  onChange={(v) => update("email", v)}
-                  placeholder="you@startup.com"
-                  autoComplete="email"
-                />
-                <div>
-                  <label
-                    htmlFor={pwId}
-                    className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-                  >
-                    Password
-                  </label>
-                  <div className="relative">
-                    <input
-                      id={pwId}
-                      type={showPassword ? "text" : "password"}
-                      value={form.password}
-                      onChange={(e) => update("password", e.target.value)}
-                      placeholder="At least 6 characters"
-                      autoComplete="new-password"
-                      className="w-full rounded-xl border border-glass/[0.10] bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:border-primary/50 focus:bg-glass/[0.08] focus:outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      aria-label={showPassword ? "Hide password" : "Show password"}
-                      className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg"
-                    >
-                      {showPassword ? (
-                        <EyeOff className="h-4 w-4" aria-hidden="true" />
-                      ) : (
-                        <Eye className="h-4 w-4" aria-hidden="true" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <Field
-                  id={companyId}
-                  label="Company name"
-                  value={form.companyName}
-                  onChange={(v) => update("companyName", v)}
-                  placeholder="Nimbus Labs"
-                />
-                <div>
-                  <label
-                    htmlFor={industryId}
-                    className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-                  >
-                    Industry
-                  </label>
-                  <select
-                    id={industryId}
-                    value={form.industry}
-                    onChange={(e) => update("industry", e.target.value)}
-                    className="w-full appearance-none rounded-xl border border-glass/[0.10] bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-glass/[0.08] focus:outline-none"
-                  >
-                    {INDUSTRIES.map((i) => (
-                      <option key={i} value={i} className="bg-bg">
-                        {i}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="flex items-start gap-3 rounded-xl border border-primary/20 bg-primary/[0.06] p-4 text-sm">
-                  <CheckCircle2
-                    className="mt-0.5 h-4 w-4 shrink-0 text-primary-strong"
-                    aria-hidden="true"
+          <form onSubmit={handleSubmit(onSubmit)} className="mt-10 space-y-5" noValidate>
+            {/* Render BOTH steps so RHF's registered inputs stay in the DOM
+                and keep their values when the user clicks Back/Continue. */}
+            <div className={cn(step === 1 ? "space-y-5" : "hidden")}>
+              <RegField
+                id={nameId}
+                label="Full name"
+                placeholder="Saqib Nawaz"
+                autoComplete="name"
+                error={errors.name?.message}
+                {...register("name")}
+              />
+              <RegField
+                id={emailId}
+                label="Work email"
+                type="email"
+                placeholder="you@startup.com"
+                autoComplete="email"
+                error={errors.email?.message}
+                {...register("email")}
+              />
+              <div>
+                <label
+                  htmlFor={pwId}
+                  className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                >
+                  Password
+                </label>
+                <div className="relative">
+                  <input
+                    id={pwId}
+                    type={showPassword ? "text" : "password"}
+                    placeholder="At least 6 characters"
+                    autoComplete="new-password"
+                    aria-invalid={errors.password ? true : undefined}
+                    aria-describedby={errors.password ? `${pwId}-err` : undefined}
+                    {...register("password")}
+                    className={cn(
+                      "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:bg-glass/[0.08] focus:outline-none",
+                      errors.password
+                        ? "border-danger/60 focus:border-danger"
+                        : "border-glass/[0.10] focus:border-primary/50"
+                    )}
                   />
-                  <p className="text-fg">
-                    <span className="font-semibold">You&apos;ll be the Admin Founder.</span>
-                    <span className="text-fg-muted">
-                      {" "}
-                      You can invite co-founders and team members from the dashboard.
-                    </span>
-                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4 w-4" aria-hidden="true" />
+                    ) : (
+                      <Eye className="h-4 w-4" aria-hidden="true" />
+                    )}
+                  </button>
                 </div>
-              </>
-            )}
+                {errors.password && (
+                  <p id={`${pwId}-err`} className="mt-1.5 text-xs text-danger">
+                    {errors.password.message}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className={cn(step === 2 ? "space-y-5" : "hidden")}>
+              <RegField
+                id={companyId}
+                label="Company name"
+                placeholder="Nimbus Labs"
+                error={errors.companyName?.message}
+                {...register("companyName")}
+              />
+              <div>
+                <label
+                  htmlFor={industryId}
+                  className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                >
+                  Industry
+                </label>
+                <select
+                  id={industryId}
+                  aria-invalid={errors.industry ? true : undefined}
+                  {...register("industry")}
+                  className={cn(
+                    "w-full appearance-none rounded-xl border bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors focus:bg-glass/[0.08] focus:outline-none",
+                    errors.industry
+                      ? "border-danger/60 focus:border-danger"
+                      : "border-glass/[0.10] focus:border-primary/50"
+                  )}
+                >
+                  {INDUSTRIES.map((i) => (
+                    <option key={i} value={i} className="bg-bg">
+                      {i}
+                    </option>
+                  ))}
+                </select>
+                {errors.industry && (
+                  <p className="mt-1.5 text-xs text-danger">{errors.industry.message}</p>
+                )}
+              </div>
+
+              <div className="flex items-start gap-3 rounded-xl border border-primary/20 bg-primary/[0.06] p-4 text-sm">
+                <CheckCircle2
+                  className="mt-0.5 h-4 w-4 shrink-0 text-primary-strong"
+                  aria-hidden="true"
+                />
+                <p className="text-fg">
+                  <span className="font-semibold">You&apos;ll be the Admin Founder.</span>
+                  <span className="text-fg-muted">
+                    {" "}
+                    You can invite co-founders and team members from the dashboard.
+                  </span>
+                </p>
+              </div>
+            </div>
 
             <div className="flex gap-3 pt-2">
               {step === 2 && (
@@ -279,17 +294,31 @@ export default function SignupPage() {
                   Back
                 </button>
               )}
-              <button
-                type="submit"
-                disabled={loading}
-                className="group inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-all hover:scale-[1.01] hover:shadow-[0_0_45px_rgb(182_244_37_/_0.4)] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
-              >
-                {loading ? "Creating…" : step === 1 ? "Continue" : "Create workspace"}
-                <ArrowRight
-                  className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
-                  aria-hidden="true"
-                />
-              </button>
+              {step === 1 ? (
+                <button
+                  type="button"
+                  onClick={handleContinue}
+                  className="group inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-all hover:scale-[1.01] hover:shadow-[0_0_45px_rgb(182_244_37_/_0.4)] active:scale-95"
+                >
+                  Continue
+                  <ArrowRight
+                    className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+                    aria-hidden="true"
+                  />
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="group inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-all hover:scale-[1.01] hover:shadow-[0_0_45px_rgb(182_244_37_/_0.4)] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+                >
+                  {isSubmitting ? "Creating…" : "Create workspace"}
+                  <ArrowRight
+                    className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+                    aria-hidden="true"
+                  />
+                </button>
+              )}
             </div>
           </form>
 
@@ -305,23 +334,18 @@ export default function SignupPage() {
   );
 }
 
-function Field({
-  id,
-  label,
-  type = "text",
-  value,
-  onChange,
-  placeholder,
-  autoComplete,
-}: {
+// Forward-ref wrapper so RHF's `register()` can hook the underlying <input>.
+// Spreads any extra register-injected props (name, onChange, onBlur).
+type RegFieldProps = {
   id: string;
   label: string;
-  type?: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  autoComplete?: string;
-}) {
+  error?: string;
+} & React.InputHTMLAttributes<HTMLInputElement>;
+
+const RegField = forwardRef<HTMLInputElement, RegFieldProps>(function RegField(
+  { id, label, error, type = "text", ...rest },
+  ref
+) {
   return (
     <div>
       <label
@@ -333,12 +357,22 @@ function Field({
       <input
         id={id}
         type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        autoComplete={autoComplete}
-        className="w-full rounded-xl border border-glass/[0.10] bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:border-primary/50 focus:bg-glass/[0.08] focus:outline-none"
+        ref={ref}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-err` : undefined}
+        {...rest}
+        className={cn(
+          "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:bg-glass/[0.08] focus:outline-none",
+          error
+            ? "border-danger/60 focus:border-danger"
+            : "border-glass/[0.10] focus:border-primary/50"
+        )}
       />
+      {error && (
+        <p id={`${id}-err`} className="mt-1.5 text-xs text-danger">
+          {error}
+        </p>
+      )}
     </div>
   );
-}
+});

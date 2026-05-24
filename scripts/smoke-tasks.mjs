@@ -19,6 +19,9 @@ const browser = await puppeteer.launch({
 });
 const page = await browser.newPage();
 page.on("pageerror", (e) => console.error("PAGEERROR:", e.message));
+page.on("console", (m) => {
+  if (m.type() === "error") console.error("CONSOLE.error:", m.text());
+});
 
 const beforeTasks = await db.task.count();
 const beforeActs = await db.activity.count();

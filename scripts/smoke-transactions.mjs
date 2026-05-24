@@ -54,9 +54,11 @@ await page.evaluate(() => {
   const btns = Array.from(document.querySelectorAll("button"));
   btns.find((b) => /log expense/i.test(b.textContent ?? ""))?.click();
 });
-await new Promise((r) => setTimeout(r, 500));
-await page.type('input[type="number"]', "12345");
-await page.type("textarea", "Smoke-test expense from puppeteer");
+// Modal mount + Framer Motion enter takes ~300-1500ms on cold dev. Wait for
+// the form's number input to exist rather than racing on a fixed timeout.
+await page.waitForSelector('[role="dialog"] input[type="number"]', { timeout: 5000 });
+await page.type('[role="dialog"] input[type="number"]', "12345");
+await page.type('[role="dialog"] textarea', "Smoke-test expense from puppeteer");
 await page.screenshot({ path: `${OUT}/txn-02-modal.png` });
 
 await page.evaluate(() => {

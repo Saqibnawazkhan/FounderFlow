@@ -15,24 +15,11 @@
  * useTransition for the loading state.
  */
 
-import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { AuthError } from "next-auth";
 import { signIn, signOut } from "@/lib/auth";
 import { db } from "@/lib/db";
-
-const SignupSchema = z.object({
-  name: z.string().trim().min(1, "Name is required").max(80),
-  email: z.string().trim().toLowerCase().email("Enter a valid email"),
-  password: z.string().min(6, "Password must be at least 6 characters").max(120),
-  companyName: z.string().trim().min(1, "Company name is required").max(80),
-  industry: z.string().trim().min(1).max(80),
-});
-
-const LoginSchema = z.object({
-  email: z.string().trim().toLowerCase().email(),
-  password: z.string().min(1),
-});
+import { LoginSchema, SignupSchema } from "@/lib/schemas/auth";
 
 export type ActionResult = { success: boolean; error?: string };
 

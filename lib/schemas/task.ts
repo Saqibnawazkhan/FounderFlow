@@ -10,7 +10,17 @@ export const NewTaskSchema = z.object({
   status: z.enum(["pending", "in_progress", "completed"]),
   priority: z.enum(["low", "medium", "high", "urgent"]),
   assignedTo: z.string().min(1, "Pick an assignee"),
-  deadline: z.string().refine((v) => !Number.isNaN(Date.parse(v)), "Invalid deadline"),
+  deadline: z
+    .string()
+    .refine((v) => !Number.isNaN(Date.parse(v)), "Invalid deadline")
+    // Reject past deadlines (closes audit flaw #37 — HTML `min` was the only
+    // gate before, which doesn't fire if the user types or pastes a date).
+    // Compare against start-of-today so "due today" stays valid.
+    .refine((v) => {
+      const startOfToday = new Date();
+      startOfToday.setHours(0, 0, 0, 0);
+      return new Date(v) >= startOfToday;
+    }, "Deadline can't be in the past"),
 });
 
 export type NewTaskInput = z.infer<typeof NewTaskSchema>;

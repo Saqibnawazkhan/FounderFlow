@@ -3,14 +3,18 @@
 import { useId, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { ArrowRight, Eye, EyeOff, Sparkles, Zap, CheckCircle2 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { loginAction } from "@/lib/actions/auth";
+import { LoginSchema, type LoginInput } from "@/lib/schemas/auth";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { StatCard } from "@/components/landing/stat-card";
 import { MetricRing } from "@/components/landing/metric-ring";
 import { ThemeToggle } from "@/components/landing/theme-toggle";
+import { cn } from "@/lib/utils";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -19,20 +23,22 @@ export default function LoginPage() {
   const emailId = useId();
   const pwId = useId();
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [loading, setLoading] = useState(false);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!email || !password) {
-      toast.error("Please fill in all fields");
-      return;
-    }
-    setLoading(true);
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<LoginInput>({
+    resolver: zodResolver(LoginSchema),
+    mode: "onSubmit",
+    reValidateMode: "onChange",
+    defaultValues: { email: "", password: "" },
+  });
+
+  async function onSubmit(data: LoginInput) {
     try {
-      const result = await loginAction({ email, password });
+      const result = await loginAction(data);
       if (result.success) {
         toast.success("Welcome back");
         // Full nav so the server middleware re-reads the new session cookie.
@@ -43,8 +49,6 @@ export default function LoginPage() {
     } catch (err) {
       console.error("loginAction threw:", err);
       toast.error("We couldn't reach the server. Check your connection and try again.");
-    } finally {
-      setLoading(false);
     }
   }
 
@@ -84,7 +88,7 @@ export default function LoginPage() {
 
           <p className="mt-3 text-sm text-fg-muted">Pick up where your co-founder left off.</p>
 
-          <form onSubmit={handleSubmit} className="mt-10 space-y-5" noValidate>
+          <form onSubmit={handleSubmit(onSubmit)} className="mt-10 space-y-5" noValidate>
             <div>
               <label
                 htmlFor={emailId}
@@ -95,12 +99,23 @@ export default function LoginPage() {
               <input
                 id={emailId}
                 type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@startup.com"
                 autoComplete="email"
-                className="w-full rounded-xl border border-glass/[0.10] bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:border-primary/50 focus:bg-glass/[0.08] focus:outline-none"
+                aria-invalid={errors.email ? true : undefined}
+                aria-describedby={errors.email ? `${emailId}-err` : undefined}
+                {...register("email")}
+                className={cn(
+                  "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:bg-glass/[0.08] focus:outline-none",
+                  errors.email
+                    ? "border-danger/60 focus:border-danger"
+                    : "border-glass/[0.10] focus:border-primary/50"
+                )}
               />
+              {errors.email && (
+                <p id={`${emailId}-err`} className="mt-1.5 text-xs text-danger">
+                  {errors.email.message}
+                </p>
+              )}
             </div>
 
             <div>
@@ -114,11 +129,17 @@ export default function LoginPage() {
                 <input
                   id={pwId}
                   type={showPassword ? "text" : "password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password"
                   autoComplete="current-password"
-                  className="w-full rounded-xl border border-glass/[0.10] bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:border-primary/50 focus:bg-glass/[0.08] focus:outline-none"
+                  aria-invalid={errors.password ? true : undefined}
+                  aria-describedby={errors.password ? `${pwId}-err` : undefined}
+                  {...register("password")}
+                  className={cn(
+                    "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:bg-glass/[0.08] focus:outline-none",
+                    errors.password
+                      ? "border-danger/60 focus:border-danger"
+                      : "border-glass/[0.10] focus:border-primary/50"
+                  )}
                 />
                 <button
                   type="button"
@@ -133,14 +154,19 @@ export default function LoginPage() {
                   )}
                 </button>
               </div>
+              {errors.password && (
+                <p id={`${pwId}-err`} className="mt-1.5 text-xs text-danger">
+                  {errors.password.message}
+                </p>
+              )}
             </div>
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={isSubmitting}
               className="group inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-all hover:scale-[1.01] hover:shadow-[0_0_45px_rgb(182_244_37_/_0.4)] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
             >
-              {loading ? "Signing in…" : "Sign in"}
+              {isSubmitting ? "Signing in…" : "Sign in"}
               <ArrowRight
                 className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
                 aria-hidden="true"
