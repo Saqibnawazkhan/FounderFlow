@@ -286,17 +286,20 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
   async function onSubmit(data: InviteUserInput) {
     const res = await inviteUserAction(data);
     if (res.success) {
-      // res.data.emailSent === false in dev (no RESEND_API_KEY) — surface
-      // the invite URL so the admin can copy it manually for testing.
+      // Two failure modes funnel into emailSent=false:
+      //   1. RESEND_API_KEY not set (dev or misconfigured prod) → console
+      //      log includes "[email:dev-stub]"
+      //   2. Resend rejected the send (rate limit, bad sender domain, etc.)
+      //      → console log includes the Resend error message
+      // Either way we show the URL so the admin can share it out-of-band.
       if (res.data.emailSent) {
         toast.success(`Invite emailed to ${res.data.email}`);
       } else {
-        toast.success(`Invite link ready (no email service in dev). Copy: ${res.data.inviteUrl}`, {
+        toast.success(`Invite created. Email didn't send — copy this link: ${res.data.inviteUrl}`, {
           duration: 12_000,
         });
-        // Also drop it into the dev console for an easy copy-paste.
         // eslint-disable-next-line no-console
-        console.info("[invite] dev URL:", res.data.inviteUrl);
+        console.info("[invite] fallback URL:", res.data.inviteUrl);
       }
       onInvited();
     } else {

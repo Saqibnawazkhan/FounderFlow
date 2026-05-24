@@ -58,14 +58,23 @@ export async function sendEmail({
       text,
     });
     if (error) {
+      // Log loudly so Vercel function logs surface the exact rejection
+      // reason ("invalid from address", "domain not verified", etc.)
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[email:resend-rejected] to=${to} from=${FROM_ADDRESS} subject="${subject}" reason="${error.message}"`
+      );
       return { delivered: false, devLogged: false, error: error.message };
     }
     return { delivered: true, devLogged: false };
   } catch (e) {
+    const msg = e instanceof Error ? e.message : "Unknown email error";
+    // eslint-disable-next-line no-console
+    console.error(`[email:resend-threw] to=${to} from=${FROM_ADDRESS} error="${msg}"`);
     return {
       delivered: false,
       devLogged: false,
-      error: e instanceof Error ? e.message : "Unknown email error",
+      error: msg,
     };
   }
 }
