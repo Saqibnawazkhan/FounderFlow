@@ -10,6 +10,8 @@
  */
 
 import type { NextAuthConfig } from "next-auth";
+import { NextResponse } from "next/server";
+import { homeRouteForRole, isMemberBlockedRoute, type Role } from "@/lib/auth/role-gates";
 
 export const authConfig = {
   trustHost: true,
@@ -52,7 +54,19 @@ export const authConfig = {
         pathname === "/icon-maskable.svg" ||
         pathname === "/manifest.json" ||
         pathname === "/sw.js";
-      return isPublic || !!auth;
+      if (isPublic) return true;
+      if (!auth) return false;
+
+      // Members can't see finance surfaces. Bounce them to their home
+      // (/tasks) instead of throwing a 403 — the route is intentionally
+      // invisible to them, so a silent redirect is the right UX. The
+      // server-action layer enforces the same rule on writes, so a forged
+      // request can't bypass this.
+      const role = (auth.user?.role as Role | undefined) ?? "member";
+      if (role === "member" && isMemberBlockedRoute(pathname)) {
+        return NextResponse.redirect(new URL(homeRouteForRole(role), request.nextUrl));
+      }
+      return true;
     },
   },
 } satisfies NextAuthConfig;

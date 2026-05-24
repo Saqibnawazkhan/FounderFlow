@@ -20,6 +20,7 @@ import { db } from "@/lib/db";
 import { NewRecurringRuleSchema, ToggleRecurringRuleSchema } from "@/lib/schemas/recurring";
 import { limiters } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
+import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
 
@@ -29,6 +30,9 @@ export async function createRecurringRuleAction(
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
+  }
+  if (!canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
   }
 
   const gate = limiters.write.consume(session.user.id);
@@ -139,6 +143,9 @@ export async function toggleRecurringRuleAction(input: unknown): Promise<ActionR
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
   }
+  if (!canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
+  }
 
   const parsed = ToggleRecurringRuleSchema.safeParse(input);
   if (!parsed.success) return { success: false, error: "Invalid request" };
@@ -167,6 +174,9 @@ export async function deleteRecurringRuleAction(ruleId: string): Promise<ActionR
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
+  }
+  if (!canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
   }
 
   if (!ruleId) return { success: false, error: "Missing rule id" };

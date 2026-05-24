@@ -23,6 +23,7 @@ import { db } from "@/lib/db";
 import { NewTransactionSchema } from "@/lib/schemas/transaction";
 import { limiters } from "@/lib/rate-limit";
 import { checkBudgetThresholdAfterExpense } from "@/lib/budgets/check";
+import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import type { Transaction } from "@/lib/types";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
@@ -61,6 +62,9 @@ function toClient(t: {
 export async function listTransactionsAction(): Promise<ActionResult<Transaction[]>> {
   const session = await auth();
   if (!session?.user?.companyId) return { success: false, error: "Not authenticated" };
+  if (!canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
+  }
 
   const rows = await db.transaction.findMany({
     where: { companyId: session.user.companyId },
@@ -78,6 +82,9 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
+  }
+  if (!canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
   }
 
   // Spam guard: 60 writes/user/min covers any plausible human, blocks scripted abuse.
@@ -172,6 +179,9 @@ export async function deleteTransactionAction(id: string): Promise<ActionResult>
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
+  }
+  if (!canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
   }
 
   const txn = await db.transaction.findUnique({ where: { id } });

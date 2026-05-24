@@ -27,6 +27,7 @@ import { listNotificationsAction } from "@/lib/actions/notifications";
 import { useT } from "@/lib/i18n/use-t";
 import type { Strings } from "@/lib/i18n/strings";
 import { cn } from "@/lib/utils";
+import { homeRouteForRole, isMemberBlockedRoute, type Role } from "@/lib/auth/role-gates";
 
 // nav items pair href + icon + a function that returns the localized label.
 // We deliberately don't bake the strings in at module scope — that'd
@@ -109,6 +110,16 @@ export function Sidebar() {
 
   const company = companies.find((c) => c.id === currentUser?.companyId);
 
+  // Hide finance-only nav items from members. The middleware enforces the
+  // same rule on direct navigation, so this is purely a "don't tease them
+  // with links they can't open" affordance.
+  const role: Role = (currentUser?.role as Role | undefined) ?? "member";
+  const visibleNavItems =
+    role === "member" ? navItems.filter((item) => !isMemberBlockedRoute(item.href)) : navItems;
+  // Brand logo also routes to the role-appropriate home so members don't
+  // hit a /dashboard bounce when they click the logo.
+  const brandHref = homeRouteForRole(role);
+
   return (
     <>
       {/* Mobile overlay — burger now lives in the topbar */}
@@ -136,7 +147,7 @@ export function Sidebar() {
         {/* Brand */}
         <div className="flex h-16 items-center justify-between border-b border-border px-5">
           <Link
-            href="/dashboard"
+            href={brandHref}
             className="flex items-center gap-2"
             onClick={() => setMobileOpen(false)}
           >
@@ -178,7 +189,7 @@ export function Sidebar() {
           className="scrollbar-thin flex-1 overflow-y-auto px-3 py-4"
         >
           <div className="space-y-1">
-            {navItems.map((item) => {
+            {visibleNavItems.map((item) => {
               const active = pathname === item.href;
               const isNotifs = item.href === "/notifications";
               return (

@@ -17,6 +17,7 @@ import { db } from "@/lib/db";
 import { NewBudgetSchema, UpdateBudgetSchema } from "@/lib/schemas/budget";
 import { limiters } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
+import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
 
@@ -24,6 +25,9 @@ export async function createBudgetAction(input: unknown): Promise<ActionResult<{
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
+  }
+  if (!canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
   }
   const gate = limiters.write.consume(session.user.id);
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
@@ -74,6 +78,9 @@ export async function updateBudgetAction(input: unknown): Promise<ActionResult> 
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
   }
+  if (!canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
+  }
 
   const parsed = UpdateBudgetSchema.safeParse(input);
   if (!parsed.success) return { success: false, error: "Invalid request" };
@@ -106,6 +113,9 @@ export async function deleteBudgetAction(budgetId: string): Promise<ActionResult
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
+  }
+  if (!canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
   }
   if (!budgetId) return { success: false, error: "Missing budget id" };
 

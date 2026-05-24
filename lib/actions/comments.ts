@@ -23,6 +23,7 @@ import { NewCommentSchema, DeleteCommentSchema } from "@/lib/schemas/comment";
 import { extractMentions } from "@/lib/comments/mentions";
 import { limiters } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
+import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import {
   listCommentsForTarget,
   type CommentClient,
@@ -47,6 +48,13 @@ export async function createCommentAction(
   }
   const { body, taskId, transactionId } = parsed.data;
   const { id: userId, companyId } = session.user;
+
+  // Members can't comment on transactions — they can't see the underlying
+  // expense/investment row, so they shouldn't be able to discuss it either.
+  // Comments on tasks remain open to everyone.
+  if (transactionId && !canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
+  }
 
   try {
     // Verify the target belongs to this company. Prevents cross-company

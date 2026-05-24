@@ -11,6 +11,7 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { canSeeFinances, isMemberBlockedRoute, type Role } from "@/lib/auth/role-gates";
 import type { Notification } from "@/lib/types";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
@@ -48,7 +49,21 @@ export async function listNotificationsAction(): Promise<ActionResult<Notificati
     orderBy: { createdAt: "desc" },
     take: 200, // cap; the bell icon shows a count + the dropdown shows top 10
   });
-  return { success: true, data: rows.map(toClient) };
+
+  // Members can't open finance pages, so a notification pointing at one is
+  // just noise (and a leaked PKR figure in the message). Drop them. We do
+  // this on read instead of pruning on write so an admin-only conversation
+  // doesn't break if a recipient's role flips later.
+  const role = (session.user.role as Role | undefined) ?? "member";
+  const visible = canSeeFinances(role)
+    ? rows
+    : rows.filter((n) => {
+        if (!n.link) return true;
+        const path = n.link.split("?")[0];
+        return !isMemberBlockedRoute(path);
+      });
+
+  return { success: true, data: visible.map(toClient) };
 }
 
 export async function markNotificationReadAction(id: string): Promise<ActionResult> {

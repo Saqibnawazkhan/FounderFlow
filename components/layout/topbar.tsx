@@ -17,6 +17,7 @@ import toast from "react-hot-toast";
 import type { Notification } from "@/lib/types";
 import { useT } from "@/lib/i18n/use-t";
 import { ClockWidget } from "@/components/time/clock-widget";
+import { homeRouteForRole, type Role } from "@/lib/auth/role-gates";
 
 export function Topbar() {
   const router = useRouter();
@@ -106,8 +107,12 @@ export function Topbar() {
         </button>
 
         {/* Brand on the smallest screens only — once search shows at sm+
-            we have less room and the burger is already an anchor home. */}
-        <Link href="/dashboard" className="flex items-center gap-2 sm:hidden">
+            we have less room and the burger is already an anchor home.
+            Routed per role so a member doesn't land on /dashboard then bounce. */}
+        <Link
+          href={homeRouteForRole((currentUser?.role as Role | undefined) ?? "member")}
+          className="flex items-center gap-2 sm:hidden"
+        >
           <span className="text-sm font-bold tracking-tight">FounderFlow</span>
         </Link>
 
