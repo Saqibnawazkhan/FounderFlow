@@ -10,18 +10,23 @@ import { db } from "@/lib/db";
 import { requireScopedSession } from "@/lib/queries/session";
 import type { Transaction } from "@/lib/types";
 
-function toClient(t: {
-  id: string;
-  companyId: string;
-  type: string;
-  amount: number;
-  category: string;
-  description: string;
-  date: Date;
-  addedBy: string;
-  addedByName: string;
-  createdAt: Date;
-}): Transaction {
+export type TransactionWithCount = Transaction & { commentCount: number };
+
+function toClient(
+  t: {
+    id: string;
+    companyId: string;
+    type: string;
+    amount: number;
+    category: string;
+    description: string;
+    date: Date;
+    addedBy: string;
+    addedByName: string;
+    createdAt: Date;
+  },
+  commentCount = 0
+): TransactionWithCount {
   return {
     id: t.id,
     companyId: t.companyId,
@@ -33,14 +38,16 @@ function toClient(t: {
     addedBy: t.addedBy,
     addedByName: t.addedByName,
     createdAt: t.createdAt.toISOString(),
+    commentCount,
   };
 }
 
-export async function getTransactions(): Promise<Transaction[]> {
+export async function getTransactions(): Promise<TransactionWithCount[]> {
   const { companyId } = await requireScopedSession();
   const rows = await db.transaction.findMany({
     where: { companyId },
     orderBy: { date: "desc" },
+    include: { _count: { select: { comments: true } } },
   });
-  return rows.map(toClient);
+  return rows.map((r) => toClient(r, r._count.comments));
 }

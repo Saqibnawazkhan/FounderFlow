@@ -50,6 +50,7 @@ model User {
   notifications  Notification[]
   recurringRules RecurringRule[]
   budgets        Budget[]
+  comments       Comment[]       @relation("CommentAuthor")
 
   @@index([companyId])
   @@index([email])
@@ -75,6 +76,7 @@ model Company {
   inviteTokens   InviteToken[]
   recurringRules RecurringRule[]
   budgets        Budget[]
+  comments       Comment[]
 }
 
 model Transaction {
@@ -96,8 +98,9 @@ model Transaction {
   ruleId String?
   rule   RecurringRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [addedBy], references: [id], onDelete: Cascade)
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user     User      @relation(fields: [addedBy], references: [id], onDelete: Cascade)
+  comments Comment[]
 
   @@index([companyId, date])
   @@index([companyId, type])
@@ -159,9 +162,10 @@ model Task {
   createdAt      DateTime  @default(now())
   completedAt    DateTime?
 
-  company  Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  assignee User    @relation("TaskAssignee", fields: [assignedTo], references: [id], onDelete: Cascade)
-  creator  User    @relation("TaskCreator", fields: [assignedBy], references: [id], onDelete: Cascade)
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  assignee User      @relation("TaskAssignee", fields: [assignedTo], references: [id], onDelete: Cascade)
+  creator  User      @relation("TaskCreator", fields: [assignedBy], references: [id], onDelete: Cascade)
+  comments Comment[]
 
   @@index([companyId, status])
   @@index([assignedTo])
@@ -256,4 +260,41 @@ model Budget {
   // conditional on `active` in Postgres without an expression index).
   @@index([companyId, active])
   @@index([companyId, category])
+}
+
+// Threaded discussion attached to either a Task or a Transaction (XOR —
+// exactly one of taskId / transactionId is non-null; enforced in the zod
+// schema and the createCommentAction). One model instead of two parallel
+// tables means a unified <CommentThread> component, one server action, and
+// one query path.
+//
+// @mentions: the action parses the raw body for @first-last tokens, looks
+// up matching company users, stores their IDs in `mentions` (JSON array)
+// for fast read-side highlighting, and fans out a Notification to each.
+// The author is never mentioned (no self-pings).
+model Comment {
+  id            String    @id @default(cuid())
+  companyId     String
+  body          String // raw text; UI parses @mentions client-side for display
+  authorId      String
+  authorName    String // denormalized — survives author rename
+  authorAvatar  String? // denormalized
+  taskId        String?
+  transactionId String?
+  // JSON array of resolved userIds — `["cuid1","cuid2"]`. Stored so the
+  // read path doesn't need to re-parse + DB-lookup every render. Empty
+  // array (not null) when no mentions; keeps the read shape predictable.
+  mentions      String    @default("[]")
+  createdAt     DateTime  @default(now())
+  editedAt      DateTime?
+
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  author      User         @relation("CommentAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  task        Task?        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, createdAt])
+  @@index([transactionId, createdAt])
+  @@index([companyId, createdAt])
+  @@index([authorId])
 }

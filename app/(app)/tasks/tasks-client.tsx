@@ -12,6 +12,7 @@ import {
   GripVertical,
   LayoutGrid,
   LayoutList,
+  MessageSquare,
   Plus,
   Trash2,
   type LucideIcon,
@@ -38,8 +39,10 @@ import { TaskForm } from "@/components/tasks/task-form";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PillBadge } from "@/components/landing/pill-badge";
+import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
 import { cn } from "@/lib/utils";
-import type { Task, TaskStatus, TaskPriority, User } from "@/lib/types";
+import type { TaskStatus, TaskPriority, User } from "@/lib/types";
+import type { TaskWithCount } from "@/lib/queries/tasks";
 
 interface Column {
   status: TaskStatus;
@@ -62,7 +65,7 @@ const PRIORITY_STYLES: Record<TaskPriority, string> = {
 };
 
 type Props = {
-  initialTasks: Task[];
+  initialTasks: TaskWithCount[];
   users: User[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
@@ -77,10 +80,15 @@ export function TasksClient({ initialTasks, users, currentUserId, currentUserRol
   // mutated in place for snappy DnD updates. router.refresh() in the parent
   // re-runs the server query and arrives back here as `initialTasks`; we
   // resync via the effect below.
-  const [tasks, setTasks] = useState<Task[]>(initialTasks);
+  const [tasks, setTasks] = useState<TaskWithCount[]>(initialTasks);
   useEffect(() => {
     setTasks(initialTasks);
   }, [initialTasks]);
+
+  // Active task whose comment thread is open. Null = drawer closed. Stays
+  // a reference to the original row so the modal title can show the title.
+  const [commentingTask, setCommentingTask] = useState<TaskWithCount | null>(null);
+  const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
 
   function refresh() {
     startTransition(() => router.refresh());
@@ -137,7 +145,7 @@ export function TasksClient({ initialTasks, users, currentUserId, currentUserRol
     useSensor(KeyboardSensor)
   );
 
-  const [draggingTask, setDraggingTask] = useState<Task | null>(null);
+  const [draggingTask, setDraggingTask] = useState<TaskWithCount | null>(null);
 
   function handleDragStart(e: DragStartEvent) {
     const t = tasks.find((x) => x.id === e.active.id);
@@ -244,6 +252,7 @@ export function TasksClient({ initialTasks, users, currentUserId, currentUserRol
                   tasks={grouped[col.status]}
                   onStatusChange={handleStatusChange}
                   onDelete={handleDelete}
+                  onOpenComments={setCommentingTask}
                   canDeleteTask={(task) =>
                     currentUserId === task.assignedBy || currentUserRole === "admin"
                   }
@@ -368,15 +377,36 @@ export function TasksClient({ initialTasks, users, currentUserId, currentUserRol
                         </span>
                       </td>
                       <td className="px-6 py-4 text-right">
-                        {(currentUserId === task.assignedBy || currentUserRole === "admin") && (
+                        <div className="inline-flex items-center gap-1">
                           <button
-                            onClick={() => handleDelete(task.id)}
-                            aria-label={`Delete task ${task.title}`}
-                            className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                            onClick={() => setCommentingTask(task)}
+                            aria-label={
+                              task.commentCount > 0
+                                ? `Open comments (${task.commentCount}) for ${task.title}`
+                                : `Add a comment to ${task.title}`
+                            }
+                            className={cn(
+                              "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors",
+                              task.commentCount > 0
+                                ? "text-cyan-strong hover:bg-cyan/10"
+                                : "text-fg-muted hover:bg-glass/[0.06] hover:text-fg"
+                            )}
                           >
-                            <Trash2 className="h-4 w-4" aria-hidden="true" />
+                            <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                            {task.commentCount > 0 && (
+                              <span className="font-mono font-bold">{task.commentCount}</span>
+                            )}
                           </button>
-                        )}
+                          {(currentUserId === task.assignedBy || currentUserRole === "admin") && (
+                            <button
+                              onClick={() => handleDelete(task.id)}
+                              aria-label={`Delete task ${task.title}`}
+                              className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                            >
+                              <Trash2 className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -401,6 +431,20 @@ export function TasksClient({ initialTasks, users, currentUserId, currentUserRol
           onSuccess={refresh}
         />
       </Modal>
+
+      {commentingTask && (
+        <CommentThreadModal
+          open={Boolean(commentingTask)}
+          onClose={() => setCommentingTask(null)}
+          target={{ taskId: commentingTask.id }}
+          title={`Comments · ${commentingTask.title}`}
+          description={`@-mention a teammate to notify them`}
+          currentUserId={currentUserId}
+          currentUserRole={currentUserRole}
+          companyUsers={mentionUsers}
+          onChanged={refresh}
+        />
+      )}
     </div>
   );
 }
@@ -461,14 +505,16 @@ function DroppableColumn({
   tasks,
   onStatusChange,
   onDelete,
+  onOpenComments,
   canDeleteTask,
   isDragActive,
 }: {
   column: Column;
-  tasks: Task[];
+  tasks: TaskWithCount[];
   onStatusChange: (id: string, status: TaskStatus) => void;
   onDelete: (id: string) => void;
-  canDeleteTask: (task: Task) => boolean;
+  onOpenComments: (task: TaskWithCount) => void;
+  canDeleteTask: (task: TaskWithCount) => boolean;
   isDragActive: boolean;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: column.status });
@@ -522,6 +568,7 @@ function DroppableColumn({
               task={task}
               onStatusChange={onStatusChange}
               onDelete={onDelete}
+              onOpenComments={onOpenComments}
               canDelete={canDeleteTask(task)}
             />
           ))
@@ -539,12 +586,14 @@ function TaskCard({
   task,
   onStatusChange,
   onDelete,
+  onOpenComments,
   canDelete,
   isDragging: isOverlay = false,
 }: {
-  task: Task;
+  task: TaskWithCount;
   onStatusChange: (id: string, status: TaskStatus) => void;
   onDelete: (id: string) => void;
+  onOpenComments?: (task: TaskWithCount) => void;
   canDelete: boolean;
   isDragging?: boolean;
 }) {
@@ -639,20 +688,45 @@ function TaskCard({
           <Avatar name={task.assignedToName} size="xs" />
           <span className="text-xs text-fg-muted">{task.assignedToName.split(" ")[0]}</span>
         </div>
-        <label htmlFor={`board-status-${task.id}`} className="sr-only">
-          Status of {task.title}
-        </label>
-        <select
-          id={`board-status-${task.id}`}
-          value={task.status}
-          onChange={(e) => onStatusChange(task.id, e.target.value as TaskStatus)}
-          onClick={(e) => e.stopPropagation()}
-          className="cursor-pointer rounded-md border border-border bg-bg px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg focus:border-primary/50 focus:outline-none"
-        >
-          <option value="pending">Pending</option>
-          <option value="in_progress">In progress</option>
-          <option value="completed">Completed</option>
-        </select>
+        <div className="flex items-center gap-1.5">
+          {onOpenComments && !isOverlay && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenComments(task);
+              }}
+              aria-label={
+                task.commentCount > 0
+                  ? `Open comments (${task.commentCount}) for ${task.title}`
+                  : `Add a comment to ${task.title}`
+              }
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md border px-1.5 py-1 text-[10px] font-bold transition-colors",
+                task.commentCount > 0
+                  ? "border-cyan/30 bg-cyan/10 text-cyan-strong hover:bg-cyan/15"
+                  : "border-border text-fg-muted hover:bg-glass/[0.06] hover:text-fg"
+              )}
+            >
+              <MessageSquare className="h-3 w-3" aria-hidden="true" />
+              {task.commentCount > 0 && <span className="font-mono">{task.commentCount}</span>}
+            </button>
+          )}
+          <label htmlFor={`board-status-${task.id}`} className="sr-only">
+            Status of {task.title}
+          </label>
+          <select
+            id={`board-status-${task.id}`}
+            value={task.status}
+            onChange={(e) => onStatusChange(task.id, e.target.value as TaskStatus)}
+            onClick={(e) => e.stopPropagation()}
+            className="cursor-pointer rounded-md border border-border bg-bg px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg focus:border-primary/50 focus:outline-none"
+          >
+            <option value="pending">Pending</option>
+            <option value="in_progress">In progress</option>
+            <option value="completed">Completed</option>
+          </select>
+        </div>
       </div>
     </div>
   );

@@ -6,6 +6,7 @@
 
 import type { Metadata } from "next";
 import { getTransactions } from "@/lib/queries/transactions";
+import { getCompanyUsers } from "@/lib/queries/users";
 import { requireScopedSession } from "@/lib/queries/session";
 import { ExpensesClient } from "./expenses-client";
 
@@ -15,11 +16,16 @@ export const metadata: Metadata = {
 };
 
 export default async function ExpensesPage() {
-  const [session, transactions] = await Promise.all([requireScopedSession(), getTransactions()]);
+  const [session, transactions, users] = await Promise.all([
+    requireScopedSession(),
+    getTransactions(),
+    getCompanyUsers(),
+  ]);
 
   return (
     <ExpensesClient
       transactions={transactions}
+      users={users}
       currentUserId={session.userId}
       currentUserRole={session.role}
     />

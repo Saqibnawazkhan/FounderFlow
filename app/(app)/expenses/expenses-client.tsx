@@ -7,6 +7,7 @@ import {
   ArrowDown,
   Calculator,
   Filter,
+  MessageSquare,
   Plus,
   Search,
   Trash2,
@@ -23,8 +24,10 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatCurrency, formatDate } from "@/lib/utils";
-import { EXPENSE_CATEGORIES, type Transaction } from "@/lib/types";
+import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
+import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { EXPENSE_CATEGORIES, type User } from "@/lib/types";
+import type { TransactionWithCount } from "@/lib/queries/transactions";
 
 // Recharts is ~200KB. Lazy-load to keep /expenses initial bundle lean.
 const CategoryBreakdownBar = dynamic(
@@ -34,15 +37,20 @@ const CategoryBreakdownBar = dynamic(
 
 type Props = {
   /** All company transactions — we filter to expenses inside. */
-  transactions: Transaction[];
+  transactions: TransactionWithCount[];
+  users: User[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
 };
 
-export function ExpensesClient({ transactions, currentUserId, currentUserRole }: Props) {
+export function ExpensesClient({ transactions, users, currentUserId, currentUserRole }: Props) {
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
+
+  // Active transaction whose comment thread is open (null = closed).
+  const [commentingTxn, setCommentingTxn] = useState<TransactionWithCount | null>(null);
+  const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
 
   const expenses = useMemo(() => transactions.filter((t) => t.type === "expense"), [transactions]);
 
@@ -317,15 +325,36 @@ export function ExpensesClient({ transactions, currentUserId, currentUserRole }:
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      {(currentUserId === t.addedBy || currentUserRole === "admin") && (
+                      <div className="inline-flex items-center gap-1">
                         <button
-                          onClick={() => handleDelete(t.id)}
-                          aria-label={`Delete expense ${t.description}`}
-                          className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                          onClick={() => setCommentingTxn(t)}
+                          aria-label={
+                            t.commentCount > 0
+                              ? `Open comments (${t.commentCount}) for ${t.description}`
+                              : `Add a comment to ${t.description}`
+                          }
+                          className={cn(
+                            "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors",
+                            t.commentCount > 0
+                              ? "text-cyan-strong hover:bg-cyan/10"
+                              : "text-fg-muted hover:bg-glass/[0.06] hover:text-fg"
+                          )}
                         >
-                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                          {t.commentCount > 0 && (
+                            <span className="font-mono font-bold">{t.commentCount}</span>
+                          )}
                         </button>
-                      )}
+                        {(currentUserId === t.addedBy || currentUserRole === "admin") && (
+                          <button
+                            onClick={() => handleDelete(t.id)}
+                            aria-label={`Delete expense ${t.description}`}
+                            className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                          >
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -343,6 +372,20 @@ export function ExpensesClient({ transactions, currentUserId, currentUserRole }:
       >
         <TransactionForm type="expense" onClose={() => setModalOpen(false)} onSuccess={refresh} />
       </Modal>
+
+      {commentingTxn && (
+        <CommentThreadModal
+          open={Boolean(commentingTxn)}
+          onClose={() => setCommentingTxn(null)}
+          target={{ transactionId: commentingTxn.id }}
+          title={`Comments · ${commentingTxn.description}`}
+          description={`${formatCurrency(commentingTxn.amount)} — ${commentingTxn.category}`}
+          currentUserId={currentUserId}
+          currentUserRole={currentUserRole}
+          companyUsers={mentionUsers}
+          onChanged={refresh}
+        />
+      )}
     </div>
   );
 }
