@@ -31,6 +31,7 @@
     "@hookform/resolvers": "^5.4.0",
     "@prisma/client": "^6.19.3",
     "@radix-ui/react-dialog": "^1.1.15",
+    "@sentry/nextjs": "^10.53.1",
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
     "date-fns": "^3.6.0",

@@ -22,6 +22,7 @@ import { db } from "@/lib/db";
 import { LoginSchema, SignupSchema } from "@/lib/schemas/auth";
 import { limiters } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
+import { captureServerError } from "@/lib/sentry-server";
 
 export type ActionResult = { success: boolean; error?: string };
 
@@ -96,8 +97,8 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
   } catch (e) {
     // Catch-all so the client never sees an unhandled rejection (which would
     // hang the loading spinner). Prisma connection failures, missing env vars,
-    // etc. all funnel through here.
-    console.error("signupAction failed:", e);
+    // etc. all funnel through here. Sentry captures the full stack with tags.
+    captureServerError(e, { action: "signupAction" });
     return {
       success: false,
       error: "Couldn't create your account right now. The team has been notified.",
@@ -127,7 +128,7 @@ export async function loginAction(input: unknown): Promise<ActionResult> {
     if (e instanceof AuthError) {
       return { success: false, error: "Invalid email or password" };
     }
-    console.error("loginAction failed:", e);
+    captureServerError(e, { action: "loginAction" });
     return { success: false, error: "Couldn't sign you in right now. Try again." };
   }
 }

@@ -22,6 +22,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { InviteUserSchema, UpdateRoleSchema } from "@/lib/schemas/user";
 import { limiters } from "@/lib/rate-limit";
+import { captureServerError } from "@/lib/sentry-server";
 import type { User } from "@/lib/types";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
@@ -148,7 +149,7 @@ export async function inviteUserAction(input: unknown): Promise<ActionResult<Use
 
     return { success: true, data: toClient(created) };
   } catch (e) {
-    console.error("inviteUserAction failed:", e);
+    captureServerError(e, { action: "inviteUserAction" });
     return {
       success: false,
       error: "Couldn't invite right now. Try again in a moment.",
@@ -232,7 +233,7 @@ export async function updateUserRoleAction(input: unknown): Promise<ActionResult
 
     return { success: true, data: undefined };
   } catch (e) {
-    console.error("updateUserRoleAction failed:", e);
+    captureServerError(e, { action: "updateUserRoleAction" });
     return { success: false, error: "Couldn't change role right now." };
   }
 }
@@ -307,7 +308,7 @@ export async function removeUserAction(userId: string): Promise<ActionResult> {
 
     return { success: true, data: undefined };
   } catch (e) {
-    console.error("removeUserAction failed:", e);
+    captureServerError(e, { action: "removeUserAction" });
     return { success: false, error: "Couldn't remove right now." };
   }
 }

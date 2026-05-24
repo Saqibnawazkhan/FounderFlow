@@ -55,4 +55,27 @@ const withBundleAnalyzer = require("@next/bundle-analyzer")({
   enabled: process.env.ANALYZE === "true",
 });
 
-module.exports = withBundleAnalyzer(nextConfig);
+// Wrap with @sentry/nextjs only when source-map upload is configured
+// (SENTRY_AUTH_TOKEN + SENTRY_ORG + SENTRY_PROJECT). Without that the
+// runtime SDK still works fine — errors report with minified stacks until
+// upload is set up. The wrapper is a no-op without DSN, so unconfigured
+// builds behave identically to having no Sentry installed.
+const { withSentryConfig } = require("@sentry/nextjs");
+
+const sentryEnabled = !!process.env.SENTRY_DSN && !!process.env.SENTRY_AUTH_TOKEN;
+
+const finalConfig = withBundleAnalyzer(nextConfig);
+
+module.exports = sentryEnabled
+  ? withSentryConfig(finalConfig, {
+      org: process.env.SENTRY_ORG,
+      project: process.env.SENTRY_PROJECT,
+      authToken: process.env.SENTRY_AUTH_TOKEN,
+      silent: !process.env.CI,
+      widenClientFileUpload: true,
+      tunnelRoute: "/monitoring",
+      hideSourceMaps: true,
+      disableLogger: true,
+      automaticVercelMonitors: false,
+    })
+  : finalConfig;

@@ -9,6 +9,7 @@
  */
 
 import { useEffect, useState } from "react";
+import * as Sentry from "@sentry/nextjs";
 
 export default function GlobalError({
   error,
@@ -21,6 +22,11 @@ export default function GlobalError({
 
   useEffect(() => {
     console.error("global error:", error);
+    // Root-layout crash — most urgent class of error. SDK no-ops without DSN.
+    Sentry.captureException(error, {
+      tags: { boundary: "global", severity: "fatal" },
+      extra: { digest: error.digest },
+    });
   }, [error]);
 
   return (

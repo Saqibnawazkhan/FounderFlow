@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, RefreshCcw } from "lucide-react";
+import * as Sentry from "@sentry/nextjs";
 
 export default function AppError({
   error,
@@ -24,6 +25,12 @@ export default function AppError({
   useEffect(() => {
     // Send to server logs so we can read it in Vercel even without DevTools.
     console.error("(app) route error:", error);
+    // Report to Sentry. The SDK no-ops if SENTRY_DSN isn't set so this is
+    // safe to call unconditionally.
+    Sentry.captureException(error, {
+      tags: { boundary: "app-route" },
+      extra: { digest: error.digest },
+    });
   }, [error]);
 
   return (
