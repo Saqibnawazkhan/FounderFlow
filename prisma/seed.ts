@@ -3,7 +3,22 @@
  * to render on first run. Mirrors lib/seed.ts but writes through Prisma with
  * bcrypt-hashed passwords (audit flaw #1 — never store plaintext).
  *
- * Run: npx prisma db seed   (configured in package.json under "prisma.seed")
+ * Run: `SEED_RESET=true npx prisma db seed` (or `npm run db:seed:local`).
+ *
+ * SAFETY (Tier 1 — see CLAUDE.md):
+ *   1. The script refuses to run unless `SEED_RESET=true` is set. This stops
+ *      `prisma migrate reset` (which auto-fires the seed) and any IDE
+ *      mis-click from silently nuking data.
+ *   2. If `DATABASE_URL` looks like a Supabase pooler URL (i.e. production),
+ *      the script refuses even with SEED_RESET unless
+ *      `SEED_RESET_ALLOW_PROD=true` is ALSO set. Two-key launch.
+ *   3. Every deleteMany() is scoped to `DEMO_COMPANY_ID`. Real signup users
+ *      live under different companyIds and are mathematically out of reach
+ *      even if 1 + 2 are bypassed.
+ *
+ * Why all three: defense in depth. Past incident — running this script
+ * against a `.env` pointed at production wiped a live signup's account.
+ * Not happening again.
  */
 
 import bcrypt from "bcryptjs";
@@ -11,24 +26,75 @@ import { PrismaClient } from "@prisma/client";
 
 const db = new PrismaClient();
 
+// All demo rows live under this single companyId. Every wipe + create
+// references it, so the seed script's blast radius is exactly one
+// workspace. A real signup gets a cuid companyId, never this one.
+const DEMO_COMPANY_ID = "demo-nimbus";
+
+function guardOrExit(): void {
+  const dbUrl = process.env.DATABASE_URL ?? "";
+  // Supabase URLs include "supabase.co" (legacy) or "supabase.com" and the
+  // pooler subdomain "pooler.supabase". Match any of them. False positives
+  // here are intentional — better to refuse on a paranoid match than wipe
+  // a prod connection that uses an exotic hostname.
+  const looksLikeProd = /supabase\.(com|co)/i.test(dbUrl) || /pooler\.supabase/i.test(dbUrl);
+
+  if (process.env.SEED_RESET !== "true") {
+    console.error("\n  ✗ Seed refused — SEED_RESET is not set to 'true'.\n");
+    console.error("  This script wipes every row in the demo workspace and re-creates");
+    console.error("  it from scratch. That's destructive. Run it deliberately:\n");
+    console.error("    SEED_RESET=true npx prisma db seed");
+    console.error("    # or");
+    console.error("    npm run db:seed:local\n");
+    process.exit(1);
+  }
+
+  if (looksLikeProd && process.env.SEED_RESET_ALLOW_PROD !== "true") {
+    console.error("\n  ✗ Seed refused — DATABASE_URL looks like a production Supabase URL.\n");
+    console.error(`  URL: ${dbUrl.replace(/:[^:@]+@/, ":****@")}`);
+    console.error("\n  Running the seed here would delete demo-workspace rows in production.");
+    console.error("  If you ABSOLUTELY mean to do that, set BOTH:");
+    console.error("    SEED_RESET=true");
+    console.error("    SEED_RESET_ALLOW_PROD=true");
+    console.error("\n  This guard exists because a previous accident wiped a real");
+    console.error("  signup's data. Don't bypass without a runbook.\n");
+    process.exit(1);
+  }
+
+  if (looksLikeProd) {
+    console.warn(
+      "\n  ⚠ WARNING: seeding against what looks like a PRODUCTION database.\n" +
+        "  Only the demo workspace (companyId=" +
+        DEMO_COMPANY_ID +
+        ") will be touched.\n"
+    );
+  }
+}
+
 async function main() {
+  guardOrExit();
   console.log("Seeding database…");
 
-  // Wipe in dependency order so re-running the seed is idempotent.
-  await db.comment.deleteMany();
-  await db.timeEntry.deleteMany();
-  await db.notification.deleteMany();
-  await db.activity.deleteMany();
-  await db.task.deleteMany();
-  await db.budget.deleteMany();
-  await db.recurringRule.deleteMany();
-  await db.transaction.deleteMany();
-  await db.inviteToken.deleteMany();
+  // Wipe ONLY the demo workspace. Scoping by companyId means a real signup's
+  // company + every row they own is untouchable even if someone bypasses
+  // the env guard above. Order matters for FKs; same dependency order as
+  // before but each delete is filtered.
+  const demoScope = { where: { companyId: DEMO_COMPANY_ID } };
+  await db.comment.deleteMany(demoScope);
+  await db.timeEntry.deleteMany(demoScope);
+  await db.notification.deleteMany(demoScope);
+  await db.activity.deleteMany(demoScope);
+  await db.task.deleteMany(demoScope);
+  await db.budget.deleteMany(demoScope);
+  await db.recurringRule.deleteMany(demoScope);
+  await db.transaction.deleteMany(demoScope);
+  await db.inviteToken.deleteMany(demoScope);
   // Drop projects BEFORE users, since Project.supervisorId references User.
-  await db.project.deleteMany();
-  // Break the User -> Company FK before deleting either.
-  await db.user.deleteMany();
-  await db.company.deleteMany();
+  await db.project.deleteMany(demoScope);
+  // User has companyId required, so the scoped filter works the same way.
+  await db.user.deleteMany(demoScope);
+  // Company is the root — wipe by id, not companyId.
+  await db.company.deleteMany({ where: { id: DEMO_COMPANY_ID } });
 
   const hash = (pw: string) => bcrypt.hashSync(pw, 12);
 
@@ -40,7 +106,7 @@ async function main() {
   const ahmedId = "demo-ahmed";
   const fatimaId = "demo-fatima";
   const sarahId = "demo-sarah";
-  const companyId = "demo-nimbus";
+  const companyId = DEMO_COMPANY_ID;
 
   // Two-step to break the User <-> Company circular FK:
   //   1. Create the company (ownerId is nullable, so this is fine)
