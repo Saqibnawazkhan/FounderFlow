@@ -67,7 +67,34 @@ const withBundleAnalyzer = require("@next/bundle-analyzer")({
 // builds behave identically to having no Sentry installed.
 const { withSentryConfig } = require("@sentry/nextjs");
 
-const sentryEnabled = !!process.env.SENTRY_DSN && !!process.env.SENTRY_AUTH_TOKEN;
+// Sentry needs FOUR env vars to upload source maps:
+//   SENTRY_DSN (always required to emit events at runtime)
+//   SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT (required for upload)
+//
+// Previously we only checked DSN + AUTH_TOKEN. With a partial config
+// (org missing, or project missing) the wrapper silently no-ops the upload
+// step at build time and prod errors come back with minified stacks
+// forever. Throw early so a misconfig surfaces during `next build`.
+const hasSentryRuntime = !!process.env.SENTRY_DSN;
+const hasSentryUpload =
+  !!process.env.SENTRY_AUTH_TOKEN && !!process.env.SENTRY_ORG && !!process.env.SENTRY_PROJECT;
+const partialUpload =
+  !!process.env.SENTRY_AUTH_TOKEN || !!process.env.SENTRY_ORG || !!process.env.SENTRY_PROJECT;
+
+if (partialUpload && !hasSentryUpload) {
+  throw new Error(
+    "Sentry source-map upload is partially configured. Set ALL of " +
+      "SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT — or unset them all. " +
+      "Got: " +
+      JSON.stringify({
+        SENTRY_AUTH_TOKEN: !!process.env.SENTRY_AUTH_TOKEN,
+        SENTRY_ORG: !!process.env.SENTRY_ORG,
+        SENTRY_PROJECT: !!process.env.SENTRY_PROJECT,
+      })
+  );
+}
+
+const sentryEnabled = hasSentryRuntime && hasSentryUpload;
 
 const finalConfig = withBundleAnalyzer(nextConfig);
 

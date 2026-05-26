@@ -110,7 +110,17 @@ export function ClockWidget() {
       }
     }
     const onVis = () => {
-      if (typeof document !== "undefined" && !document.hidden) beat();
+      if (typeof document !== "undefined" && !document.hidden) {
+        // Two things happen on tab re-focus:
+        //   1. Send a heartbeat so lastActivityAt catches up
+        //   2. Force a now() update so the running pill repaints with the
+        //      real elapsed time. Without #2 the ticker's `now` is up to
+        //      60s stale (we throttle to 60s tick while the tab's hidden),
+        //      so the pill displays a stale duration for a second or two
+        //      after re-focus until the next tick rolls.
+        beat();
+        setNow(new Date());
+      }
     };
 
     const id = window.setInterval(beat, HEARTBEAT_MS);

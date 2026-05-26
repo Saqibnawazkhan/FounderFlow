@@ -81,8 +81,19 @@ export function CommentThread({
       return;
     }
     setBody("");
-    if (result.data.mentionedUserIds.length > 0) {
-      toast.success(`Posted — pinged ${result.data.mentionedUserIds.length} teammate(s)`);
+    // Honest count: notifiedCount comes from the actual createMany result,
+    // so if the fan-out threw, we don't overstate. mentionedUserIds is the
+    // PARSED list — useful to know "we tried", but the user wants to know
+    // who got the ping.
+    const { notifiedCount, mentionedUserIds } = result.data;
+    if (notifiedCount > 0) {
+      toast.success(`Posted — pinged ${notifiedCount} teammate(s)`);
+    } else if (mentionedUserIds.length > 0) {
+      // Parsed mentions but no notifications landed → fan-out failed.
+      toast(
+        `Posted — couldn't send mention pings (${mentionedUserIds.length} attempted). The team has been notified.`,
+        { icon: "⚠️" }
+      );
     } else {
       toast.success("Comment posted");
     }

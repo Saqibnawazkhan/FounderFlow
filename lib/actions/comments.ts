@@ -32,9 +32,17 @@ import {
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
 
-export async function createCommentAction(
-  input: unknown
-): Promise<ActionResult<{ id: string; mentionedUserIds: string[] }>> {
+export async function createCommentAction(input: unknown): Promise<
+  ActionResult<{
+    id: string;
+    /** IDs the parser RESOLVED from the body — useful for the UI to know
+     *  "we tried to ping these people." */
+    mentionedUserIds: string[];
+    /** IDs the createMany ACTUALLY notified. Differs from mentionedUserIds
+     *  when the fan-out throws — the UI uses this for the honest toast. */
+    notifiedCount: number;
+  }>
+> {
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
@@ -103,12 +111,16 @@ export async function createCommentAction(
 
     // Fan out notifications OUTSIDE the comment write. If this throws we
     // log + swallow rather than rolling back the comment — a missing
-    // notification is recoverable, a missing comment is not.
+    // notification is recoverable, a missing comment is not. We track the
+    // ACTUAL `notifiedCount` so the UI toast can say "pinged 3 teammates"
+    // honestly (previously it reported the parsed mention count even
+    // when the createMany threw — silent overstatement).
+    let notifiedCount = 0;
     if (mentionedUserIds.length > 0) {
       const link = taskId ? `/tasks?comment=${created.id}` : `/expenses?comment=${created.id}`;
       const truncated = body.length > 140 ? body.slice(0, 137) + "…" : body;
       try {
-        await db.notification.createMany({
+        const { count } = await db.notification.createMany({
           data: mentionedUserIds.map((toUserId) => ({
             userId: toUserId,
             companyId,
@@ -118,15 +130,24 @@ export async function createCommentAction(
             link,
           })),
         });
+        notifiedCount = count;
       } catch (notifyErr) {
-        captureServerError(notifyErr, { action: "createCommentAction.fanout" });
+        captureServerError(notifyErr, {
+          action: "createCommentAction.fanout",
+          companyId,
+          userId,
+          extra: { commentId: created.id, attempted: mentionedUserIds.length },
+        });
       }
     }
 
     if (taskId) revalidatePath("/tasks");
     else revalidatePath("/expenses");
 
-    return { success: true, data: { id: created.id, mentionedUserIds } };
+    return {
+      success: true,
+      data: { id: created.id, mentionedUserIds, notifiedCount },
+    };
   } catch (e) {
     captureServerError(e, { action: "createCommentAction" });
     return { success: false, error: "Couldn't post the comment right now." };
