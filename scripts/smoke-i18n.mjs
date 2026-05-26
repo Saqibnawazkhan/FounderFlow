@@ -16,8 +16,7 @@ import puppeteer from "puppeteer-core";
 
 const BASE = process.env.SMOKE_BASE_URL || "http://localhost:3000";
 const CHROME =
-  process.env.PUPPETEER_EXECUTABLE_PATH ||
-  "C:/Program Files/Google/Chrome/Application/chrome.exe";
+  process.env.PUPPETEER_EXECUTABLE_PATH || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 
 function ok(label) {
   console.log(`  ok  ${label}`);

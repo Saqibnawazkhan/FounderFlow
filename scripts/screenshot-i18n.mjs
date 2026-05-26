@@ -8,8 +8,7 @@ import { mkdir } from "node:fs/promises";
 
 const BASE = process.env.SMOKE_BASE_URL || "http://localhost:3000";
 const CHROME =
-  process.env.PUPPETEER_EXECUTABLE_PATH ||
-  "C:/Program Files/Google/Chrome/Application/chrome.exe";
+  process.env.PUPPETEER_EXECUTABLE_PATH || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 
 async function main() {
   await mkdir("artifacts", { recursive: true });

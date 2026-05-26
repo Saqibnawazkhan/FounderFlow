@@ -1,12 +1,5 @@
 import { v4 as uuid } from "uuid";
-import type {
-  User,
-  Company,
-  Transaction,
-  Task,
-  Activity,
-  Notification,
-} from "./types";
+import type { User, Company, Transaction, Task, Activity, Notification } from "./types";
 import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES } from "./types";
 
 export function seedData() {
@@ -435,7 +428,7 @@ export function seedData() {
       id: uuid(),
       companyId,
       type: "company_created",
-      message: "Saqib Nawaz created the company \"Nimbus Labs\"",
+      message: 'Saqib Nawaz created the company "Nimbus Labs"',
       userId: saqibId,
       userName: "Saqib Nawaz",
       createdAt: daysAgo(90),
@@ -471,7 +464,7 @@ export function seedData() {
       id: uuid(),
       companyId,
       type: "task_completed",
-      message: "Ahmed Khan completed \"Setup CI/CD pipeline\"",
+      message: 'Ahmed Khan completed "Setup CI/CD pipeline"',
       userId: ahmedId,
       userName: "Ahmed Khan",
       createdAt: daysAgo(2),
@@ -489,7 +482,7 @@ export function seedData() {
       id: uuid(),
       companyId,
       type: "task_assigned",
-      message: "Saqib Nawaz assigned \"Finalize Q3 product roadmap\" to Ali Raza",
+      message: 'Saqib Nawaz assigned "Finalize Q3 product roadmap" to Ali Raza',
       userId: saqibId,
       userName: "Saqib Nawaz",
       createdAt: daysAgo(5),
@@ -516,7 +509,7 @@ export function seedData() {
       id: uuid(),
       companyId,
       type: "task_assigned",
-      message: "Ali Raza assigned \"Design new landing page\" to Sarah Malik",
+      message: 'Ali Raza assigned "Design new landing page" to Sarah Malik',
       userId: aliId,
       userName: "Ali Raza",
       createdAt: daysAgo(3),
@@ -529,7 +522,7 @@ export function seedData() {
       userId: saqibId,
       companyId,
       title: "Task Completed",
-      message: "Ahmed Khan completed \"Setup CI/CD pipeline\"",
+      message: 'Ahmed Khan completed "Setup CI/CD pipeline"',
       type: "success",
       read: false,
       link: "/tasks",

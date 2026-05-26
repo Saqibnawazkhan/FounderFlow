@@ -17,8 +17,14 @@ jobs:
           node-version: "20"
           cache: "npm"
 
+      # `npm install` (not `npm ci`) tolerates the known npm bug where
+      # optional + cpu-mismatched packages (e.g. @rolldown/binding-wasm32-wasi)
+      # reference transitive deps like @emnapi/core@1.10.0 but the lock file
+      # omits the corresponding package entry — `npm ci` fails strict
+      # validation, `npm install` reconciles silently. `--no-audit --no-fund`
+      # keeps the log clean.
       - name: Install dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Type check
         run: npm run typecheck

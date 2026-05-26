@@ -84,17 +84,13 @@ for (const path of ROUTES) {
   await new Promise((r) => setTimeout(r, 250));
   let skeletonCount = 0;
   try {
-    skeletonCount = await page.evaluate(
-      () => document.querySelectorAll(".animate-pulse").length
-    );
+    skeletonCount = await page.evaluate(() => document.querySelectorAll(".animate-pulse").length);
   } catch {
     // Execution context destroyed mid-probe means navigation completed; treat
     // as another sample opportunity.
     await new Promise((r) => setTimeout(r, 200));
     try {
-      skeletonCount = await page.evaluate(
-        () => document.querySelectorAll(".animate-pulse").length
-      );
+      skeletonCount = await page.evaluate(() => document.querySelectorAll(".animate-pulse").length);
     } catch {
       /* swallow */
     }
@@ -103,8 +99,7 @@ for (const path of ROUTES) {
   await page
     .waitForFunction(
       () =>
-        document.querySelectorAll(".animate-pulse").length === 0 &&
-        !!document.querySelector("h1"),
+        document.querySelectorAll(".animate-pulse").length === 0 && !!document.querySelector("h1"),
       { timeout: 15_000 }
     )
     .catch(() => {});

@@ -16,8 +16,7 @@ import puppeteer from "puppeteer-core";
 
 const BASE = process.env.SMOKE_BASE_URL || "http://localhost:3000";
 const CHROME =
-  process.env.PUPPETEER_EXECUTABLE_PATH ||
-  "C:/Program Files/Google/Chrome/Application/chrome.exe";
+  process.env.PUPPETEER_EXECUTABLE_PATH || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 
 const BLOCKED = [
   "/dashboard",
@@ -52,9 +51,7 @@ async function signIn(page, email, password) {
     timeout: 15000,
   });
   // Let the redirect chain settle (admin → /dashboard, member → /tasks).
-  await page
-    .waitForNavigation({ waitUntil: "networkidle0", timeout: 5000 })
-    .catch(() => {});
+  await page.waitForNavigation({ waitUntil: "networkidle0", timeout: 5000 }).catch(() => {});
 }
 
 async function main() {
@@ -110,18 +107,11 @@ async function main() {
     links
       .map((a) => a.getAttribute("href") || "")
       .filter((h) =>
-        /^\/(expenses|investments|budgets|recurring|reports|dashboard|activities)/.test(
-          h
-        )
+        /^\/(expenses|investments|budgets|recurring|reports|dashboard|activities)/.test(h)
       )
   );
-  if (sarahFinanceHrefs.length === 0)
-    ok("notifications: no finance hrefs visible");
-  else
-    fail(
-      "notifications leak",
-      `finance hrefs: ${JSON.stringify(sarahFinanceHrefs)}`
-    );
+  if (sarahFinanceHrefs.length === 0) ok("notifications: no finance hrefs visible");
+  else fail("notifications leak", `finance hrefs: ${JSON.stringify(sarahFinanceHrefs)}`);
 
   await sarah.close();
   await sarahCtx.close();

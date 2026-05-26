@@ -23,7 +23,7 @@ export function Avatar({ name, size = "md", className }: AvatarProps) {
   return (
     <div
       className={cn(
-        "rounded-full bg-gradient-to-br text-white font-semibold flex items-center justify-center shrink-0 ring-2 ring-white dark:ring-slate-900",
+        "flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br font-semibold text-white ring-2 ring-white dark:ring-slate-900",
         color,
         sizeMap[size],
         className
@@ -35,19 +35,32 @@ export function Avatar({ name, size = "md", className }: AvatarProps) {
   );
 }
 
-export function AvatarGroup({ names, max = 4, size = "sm" }: { names: string[]; max?: number; size?: AvatarProps["size"] }) {
+export function AvatarGroup({
+  names,
+  max = 4,
+  size = "sm",
+}: {
+  names: string[];
+  max?: number;
+  size?: AvatarProps["size"];
+}) {
   const visible = names.slice(0, max);
   const remaining = names.length - max;
 
   return (
     <div className="flex -space-x-2">
       {visible.map((name, i) => (
-        <Avatar key={`${name}-${i}`} name={name} size={size} className="ring-2 ring-white dark:ring-slate-900" />
+        <Avatar
+          key={`${name}-${i}`}
+          name={name}
+          size={size}
+          className="ring-2 ring-white dark:ring-slate-900"
+        />
       ))}
       {remaining > 0 && (
         <div
           className={cn(
-            "rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 font-semibold flex items-center justify-center ring-2 ring-white dark:ring-slate-900",
+            "flex items-center justify-center rounded-full bg-slate-200 font-semibold text-slate-700 ring-2 ring-white dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-900",
             sizeMap[size!]
           )}
         >

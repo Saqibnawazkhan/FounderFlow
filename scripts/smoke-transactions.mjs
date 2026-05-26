@@ -91,9 +91,7 @@ await page.evaluate(() => {
 await new Promise((r) => setTimeout(r, 3000));
 
 // --- 4. verify in the UI: count after in-place refresh ---
-const rowsAfterInPlace = await page.evaluate(
-  () => document.querySelectorAll("tbody tr").length
-);
+const rowsAfterInPlace = await page.evaluate(() => document.querySelectorAll("tbody tr").length);
 console.log(`/expenses rows (in-place refresh): ${rowsAfterInPlace}`);
 await page.screenshot({ path: `${OUT}/txn-03-after-in-place.png` });
 
@@ -106,9 +104,7 @@ await page
     timeout: 8000,
   })
   .catch(() => {});
-const rowsAfterReload = await page.evaluate(
-  () => document.querySelectorAll("tbody tr").length
-);
+const rowsAfterReload = await page.evaluate(() => document.querySelectorAll("tbody tr").length);
 console.log(`/expenses rows (hard reload):     ${rowsAfterReload}`);
 await page.screenshot({ path: `${OUT}/txn-04-after-reload.png` });
 const rowsAfter = rowsAfterReload;
@@ -117,7 +113,9 @@ const rowsAfter = rowsAfterReload;
 const afterDb = await db.transaction.count();
 console.log(`DB rows after:  ${afterDb}`);
 const latest = await db.transaction.findFirst({ orderBy: { createdAt: "desc" } });
-console.log(`latest DB row: ${latest ? `${latest.type} ${latest.amount} "${latest.description}"` : "none"}`);
+console.log(
+  `latest DB row: ${latest ? `${latest.type} ${latest.amount} "${latest.description}"` : "none"}`
+);
 
 console.log(
   rowsAfter === rowsBefore + 1 && afterDb === beforeDb + 1

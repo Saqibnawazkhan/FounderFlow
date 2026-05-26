@@ -46,14 +46,9 @@ await page.goto(`${BASE}/tasks`, { waitUntil: "domcontentloaded" });
 // Wait for at least one task card to render (kanban view default). Bumped to
 // 20s — dev-mode RSC + Supabase cold start can run long.
 await page
-  .waitForFunction(
-    () => document.querySelectorAll("h4, tbody tr").length > 0,
-    { timeout: 20_000 }
-  )
+  .waitForFunction(() => document.querySelectorAll("h4, tbody tr").length > 0, { timeout: 20_000 })
   .catch(() => {});
-const cardsBefore = await page.evaluate(
-  () => document.querySelectorAll("h4").length
-);
+const cardsBefore = await page.evaluate(() => document.querySelectorAll("h4").length);
 console.log(`/tasks visible card titles before: ${cardsBefore}`);
 await page.screenshot({ path: `${OUT}/task-01-board-before.png` });
 
@@ -82,10 +77,10 @@ await page.evaluate(() => {
   }
   if (desc) {
     desc.focus();
-    Object.getOwnPropertyDescriptor(
-      window.HTMLTextAreaElement.prototype,
-      "value"
-    )?.set?.call(desc, "Verifying server actions wire up correctly");
+    Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set?.call(
+      desc,
+      "Verifying server actions wire up correctly"
+    );
     desc.dispatchEvent(new Event("input", { bubbles: true }));
   }
 });
@@ -99,9 +94,7 @@ await page.evaluate(() => {
 await new Promise((r) => setTimeout(r, 3000));
 await page.screenshot({ path: `${OUT}/task-03-after.png` });
 
-const cardsAfter = await page.evaluate(
-  () => document.querySelectorAll("h4").length
-);
+const cardsAfter = await page.evaluate(() => document.querySelectorAll("h4").length);
 console.log(`/tasks visible card titles after:  ${cardsAfter}`);
 
 const afterTasks = await db.task.count();

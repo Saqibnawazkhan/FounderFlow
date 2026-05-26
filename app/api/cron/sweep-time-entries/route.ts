@@ -1,14 +1,20 @@
 /**
- * Hourly cron endpoint — safety net for the auto-close pipeline. If a user
+ * Daily cron endpoint — safety net for the auto-close pipeline. If a user
  * forgot to clock out and then closed the browser (so the in-page idle
  * handler never fires), this sweep closes the entry at `lastActivityAt`.
+ *
+ * Cadence: once per day (00:10 UTC per vercel.json). Vercel's Hobby plan
+ * caps crons at daily, so we can't run hourly. Daily is fine because the
+ * sweeper sets `clockOutAt = lastActivityAt` — the recorded duration is
+ * accurate regardless of when the sweep actually runs; only the visibility
+ * of the "auto-closed" state is delayed.
  *
  * Auth: same CRON_SECRET pattern as materialize-recurring. Vercel sends
  * `Authorization: Bearer <CRON_SECRET>` on cron requests.
  *
  * Idempotency: the sweeper only touches rows where clockOutAt is still
  * null AND lastActivityAt < now - AUTO_CLOSE_MS, so re-running the cron
- * a second time in the same hour is a no-op.
+ * within the same day is a no-op.
  */
 
 import { NextResponse } from "next/server";

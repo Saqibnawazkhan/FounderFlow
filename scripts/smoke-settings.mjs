@@ -18,8 +18,7 @@ import puppeteer from "puppeteer-core";
 
 const BASE = process.env.SMOKE_BASE_URL || "http://localhost:3000";
 const CHROME =
-  process.env.PUPPETEER_EXECUTABLE_PATH ||
-  "C:/Program Files/Google/Chrome/Application/chrome.exe";
+  process.env.PUPPETEER_EXECUTABLE_PATH || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 
 function ok(label) {
   console.log(`  ok  ${label}`);
@@ -104,16 +103,15 @@ async function main() {
     await pwInputs[1].type("short");
     await pwInputs[2].type("short");
     // Submit
-    const handle = await admin.evaluateHandle(() =>
-      Array.from(document.querySelectorAll("[role=dialog] button[type=submit]"))[0]
+    const handle = await admin.evaluateHandle(
+      () => Array.from(document.querySelectorAll("[role=dialog] button[type=submit]"))[0]
     );
     await handle.asElement().click();
     // Look for the inline error text from zod.
     await admin
-      .waitForFunction(
-        () => (document.body.textContent || "").includes("at least 6 characters"),
-        { timeout: 5000 }
-      )
+      .waitForFunction(() => (document.body.textContent || "").includes("at least 6 characters"), {
+        timeout: 5000,
+      })
       .then(() => ok("change password: short-password validation surfaces"))
       .catch(() => fail("change password validation", "expected 'at least 6 characters'"));
   }
@@ -133,17 +131,13 @@ async function main() {
   // The Company section heading is the icon+label pair inside the section
   // header. We check for the badge text "Company" rendered as a section
   // label specifically. Looser check: search the H2 elements.
-  const memberSectionLabels = await member.$$eval(
-    "section h2",
-    (els) => els.map((h) => (h.textContent || "").trim())
+  const memberSectionLabels = await member.$$eval("section h2", (els) =>
+    els.map((h) => (h.textContent || "").trim())
   );
   const hasCompany = memberSectionLabels.some((l) => l.toLowerCase().includes("company"));
   if (!hasCompany) ok("member: Company section hidden");
   else
-    fail(
-      "member Company hidden",
-      `found section label(s): ${JSON.stringify(memberSectionLabels)}`
-    );
+    fail("member Company hidden", `found section label(s): ${JSON.stringify(memberSectionLabels)}`);
 
   // Edit company button must not exist for the member.
   const memberHasEditCompany = await member.evaluate(() =>

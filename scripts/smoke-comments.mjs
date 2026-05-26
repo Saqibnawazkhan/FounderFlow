@@ -16,8 +16,7 @@ import puppeteer from "puppeteer-core";
 
 const BASE = process.env.SMOKE_BASE_URL || "http://localhost:3000";
 const CHROME =
-  process.env.PUPPETEER_EXECUTABLE_PATH ||
-  "C:/Program Files/Google/Chrome/Application/chrome.exe";
+  process.env.PUPPETEER_EXECUTABLE_PATH || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 
 const STAMP = Date.now().toString().slice(-6);
 const BODY = `Comment smoke ${STAMP} — please review @Ali-Raza`;
@@ -111,11 +110,13 @@ async function main() {
 
   // The notification message includes the comment body snippet.
   const notifBodySnippet = `Comment smoke ${STAMP}`;
-  const found = await aliPage.waitForFunction(
-    (snippet) => document.body.textContent && document.body.textContent.includes(snippet),
-    { timeout: 8000 },
-    notifBodySnippet
-  ).catch(() => null);
+  const found = await aliPage
+    .waitForFunction(
+      (snippet) => document.body.textContent && document.body.textContent.includes(snippet),
+      { timeout: 8000 },
+      notifBodySnippet
+    )
+    .catch(() => null);
   if (found) ok("notification with comment snippet is present");
   else fail("notification fan-out", `looking for "${notifBodySnippet}"`);
 

@@ -16,7 +16,9 @@ if (!user) {
   console.log(`existing users: ${JSON.stringify(all, null, 2)}`);
 } else {
   const ok = await bcrypt.compare(password, user.passwordHash);
-  console.log(`user: ${user.name} <${user.email}> (role: ${user.role}, companyId: ${user.companyId})`);
+  console.log(
+    `user: ${user.name} <${user.email}> (role: ${user.role}, companyId: ${user.companyId})`
+  );
   console.log(`password "${password}" matches stored hash: ${ok ? "✅" : "❌"}`);
   const txns = await db.transaction.count({ where: { companyId: user.companyId } });
   const tasks = await db.task.count({ where: { companyId: user.companyId } });

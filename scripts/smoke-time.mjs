@@ -18,8 +18,7 @@ import puppeteer from "puppeteer-core";
 
 const BASE = process.env.SMOKE_BASE_URL || "http://localhost:3000";
 const CHROME =
-  process.env.PUPPETEER_EXECUTABLE_PATH ||
-  "C:/Program Files/Google/Chrome/Application/chrome.exe";
+  process.env.PUPPETEER_EXECUTABLE_PATH || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 
 function ok(label) {
   console.log(`  ok  ${label}`);
@@ -98,9 +97,7 @@ async function main() {
   // ── 4) Stop modal + clock out
   await page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle0" });
   await new Promise((r) => setTimeout(r, 500));
-  const runningPill = await page.$(
-    "button[aria-label^='Clocked in']"
-  );
+  const runningPill = await page.$("button[aria-label^='Clocked in']");
   if (!runningPill) {
     fail("running pill before stop", "no aria-label^='Clocked in'");
     await browser.close();
@@ -111,18 +108,16 @@ async function main() {
   // matches; the "Keep going" cancel button is type=button).
   await page.waitForSelector("button[type=submit]", { timeout: 5000 });
   await page.click("button[type=submit]");
-  await page.waitForFunction(
-    () => !!document.querySelector("button[aria-label='Clock in']"),
-    { timeout: 8000 }
-  );
+  await page.waitForFunction(() => !!document.querySelector("button[aria-label='Clock in']"), {
+    timeout: 8000,
+  });
   ok("clocked out — idle pill back");
 
   // ── 5) Edit modal flow (admin only)
   await page.goto(`${BASE}/time`, { waitUntil: "networkidle0" });
-  const editBtn = await page.waitForSelector(
-    "button[aria-label^='Edit time entry']",
-    { timeout: 5000 }
-  );
+  const editBtn = await page.waitForSelector("button[aria-label^='Edit time entry']", {
+    timeout: 5000,
+  });
   await editBtn.click();
   // Modify the clockOutAt input by +30 min. Simplest: read current value,
   // adjust, re-set.
@@ -154,10 +149,9 @@ async function main() {
     newOut
   );
   await page.click("button[type=submit]");
-  await page.waitForFunction(
-    () => (document.body.textContent || "").includes("✎"),
-    { timeout: 8000 }
-  );
+  await page.waitForFunction(() => (document.body.textContent || "").includes("✎"), {
+    timeout: 8000,
+  });
   ok("admin edit landed — ✎ marker shown");
 
   await browser.close();

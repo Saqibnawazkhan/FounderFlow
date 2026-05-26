@@ -41,10 +41,7 @@ async function attempt(label) {
     const emailEl = document.querySelector("input[name=email]");
     const pwEl = document.querySelector("input[name=password]");
     const setVal = (el, v) => {
-      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set?.call(
-        el,
-        v
-      );
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set?.call(el, v);
       el.dispatchEvent(new Event("input", { bubbles: true }));
     };
     setVal(emailEl, "bogus-attacker@example.com");
@@ -58,7 +55,9 @@ async function attempt(label) {
     await new Promise((r) => setTimeout(r, 100));
   }
   const elapsed = Date.now() - t0;
-  console.log(`attempt ${label}: status=${timings[startCount]?.status ?? "?"} client-elapsed=${elapsed}ms`);
+  console.log(
+    `attempt ${label}: status=${timings[startCount]?.status ?? "?"} client-elapsed=${elapsed}ms`
+  );
 }
 
 for (let i = 1; i <= 6; i++) {
@@ -96,7 +95,11 @@ if (logPath) {
     console.log("");
     console.log(`slow attempts (>200ms): ${slowCount}, fast short-circuits (≤100ms): ${fastCount}`);
     const ok = slowCount >= 3 && fastCount >= 1 && allFastAtEnd;
-    console.log(ok ? "✅ rate limiter is short-circuiting once threshold is hit" : "❌ unexpected timing pattern");
+    console.log(
+      ok
+        ? "✅ rate limiter is short-circuiting once threshold is hit"
+        : "❌ unexpected timing pattern"
+    );
     process.exit(ok ? 0 : 1);
   }
 }
