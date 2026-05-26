@@ -44,15 +44,12 @@ const StatusField = z.enum(PROJECT_STATUSES, {
   errorMap: () => ({ message: "Pick a project status" }),
 });
 
-// Preprocess so an empty date input ("" from the browser) becomes null
-// BEFORE z.coerce.date() — otherwise the coerce stage produces an
-// Invalid Date and the whole parse fails silently. Resolved values:
-//   "" / undefined → null
-//   "2026-12-31" → Date
-const TargetEndDateField = z.preprocess(
-  (v) => (v === "" || v === undefined ? null : v),
-  z.coerce.date().nullable().optional()
-);
+// Tight input/output types so RHF's `useForm<T>` infers a single shape
+// (Date | null | undefined). `z.preprocess` would widen the input type to
+// `unknown` and break the resolver. The browser's <input type=date>
+// returns "" for an unset date; the form normalises that to `null`
+// before calling .parse, so the schema never sees an empty string here.
+const TargetEndDateField = z.coerce.date().nullable().optional();
 
 export const NewProjectSchema = z.object({
   name: NameField,

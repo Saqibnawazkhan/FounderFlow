@@ -170,7 +170,11 @@ export function EditProjectModal({ open, onClose, project, onSaved }: Props) {
             id={dateId}
             type="date"
             defaultValue={toLocalDateInput(project.targetEndDate)}
-            {...register("targetEndDate")}
+            // See new-project-modal — empty "" must become null so the
+            // zod resolver doesn't reject the whole form silently.
+            {...register("targetEndDate", {
+              setValueAs: (v: unknown) => (v === "" || v === undefined ? null : v),
+            })}
             className={inputClass(!!errors.targetEndDate)}
           />
         </Field>

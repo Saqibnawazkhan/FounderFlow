@@ -161,7 +161,12 @@ export function NewProjectModal({ open, onClose, users, currentUserId, onCreated
           <input
             id={dateId}
             type="date"
-            {...register("targetEndDate")}
+            // Empty <input type=date> emits "" which would fail
+            // z.coerce.date() inside the resolver. Coerce empty → null
+            // so the schema's .nullable().optional() accepts the absence.
+            {...register("targetEndDate", {
+              setValueAs: (v: unknown) => (v === "" || v === undefined ? null : v),
+            })}
             className={inputClass(!!errors.targetEndDate)}
           />
         </Field>
