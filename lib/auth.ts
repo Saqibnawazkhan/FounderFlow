@@ -59,7 +59,20 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
         if (!user) return null;
 
         const ok = await bcrypt.compare(password, user.passwordHash);
-        if (!ok) return null;
+        if (!ok) {
+          // A failed compare on an EXISTING user is the brute-force signal:
+          // someone knows a real email and is trying passwords. Capture
+          // (no full email — that'd leak PII into Sentry + enable account
+          // enumeration via Sentry); userId + hash prefix is enough to
+          // trend it. The in-memory rate limiter already blocks at 5/min,
+          // this just makes the activity visible. Forgotten-password
+          // typos by legit users land here too — accept that noise floor.
+          captureServerError(new Error("Credentials rejected after user lookup"), {
+            action: "authorizeCredentials",
+            extra: { userId: user.id, hashPrefix: user.passwordHash.slice(0, 7) },
+          });
+          return null;
+        }
 
         // Stamp last-sign-in for the /settings audit row. Fire-and-forget
         // so a DB blip on the timestamp doesn't block the login itself —

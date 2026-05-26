@@ -26,6 +26,7 @@
  */
 
 import nodemailer from "nodemailer";
+import { captureServerError } from "@/lib/sentry-server";
 
 export interface SendEmailInput {
   to: string;
@@ -91,6 +92,16 @@ export async function sendEmail({
     console.error(
       `[email:gmail-rejected] to=${to} from=${FROM_DISPLAY} subject="${subject}" reason="${msg}"`
     );
+    // Surface to Sentry too — without this, a stuck SMTP credential or
+    // a Gmail quota-rejection (550) is only visible in console output the
+    // admin doesn't read. captureServerError tags by `action: sendEmail`
+    // so a single alert can wire on this.
+    captureServerError(e, {
+      action: "sendEmail",
+      // Redact subject content to a length so a noisy email body doesn't
+      // bloat the Sentry event; recipient + reason are what triage needs.
+      extra: { to, subjectPrefix: subject.slice(0, 80), reason: msg },
+    });
     return { delivered: false, devLogged: false, error: msg };
   }
 }

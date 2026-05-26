@@ -24,7 +24,11 @@ import { limiters } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
 import { captureServerError } from "@/lib/sentry-server";
 
-export type ActionResult = { success: boolean; error?: string };
+// Discriminated union so TS narrows `error` to `string` after `if (!success)`.
+// The previous shape `{ success: boolean; error?: string }` left error
+// typed `string | undefined` everywhere, forcing callers into `error ??
+// "fallback"` boilerplate (or worse, dropping the message entirely).
+export type ActionResult = { success: true } | { success: false; error: string };
 
 export async function signupAction(input: unknown): Promise<ActionResult> {
   // Brute-force / signup-spam guard. 5/min/IP — covers a tab-spam attacker
@@ -32,7 +36,7 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
   const ip = await getClientIp();
   const gate = limiters.auth.consume(ip);
   if (!gate.allowed) {
-    return { success: false, error: gate.error };
+    return { success: false, error: gate.error ?? "Too many requests" };
   }
 
   const parsed = SignupSchema.safeParse(input);
@@ -112,7 +116,7 @@ export async function loginAction(input: unknown): Promise<ActionResult> {
   const ip = await getClientIp();
   const gate = limiters.auth.consume(ip);
   if (!gate.allowed) {
-    return { success: false, error: gate.error };
+    return { success: false, error: gate.error ?? "Too many requests" };
   }
 
   const parsed = LoginSchema.safeParse(input);
@@ -133,6 +137,17 @@ export async function loginAction(input: unknown): Promise<ActionResult> {
   }
 }
 
-export async function logoutAction(): Promise<void> {
-  await signOut({ redirect: false });
+export async function logoutAction(): Promise<ActionResult> {
+  try {
+    await signOut({ redirect: false });
+    return { success: true };
+  } catch (e) {
+    // signOut throws on session-cookie-write failure (e.g., Auth.js DB
+    // adapter issue). The CLIENT used to clear local Zustand regardless,
+    // which left the user "logged out" in the UI but still authenticated
+    // server-side — next reload put them back in. Surface failure so
+    // callers can keep the local state intact and toast an error.
+    captureServerError(e, { action: "logoutAction" });
+    return { success: false, error: "Couldn't sign you out. Try again." };
+  }
 }

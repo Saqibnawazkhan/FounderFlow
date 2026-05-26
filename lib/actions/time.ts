@@ -322,26 +322,50 @@ export async function updateTimeEntryAction(input: unknown): Promise<ActionResul
   }
 }
 
+export interface SweepResult {
+  attempted: number;
+  closed: string[];
+  failed: { id: string; error: string }[];
+}
+
 /**
- * Cron handler — runs hourly (see vercel.json). Closes any open entry that
- * hasn't heartbeat-ed in AUTO_CLOSE_MS. Returns the count of closed rows
- * so the cron endpoint can log it.
+ * Cron handler — runs daily (see vercel.json). Closes any open entry that
+ * hasn't heartbeat-ed in AUTO_CLOSE_MS.
+ *
+ * Returns a detailed result instead of a count so the cron endpoint can:
+ *   • respond 206 Partial Content if some entries fail (Vercel cron monitor
+ *     will only alert on 5xx, but 206 still surfaces in dashboards)
+ *   • log per-entry failures to Sentry with the entry id so triage isn't
+ *     "something failed somewhere"
+ *
+ * Each entry is closed in its own update — NOT a single $transaction —
+ * because one stuck row shouldn't block sweeping the other 99.
  */
-export async function sweepAutoCloseEntries(): Promise<number> {
+export async function sweepAutoCloseEntries(): Promise<SweepResult> {
   const cutoff = new Date(Date.now() - AUTO_CLOSE_MS);
   const stale = await db.timeEntry.findMany({
     where: { clockOutAt: null, lastActivityAt: { lt: cutoff } },
-    select: { id: true, lastActivityAt: true },
+    select: { id: true, lastActivityAt: true, userId: true, companyId: true },
   });
-  if (stale.length === 0) return 0;
+  if (stale.length === 0) return { attempted: 0, closed: [], failed: [] };
 
-  await db.$transaction(
-    stale.map((s) =>
-      db.timeEntry.update({
+  const closed: string[] = [];
+  const failed: { id: string; error: string }[] = [];
+  for (const s of stale) {
+    try {
+      await db.timeEntry.update({
         where: { id: s.id },
         data: { clockOutAt: s.lastActivityAt, autoClosed: true },
-      })
-    )
-  );
-  return stale.length;
+      });
+      closed.push(s.id);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown sweep error";
+      failed.push({ id: s.id, error: msg });
+      captureServerError(e, {
+        action: "sweepAutoCloseEntries:entry",
+        extra: { entryId: s.id, userId: s.userId, companyId: s.companyId },
+      });
+    }
+  }
+  return { attempted: stale.length, closed, failed };
 }

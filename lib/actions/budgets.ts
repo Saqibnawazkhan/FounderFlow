@@ -120,7 +120,10 @@ export async function updateBudgetAction(input: unknown): Promise<ActionResult> 
     if (monthlyLimit !== undefined) data.monthlyLimit = monthlyLimit;
     if (active !== undefined) data.active = active;
     if (Object.keys(data).length === 0) {
-      return { success: true, data: undefined };
+      // Reject the no-op explicitly so the UI doesn't show a green
+      // "saved" toast when nothing actually got saved. Previously this
+      // returned success — a silent no-op.
+      return { success: false, error: "Nothing to update" };
     }
 
     await db.budget.update({ where: { id: budgetId }, data });

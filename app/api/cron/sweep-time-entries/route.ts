@@ -36,15 +36,27 @@ export async function GET(request: Request) {
 
   const startedAt = Date.now();
   try {
-    const closed = await sweepAutoCloseEntries();
-    return NextResponse.json({
-      ok: true,
-      ranAt: new Date().toISOString(),
-      entriesAutoClosed: closed,
-      durationMs: Date.now() - startedAt,
-    });
+    const result = await sweepAutoCloseEntries();
+    // 206 when some entries failed but the sweep itself didn't throw.
+    // The per-entry failures are already in Sentry (see sweepAutoCloseEntries).
+    // Vercel cron health dashboards see the non-2xx; we keep alerting tight.
+    const status = result.failed.length > 0 ? 206 : 200;
+    return NextResponse.json(
+      {
+        ok: result.failed.length === 0,
+        ranAt: new Date().toISOString(),
+        entriesAutoClosed: result.closed.length,
+        entriesAttempted: result.attempted,
+        entriesFailed: result.failed.length,
+        durationMs: Date.now() - startedAt,
+      },
+      { status }
+    );
   } catch (e) {
-    captureServerError(e, { action: "sweepTimeEntries:outer" });
+    captureServerError(e, {
+      action: "sweepTimeEntries:outer",
+      extra: { durationMs: Date.now() - startedAt },
+    });
     return NextResponse.json(
       { error: "Sweep failed", durationMs: Date.now() - startedAt },
       { status: 500 }

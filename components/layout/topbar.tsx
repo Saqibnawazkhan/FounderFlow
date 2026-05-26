@@ -85,8 +85,14 @@ export function Topbar() {
   }, []);
 
   async function handleLogout() {
-    // Server action clears the Auth.js cookie; local store cleanup follows.
-    await logoutAction();
+    // Server action clears the Auth.js cookie. Only clear local Zustand
+    // when the server actually signed us out — otherwise we'd leave the
+    // user looking logged out while a valid session cookie still rides.
+    const res = await logoutAction();
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
     logout();
     toast.success(t.topbar.signedOutToast);
     // Full nav so middleware sees the cleared cookie immediately.

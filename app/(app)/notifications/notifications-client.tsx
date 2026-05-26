@@ -51,7 +51,10 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
       toast.error(result.error);
       return;
     }
-    toast.success("All marked as read");
+    // Honest message based on what actually got marked — a "Marked all
+    // read" toast when zero rows changed is confusing.
+    if (result.data.changed === 0) toast("Nothing to mark — you're all caught up", { icon: "✓" });
+    else toast.success(`Marked ${result.data.changed} as read`);
     refresh();
   }
 
@@ -69,7 +72,8 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
       toast.error(result.error);
       return;
     }
-    toast.success("All notifications cleared");
+    if (result.data.deleted === 0) toast("Nothing to clear", { icon: "✓" });
+    else toast.success(`Cleared ${result.data.deleted} notification(s)`);
     refresh();
   }
 

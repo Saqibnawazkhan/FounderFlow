@@ -101,23 +101,43 @@ export async function GET(request: Request) {
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Unknown materializer error";
         failed.push({ ruleId: m.ruleId, error: msg });
+        // Capture with full context: companyId so triage knows whose
+        // recurring rule failed, and a running count so a partial-success
+        // pattern is visible in the Sentry breadcrumb trail. Previous
+        // capture had only ruleId — opaque when an issue lands.
         captureServerError(e, {
           action: "materializeRecurring",
-          extra: { ruleId: m.ruleId },
+          extra: {
+            ruleId: m.ruleId,
+            companyId: m.companyId,
+            succeededSoFar: created.length,
+            failedSoFar: failed.length,
+          },
         });
       }
     }
 
-    return NextResponse.json({
-      ok: true,
-      ranAt: now.toISOString(),
-      rulesChecked: rules.length,
-      transactionsCreated: created.length,
-      failures: failed,
-      durationMs: Date.now() - startedAt,
-    });
+    // Return 206 when some rules failed — Vercel cron monitoring escalates
+    // on 5xx, but a 206 still shows up in dashboards + makes it possible
+    // to alert externally on partial drops without false-firing on full
+    // success runs.
+    const status = failed.length > 0 ? 206 : 200;
+    return NextResponse.json(
+      {
+        ok: failed.length === 0,
+        ranAt: now.toISOString(),
+        rulesChecked: rules.length,
+        transactionsCreated: created.length,
+        failures: failed,
+        durationMs: Date.now() - startedAt,
+      },
+      { status }
+    );
   } catch (e) {
-    captureServerError(e, { action: "materializeRecurring:outer" });
+    captureServerError(e, {
+      action: "materializeRecurring:outer",
+      extra: { durationMs: Date.now() - startedAt },
+    });
     return NextResponse.json(
       {
         error: "Materialization run failed",

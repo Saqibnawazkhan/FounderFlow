@@ -85,7 +85,14 @@ export function SettingsClient({ user, company, stats }: Props) {
       tone: "primary",
     });
     if (!ok) return;
-    await logoutAction();
+    // Only clear local Zustand state on a confirmed server sign-out.
+    // Previously we wiped the local store regardless, leaving a valid
+    // session cookie alive — next reload put the user back in.
+    const res = await logoutAction();
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
     logout();
     toast.success(t.settings.signedOutToast);
     window.location.href = "/login";

@@ -80,25 +80,30 @@ export async function markNotificationReadAction(id: string): Promise<ActionResu
   return { success: true, data: undefined };
 }
 
-export async function markAllNotificationsReadAction(): Promise<ActionResult> {
+export async function markAllNotificationsReadAction(): Promise<ActionResult<{ changed: number }>> {
   const session = await auth();
   if (!session?.user?.id) return { success: false, error: "Not authenticated" };
 
-  await db.notification.updateMany({
+  // updateMany returns { count } — surface it so the caller can decide
+  // whether to toast "marked all read" vs "no unread notifications" and
+  // skip an unnecessary router.refresh when nothing changed.
+  const { count } = await db.notification.updateMany({
     where: { userId: session.user.id, read: false },
     data: { read: true },
   });
-  revalidatePath("/notifications");
+  if (count > 0) revalidatePath("/notifications");
 
-  return { success: true, data: undefined };
+  return { success: true, data: { changed: count } };
 }
 
-export async function clearNotificationsAction(): Promise<ActionResult> {
+export async function clearNotificationsAction(): Promise<ActionResult<{ deleted: number }>> {
   const session = await auth();
   if (!session?.user?.id) return { success: false, error: "Not authenticated" };
 
-  await db.notification.deleteMany({ where: { userId: session.user.id } });
-  revalidatePath("/notifications");
+  const { count } = await db.notification.deleteMany({
+    where: { userId: session.user.id },
+  });
+  if (count > 0) revalidatePath("/notifications");
 
-  return { success: true, data: undefined };
+  return { success: true, data: { deleted: count } };
 }
