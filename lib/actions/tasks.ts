@@ -288,6 +288,10 @@ export async function deleteTaskAction(id: string): Promise<ActionResult> {
     await tx.activity.create({
       data: {
         companyId: task.companyId,
+        // Task.projectId is non-nullable post-add_projects, so always carry
+        // it through. The per-project Activity tab depends on this row to
+        // show "X deleted task Y".
+        projectId: task.projectId,
         type: "task_deleted",
         message: `${me.name} deleted task "${task.title}"`,
         userId: me.id,
@@ -300,6 +304,7 @@ export async function deleteTaskAction(id: string): Promise<ActionResult> {
   revalidatePath("/tasks");
   revalidatePath("/dashboard");
   revalidatePath("/activities");
+  revalidatePath(`/projects/${task.projectId}`);
 
   return { success: true, data: undefined };
 }

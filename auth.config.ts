@@ -62,9 +62,15 @@ export const authConfig = {
       // invisible to them, so a silent redirect is the right UX. The
       // server-action layer enforces the same rule on writes, so a forged
       // request can't bypass this.
+      //
+      // Preserve the original querystring so an email link like
+      // `/expenses?ref=newsletter` keeps `?ref=newsletter` when it lands
+      // on /tasks. Drops nothing the user typed.
       const role = (auth.user?.role as Role | undefined) ?? "member";
       if (role === "member" && isMemberBlockedRoute(pathname)) {
-        return NextResponse.redirect(new URL(homeRouteForRole(role), request.nextUrl));
+        const dest = new URL(homeRouteForRole(role), request.nextUrl);
+        dest.search = request.nextUrl.search;
+        return NextResponse.redirect(dest);
       }
       return true;
     },

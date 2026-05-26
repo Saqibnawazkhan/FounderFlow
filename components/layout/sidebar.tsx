@@ -23,7 +23,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useStore } from "@/lib/store";
+import { useStore, useStoreHasHydrated } from "@/lib/store";
 import { listNotificationsAction } from "@/lib/actions/notifications";
 import { useT } from "@/lib/i18n/use-t";
 import type { Strings } from "@/lib/i18n/strings";
@@ -115,9 +115,19 @@ export function Sidebar() {
   // Hide finance-only nav items from members. The middleware enforces the
   // same rule on direct navigation, so this is purely a "don't tease them
   // with links they can't open" affordance.
+  //
+  // Gate on hydration: during the ~50ms before Zustand persist replays from
+  // localStorage, `currentUser` is null and our role fallback is "member".
+  // Without the hydration gate, an admin sees the member-restricted sidebar
+  // for that window. We optimistically show ALL nav items until hydration
+  // completes — middleware still blocks members from finance pages, so a
+  // member who clicks a finance link mid-hydration just gets bounced.
+  const hasHydrated = useStoreHasHydrated();
   const role: Role = (currentUser?.role as Role | undefined) ?? "member";
   const visibleNavItems =
-    role === "member" ? navItems.filter((item) => !isMemberBlockedRoute(item.href)) : navItems;
+    hasHydrated && role === "member"
+      ? navItems.filter((item) => !isMemberBlockedRoute(item.href))
+      : navItems;
   // Brand logo also routes to the role-appropriate home so members don't
   // hit a /dashboard bounce when they click the logo.
   const brandHref = homeRouteForRole(role);

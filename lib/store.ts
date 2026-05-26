@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { v4 as uuid } from "uuid";
@@ -587,3 +588,24 @@ export const useStore = create<AppState>()(
     }
   )
 );
+
+/**
+ * Subscribes to the persist-rehydration lifecycle. Returns `false` until
+ * Zustand has finished reading localStorage and applied it to the store —
+ * after that, `true`.
+ *
+ * Why this exists: any component that gates its render on `currentUser?.role`
+ * sees `undefined` (and our `?? "member"` fallback) for ~50ms after page
+ * load before persist hydrates. That makes admins briefly look like members,
+ * which can hide nav items / finance pages on first paint. Components that
+ * need to be hydration-aware should gate on this hook instead.
+ */
+export function useStoreHasHydrated(): boolean {
+  const [hydrated, setHydrated] = useState(() => useStore.persist.hasHydrated());
+  useEffect(() => {
+    const unsub = useStore.persist.onFinishHydration(() => setHydrated(true));
+    setHydrated(useStore.persist.hasHydrated());
+    return unsub;
+  }, []);
+  return hydrated;
+}

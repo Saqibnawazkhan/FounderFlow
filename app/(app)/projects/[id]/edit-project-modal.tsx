@@ -69,7 +69,12 @@ export function EditProjectModal({ open, onClose, project, onSaved }: Props) {
       description: project.description ?? "",
       color: project.color as ProjectColor,
       status: project.status,
-      targetEndDate: project.targetEndDate ? new Date(project.targetEndDate) : null,
+      // Seed as the yyyy-mm-dd string the <input type="date"> expects.
+      // The setValueAs on the register() call coerces back to null on
+      // empty + zod's z.coerce.date handles the string → Date hop at
+      // parse time. Seeding `new Date(...)` here would mismatch the
+      // controlled input and render blank on mount.
+      targetEndDate: toLocalDateInput(project.targetEndDate) as unknown as Date | null,
     },
   });
 
@@ -82,7 +87,7 @@ export function EditProjectModal({ open, onClose, project, onSaved }: Props) {
       description: project.description ?? "",
       color: project.color as ProjectColor,
       status: project.status,
-      targetEndDate: project.targetEndDate ? new Date(project.targetEndDate) : null,
+      targetEndDate: toLocalDateInput(project.targetEndDate) as unknown as Date | null,
     });
     onClose();
   }

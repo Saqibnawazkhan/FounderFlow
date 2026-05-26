@@ -16,6 +16,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { authConfig } from "@/auth.config";
 import { db } from "@/lib/db";
+import { captureServerError } from "@/lib/sentry-server";
 
 const credentialsSchema = z.object({
   email: z.string().email(),
@@ -61,12 +62,17 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
         if (!ok) return null;
 
         // Stamp last-sign-in for the /settings audit row. Fire-and-forget
-        // is fine — a logged-in user shouldn't see auth() fail because
-        // the timestamp didn't land. We swallow errors to keep auth resilient
-        // (it's defensive — bad password is the only realistic block here).
+        // so a DB blip on the timestamp doesn't block the login itself —
+        // but we DO log failures: a silent rot here means the rogue-login
+        // detection on /settings becomes unreliable, and we'd never know.
         db.user
           .update({ where: { id: user.id }, data: { lastSignInAt: new Date() } })
-          .catch(() => {});
+          .catch((e: unknown) =>
+            captureServerError(e, {
+              action: "updateLastSignInAt",
+              extra: { userId: user.id },
+            })
+          );
 
         return {
           id: user.id,

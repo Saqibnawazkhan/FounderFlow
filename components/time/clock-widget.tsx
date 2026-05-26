@@ -21,7 +21,7 @@
  * net for "user closed the browser entirely" cases.
  */
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { Clock, LogIn, LogOut, PlayCircle } from "lucide-react";
@@ -53,6 +53,10 @@ import type { TimeEntryClient } from "@/lib/queries/time";
  */
 export function ClockWidget() {
   const router = useRouter();
+  // startTransition keeps the running UI responsive while the RSC tree
+  // re-fetches after a clock-in/out — otherwise the pill renders the
+  // pre-mutation state for ~200-400ms and users double-click.
+  const [, startTransition] = useTransition();
   const [entry, setEntry] = useState<TimeEntryClient | null>(null);
   const [tasks, setTasks] = useState<{ id: string; title: string }[]>([]);
   const [now, setNow] = useState<Date>(() => new Date());
@@ -137,7 +141,7 @@ export function ClockWidget() {
           toast(`Auto-clocked out — no activity for ${Math.round(AUTO_CLOSE_MS / 3_600_000)}h.`, {
             icon: "⏱️",
           });
-          router.refresh();
+          startTransition(() => router.refresh());
         }
       });
     }
@@ -174,7 +178,7 @@ export function ClockWidget() {
       editedAt: null,
       createdAt: new Date().toISOString(),
     });
-    router.refresh();
+    startTransition(() => router.refresh());
     void reload();
   }
 
@@ -192,7 +196,7 @@ export function ClockWidget() {
     setStopOpen(false);
     setWarnOpen(false);
     setEntry(null);
-    router.refresh();
+    startTransition(() => router.refresh());
     void reload();
   }
 

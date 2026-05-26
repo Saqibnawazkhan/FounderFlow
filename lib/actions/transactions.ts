@@ -222,6 +222,10 @@ export async function deleteTransactionAction(id: string): Promise<ActionResult>
     await tx.activity.create({
       data: {
         companyId: txn.companyId,
+        // Carry the project tag forward so the per-project Activity tab
+        // shows the deletion. Null for legacy / company-global transactions
+        // — those still surface in the global activity feed.
+        projectId: txn.projectId,
         type: "transaction_deleted",
         message: `${me.name} deleted a ${txn.type} of ${txn.amount.toLocaleString()} PKR`,
         userId: me.id,
@@ -240,6 +244,7 @@ export async function deleteTransactionAction(id: string): Promise<ActionResult>
   revalidatePath("/dashboard");
   revalidatePath("/reports");
   revalidatePath("/activities");
+  if (txn.projectId) revalidatePath(`/projects/${txn.projectId}`);
 
   return { success: true, data: undefined };
 }
