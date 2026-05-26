@@ -205,13 +205,6 @@ export function Sidebar() {
                       : "text-fg-muted hover:bg-surface-hover hover:text-fg"
                   )}
                 >
-                  {active && (
-                    <motion.div
-                      layoutId="sidebar-active"
-                      className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-primary"
-                      transition={{ duration: 0.2 }}
-                    />
-                  )}
                   <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
                   <span className="flex-1">{t.nav[item.labelKey]}</span>
                   {isNotifs && unreadCount > 0 && (

@@ -21,7 +21,7 @@
  * Update by editing CACHE_VERSION below and redeploying.
  */
 
-const CACHE_VERSION = "ff-v1";
+const CACHE_VERSION = "ff-v2";
 const RUNTIME_CACHE = `ff-runtime-${CACHE_VERSION}`;
 const SHELL_CACHE = `ff-shell-${CACHE_VERSION}`;
 
