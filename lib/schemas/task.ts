@@ -9,6 +9,9 @@ export const NewTaskSchema = z.object({
   description: z.string().trim().max(2000, "Description must be 2000 chars or less"),
   status: z.enum(["pending", "in_progress", "completed"]),
   priority: z.enum(["low", "medium", "high", "urgent"]),
+  // Project the task lives under. Required since the add_projects migration —
+  // the UI auto-prefills with "General" when there's no other context.
+  projectId: z.string().min(1, "Pick a project"),
   assignedTo: z.string().min(1, "Pick an assignee"),
   deadline: z
     .string()

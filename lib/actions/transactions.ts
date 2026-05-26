@@ -98,8 +98,20 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
       error: parsed.error.issues[0]?.message ?? "Invalid transaction",
     };
   }
-  const { type, amount, category, description, date } = parsed.data;
+  const { type, amount, category, description, date, projectId } = parsed.data;
   const { id: userId, companyId } = session.user;
+
+  // If a projectId was supplied, verify it belongs to this company. We
+  // accept the tag from anyone who can see finances — the project's own
+  // budgets enforce who's spending on it. A null projectId is the legacy
+  // "company-global" spend path.
+  if (projectId) {
+    const project = await db.project.findFirst({
+      where: { id: projectId, companyId },
+      select: { id: true },
+    });
+    if (!project) return { success: false, error: "Project not found" };
+  }
 
   // Authoritative user lookup so the denormalized addedByName is never stale.
   const user = await db.user.findUnique({ where: { id: userId } });
@@ -111,6 +123,7 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
     const txn = await tx.transaction.create({
       data: {
         companyId,
+        projectId: projectId ?? null,
         type,
         amount,
         category,
@@ -125,6 +138,7 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
     await tx.activity.create({
       data: {
         companyId,
+        projectId: projectId ?? null,
         type: isExpense ? "expense_added" : "investment_added",
         message: `${user.name} added ${isExpense ? "expense" : "investment"} of ${amount.toLocaleString()} PKR for ${category}`,
         userId,
@@ -143,10 +157,14 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
         data: others.map((o) => ({
           userId: o.id,
           companyId,
+          // Stamp the projectId on each notification so the member-side
+          // filter in lib/queries/notifications can strip these for members
+          // unless the project is one they're attached to.
+          projectId: projectId ?? null,
           title: isExpense ? "New expense" : "New investment",
           message: `${user.name} ${isExpense ? "logged" : "added"} ${amount.toLocaleString()} PKR`,
           type: isExpense ? "warning" : "success",
-          link: isExpense ? "/expenses" : "/investments",
+          link: projectId ? `/projects/${projectId}` : isExpense ? "/expenses" : "/investments",
         })),
       });
     }
@@ -160,14 +178,13 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
   revalidatePath("/dashboard");
   revalidatePath("/reports");
   revalidatePath("/activities");
+  if (projectId) revalidatePath(`/projects/${projectId}`);
 
   // Budget threshold check fires only for expenses (investments don't count
-  // against caps). Awaited so the notifications land before we return — the
-  // user sees the bell badge update on the next router.refresh().
-  // Wrapped internally in try/catch so a budget failure never poisons the
-  // transaction insert above.
+  // against caps). Per-project now — pass the projectId in so the threshold
+  // only sums this project's transactions against this project's budgets.
   if (type === "expense") {
-    await checkBudgetThresholdAfterExpense({ companyId, category });
+    await checkBudgetThresholdAfterExpense({ companyId, projectId: projectId ?? null, category });
     revalidatePath("/budgets");
     revalidatePath("/notifications");
   }

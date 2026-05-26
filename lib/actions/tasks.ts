@@ -20,6 +20,8 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { NewTaskSchema, TaskStatusUpdateSchema } from "@/lib/schemas/task";
 import { limiters } from "@/lib/rate-limit";
+import { canManageProject } from "@/lib/auth/project-permissions";
+import type { Role } from "@/lib/auth/role-gates";
 import type { Task, TaskStatus } from "@/lib/types";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
@@ -27,6 +29,7 @@ export type ActionResult<T = void> = { success: true; data: T } | { success: fal
 function toClient(t: {
   id: string;
   companyId: string;
+  projectId: string;
   title: string;
   description: string;
   status: string;
@@ -42,6 +45,7 @@ function toClient(t: {
   return {
     id: t.id,
     companyId: t.companyId,
+    projectId: t.projectId,
     title: t.title,
     description: t.description,
     status: t.status as TaskStatus,
@@ -88,8 +92,23 @@ export async function addTaskAction(input: unknown): Promise<ActionResult<Task>>
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid task" };
   }
-  const { title, description, status, priority, assignedTo, deadline } = parsed.data;
-  const { id: actorId, companyId } = session.user;
+  const { title, description, status, priority, projectId, assignedTo, deadline } = parsed.data;
+  const { id: actorId, companyId, role } = session.user;
+
+  // Project must live in this company. Then check the caller can manage it
+  // (admin / cofounder always; supervisor of this project too). Stops a
+  // member from filing a task in a project they shouldn't see.
+  const project = await db.project.findFirst({
+    where: { id: projectId, companyId },
+    select: { id: true, name: true, supervisorId: true, status: true },
+  });
+  if (!project) return { success: false, error: "Project not found" };
+  if (project.status === "archived") {
+    return { success: false, error: "Can't add tasks to an archived project" };
+  }
+  if (!canManageProject({ userId: actorId, role: role as Role, project })) {
+    return { success: false, error: "Only the supervisor or a founder can add tasks here" };
+  }
 
   const [actor, assignee] = await Promise.all([
     db.user.findUnique({ where: { id: actorId } }),
@@ -107,6 +126,7 @@ export async function addTaskAction(input: unknown): Promise<ActionResult<Task>>
     const task = await tx.task.create({
       data: {
         companyId,
+        projectId,
         title,
         description,
         status,
@@ -123,24 +143,37 @@ export async function addTaskAction(input: unknown): Promise<ActionResult<Task>>
     await tx.activity.create({
       data: {
         companyId,
-        type: "task_assigned",
-        message: `${actor.name} assigned "${title}" to ${assignee.name}`,
+        projectId,
+        type: "task_created",
+        message: `${actor.name} added "${title}" to ${project.name}`,
         userId: actorId,
         userName: actor.name,
         metadata: JSON.stringify({ kind: "task", taskId: task.id, title }),
       },
     });
 
-    // Notify the assignee unless they assigned the task to themselves.
+    // Assignment is a distinct event — fires when assignee != actor.
     if (assignee.id !== actorId) {
+      await tx.activity.create({
+        data: {
+          companyId,
+          projectId,
+          type: "task_assigned",
+          message: `${actor.name} assigned "${title}" to ${assignee.name}`,
+          userId: actorId,
+          userName: actor.name,
+          metadata: JSON.stringify({ kind: "task", taskId: task.id, title }),
+        },
+      });
       await tx.notification.create({
         data: {
           userId: assignee.id,
           companyId,
+          projectId,
           title: "New task assigned",
-          message: `${actor.name} assigned you "${title}"`,
+          message: `${actor.name} assigned you "${title}" in ${project.name}`,
           type: "info",
-          link: "/tasks",
+          link: `/projects/${projectId}`,
         },
       });
     }
@@ -151,6 +184,8 @@ export async function addTaskAction(input: unknown): Promise<ActionResult<Task>>
   revalidatePath("/tasks");
   revalidatePath("/dashboard");
   revalidatePath("/activities");
+  revalidatePath("/projects");
+  revalidatePath(`/projects/${projectId}`);
 
   return { success: true, data: toClient(created) };
 }

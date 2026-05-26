@@ -11,15 +11,20 @@ import { cn } from "@/lib/utils";
 
 interface Props {
   type: TransactionType;
+  /** Optional project picker. Empty list → no picker rendered (members
+   *  who aren't on any project just don't see the field). The
+   *  transaction's projectId column is nullable, so this stays optional. */
+  projects?: { id: string; name: string }[];
   onClose: () => void;
   /** Called after the server action succeeds so the parent can re-fetch. */
   onSuccess?: () => void;
 }
 
-export function TransactionForm({ type, onClose, onSuccess }: Props) {
+export function TransactionForm({ type, projects = [], onClose, onSuccess }: Props) {
   const categories = type === "expense" ? EXPENSE_CATEGORIES : INVESTMENT_CATEGORIES;
 
   const amountId = useId();
+  const projectId = useId();
   const categoryId = useId();
   const dateId = useId();
   const descId = useId();
@@ -41,6 +46,9 @@ export function TransactionForm({ type, onClose, onSuccess }: Props) {
       amount: undefined as unknown as number,
       category: categories[0],
       description: "",
+      // Empty string round-trips to undefined in the schema's transform,
+      // which becomes a SQL NULL — "no project tag" is the default.
+      projectId: "",
       date: today,
     },
   });
@@ -159,6 +167,43 @@ export function TransactionForm({ type, onClose, onSuccess }: Props) {
           )}
         </div>
       </div>
+
+      {projects.length > 0 && (
+        <div>
+          <label
+            htmlFor={projectId}
+            className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+          >
+            Project{" "}
+            <span className="font-sans normal-case tracking-normal text-fg-muted/60">
+              (optional)
+            </span>
+          </label>
+          <select
+            id={projectId}
+            aria-invalid={errors.projectId ? true : undefined}
+            {...register("projectId")}
+            className={cn(
+              "w-full appearance-none rounded-xl border bg-bg px-4 py-2.5 text-sm text-fg transition-colors focus:bg-surface focus:outline-none",
+              errors.projectId
+                ? "border-danger/60 focus:border-danger"
+                : "border-border focus:border-primary/50"
+            )}
+          >
+            <option value="" className="bg-bg">
+              Not tagged to a project
+            </option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id} className="bg-bg">
+                {p.name}
+              </option>
+            ))}
+          </select>
+          {errors.projectId && (
+            <p className="mt-1.5 text-xs text-danger">{errors.projectId.message}</p>
+          )}
+        </div>
+      )}
 
       <div>
         <label

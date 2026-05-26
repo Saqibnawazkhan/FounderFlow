@@ -15,10 +15,17 @@ async function main() {
   console.log("Seeding database…");
 
   // Wipe in dependency order so re-running the seed is idempotent.
+  await db.comment.deleteMany();
+  await db.timeEntry.deleteMany();
   await db.notification.deleteMany();
   await db.activity.deleteMany();
   await db.task.deleteMany();
+  await db.budget.deleteMany();
+  await db.recurringRule.deleteMany();
   await db.transaction.deleteMany();
+  await db.inviteToken.deleteMany();
+  // Drop projects BEFORE users, since Project.supervisorId references User.
+  await db.project.deleteMany();
   // Break the User -> Company FK before deleting either.
   await db.user.deleteMany();
   await db.company.deleteMany();
@@ -109,6 +116,48 @@ async function main() {
   };
 
   const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
+
+  // Projects — distribute the seeded tasks across three so the /projects
+  // page has real variety. Supervisor assignments mix admin/cofounder/member
+  // tiers so we can verify the project-permission gates in the smoke.
+  const launchProjectId = "demo-project-launch";
+  const customerProjectId = "demo-project-customer";
+  const opsProjectId = "demo-project-ops";
+
+  await db.project.createMany({
+    data: [
+      {
+        id: launchProjectId,
+        companyId,
+        name: "Launch v2",
+        description: "Public launch of the v2 product including marketing site + analytics.",
+        supervisorId: aliId, // cofounder
+        status: "active",
+        color: "primary",
+        createdBy: founderId,
+      },
+      {
+        id: customerProjectId,
+        companyId,
+        name: "Customer success Q3",
+        description: "Beta cohort onboarding, top-10 interviews, NPS reporting.",
+        supervisorId: ahmedId, // cofounder
+        status: "active",
+        color: "cyan",
+        createdBy: founderId,
+      },
+      {
+        id: opsProjectId,
+        companyId,
+        name: "Internal ops",
+        description: "Hiring, CI/CD, internal tooling. Run by Sarah (member supervisor).",
+        supervisorId: sarahId, // member-as-supervisor — exercises the elevated-permission path
+        status: "active",
+        color: "pink",
+        createdBy: founderId,
+      },
+    ],
+  });
 
   // Investments
   const investments = [
@@ -245,6 +294,7 @@ async function main() {
     data: [
       {
         companyId,
+        projectId: launchProjectId,
         title: "Prepare investor pitch deck v2",
         description: "Update financials section, add traction metrics from Q1",
         status: "in_progress",
@@ -257,6 +307,7 @@ async function main() {
       },
       {
         companyId,
+        projectId: launchProjectId,
         title: "Finalize Q3 product roadmap",
         description: "Sync with engineering on capacity, prioritize top 3 features",
         status: "pending",
@@ -269,6 +320,7 @@ async function main() {
       },
       {
         companyId,
+        projectId: customerProjectId,
         title: "Customer interviews — top 10 users",
         description: "Identify pain points and feature requests for v2.0",
         status: "in_progress",
@@ -281,6 +333,7 @@ async function main() {
       },
       {
         companyId,
+        projectId: launchProjectId,
         title: "Design new landing page",
         description: "Hero section, pricing, testimonials. Mobile-first.",
         status: "pending",
@@ -293,6 +346,7 @@ async function main() {
       },
       {
         companyId,
+        projectId: opsProjectId,
         title: "Hire backend engineer",
         description: "Source 5 candidates, conduct technical interviews",
         status: "pending",
@@ -305,6 +359,7 @@ async function main() {
       },
       {
         companyId,
+        projectId: opsProjectId,
         title: "Setup CI/CD pipeline",
         description: "Migrate from manual deploys to GitHub Actions",
         status: "completed",
@@ -318,6 +373,7 @@ async function main() {
       },
       {
         companyId,
+        projectId: customerProjectId,
         title: "Launch beta with 20 customers",
         description: "Onboarding, feedback loop, dashboard for usage",
         status: "completed",
@@ -331,6 +387,7 @@ async function main() {
       },
       {
         companyId,
+        projectId: customerProjectId,
         title: "Setup analytics dashboard",
         description: "Mixpanel + custom dashboard for product metrics",
         status: "completed",

@@ -39,11 +39,18 @@ type Props = {
   /** All company transactions — we filter to expenses inside. */
   transactions: TransactionWithCount[];
   users: User[];
+  projects: { id: string; name: string }[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
 };
 
-export function ExpensesClient({ transactions, users, currentUserId, currentUserRole }: Props) {
+export function ExpensesClient({
+  transactions,
+  users,
+  projects,
+  currentUserId,
+  currentUserRole,
+}: Props) {
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
@@ -370,7 +377,12 @@ export function ExpensesClient({ transactions, users, currentUserId, currentUser
         title="Log new expense"
         description="Track a business expense"
       >
-        <TransactionForm type="expense" onClose={() => setModalOpen(false)} onSuccess={refresh} />
+        <TransactionForm
+          type="expense"
+          projects={projects}
+          onClose={() => setModalOpen(false)}
+          onSuccess={refresh}
+        />
       </Modal>
 
       {commentingTxn && (

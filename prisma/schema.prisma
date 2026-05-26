@@ -57,6 +57,12 @@ model User {
   comments       Comment[]       @relation("CommentAuthor")
   timeEntries    TimeEntry[]     @relation("TimeEntryUser")
   editedEntries  TimeEntry[]     @relation("TimeEntryEditor")
+  // Projects this user supervises (1:N — one user can supervise many).
+  // SetNull on delete so the project survives the supervisor leaving;
+  // the actions layer re-assigns via changeSupervisorAction immediately
+  // after, but the DB never blocks the user delete.
+  supervisedProjects Project[]   @relation("ProjectSupervisor")
+  createdProjects    Project[]   @relation("ProjectCreator")
 
   @@index([companyId])
   @@index([email])
@@ -84,6 +90,7 @@ model Company {
   budgets        Budget[]
   comments       Comment[]
   timeEntries    TimeEntry[]
+  projects       Project[]
 }
 
 model Transaction {
@@ -105,6 +112,13 @@ model Transaction {
   ruleId String?
   rule   RecurringRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
 
+  // Optional project tag. When set, this transaction counts against the
+  // project's category budget(s); when null, it counts against company-wide
+  // budgets only. Existing rows are null after migration — pre-projects
+  // transactions remain company-global.
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
   company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   user     User      @relation(fields: [addedBy], references: [id], onDelete: Cascade)
   comments Comment[]
@@ -113,6 +127,7 @@ model Transaction {
   @@index([companyId, type])
   @@index([addedBy])
   @@index([ruleId])
+  @@index([projectId, date])
 }
 
 // Repeating-transaction template. A daily cron at /api/cron/materialize-recurring
@@ -157,6 +172,11 @@ model RecurringRule {
 model Task {
   id             String    @id @default(cuid())
   companyId      String
+  // Required after the add_projects migration backfills every legacy row
+  // to a "General" project per company. onDelete: Restrict so a project
+  // can't be deleted while it still has tasks — admins must archive or
+  // reparent tasks first.
+  projectId      String
   title          String
   description    String
   status         String // "pending" | "in_progress" | "completed"
@@ -170,18 +190,25 @@ model Task {
   completedAt    DateTime?
 
   company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Restrict)
   assignee    User        @relation("TaskAssignee", fields: [assignedTo], references: [id], onDelete: Cascade)
   creator     User        @relation("TaskCreator", fields: [assignedBy], references: [id], onDelete: Cascade)
   comments    Comment[]
   timeEntries TimeEntry[]
 
   @@index([companyId, status])
+  @@index([projectId, status])
   @@index([assignedTo])
 }
 
 model Activity {
   id        String   @id @default(cuid())
   companyId String
+  // Optional project tag. Project-scoped events (project_created,
+  // task_created, supervisor changed, etc.) carry the projectId so the
+  // per-project Activity tab can filter without scanning every event.
+  // SetNull on project delete so historical events outlive the project.
+  projectId String?
   type      String // ActivityType union from lib/types.ts
   message   String
   userId    String
@@ -189,16 +216,23 @@ model Activity {
   metadata  String? // JSON-encoded ActivityMetadata discriminated union
   createdAt DateTime @default(now())
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   @@index([companyId, createdAt])
+  @@index([projectId, createdAt])
 }
 
 model Notification {
   id        String   @id @default(cuid())
   userId    String
   companyId String
+  // Optional project scope — set for project-scoped notifications
+  // (supervisor assigned, project task created, project budget alerted).
+  // Drives the read-side strip-finance-for-members filter so we can keep
+  // serving members project pings without leaking non-project budget alerts.
+  projectId String?
   title     String
   message   String
   type      String // "info" | "success" | "warning" | "danger"
@@ -206,8 +240,9 @@ model Notification {
   link      String?
   createdAt DateTime @default(now())
 
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   @@index([userId, read])
   @@index([userId, createdAt])
@@ -249,6 +284,10 @@ model InviteToken {
 model Budget {
   id               String   @id @default(cuid())
   companyId        String
+  // Required after add_projects backfills every legacy row to a "General"
+  // project per company. onDelete: Restrict so a project can't be deleted
+  // while it still has budgets attached (admin must archive or reparent).
+  projectId        String
   category         String // single expense category, e.g. "Office Rent"
   monthlyLimit     Float
   createdBy        String
@@ -261,13 +300,16 @@ model Budget {
   createdAt        DateTime @default(now())
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Restrict)
   user    User    @relation(fields: [createdBy], references: [id], onDelete: Cascade)
 
-  // One active budget per category per company (paused budgets are excluded
+  // One active budget per category per project (paused budgets are excluded
   // via partial-unique-emulation in the action layer; SQL unique can't be
   // conditional on `active` in Postgres without an expression index).
   @@index([companyId, active])
   @@index([companyId, category])
+  @@index([projectId, active])
+  @@index([projectId, category])
 }
 
 // Threaded discussion attached to either a Task or a Transaction (XOR —
@@ -325,6 +367,11 @@ model Comment {
 model TimeEntry {
   id             String    @id @default(cuid())
   companyId      String
+  // Optional project tag — entries can stay "general work" (null). If both
+  // taskId and projectId are set, the picker UI keeps them in sync (the
+  // task's project wins). SetNull on delete so historical hours survive.
+  projectId      String?
+  projectName    String? // denormalized snapshot of the project name at clock-in
   userId         String
   userName       String // denormalized — survives user rename
   taskId         String? // optional — entry can be "untagged" general work
@@ -345,14 +392,74 @@ model TimeEntry {
   editedAt       DateTime?
   createdAt      DateTime  @default(now())
 
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  user    User    @relation("TimeEntryUser", fields: [userId], references: [id], onDelete: Cascade)
-  editor  User?   @relation("TimeEntryEditor", fields: [editedBy], references: [id], onDelete: SetNull)
-  task    Task?   @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  company Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User     @relation("TimeEntryUser", fields: [userId], references: [id], onDelete: Cascade)
+  editor  User?    @relation("TimeEntryEditor", fields: [editedBy], references: [id], onDelete: SetNull)
+  task    Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   @@index([userId, clockInAt])
   @@index([companyId, clockInAt])
   @@index([taskId])
+  @@index([projectId, clockInAt])
   // Lets the cron find open entries to auto-close without scanning every row.
   @@index([clockOutAt, lastActivityAt])
+}
+
+// A project is the unit founders plan against — owns tasks, budgets, time
+// entries, and optionally transactions. One company can own any number of
+// projects.
+//
+// Supervisor model:
+//   - Each project has exactly one supervisorId (User).
+//   - The supervisor gets ELEVATED permissions inside this project:
+//     manage its tasks and budgets, see its finance figures, even when
+//     their global role is "member". See lib/auth/project-permissions.ts.
+//   - Supervisor can be reassigned (admin/cofounder only) via
+//     changeSupervisorAction; an Activity row + a Notification land on
+//     the new supervisor.
+//
+// Visibility for members:
+//   - A member sees a project iff they're the supervisor OR they have at
+//     least one assigned task in it. Derived in listProjectsForUser().
+//   - There's no separate ProjectMember table — task assignments + the
+//     supervisor FK encode "who's on this project."
+//
+// Migration & backfill:
+//   - The add_projects migration creates one "General" project per company
+//     and back-fills every existing Task + Budget row's projectId there.
+//   - After that backfill, Task.projectId and Budget.projectId are NOT NULL.
+model Project {
+  id            String   @id @default(cuid())
+  companyId     String
+  name          String
+  description   String?  // one-line summary shown on cards
+  supervisorId  String
+  // Lifecycle: active | on_hold | completed | archived. Status drives the
+  // default filter on /projects (archived hidden by default) and shifts
+  // the card's visual tone.
+  status        String   @default("active")
+  // Color tag drawn from a fixed palette (primary | cyan | pink | warning
+  // | info). Stored as a string slug, NOT a hex — keeps swatches in lock
+  // step with the design tokens defined in app/globals.css.
+  color         String   @default("primary")
+  // Optional planned end. When set + status="active" + past today, the
+  // project card renders an overdue chip.
+  targetEndDate DateTime?
+  createdBy     String
+  createdAt     DateTime @default(now())
+
+  company    Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supervisor User    @relation("ProjectSupervisor", fields: [supervisorId], references: [id])
+  creator    User    @relation("ProjectCreator", fields: [createdBy], references: [id])
+
+  tasks         Task[]
+  budgets       Budget[]
+  timeEntries   TimeEntry[]
+  transactions  Transaction[]
+  activities    Activity[]
+  notifications Notification[]
+
+  @@index([companyId, status])
+  @@index([supervisorId])
 }

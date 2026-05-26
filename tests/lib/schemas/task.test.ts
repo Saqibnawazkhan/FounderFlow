@@ -13,6 +13,8 @@ describe("NewTaskSchema", () => {
     description: "Roll the schema change",
     status: "pending" as const,
     priority: "high" as const,
+    // Required since the add_projects schema change.
+    projectId: "p1",
     assignedTo: "user-1",
     deadline: tomorrow(),
   });

@@ -17,7 +17,8 @@ import { db } from "@/lib/db";
 import { NewBudgetSchema, UpdateBudgetSchema } from "@/lib/schemas/budget";
 import { limiters } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
-import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
+import type { Role } from "@/lib/auth/role-gates";
+import { canManageProject } from "@/lib/auth/project-permissions";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
 
@@ -26,9 +27,6 @@ export async function createBudgetAction(input: unknown): Promise<ActionResult<{
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
   }
-  if (!canSeeFinances(session.user.role as Role)) {
-    return { success: false, error: "Not authorized" };
-  }
   const gate = limiters.write.consume(session.user.id);
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
@@ -36,19 +34,33 @@ export async function createBudgetAction(input: unknown): Promise<ActionResult<{
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid budget" };
   }
-  const { category, monthlyLimit } = parsed.data;
-  const { id: userId, companyId } = session.user;
+  const { projectId, category, monthlyLimit } = parsed.data;
+  const { id: userId, companyId, role } = session.user;
 
   try {
-    // Soft uniqueness: refuse a second ACTIVE budget for the same category.
-    // (Inactive duplicates are fine — admins can pause + reuse.)
+    // Project must live in this company. Supervisor of THIS project can
+    // create budgets even as a member-tier user; otherwise admin/cofounder.
+    const project = await db.project.findFirst({
+      where: { id: projectId, companyId },
+      select: { id: true, supervisorId: true, status: true },
+    });
+    if (!project) return { success: false, error: "Project not found" };
+    if (project.status === "archived") {
+      return { success: false, error: "Can't add budgets to an archived project" };
+    }
+    if (!canManageProject({ userId, role: role as Role, project })) {
+      return { success: false, error: "Only the supervisor or a founder can add budgets here" };
+    }
+
+    // Soft uniqueness: refuse a second ACTIVE budget for the same category
+    // within the SAME project. Different projects can share a category.
     const existing = await db.budget.findFirst({
-      where: { companyId, category, active: true },
+      where: { projectId, category, active: true },
     });
     if (existing) {
       return {
         success: false,
-        error: `A budget for "${category}" already exists. Edit or pause it instead.`,
+        error: `A budget for "${category}" already exists in this project. Edit or pause it instead.`,
       };
     }
 
@@ -58,6 +70,7 @@ export async function createBudgetAction(input: unknown): Promise<ActionResult<{
     const created = await db.budget.create({
       data: {
         companyId,
+        projectId,
         category,
         monthlyLimit,
         createdBy: userId,
@@ -66,6 +79,7 @@ export async function createBudgetAction(input: unknown): Promise<ActionResult<{
     });
 
     revalidatePath("/budgets");
+    revalidatePath(`/projects/${projectId}`);
     return { success: true, data: { id: created.id } };
   } catch (e) {
     captureServerError(e, { action: "createBudgetAction" });
@@ -78,18 +92,27 @@ export async function updateBudgetAction(input: unknown): Promise<ActionResult> 
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
   }
-  if (!canSeeFinances(session.user.role as Role)) {
-    return { success: false, error: "Not authorized" };
-  }
 
   const parsed = UpdateBudgetSchema.safeParse(input);
   if (!parsed.success) return { success: false, error: "Invalid request" };
   const { budgetId, monthlyLimit, active } = parsed.data;
 
   try {
-    const budget = await db.budget.findUnique({ where: { id: budgetId } });
+    const budget = await db.budget.findUnique({
+      where: { id: budgetId },
+      include: { project: { select: { id: true, supervisorId: true } } },
+    });
     if (!budget) return { success: false, error: "Budget not found" };
     if (budget.companyId !== session.user.companyId) {
+      return { success: false, error: "Not authorized" };
+    }
+    if (
+      !canManageProject({
+        userId: session.user.id,
+        role: session.user.role as Role,
+        project: budget.project,
+      })
+    ) {
       return { success: false, error: "Not authorized" };
     }
 
@@ -102,6 +125,7 @@ export async function updateBudgetAction(input: unknown): Promise<ActionResult> 
 
     await db.budget.update({ where: { id: budgetId }, data });
     revalidatePath("/budgets");
+    revalidatePath(`/projects/${budget.projectId}`);
     return { success: true, data: undefined };
   } catch (e) {
     captureServerError(e, { action: "updateBudgetAction" });
@@ -114,19 +138,29 @@ export async function deleteBudgetAction(budgetId: string): Promise<ActionResult
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
   }
-  if (!canSeeFinances(session.user.role as Role)) {
-    return { success: false, error: "Not authorized" };
-  }
   if (!budgetId) return { success: false, error: "Missing budget id" };
 
   try {
-    const budget = await db.budget.findUnique({ where: { id: budgetId } });
+    const budget = await db.budget.findUnique({
+      where: { id: budgetId },
+      include: { project: { select: { id: true, supervisorId: true } } },
+    });
     if (!budget) return { success: false, error: "Budget not found" };
     if (budget.companyId !== session.user.companyId) {
       return { success: false, error: "Not authorized" };
     }
+    if (
+      !canManageProject({
+        userId: session.user.id,
+        role: session.user.role as Role,
+        project: budget.project,
+      })
+    ) {
+      return { success: false, error: "Not authorized" };
+    }
     await db.budget.delete({ where: { id: budgetId } });
     revalidatePath("/budgets");
+    revalidatePath(`/projects/${budget.projectId}`);
     return { success: true, data: undefined };
   } catch (e) {
     captureServerError(e, { action: "deleteBudgetAction" });

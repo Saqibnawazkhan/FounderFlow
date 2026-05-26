@@ -1,6 +1,12 @@
 /**
  * Read-side queries for tasks. Pairs with lib/actions/tasks.ts which still
  * owns add/update/delete/status-change.
+ *
+ * Project scoping:
+ *   - `getTasks()` (no args) — every company task. Used by /dashboard for
+ *     the "open tasks" KPI and the legacy /tasks board.
+ *   - `getTasks({ projectId })` — scoped to one project. Used inside the
+ *     project detail page's Tasks tab.
  */
 
 import { db } from "@/lib/db";
@@ -15,6 +21,7 @@ function toClient(
   t: {
     id: string;
     companyId: string;
+    projectId: string;
     title: string;
     description: string;
     status: string;
@@ -26,12 +33,15 @@ function toClient(
     deadline: Date;
     createdAt: Date;
     completedAt: Date | null;
+    project?: { name: string } | null;
   },
   commentCount = 0
 ): TaskWithCount {
   return {
     id: t.id,
     companyId: t.companyId,
+    projectId: t.projectId,
+    projectName: t.project?.name,
     title: t.title,
     description: t.description,
     status: t.status as Task["status"],
@@ -47,12 +57,15 @@ function toClient(
   };
 }
 
-export async function getTasks(): Promise<TaskWithCount[]> {
+export async function getTasks(opts: { projectId?: string } = {}): Promise<TaskWithCount[]> {
   const { companyId } = await requireScopedSession();
   const rows = await db.task.findMany({
-    where: { companyId },
+    where: { companyId, ...(opts.projectId ? { projectId: opts.projectId } : {}) },
     orderBy: { createdAt: "desc" },
-    include: { _count: { select: { comments: true } } },
+    include: {
+      _count: { select: { comments: true } },
+      project: { select: { name: true } },
+    },
   });
   return rows.map((r) => toClient(r, r._count.comments));
 }

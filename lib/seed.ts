@@ -305,10 +305,17 @@ export function seedData() {
 
   const transactions = [...investments, ...expenses];
 
+  // Single demo project so every seeded task satisfies the Task.projectId
+  // contract. This is the localStorage seed used by the legacy demo mode —
+  // it doesn't touch the real DB, so the projectId only needs to be a
+  // stable non-empty string.
+  const defaultProjectId = uuid();
+
   const tasks: Task[] = [
     {
       id: uuid(),
       companyId,
+      projectId: defaultProjectId,
       title: "Finalize Q3 product roadmap",
       description: "Review feature requests and prioritize for next quarter",
       status: "in_progress",
@@ -323,6 +330,7 @@ export function seedData() {
     {
       id: uuid(),
       companyId,
+      projectId: defaultProjectId,
       title: "Design new landing page",
       description: "Create high-converting hero section with new branding",
       status: "in_progress",
@@ -337,6 +345,7 @@ export function seedData() {
     {
       id: uuid(),
       companyId,
+      projectId: defaultProjectId,
       title: "Customer interviews — top 10 users",
       description: "Schedule and conduct discovery interviews",
       status: "pending",
@@ -351,6 +360,7 @@ export function seedData() {
     {
       id: uuid(),
       companyId,
+      projectId: defaultProjectId,
       title: "Prepare investor pitch deck v2",
       description: "Update financials and traction metrics for Series A",
       status: "pending",
@@ -365,6 +375,7 @@ export function seedData() {
     {
       id: uuid(),
       companyId,
+      projectId: defaultProjectId,
       title: "Hire backend engineer",
       description: "Source candidates and conduct first round interviews",
       status: "pending",
@@ -379,6 +390,7 @@ export function seedData() {
     {
       id: uuid(),
       companyId,
+      projectId: defaultProjectId,
       title: "Setup CI/CD pipeline",
       description: "Migrate from manual deploys to GitHub Actions",
       status: "completed",
@@ -394,6 +406,7 @@ export function seedData() {
     {
       id: uuid(),
       companyId,
+      projectId: defaultProjectId,
       title: "Launch beta with 20 customers",
       description: "Coordinate beta launch and gather initial feedback",
       status: "completed",
@@ -409,6 +422,7 @@ export function seedData() {
     {
       id: uuid(),
       companyId,
+      projectId: defaultProjectId,
       title: "Setup analytics dashboard",
       description: "Integrate Mixpanel and create internal metrics dashboard",
       status: "completed",

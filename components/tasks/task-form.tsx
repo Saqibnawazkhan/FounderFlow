@@ -12,8 +12,14 @@ import { cn } from "@/lib/utils";
 interface Props {
   /** Company users for the assignee dropdown — parent fetches and passes in. */
   users: User[];
+  /** Available projects for the project picker. Required since the
+   *  add_projects migration — Task.projectId is non-nullable. */
+  projects: { id: string; name: string }[];
   /** Current user's id, used to default assignee to self. */
   currentUserId?: string;
+  /** Pre-select a project when the form is rendered inside a specific
+   *  project detail page. Locks the field if set. */
+  forcedProjectId?: string;
   onClose: () => void;
   onSuccess?: () => void;
 }
@@ -31,10 +37,18 @@ const STATUSES: { value: TaskStatus; label: string }[] = [
   { value: "completed", label: "Completed" },
 ];
 
-export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
+export function TaskForm({
+  users,
+  projects,
+  currentUserId,
+  forcedProjectId,
+  onClose,
+  onSuccess,
+}: Props) {
   const titleId = useId();
   const descId = useId();
   const assigneeId = useId();
+  const projectFieldId = useId();
   const deadlineId = useId();
 
   const today = new Date().toISOString().slice(0, 10);
@@ -53,6 +67,7 @@ export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
     defaultValues: {
       title: "",
       description: "",
+      projectId: forcedProjectId || projects[0]?.id || "",
       assignedTo: currentUserId || users[0]?.id || "",
       priority: "medium",
       status: "pending",
@@ -142,6 +157,29 @@ export function TaskForm({ users, currentUserId, onClose, onSuccess }: Props) {
         />
         {errors.description && (
           <p className="mt-1.5 text-xs text-danger">{errors.description.message}</p>
+        )}
+      </div>
+
+      <div>
+        <label htmlFor={projectFieldId} className={labelClass}>
+          Project
+        </label>
+        <select
+          id={projectFieldId}
+          disabled={Boolean(forcedProjectId)}
+          aria-invalid={errors.projectId ? true : undefined}
+          {...register("projectId")}
+          className={cn(inputClass(!!errors.projectId), "appearance-none")}
+        >
+          {projects.length === 0 && <option value="">No projects yet</option>}
+          {projects.map((p) => (
+            <option key={p.id} value={p.id} className="bg-bg">
+              {p.name}
+            </option>
+          ))}
+        </select>
+        {errors.projectId && (
+          <p className="mt-1.5 text-xs text-danger">{errors.projectId.message}</p>
         )}
       </div>
 

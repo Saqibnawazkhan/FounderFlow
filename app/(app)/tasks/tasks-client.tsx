@@ -67,11 +67,18 @@ const PRIORITY_STYLES: Record<TaskPriority, string> = {
 type Props = {
   initialTasks: TaskWithCount[];
   users: User[];
+  projects: { id: string; name: string }[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
 };
 
-export function TasksClient({ initialTasks, users, currentUserId, currentUserRole }: Props) {
+export function TasksClient({
+  initialTasks,
+  users,
+  projects,
+  currentUserId,
+  currentUserRole,
+}: Props) {
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
@@ -426,6 +433,7 @@ export function TasksClient({ initialTasks, users, currentUserId, currentUserRol
       >
         <TaskForm
           users={users}
+          projects={projects}
           currentUserId={currentUserId}
           onClose={() => setModalOpen(false)}
           onSuccess={refresh}

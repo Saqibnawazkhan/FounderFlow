@@ -7,6 +7,7 @@
 import type { Metadata } from "next";
 import { getTransactions } from "@/lib/queries/transactions";
 import { getCompanyUsers } from "@/lib/queries/users";
+import { listProjectOptions } from "@/lib/queries/projects";
 import { requireScopedSession } from "@/lib/queries/session";
 import { InvestmentsClient } from "./investments-client";
 
@@ -16,16 +17,18 @@ export const metadata: Metadata = {
 };
 
 export default async function InvestmentsPage() {
-  const [session, transactions, users] = await Promise.all([
+  const [session, transactions, users, projects] = await Promise.all([
     requireScopedSession(),
     getTransactions(),
     getCompanyUsers(),
+    listProjectOptions(),
   ]);
 
   return (
     <InvestmentsClient
       transactions={transactions}
       users={users}
+      projects={projects.map((p) => ({ id: p.id, name: p.name }))}
       currentUserId={session.userId}
       currentUserRole={session.role}
     />

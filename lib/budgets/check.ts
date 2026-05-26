@@ -1,7 +1,17 @@
 /**
  * Post-write hook for addTransactionAction. After an expense lands, see if
  * any active budget for that category just crossed 80% or 100% and fan out
- * notifications to every company member.
+ * notifications.
+ *
+ * Project scoping:
+ *   - If the transaction was tagged with a projectId, only that project's
+ *     budgets get checked, the threshold sum aggregates ONLY project-tagged
+ *     transactions, and the fan-out is limited to the supervisor + everyone
+ *     with an assigned task on the project. The link points back to the
+ *     project detail page.
+ *   - If the transaction is project-less (legacy / non-project spend), we
+ *     skip the budget check entirely — every Budget now belongs to a
+ *     project, so there's nothing global to cross.
  *
  * Failure mode: this runs OUTSIDE the addTransaction $transaction on
  * purpose. A budget-check error must NEVER roll back the user's expense.
@@ -14,16 +24,22 @@ import { captureServerError } from "@/lib/sentry-server";
 
 export async function checkBudgetThresholdAfterExpense({
   companyId,
+  projectId,
   category,
 }: {
   companyId: string;
+  projectId: string | null;
   category: string;
 }): Promise<void> {
+  // No project tag → no per-project budget to cross. We deliberately skip
+  // here rather than aggregate company-wide — projects own budgets now.
+  if (!projectId) return;
+
   try {
     const budget = await db.budget.findFirst({
-      where: { companyId, category, active: true },
+      where: { projectId, category, active: true },
     });
-    if (!budget) return; // no budget for this category — nothing to check
+    if (!budget) return; // no budget for this category in this project
 
     const now = new Date();
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -32,6 +48,7 @@ export async function checkBudgetThresholdAfterExpense({
     const sum = await db.transaction.aggregate({
       where: {
         companyId,
+        projectId,
         type: "expense",
         category,
         date: { gte: monthStart, lt: nextMonthStart },
@@ -43,6 +60,12 @@ export async function checkBudgetThresholdAfterExpense({
     const decision = decideThreshold(budget, monthToDate, now);
     if (!decision) return;
 
+    const project = await db.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, name: true, supervisorId: true },
+    });
+    if (!project) return; // race: project deleted between writes
+
     const mk = monthKey(now);
     const limitLabel = budget.monthlyLimit.toLocaleString();
     const spentLabel = monthToDate.toLocaleString();
@@ -50,31 +73,36 @@ export async function checkBudgetThresholdAfterExpense({
 
     const title =
       decision.kind === "alert"
-        ? `Budget exceeded: ${category}`
-        : `Budget alert: ${category} at ${pctLabel}%`;
+        ? `Budget exceeded: ${category} — ${project.name}`
+        : `Budget alert: ${category} at ${pctLabel}% — ${project.name}`;
     const message =
       decision.kind === "alert"
-        ? `${category} spend is PKR ${spentLabel} — over the PKR ${limitLabel} monthly cap.`
-        : `${category} is at ${pctLabel}% of the PKR ${limitLabel} monthly cap (PKR ${spentLabel} so far).`;
+        ? `${category} spend on ${project.name} is PKR ${spentLabel} — over the PKR ${limitLabel} monthly cap.`
+        : `${category} on ${project.name} is at ${pctLabel}% of the PKR ${limitLabel} monthly cap (PKR ${spentLabel} so far).`;
     const notifType = decision.kind === "alert" ? "danger" : "warning";
 
-    // Fan-out + update the budget's "last fired this month" sentinel in one
-    // $transaction so we can't end up with notifications but no sentinel
-    // (would re-spam everyone on the next expense).
+    // Fan-out target: the supervisor + every assignee of a task in this
+    // project. Replaces the old "every company member" blast so unrelated
+    // teammates don't get pinged about budgets they don't own.
     await db.$transaction(async (tx) => {
-      const members = await tx.user.findMany({
-        where: { companyId },
-        select: { id: true },
+      const assignees = await tx.task.findMany({
+        where: { projectId },
+        select: { assignedTo: true },
+        distinct: ["assignedTo"],
       });
-      if (members.length > 0) {
+      const recipientIds = new Set<string>([project.supervisorId]);
+      for (const a of assignees) recipientIds.add(a.assignedTo);
+
+      if (recipientIds.size > 0) {
         await tx.notification.createMany({
-          data: members.map((m) => ({
-            userId: m.id,
+          data: Array.from(recipientIds).map((userId) => ({
+            userId,
             companyId,
+            projectId,
             title,
             message,
             type: notifType,
-            link: "/budgets",
+            link: `/projects/${projectId}`,
           })),
         });
       }
@@ -90,7 +118,7 @@ export async function checkBudgetThresholdAfterExpense({
     // Non-fatal — log + capture, never rethrow.
     captureServerError(e, {
       action: "checkBudgetThresholdAfterExpense",
-      extra: { companyId, category },
+      extra: { companyId, projectId, category },
     });
   }
 }

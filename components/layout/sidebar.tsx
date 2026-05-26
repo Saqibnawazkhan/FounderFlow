@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   BarChart3,
   Bell,
+  Briefcase,
   CheckSquare,
   Clock,
   FileText,
@@ -42,6 +43,7 @@ const navItems: {
   { href: "/investments", icon: TrendingUp, labelKey: "investments" },
   { href: "/recurring", icon: Repeat, labelKey: "recurring" },
   { href: "/budgets", icon: Target, labelKey: "budgets" },
+  { href: "/projects", icon: Briefcase, labelKey: "projects" },
   { href: "/tasks", icon: CheckSquare, labelKey: "tasks" },
   { href: "/time", icon: Clock, labelKey: "time" },
   { href: "/activities", icon: Zap, labelKey: "activity" },

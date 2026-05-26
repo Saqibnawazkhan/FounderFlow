@@ -6,6 +6,7 @@
 
 import type { Metadata } from "next";
 import { getBudgetsWithSpend } from "@/lib/queries/budgets";
+import { listProjectOptions } from "@/lib/queries/projects";
 import { BudgetsClient } from "./budgets-client";
 
 export const metadata: Metadata = {
@@ -14,6 +15,8 @@ export const metadata: Metadata = {
 };
 
 export default async function BudgetsPage() {
-  const budgets = await getBudgetsWithSpend();
-  return <BudgetsClient budgets={budgets} />;
+  const [budgets, projects] = await Promise.all([getBudgetsWithSpend(), listProjectOptions()]);
+  return (
+    <BudgetsClient budgets={budgets} projects={projects.map((p) => ({ id: p.id, name: p.name }))} />
+  );
 }

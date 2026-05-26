@@ -41,6 +41,10 @@ export type TaskPriority = "low" | "medium" | "high" | "urgent";
 export interface Task {
   id: string;
   companyId: string;
+  // projectId is required after the add_projects migration. Pre-projects
+  // rows were back-filled to a per-company "General" project.
+  projectId: string;
+  projectName?: string;
   title: string;
   description: string;
   status: TaskStatus;
@@ -65,12 +69,18 @@ export type ActivityType =
   | "user_role_changed"
   | "company_created"
   | "transaction_deleted"
-  | "task_deleted";
+  | "task_deleted"
+  | "task_created"
+  | "project_created"
+  | "project_updated"
+  | "project_archived"
+  | "project_supervisor_changed";
 
 export type ActivityMetadata =
   | { kind: "transaction"; amount: number; category: string }
   | { kind: "task"; taskId: string; title: string }
   | { kind: "user"; invitedUser?: string; role?: UserRole; previousRole?: UserRole }
+  | { kind: "project"; projectId: string; projectName: string }
   | { kind: "none" };
 
 export interface Activity {

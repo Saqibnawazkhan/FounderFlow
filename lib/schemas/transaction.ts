@@ -23,6 +23,14 @@ export const NewTransactionSchema = z.object({
     message: "Pick a valid category",
   }),
   description: z.string().trim().max(500, "Description must be 500 chars or less"),
+  // Optional project tag — when set, the threshold check sums only this
+  // project's transactions against this project's budgets. Empty string
+  // coerces to undefined so a "no project" select option round-trips
+  // cleanly to a SQL NULL.
+  projectId: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
   date: z
     .string()
     .refine((v) => !Number.isNaN(Date.parse(v)), "Invalid date")

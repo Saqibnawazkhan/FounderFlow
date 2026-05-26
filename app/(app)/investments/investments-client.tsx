@@ -34,11 +34,18 @@ const ROLE_LABEL = {
 type Props = {
   transactions: Transaction[];
   users: User[];
+  projects: { id: string; name: string }[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
 };
 
-export function InvestmentsClient({ transactions, users, currentUserId, currentUserRole }: Props) {
+export function InvestmentsClient({
+  transactions,
+  users,
+  projects,
+  currentUserId,
+  currentUserRole,
+}: Props) {
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
@@ -356,6 +363,7 @@ export function InvestmentsClient({ transactions, users, currentUserId, currentU
       >
         <TransactionForm
           type="investment"
+          projects={projects}
           onClose={() => setModalOpen(false)}
           onSuccess={refresh}
         />

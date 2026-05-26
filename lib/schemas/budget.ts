@@ -6,6 +6,9 @@ import { z } from "zod";
 import { EXPENSE_CATEGORIES } from "@/lib/types";
 
 export const NewBudgetSchema = z.object({
+  // Required since add_projects migration — budgets live inside a project.
+  // "General" project is the catch-all for cross-cutting caps.
+  projectId: z.string().min(1, "Pick a project"),
   category: z.string().refine((v) => (EXPENSE_CATEGORIES as readonly string[]).includes(v), {
     message: "Pick a valid expense category",
   }),

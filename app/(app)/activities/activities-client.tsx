@@ -3,8 +3,11 @@
 import { useMemo, useState } from "react";
 import {
   Activity as ActivityIcon,
+  Archive,
   CheckCircle2,
   CheckSquare,
+  Edit3,
+  FolderPlus,
   Filter,
   Search,
   ShieldCheck,
@@ -13,6 +16,7 @@ import {
   TrendingUp,
   UserMinus,
   UserPlus,
+  UserCog,
   Zap,
   type LucideIcon,
 } from "lucide-react";
@@ -28,6 +32,7 @@ const ACTIVITY_META: Record<ActivityType, { icon: LucideIcon; tone: ActivityTone
   {
     expense_added: { icon: TrendingDown, tone: "pink", label: "Expense" },
     investment_added: { icon: TrendingUp, tone: "primary", label: "Investment" },
+    task_created: { icon: CheckSquare, tone: "primary", label: "Task created" },
     task_assigned: { icon: CheckSquare, tone: "cyan", label: "Task assigned" },
     task_completed: { icon: CheckCircle2, tone: "primary", label: "Task completed" },
     task_updated: { icon: CheckSquare, tone: "info", label: "Task updated" },
@@ -37,6 +42,10 @@ const ACTIVITY_META: Record<ActivityType, { icon: LucideIcon; tone: ActivityTone
     user_removed: { icon: UserMinus, tone: "danger", label: "Member removed" },
     user_role_changed: { icon: ShieldCheck, tone: "warning", label: "Role changed" },
     company_created: { icon: Zap, tone: "primary", label: "Company" },
+    project_created: { icon: FolderPlus, tone: "primary", label: "Project created" },
+    project_updated: { icon: Edit3, tone: "info", label: "Project updated" },
+    project_archived: { icon: Archive, tone: "warning", label: "Project archived" },
+    project_supervisor_changed: { icon: UserCog, tone: "cyan", label: "Supervisor changed" },
   };
 
 const TONE_FILL: Record<ActivityTone, string> = {

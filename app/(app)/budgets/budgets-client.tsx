@@ -17,9 +17,12 @@ import { cn, formatCurrency } from "@/lib/utils";
 import { EXPENSE_CATEGORIES } from "@/lib/types";
 import type { BudgetWithSpend } from "@/lib/queries/budgets";
 
-type Props = { budgets: BudgetWithSpend[] };
+type Props = {
+  budgets: BudgetWithSpend[];
+  projects: { id: string; name: string }[];
+};
 
-export function BudgetsClient({ budgets }: Props) {
+export function BudgetsClient({ budgets, projects }: Props) {
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
@@ -124,6 +127,7 @@ export function BudgetsClient({ budgets }: Props) {
       >
         <NewBudgetForm
           takenCategories={takenCategories}
+          projects={projects}
           onClose={() => setModalOpen(false)}
           onCreated={() => {
             refresh();
@@ -268,15 +272,18 @@ function BudgetCard({
 
 function NewBudgetForm({
   takenCategories,
+  projects,
   onClose,
   onCreated,
 }: {
   takenCategories: Set<string>;
+  projects: { id: string; name: string }[];
   onClose: () => void;
   onCreated: () => void;
 }) {
   const categoryId = useId();
   const limitId = useId();
+  const projectFieldId = useId();
 
   // Pick the first NOT-already-budgeted category as the default so the form
   // opens in a valid state most of the time.
@@ -294,6 +301,7 @@ function NewBudgetForm({
     defaultValues: {
       category: defaultCategory,
       monthlyLimit: undefined as unknown as number,
+      projectId: projects[0]?.id ?? "",
     },
   });
 
@@ -316,6 +324,30 @@ function NewBudgetForm({
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
+      <div>
+        <label
+          htmlFor={projectFieldId}
+          className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+        >
+          Project
+        </label>
+        <select
+          id={projectFieldId}
+          {...register("projectId")}
+          className={inputClass(!!errors.projectId)}
+        >
+          {projects.length === 0 && <option value="">No projects available</option>}
+          {projects.map((p) => (
+            <option key={p.id} value={p.id} className="bg-bg">
+              {p.name}
+            </option>
+          ))}
+        </select>
+        {errors.projectId && (
+          <p className="mt-1.5 text-xs text-danger">{errors.projectId.message}</p>
+        )}
+      </div>
+
       <div>
         <label
           htmlFor={categoryId}
