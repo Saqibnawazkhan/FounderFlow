@@ -14,7 +14,14 @@ Legend
 - **[OPP]** — improvement / opportunity
 - Severity: **🔴 P0** blocking or trust-eroding · **🟠 P1** should ship · **🟡 P2** nice-to-have · **🔵 P3** long-horizon
 
-Totals at audit time: **6 P0 · ~50 P1 · ~20 P2/P3 · 76 rows**.
+Totals at audit time: **6 P0 · ~50 P1 · ~20 P2/P3 · 76 unique rows** (96 checkboxes once duplicates + top-of-sweep pointers are counted).
+
+Progress so far (2026-07-01 sweep):
+- **34 [x] shipped** across P0 + P1 across every surface (auth, nav, tasks, projects, finance, time, notifications, settings, i18n, a11y, PWA).
+- **16 [~] skipped with rationale** (false positives, already-covered items, or DEFERRED with a specific unblock condition — usually "waits on Tier 2 env separation" or "needs binary assets Write tool can't emit").
+- **46 [ ] still open** — mix of P1 feature-shaped work (bulk edit, CSV import, MFA, mobile card fallbacks, notification categories, etc.) and P2/P3 nice-to-haves.
+
+Commits: `61efaba` (P0) · `89b8298` (Auth+Nav) · `1f8c4fb` (Tasks+Projects) · `88263e2` (Finance) · `388bb02` (Time+Notif) · `68bac72` (Settings+i18n+a11y+PWA).
 
 ---
 
