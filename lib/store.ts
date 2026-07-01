@@ -33,9 +33,13 @@ interface AppState {
   /** Mobile sidebar open/close. Lifted to the store so the topbar burger can
    * open the sidebar without prop-drilling through layout. */
   mobileNavOpen: boolean;
+  /** Desktop sidebar collapsed vs expanded. Persisted so the choice survives
+   * a page reload. Mobile always uses the drawer overlay regardless. */
+  sidebarCollapsed: boolean;
 
   init: () => void;
   setMobileNavOpen: (open: boolean) => void;
+  toggleSidebarCollapsed: () => void;
   setLocale: (locale: Locale) => void;
   /**
    * Adopt a user identity that came from Auth.js (via getSession on mount).
@@ -160,6 +164,7 @@ export const useStore = create<AppState>()(
       theme: "dark",
       locale: "en" as Locale,
       mobileNavOpen: false,
+      sidebarCollapsed: false,
 
       init: () => {
         const state = get();
@@ -178,6 +183,8 @@ export const useStore = create<AppState>()(
       },
 
       setMobileNavOpen: (open) => set({ mobileNavOpen: open }),
+
+      toggleSidebarCollapsed: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
 
       setLocale: (locale) => set({ locale }),
 
@@ -583,6 +590,7 @@ export const useStore = create<AppState>()(
         notifications: state.notifications,
         theme: state.theme,
         locale: state.locale,
+        sidebarCollapsed: state.sidebarCollapsed,
         initialized: state.initialized,
       }),
     }

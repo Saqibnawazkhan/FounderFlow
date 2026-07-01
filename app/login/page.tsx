@@ -103,8 +103,12 @@ export default function LoginPage() {
               <input
                 id={emailId}
                 type="email"
+                inputMode="email"
+                maxLength={254}
                 placeholder={t.auth.emailPlaceholder}
                 autoComplete="email"
+                // eslint-disable-next-line jsx-a11y/no-autofocus -- landing on a dedicated /login page; first-field autofocus is expected
+                autoFocus
                 aria-invalid={errors.email ? true : undefined}
                 aria-describedby={errors.email ? `${emailId}-err` : undefined}
                 {...register("email")}
@@ -133,6 +137,7 @@ export default function LoginPage() {
                 <input
                   id={pwId}
                   type={showPassword ? "text" : "password"}
+                  maxLength={256}
                   placeholder={t.auth.passwordPlaceholderLogin}
                   autoComplete="current-password"
                   aria-invalid={errors.password ? true : undefined}
@@ -149,7 +154,7 @@ export default function LoginPage() {
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   aria-label={showPassword ? t.auth.hidePassword : t.auth.showPassword}
-                  className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg"
+                  className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                 >
                   {showPassword ? (
                     <EyeOff className="h-4 w-4" aria-hidden="true" />

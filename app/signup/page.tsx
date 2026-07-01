@@ -4,7 +4,7 @@ import { forwardRef, useId, useState } from "react";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowRight, Eye, EyeOff, Sparkles, CheckCircle2 } from "lucide-react";
+import { ArrowRight, ChevronDown, Eye, EyeOff, Sparkles, CheckCircle2 } from "lucide-react";
 import toast from "react-hot-toast";
 import { signupAction } from "@/lib/actions/auth";
 import { SignupSchema, type SignupInput } from "@/lib/schemas/auth";
@@ -187,6 +187,9 @@ export default function SignupPage() {
                 label={t.auth.fullName}
                 placeholder={t.auth.fullNamePlaceholder}
                 autoComplete="name"
+                maxLength={80}
+                // eslint-disable-next-line jsx-a11y/no-autofocus -- landing on /signup step 1; first-field autofocus is expected
+                autoFocus
                 error={errors.name?.message}
                 {...register("name")}
               />
@@ -194,6 +197,8 @@ export default function SignupPage() {
                 id={emailId}
                 label={t.auth.workEmail}
                 type="email"
+                inputMode="email"
+                maxLength={254}
                 placeholder={t.auth.emailPlaceholder}
                 autoComplete="email"
                 error={errors.email?.message}
@@ -210,6 +215,7 @@ export default function SignupPage() {
                   <input
                     id={pwId}
                     type={showPassword ? "text" : "password"}
+                    maxLength={256}
                     placeholder={t.auth.passwordPlaceholderSignup}
                     autoComplete="new-password"
                     aria-invalid={errors.password ? true : undefined}
@@ -226,7 +232,7 @@ export default function SignupPage() {
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     aria-label={showPassword ? t.auth.hidePassword : t.auth.showPassword}
-                    className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg"
+                    className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                   >
                     {showPassword ? (
                       <EyeOff className="h-4 w-4" aria-hidden="true" />
@@ -258,23 +264,29 @@ export default function SignupPage() {
                 >
                   {t.auth.industry}
                 </label>
-                <select
-                  id={industryId}
-                  aria-invalid={errors.industry ? true : undefined}
-                  {...register("industry")}
-                  className={cn(
-                    "w-full appearance-none rounded-xl border bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors focus:bg-glass/[0.08] focus:outline-none",
-                    errors.industry
-                      ? "border-danger/60 focus:border-danger"
-                      : "border-glass/[0.10] focus:border-primary/50"
-                  )}
-                >
-                  {INDUSTRIES.map((i) => (
-                    <option key={i} value={i} className="bg-bg">
-                      {i}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <select
+                    id={industryId}
+                    aria-invalid={errors.industry ? true : undefined}
+                    {...register("industry")}
+                    className={cn(
+                      "w-full cursor-pointer appearance-none rounded-xl border bg-glass/[0.05] px-4 py-3 pr-11 text-sm text-fg transition-colors focus:bg-glass/[0.08] focus:outline-none",
+                      errors.industry
+                        ? "border-danger/60 focus:border-danger"
+                        : "border-glass/[0.10] focus:border-primary/50"
+                    )}
+                  >
+                    {INDUSTRIES.map((i) => (
+                      <option key={i} value={i} className="bg-surface text-fg">
+                        {i}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown
+                    className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+                    aria-hidden="true"
+                  />
+                </div>
                 {errors.industry && (
                   <p className="mt-1.5 text-xs text-danger">{errors.industry.message}</p>
                 )}

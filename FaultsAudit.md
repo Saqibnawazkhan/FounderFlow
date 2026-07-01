@@ -37,12 +37,12 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 - [ ] **A2 · 🔴 [FEAT] No email verification post-signup.** Typo'd emails persist forever. Add a `verify-email` step or grace-period gate. → [app/signup](app/signup)
 - [ ] **A3 · 🔴 [FEAT] No account deletion (GDPR/CCPA gap).** Danger-zone section missing from settings. → [app/(app)/settings](app/(app)/settings)
 - [x] **A4 · 🔴 [FEAT] No favicon + OG image** — shipped in P0-6.
-- [ ] **A5 · 🟠 [FEAT] Admin can't generate/manage invite tokens from UI.** Acceptance page exists (`/invite/[token]`), creation doesn't. Team page needs "Invite" button + list of pending invites with resend/revoke.
-- [ ] **A6 · 🟠 [UI] Password inputs lack `maxLength`; email lacks `inputMode="email"`.** Edge-case form bugs + wrong mobile keyboard. → [app/login/page.tsx](app/login/page.tsx), [app/signup](app/signup)
-- [ ] **A7 · 🟠 [UI] No autofocus on first field.** User must click email manually. → [app/login/page.tsx](app/login/page.tsx)
-- [ ] **A8 · 🟠 [UI] Password eye-toggle has no `:focus-visible` ring.** Keyboard-invisible. → [app/login/page.tsx:148-159](app/login/page.tsx#L148-L159)
-- [ ] **A9 · 🟠 [BUG] Rate-limit message "Too many requests" is opaque.** No countdown, no guidance. Return `{ retryAfterSeconds }` from the limiter and render a countdown toast. → [lib/actions/auth.ts:37-39](lib/actions/auth.ts#L37-L39)
-- [ ] **A10 · 🟠 [BUG] Session expiry silently 401s server actions.** No toast, no redirect. Intercept 401 in a global boundary and force re-auth with a friendly banner. → [lib/auth.ts](lib/auth.ts)
+- [~] **A5 · 🟠 [FEAT] Admin can't generate/manage invite tokens from UI.** Partial false positive — creation UI DOES exist at [app/(app)/team/team-client.tsx:87](app/(app)/team/team-client.tsx#L87) (Invite member button + modal). The "list pending invites with resend/revoke" side is real but tracked separately under X7.
+- [x] **A6 · 🟠 [UI] Password inputs lack `maxLength`; email lacks `inputMode="email"`.** ✔ Login + signup emails now carry `inputMode="email" maxLength={254}`, passwords `maxLength={256}`. Signup name `maxLength={80}`.
+- [x] **A7 · 🟠 [UI] No autofocus on first field.** ✔ `autoFocus` on the first field of login (email) and signup step-1 (name), with an inline eslint-disable + rationale ("landing on a dedicated auth page; first-field autofocus is expected").
+- [x] **A8 · 🟠 [UI] Password eye-toggle has no `:focus-visible` ring.** ✔ Added `focus-visible:ring-2 focus-visible:ring-primary/50` to the toggle button on login, signup, and the new reset-password page.
+- [~] **A9 · 🟠 [BUG] Rate-limit message "Too many requests" is opaque.** Partial false positive — [lib/rate-limit.ts:103](lib/rate-limit.ts#L103) already returns `"Too many requests. Try again in Xs."`. The toast surfaces that verbatim via `gate.error`. A LIVE countdown timer is a P3 nice-to-have, not a P1.
+- [~] **A10 · 🟠 [BUG] Session expiry silently 401s server actions.** DEFERRED — a proper fix means a global "action result" interceptor or wrapping every callsite. Middleware already redirects expired sessions on the next navigation; the only silent case is mid-session for a single action call, which shows a toast. Full fix tracked as follow-up under a broader "auth error boundary" line item.
 - [ ] **A11 · 🟡 [UI] Landing hero contrast risk.** `text-primary-strong` on gradient may fail WCAG AA in some themes. → [app/page.tsx](app/page.tsx)
 - [ ] **A12 · 🟡 [OPP] No welcome tour / empty-state guidance post-signup.** New users land on blank dashboard. → [app/(app)/dashboard](app/(app)/dashboard)
 - [ ] **A13 · 🔵 [OPP] Magic-link login, sign-in-with-Google, 2FA / TOTP.** → [auth.config.ts](auth.config.ts)
@@ -50,13 +50,13 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 ## 2. Dashboard · Nav · Global shell
 
 - [x] **N1 · 🔴 [BUG] Topbar search stub** — shipped in P0-3 (command palette + ⌘K).
-- [ ] **N2 · 🟠 [FEAT] No breadcrumbs anywhere.**
-- [ ] **N3 · 🟠 [FEAT] No language switcher in UI.** Locale lives in Zustand but is unreachable by the user. → [components/layout/topbar.tsx](components/layout/topbar.tsx)
-- [ ] **N4 · 🟠 [FEAT] No desktop sidebar-collapse toggle.** 256 px permanently claimed on wide screens. → [components/layout/sidebar.tsx:156](components/layout/sidebar.tsx#L156)
-- [ ] **N5 · 🟠 [UI] Sidebar active-state too subtle.** `border-primary/30 bg-primary/10` blends. Bump to a stronger left-border or filled pill. → [components/layout/sidebar.tsx:216](components/layout/sidebar.tsx#L216)
-- [ ] **N6 · 🟠 [UI] Duplicate notification affordance.** Sidebar badge + topbar dot both indicate unread. Pick one. → [sidebar.tsx:222](components/layout/sidebar.tsx#L222), [topbar.tsx:194](components/layout/topbar.tsx#L194)
-- [ ] **N7 · 🟠 [BUG] No scroll-restoration between route transitions.** Cross-nav lands mid-scroll.
-- [ ] **N8 · 🟠 [BUG] Hydration paint flash from Zustand skeleton.** `AppLayout` shows loading state during `currentUser` hydration. → [app/(app)/layout.tsx:22-32](app/(app)/layout.tsx#L22-L32)
+- [ ] **N2 · 🟠 [FEAT] No breadcrumbs anywhere.** Follow-up: bake per-route metadata into a shared `PageHeader` and hoist it into the app layout.
+- [x] **N3 · 🟠 [FEAT] No language switcher in UI.** ✔ Added a `Languages` icon button in the topbar (between clock widget and theme toggle). Two-locale toggle (en ↔ ur); would upgrade to a dropdown if we add a third locale.
+- [x] **N4 · 🟠 [FEAT] No desktop sidebar-collapse toggle.** ✔ New `sidebarCollapsed` in the persisted store; sidebar shrinks to a 64 px icon rail with an inline `⟵ Collapse / ⟶` toggle in its footer; app layout's left margin animates between `lg:ml-64` and `lg:ml-16`.
+- [x] **N5 · 🟠 [UI] Sidebar active-state too subtle.** ✔ Stronger `border-primary/50 bg-primary/[0.14]` + a 2 px inset shadow rail + colored icon.
+- [x] **N6 · 🟠 [UI] Duplicate notification affordance.** ✔ Replaced the topbar 2×2 dot with a proper numeric badge (`9+` when over). Sidebar still counts; the two now agree instead of racing.
+- [~] **N7 · 🟠 [BUG] No scroll-restoration between route transitions.** DEFERRED — Next.js 14 App Router scroll-restores by default on `<Link>` nav and browser back/forward; audit finding needs empirical verification against a real regression, not blind wiring.
+- [~] **N8 · 🟠 [BUG] Hydration paint flash from Zustand skeleton.** DEFERRED — proper fix moves `currentUser` hydration into a Suspense boundary in Providers so the layout renders in the same paint as content. Full refactor for a future session.
 - [ ] **N9 · 🟡 [UI] Sparse / inconsistent page metadata.** Dashboard has 4 words, tasks has a full sentence. Standardize `"FounderFlow — <page>"` prefix + description shape.
 - [ ] **N10 · 🟡 [UI] 404 doesn't suggest related pages; offline page has no cached-page list.** → [app/not-found.tsx](app/not-found.tsx), [app/offline/page.tsx](app/offline/page.tsx)
 - [ ] **N11 · 🔵 [OPP] Cmd-K palette, recent-items widget, activity ticker, install-PWA button.**

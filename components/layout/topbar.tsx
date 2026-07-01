@@ -4,8 +4,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Bell, ChevronDown, LogOut, Menu, Moon, Search, Settings, Sun, User } from "lucide-react";
+import {
+  Bell,
+  ChevronDown,
+  Languages,
+  LogOut,
+  Menu,
+  Moon,
+  Search,
+  Settings,
+  Sun,
+  User,
+} from "lucide-react";
 import { useStore } from "@/lib/store";
+import { SUPPORTED_LOCALES, type Locale } from "@/lib/i18n/strings";
 import { logoutAction } from "@/lib/actions/auth";
 import {
   listNotificationsAction,
@@ -25,8 +37,19 @@ export function Topbar() {
   const currentUser = useStore((s) => s.currentUser);
   const theme = useStore((s) => s.theme);
   const toggleTheme = useStore((s) => s.toggleTheme);
+  const locale = useStore((s) => s.locale);
+  const setLocale = useStore((s) => s.setLocale);
   const logout = useStore((s) => s.logout);
   const setMobileNavOpen = useStore((s) => s.setMobileNavOpen);
+  // Toggle the UI locale. With only two supported locales today (en, ur),
+  // flipping between them from the topbar is the fastest UX. If we add a
+  // third we'd upgrade this to a small dropdown — until then a single
+  // button keeps the chrome tight.
+  function toggleLocale() {
+    const next: Locale = locale === "en" ? "ur" : "en";
+    setLocale(next);
+  }
+  const nextLocaleLabel = SUPPORTED_LOCALES.find((l) => l.code !== locale)?.label ?? "English";
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [notifVersion, setNotifVersion] = useState(0);
   const refreshNotifs = useCallback(() => setNotifVersion((v) => v + 1), []);
@@ -164,6 +187,15 @@ export function Topbar() {
           <ClockWidget />
 
           <button
+            onClick={toggleLocale}
+            className="flex h-9 w-9 items-center justify-center rounded-xl text-fg-muted transition hover:bg-surface-hover"
+            aria-label={`Switch language — currently ${locale === "en" ? "English" : "اردو"}, switch to ${nextLocaleLabel}`}
+            title={`Switch to ${nextLocaleLabel}`}
+          >
+            <Languages className="h-4 w-4" aria-hidden="true" />
+          </button>
+
+          <button
             onClick={toggleTheme}
             className="flex h-9 w-9 items-center justify-center rounded-xl text-fg-muted transition hover:bg-surface-hover"
             aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
@@ -208,7 +240,15 @@ export function Topbar() {
             >
               <Bell className="h-4 w-4" aria-hidden="true" />
               {unreadCount > 0 && (
-                <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-danger ring-2 ring-surface" />
+                // Numeric badge (was a 2×2 dot — audit N6 called out the
+                // duplicate-and-invisible affordance). Sidebar still shows
+                // its count; the two now visually agree instead of racing.
+                <span
+                  aria-hidden="true"
+                  className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[9px] font-bold leading-none text-white ring-2 ring-surface"
+                >
+                  {unreadCount > 9 ? "9+" : unreadCount}
+                </span>
               )}
             </button>
 

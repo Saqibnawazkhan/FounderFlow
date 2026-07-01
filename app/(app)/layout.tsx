@@ -15,6 +15,7 @@
 import { useStore } from "@/lib/store";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
+import { cn } from "@/lib/utils";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const currentUser = useStore((s) => s.currentUser);
@@ -32,10 +33,20 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     );
   }
 
+  return <AppShell>{children}</AppShell>;
+}
+
+function AppShell({ children }: { children: React.ReactNode }) {
+  const collapsed = useStore((s) => s.sidebarCollapsed);
   return (
     <div className="flex min-h-screen bg-bg">
       <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col lg:ml-64">
+      <div
+        className={cn(
+          "flex min-w-0 flex-1 flex-col transition-[margin-left] duration-300",
+          collapsed ? "lg:ml-16" : "lg:ml-64"
+        )}
+      >
         <Topbar />
         <main className="flex-1 overflow-x-hidden p-4 md:p-6 lg:p-8">{children}</main>
       </div>

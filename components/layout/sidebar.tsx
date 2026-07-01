@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Sparkles, X } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Sparkles, X } from "lucide-react";
 import { useStore, useStoreHasHydrated } from "@/lib/store";
 import { listNotificationsAction } from "@/lib/actions/notifications";
 import { useT } from "@/lib/i18n/use-t";
@@ -18,6 +18,8 @@ export function Sidebar() {
   // through the menu auto-dismisses the overlay.
   const mobileOpen = useStore((s) => s.mobileNavOpen);
   const setMobileOpen = useStore((s) => s.setMobileNavOpen);
+  const collapsed = useStore((s) => s.sidebarCollapsed);
+  const toggleCollapsed = useStore((s) => s.toggleSidebarCollapsed);
   const pathname = usePathname();
   const currentUser = useStore((s) => s.currentUser);
   const companies = useStore((s) => s.companies);
@@ -110,54 +112,71 @@ export function Sidebar() {
       {/* Sidebar */}
       <aside
         aria-label="Primary"
+        // Collapsed rail is desktop-only: mobile always uses the full-width
+        // drawer overlay because a 64px thumbstrip on a phone is worse UX
+        // than a proper burger menu.
         className={cn(
-          "fixed left-0 top-0 z-modal flex h-screen w-64 flex-col border-r border-border bg-surface transition-transform duration-300",
-          mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+          "fixed left-0 top-0 z-modal flex h-screen w-64 flex-col border-r border-border bg-surface transition-[transform,width] duration-300",
+          mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
+          collapsed && "lg:w-16"
         )}
       >
         {/* Brand */}
-        <div className="flex h-16 items-center justify-between border-b border-border px-5">
+        <div
+          className={cn(
+            "flex h-16 items-center justify-between border-b border-border transition-[padding] duration-300",
+            collapsed ? "px-2 lg:justify-center" : "px-5"
+          )}
+        >
           <Link
             href={brandHref}
             className="flex items-center gap-2"
             onClick={() => setMobileOpen(false)}
+            aria-label="FounderFlow home"
           >
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary shadow-glow">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary shadow-glow">
               <Sparkles className="h-5 w-5 text-primary-fg" aria-hidden="true" />
             </div>
-            <div>
-              <p className="text-sm font-bold">FounderFlow</p>
-              <p className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
-                {t.common.workspace}
-              </p>
-            </div>
+            {!collapsed && (
+              <div>
+                <p className="text-sm font-bold">FounderFlow</p>
+                <p className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
+                  {t.common.workspace}
+                </p>
+              </div>
+            )}
           </Link>
           <button
             onClick={() => setMobileOpen(false)}
             aria-label="Close navigation menu"
-            className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-surface-hover lg:hidden"
+            className={cn(
+              "flex h-8 w-8 items-center justify-center rounded-lg hover:bg-surface-hover lg:hidden",
+              collapsed && "lg:hidden"
+            )}
           >
             <X className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
 
         {/* Company */}
-        <div className="border-b border-border px-5 py-4">
-          <div className="flex items-center gap-3 rounded-xl bg-bg p-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary font-bold text-primary-fg">
-              {company?.name?.[0] || "C"}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">{company?.name || "Your Company"}</p>
-              <p className="truncate text-xs text-fg-muted">{company?.industry}</p>
+        {!collapsed && (
+          <div className="border-b border-border px-5 py-4">
+            <div className="flex items-center gap-3 rounded-xl bg-bg p-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary font-bold text-primary-fg">
+                {company?.name?.[0] || "C"}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">{company?.name || "Your Company"}</p>
+                <p className="truncate text-xs text-fg-muted">{company?.industry}</p>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Nav */}
         <nav
           aria-label="Main navigation"
-          className="scrollbar-thin flex-1 overflow-y-auto px-3 py-4"
+          className={cn("scrollbar-thin flex-1 overflow-y-auto py-4", collapsed ? "px-2" : "px-3")}
         >
           <div className="space-y-1">
             {visibleNavItems.map((item) => {
@@ -169,22 +188,37 @@ export function Sidebar() {
                   href={item.href}
                   aria-current={active ? "page" : undefined}
                   onClick={() => setMobileOpen(false)}
+                  title={collapsed ? t.nav[item.labelKey] : undefined}
                   className={cn(
-                    "relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all",
+                    "relative flex items-center gap-3 rounded-xl text-sm font-medium transition-all",
+                    collapsed ? "justify-center px-2 py-2.5" : "px-3 py-2.5",
                     active
-                      ? "border border-primary/30 bg-primary/10 text-fg"
+                      ? "border border-primary/50 bg-primary/[0.14] text-fg shadow-[inset_2px_0_0_0_rgb(var(--primary))]"
                       : "text-fg-muted hover:bg-surface-hover hover:text-fg"
                   )}
                 >
-                  <item.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  <span className="flex-1">{t.nav[item.labelKey]}</span>
-                  {isNotifs && unreadCount > 0 && (
+                  <item.icon
+                    className={cn("h-4 w-4 shrink-0", active && "text-primary-strong")}
+                    aria-hidden="true"
+                  />
+                  {!collapsed && (
+                    <>
+                      <span className="flex-1">{t.nav[item.labelKey]}</span>
+                      {isNotifs && unreadCount > 0 && (
+                        <span
+                          aria-label={`${unreadCount} unread notifications`}
+                          className="flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-[10px] font-bold text-white"
+                        >
+                          {unreadCount}
+                        </span>
+                      )}
+                    </>
+                  )}
+                  {collapsed && isNotifs && unreadCount > 0 && (
                     <span
                       aria-label={`${unreadCount} unread notifications`}
-                      className="flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-[10px] font-bold text-white"
-                    >
-                      {unreadCount}
-                    </span>
+                      className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-danger ring-2 ring-surface"
+                    />
                   )}
                 </Link>
               );
@@ -192,25 +226,52 @@ export function Sidebar() {
           </div>
         </nav>
 
+        {/* Desktop collapse toggle */}
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-pressed={collapsed}
+          className={cn(
+            "mx-3 mb-2 hidden items-center gap-2 rounded-xl border border-border px-3 py-2 text-xs font-medium text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg lg:flex",
+            collapsed && "justify-center"
+          )}
+        >
+          {collapsed ? (
+            <ChevronsRight className="h-4 w-4" aria-hidden="true" />
+          ) : (
+            <>
+              <ChevronsLeft className="h-4 w-4" aria-hidden="true" />
+              <span className="font-mono uppercase tracking-wider">Collapse</span>
+            </>
+          )}
+        </button>
+
         {/* User */}
-        <div className="border-t border-border p-4">
+        <div className={cn("border-t border-border", collapsed ? "p-2" : "p-4")}>
           <Link
             href="/settings"
-            className="flex items-center gap-3 rounded-xl p-2 transition hover:bg-surface-hover"
+            className={cn(
+              "flex items-center gap-3 rounded-xl transition hover:bg-surface-hover",
+              collapsed ? "justify-center p-2" : "p-2"
+            )}
+            title={collapsed ? currentUser?.name : undefined}
           >
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan text-sm font-semibold text-primary-fg">
               {currentUser?.name?.[0] || "U"}
             </div>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold">{currentUser?.name}</p>
-              <p className="truncate text-xs capitalize text-fg-muted">
-                {currentUser?.role === "admin"
-                  ? "Admin Founder"
-                  : currentUser?.role === "cofounder"
-                    ? "Co-Founder"
-                    : "Team Member"}
-              </p>
-            </div>
+            {!collapsed && (
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold">{currentUser?.name}</p>
+                <p className="truncate text-xs capitalize text-fg-muted">
+                  {currentUser?.role === "admin"
+                    ? "Admin Founder"
+                    : currentUser?.role === "cofounder"
+                      ? "Co-Founder"
+                      : "Team Member"}
+                </p>
+              </div>
+            )}
           </Link>
         </div>
       </aside>
