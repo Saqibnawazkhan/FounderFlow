@@ -107,6 +107,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
       </head>
       <body className="min-h-screen bg-bg font-sans text-fg antialiased">
+        {/* Skip-to-content: hidden until keyboard-focused, then jumps past
+            the sidebar + topbar chrome. Every /main is tagged with id="main"
+            by the app-shell layout so this lands somewhere useful. */}
+        <a
+          href="#main"
+          className="sr-only rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-fg focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-modal"
+        >
+          Skip to main content
+        </a>
         <Providers>{children}</Providers>
       </body>
     </html>

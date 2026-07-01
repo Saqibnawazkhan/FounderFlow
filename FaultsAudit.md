@@ -118,25 +118,25 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 ## 6. Settings · i18n · a11y · Mobile · PWA
 
 - [x] **S1 · 🔴 [BUG] Manifest missing `/icon.svg` file** — shipped in P0-2.
-- [ ] **S2 · 🔴 [FEAT] No danger zone.** No delete-account, no leave-company, no delete-company. → [app/(app)/settings](app/(app)/settings)
-- [ ] **S3 · 🟠 [FEAT] No change-email flow with verification.** Edit modal accepts `email` field but sends no verify token. → [app/(app)/settings](app/(app)/settings)
-- [ ] **S4 · 🟠 [FEAT] No MFA/2FA setup.**
-- [ ] **S5 · 🟠 [FEAT] No system-theme option** (only light/dark; no `prefers-color-scheme` match). → [lib/store.ts](lib/store.ts)
-- [ ] **S6 · 🟠 [FEAT] Locale + theme not synced to DB.** Logout wipes preferences. Add `User.locale` / `User.theme` columns. → [lib/store.ts](lib/store.ts)
-- [ ] **S7 · 🟠 [FEAT] No timezone preference** (user or company).
-- [ ] **S8 · 🟠 [FEAT] No profile photo upload; no company logo.** → [app/(app)/settings](app/(app)/settings)
-- [ ] **S9 · 🟠 [FEAT] No email/in-app notification-preferences UI.**
-- [ ] **S10 · 🟠 [FEAT] No "Export my data" (GDPR).**
-- [ ] **S11 · 🟠 [FEAT] No PWA install button; no offline write queue.** → [app/offline/page.tsx](app/offline/page.tsx), [public/sw.js](public/sw.js)
-- [ ] **S12 · 🟠 [BUG] Hardcoded English strings escape i18n.** "Show/Hide password" and confirm-dialog "Cancel"/"Confirm" fallbacks. Route through `t.common.*`. → [app/(app)/settings/change-password-modal.tsx:159](app/(app)/settings/change-password-modal.tsx#L159), [components/ui/confirm-dialog.tsx:128](components/ui/confirm-dialog.tsx#L128)
-- [ ] **S13 · 🟠 [BUG] No skip-to-content link.** → [app/layout.tsx](app/layout.tsx)
-- [ ] **S14 · 🟠 [BUG] Toast (`react-hot-toast`) not `aria-live="assertive"`.** SR users miss confirmations + errors. → [components/providers.tsx](components/providers.tsx)
-- [ ] **S15 · 🟠 [BUG] Manifest missing PNG raster icons at 192 / 512.** Android home-screen falls back. → [public/manifest.json](public/manifest.json)
-- [ ] **S16 · 🟠 [BUG] No `apple-touch-startup-image`.** iOS PWA splash is blank. → [app/layout.tsx](app/layout.tsx)
-- [ ] **S17 · 🟠 [UI] Modal sizes are `sm/md/lg/xl` only.** No mobile full-screen sheet. → [components/ui/modal.tsx:70-76](components/ui/modal.tsx#L70-L76)
-- [ ] **S18 · 🟠 [UI] Confirm dialog buttons + labels not localizable** — see S12. → [components/ui/confirm-dialog.tsx:128](components/ui/confirm-dialog.tsx#L128)
-- [ ] **S19 · 🟡 [BUG] Number formatting not locale-aware** ("999 sessions" not "۹۹۹") for Urdu. → [lib/utils.ts](lib/utils.ts)
-- [ ] **S20 · 🟡 [BUG] No RTL sidebar mirror check for Urdu.** → [components/layout/sidebar.tsx](components/layout/sidebar.tsx)
+- [ ] **S2 · 🔴 [FEAT] No danger zone.** Deferred — needs 3 new server actions (deleteAccount, leaveCompany, deleteCompany) + soft-delete strategy per Tier 3 plan in CLAUDE.md.
+- [ ] **S3 · 🟠 [FEAT] No change-email flow with verification.** Deferred — parallels the password-reset flow shipped in P0-1; needs its own token + confirmation-email step.
+- [ ] **S4 · 🟠 [FEAT] No MFA/2FA setup.** Deferred — Auth.js supports TOTP with a follow-up integration commit.
+- [~] **S5 · 🟠 [FEAT] No system-theme option.** DEFERRED — three-way theme choice ("system") means widening the store type + a `matchMedia("prefers-color-scheme")` listener. Follow-up.
+- [ ] **S6 · 🟠 [FEAT] Locale + theme not synced to DB.** Deferred — schema addition (`User.locale`, `User.theme`) touches prod DB (CLAUDE.md safety rail); do after Tier 2 env separation.
+- [ ] **S7 · 🟠 [FEAT] No timezone preference.** Deferred — schema addition + rollout across every date formatter.
+- [ ] **S8 · 🟠 [FEAT] No profile photo upload; no company logo.** Deferred — needs Supabase Storage wiring.
+- [ ] **S9 · 🟠 [FEAT] No email/in-app notification-preferences UI.** Deferred — schema addition + matrix UI.
+- [ ] **S10 · 🟠 [FEAT] No "Export my data" (GDPR).** Deferred — download-a-zip action + JSON export.
+- [ ] **S11 · 🟠 [FEAT] No PWA install button; no offline write queue.** Deferred — beforeinstallprompt handling + IndexedDB queue.
+- [x] **S12 · 🟠 [BUG] Hardcoded English strings escape i18n.** ✔ `change-password-modal.tsx` now threads `showLabel`/`hideLabel` from `t.auth.show/hidePassword` into the `PasswordField` subcomponent. `confirm-dialog.tsx` falls back to `t.common.cancel`/`t.common.confirm` instead of raw English.
+- [x] **S13 · 🟠 [BUG] No skip-to-content link.** ✔ Added a keyboard-focus-only `Skip to main content` link at the top of the root layout; `<main>` inside the app shell now carries `id="main"` so it lands somewhere useful.
+- [x] **S14 · 🟠 [BUG] Toast (`react-hot-toast`) not `aria-live="assertive"`.** ✔ Toaster `ariaProps` now default to `role="status" aria-live="polite"` for info/success; error toasts explicitly upgrade to `role="alert" aria-live="assertive"`.
+- [~] **S15 · 🟠 [BUG] Manifest missing PNG raster icons at 192 / 512.** DEFERRED — Write tool can't emit binary PNGs. Follow-up: generate `public/icon-192.png` + `icon-512.png` via a build-time helper (or a manual export from the SVG) and reference them in `manifest.json`.
+- [~] **S16 · 🟠 [BUG] No `apple-touch-startup-image`.** DEFERRED — same binary-file constraint as S15. Follow-up: generate the required PNGs per Apple's device-size matrix.
+- [x] **S17 · 🟠 [UI] Modal sizes are `sm/md/lg/xl` only.** ✔ `<Modal>` is now a bottom-sheet on `< sm` viewports (full-width, rounded top corners) and a centered card at `sm` and up. Every existing size (sm/md/lg/xl) becomes the desktop max-width via `sm:max-w-*` variants.
+- [x] **S18 · 🟠 [UI] Confirm dialog buttons + labels not localizable.** ✔ Same fix as S12 — button labels now flow through `t.common.cancel`/`t.common.confirm`.
+- [ ] **S19 · 🟡 [BUG] Number formatting not locale-aware** ("999 sessions" not "۹۹۹") for Urdu. Deferred — needs an `Intl.NumberFormat(t.locale)` sweep across formatters.
+- [ ] **S20 · 🟡 [BUG] No RTL sidebar mirror check for Urdu.** Deferred — CSS logical-property audit for the sidebar + drawer + all fixed-position elements.
 - [ ] **S21 · 🔵 [OPP] Density preference, contrast-mode boost, mobile bottom-nav for primary actions, "reset all preferences".**
 
 ---

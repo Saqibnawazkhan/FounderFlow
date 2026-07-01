@@ -35,11 +35,14 @@ export interface ModalProps {
   hideClose?: boolean;
 }
 
+// Desktop widths only — mobile always fills the viewport (bottom-sheet
+// pattern). Tailwind JIT needs literal class names so we spell out both
+// the `max-w-*` and `sm:max-w-*` variants below.
 const sizeMap: Record<NonNullable<ModalProps["size"]>, string> = {
-  sm: "max-w-md",
-  md: "max-w-lg",
-  lg: "max-w-2xl",
-  xl: "max-w-4xl",
+  sm: "sm:max-w-md",
+  md: "sm:max-w-lg",
+  lg: "sm:max-w-2xl",
+  xl: "sm:max-w-4xl",
 };
 
 export function Modal({
@@ -62,13 +65,17 @@ export function Modal({
             "data-[state=closed]:animate-out data-[state=closed]:fade-out-0"
           )}
         />
-        {/* Content — slide-up + fade. Radix handles focus trap and aria-* */}
+        {/* Content — slide-up + fade. Radix handles focus trap and aria-*.
+            On phones (< sm) the modal takes the full viewport (bottom-sheet
+            style with a rounded top) so form-heavy dialogs — task, budget,
+            transaction — aren't crammed into a 320 px card. Audit S17. */}
         <Dialog.Content
           className={cn(
-            "fixed left-[50%] top-[50%] z-modal w-[calc(100%-2rem)]",
-            "translate-x-[-50%] translate-y-[-50%]",
-            "flex max-h-[90vh] flex-col overflow-hidden rounded-2xl",
-            "border border-border bg-surface shadow-card-hover",
+            "fixed z-modal flex flex-col overflow-hidden border border-border bg-surface shadow-card-hover",
+            // Mobile: full-height bottom sheet with rounded top corners.
+            "inset-x-0 bottom-0 max-h-[92vh] rounded-b-none rounded-t-2xl",
+            // Desktop (sm+): centered card with max-height and standard rounding.
+            "sm:inset-x-auto sm:bottom-auto sm:left-[50%] sm:top-[50%] sm:max-h-[90vh] sm:w-[calc(100%-2rem)] sm:translate-x-[-50%] sm:translate-y-[-50%] sm:rounded-2xl",
             "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:slide-in-from-bottom-2",
             "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
             "duration-200",

@@ -108,9 +108,14 @@ function Inner({ children }: { children: React.ReactNode }) {
       <ConfirmDialogHost />
       <Toaster
         position="top-right"
+        // ariaProps make each toast a live region so screen readers announce
+        // it as it arrives (audit S14: previously silent). Error toasts use
+        // assertive; success/info toasts use polite so a burst of successes
+        // doesn't interrupt whatever the user was reading.
         toastOptions={{
           duration: 3500,
           className: "!font-sans",
+          ariaProps: { role: "status", "aria-live": "polite" },
           style: {
             background: "rgb(var(--surface))",
             color: "rgb(var(--fg))",
@@ -125,6 +130,7 @@ function Inner({ children }: { children: React.ReactNode }) {
             iconTheme: { primary: "rgb(var(--primary))", secondary: "rgb(var(--primary-fg))" },
           },
           error: {
+            ariaProps: { role: "alert", "aria-live": "assertive" },
             iconTheme: { primary: "rgb(var(--danger))", secondary: "#fff" },
           },
         }}

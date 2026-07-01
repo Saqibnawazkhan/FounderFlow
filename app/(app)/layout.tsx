@@ -48,7 +48,9 @@ function AppShell({ children }: { children: React.ReactNode }) {
         )}
       >
         <Topbar />
-        <main className="flex-1 overflow-x-hidden p-4 md:p-6 lg:p-8">{children}</main>
+        <main id="main" className="flex-1 overflow-x-hidden p-4 md:p-6 lg:p-8">
+          {children}
+        </main>
       </div>
     </div>
   );

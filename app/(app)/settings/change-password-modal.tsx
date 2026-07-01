@@ -69,6 +69,8 @@ export function ChangePasswordModal({ open, onClose }: Props) {
           autoComplete="current-password"
           show={showCurrent}
           onToggleShow={() => setShowCurrent((s) => !s)}
+          showLabel={t.auth.showPassword}
+          hideLabel={t.auth.hidePassword}
           error={errors.currentPassword?.message}
           inputProps={register("currentPassword")}
         />
@@ -78,6 +80,8 @@ export function ChangePasswordModal({ open, onClose }: Props) {
           autoComplete="new-password"
           show={showNext}
           onToggleShow={() => setShowNext((s) => !s)}
+          showLabel={t.auth.showPassword}
+          hideLabel={t.auth.hidePassword}
           error={errors.newPassword?.message}
           inputProps={register("newPassword")}
         />
@@ -87,6 +91,8 @@ export function ChangePasswordModal({ open, onClose }: Props) {
           autoComplete="new-password"
           show={showNext}
           onToggleShow={() => setShowNext((s) => !s)}
+          showLabel={t.auth.showPassword}
+          hideLabel={t.auth.hidePassword}
           error={errors.confirmPassword?.message}
           inputProps={register("confirmPassword")}
         />
@@ -118,6 +124,8 @@ function PasswordField({
   autoComplete,
   show,
   onToggleShow,
+  showLabel,
+  hideLabel,
   error,
   inputProps,
 }: {
@@ -126,6 +134,8 @@ function PasswordField({
   autoComplete: string;
   show: boolean;
   onToggleShow: () => void;
+  showLabel: string;
+  hideLabel: string;
   error?: string;
   inputProps: React.InputHTMLAttributes<HTMLInputElement> & {
     name: string;
@@ -156,7 +166,7 @@ function PasswordField({
         <button
           type="button"
           onClick={onToggleShow}
-          aria-label={show ? "Hide password" : "Show password"}
+          aria-label={show ? hideLabel : showLabel}
           className="absolute right-2.5 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.06] hover:text-fg"
         >
           {show ? (

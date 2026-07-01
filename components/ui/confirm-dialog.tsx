@@ -27,6 +27,7 @@ import { useEffect, useState, useCallback } from "react";
 import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
 import { Modal } from "./modal";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n/use-t";
 
 export interface ConfirmOptions {
   title: string;
@@ -63,6 +64,7 @@ export function useConfirm() {
 
 export function ConfirmDialogHost() {
   const [pending, setPending] = useState<PendingConfirm | null>(null);
+  const t = useT();
 
   useEffect(() => {
     const handler: Listener = (p) => setPending(p);
@@ -125,7 +127,7 @@ export function ConfirmDialogHost() {
           onClick={() => close(false)}
           className="flex-1 rounded-full border border-border bg-bg px-5 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-surface-hover active:scale-95"
         >
-          {pending?.opts.cancelLabel ?? "Cancel"}
+          {pending?.opts.cancelLabel ?? t.common.cancel}
         </button>
         <button
           type="button"
@@ -136,7 +138,7 @@ export function ConfirmDialogHost() {
             confirmClass
           )}
         >
-          {pending?.opts.confirmLabel ?? "Confirm"}
+          {pending?.opts.confirmLabel ?? t.common.confirm}
         </button>
       </div>
     </Modal>
