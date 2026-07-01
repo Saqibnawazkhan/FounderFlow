@@ -75,7 +75,7 @@ export default function LandingPage() {
 function Nav({ onDemo }: { onDemo: () => void }) {
   return (
     <header className="sticky top-0 z-sticky border-b border-glass/[0.06] bg-bg/70 backdrop-blur-xl">
-      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
+      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
         <Link href="/" className="flex items-center gap-2.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary">
             <Sparkles className="h-4 w-4 text-primary-fg" aria-hidden="true" />
@@ -115,7 +115,7 @@ function Nav({ onDemo }: { onDemo: () => void }) {
           <ThemeToggle size="sm" />
           <Link
             href="/login"
-            className="rounded-full px-4 py-1.5 text-sm font-medium text-fg-muted transition-colors hover:text-fg"
+            className="hidden rounded-full px-4 py-1.5 text-sm font-medium text-fg-muted transition-colors hover:text-fg sm:inline-flex"
           >
             Log in
           </Link>
@@ -152,9 +152,9 @@ function Hero({ onDemo }: { onDemo: () => void }) {
             <SplitText text="actually agrees on." delay={600} className="text-primary-strong" />
           </h1>
 
-          <p className="mt-6 max-w-lg text-pretty text-base leading-relaxed text-fg-muted md:text-lg">
-            Track investments, expenses, tasks, and every team motion in one workspace. No
-            spreadsheet wars, no "wait, who paid for that?" — just one shared source of truth.
+          <p className="mt-6 max-w-md text-pretty text-base leading-relaxed text-fg-muted md:text-lg">
+            Track investments, expenses, and tasks in one shared workspace — so every co-founder
+            sees the same numbers, in real time.
           </p>
 
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
@@ -237,7 +237,7 @@ const FEATURES = [
   {
     icon: CreditCard,
     title: "Shared finances",
-    desc: "Every founder logs their own contributions and spend. The system tallies in real time. No spreadsheets, no arguments.",
+    desc: "Every founder logs contributions and spend; totals update in real time.",
     stat: "100%",
     statLabel: "Agreement",
     premium: true,
@@ -245,7 +245,7 @@ const FEATURES = [
   {
     icon: BarChart3,
     title: "Live dashboards",
-    desc: "Total balance, founder-wise contributions, burn rate, category breakdowns — all interactive, all in real time.",
+    desc: "Balance, burn rate, and founder contributions — interactive and always current.",
     stat: "0ms",
     statLabel: "Sync delay",
     premium: true,
@@ -253,7 +253,7 @@ const FEATURES = [
   {
     icon: CheckCircle2,
     title: "Kanban tasks",
-    desc: "Assign work, set priorities and deadlines, move cards across columns. Built for two founders, scales to twenty.",
+    desc: "Assign work, set priorities and deadlines, and track it across a board.",
     stat: "3 views",
     statLabel: "Board · List · Calendar",
     premium: true,
@@ -261,42 +261,42 @@ const FEATURES = [
   {
     icon: Bell,
     title: "Real-time notifications",
-    desc: "When someone adds a 500K investment or completes a task, everyone knows instantly. In-app, email, or push.",
+    desc: "When something changes, the whole team knows instantly — in-app or email.",
     stat: "<1s",
     statLabel: "Delivery",
   },
   {
     icon: FileText,
     title: "Investor-ready reports",
-    desc: "Monthly P&L, founder-wise contributions, category drill-downs. Export to PDF or Excel in one click.",
+    desc: "Monthly P&L and contribution breakdowns, exportable to PDF or Excel.",
     stat: "PDF / XLS",
     statLabel: "Formats",
   },
   {
     icon: Users,
     title: "Role-based access",
-    desc: "Admin Founder, Co-Founder, and Team Member roles. Everyone sees exactly what they should — nothing more.",
+    desc: "Admin, co-founder, and member roles — everyone sees exactly what they should.",
     stat: "3 roles",
     statLabel: "Built-in",
   },
   {
     icon: Zap,
     title: "Activity timeline",
-    desc: "A live feed of everything happening — who added what, when, and why. Fully searchable, fully audited.",
+    desc: "A searchable, audited feed of who changed what, and when.",
     stat: "∞",
     statLabel: "History",
   },
   {
     icon: LineChart,
-    title: "Beautiful by default",
-    desc: "Built with the same craft you put into your own product. Dark mode, smooth motion, responsive on every screen.",
+    title: "Polished on every screen",
+    desc: "Dark mode, smooth motion, and a layout that holds up from phone to desktop.",
     stat: "AA",
     statLabel: "WCAG",
   },
   {
     icon: Lock,
     title: "Private by design",
-    desc: "Your data stays with your company. Role-based permissions enforced on every read and every write.",
+    desc: "Your data stays yours — permissions enforced on every read and write.",
     stat: "256-bit",
     statLabel: "Encryption",
   },
@@ -308,12 +308,10 @@ function Features() {
       <div className="mx-auto max-w-2xl text-center">
         <PillBadge tone="cyan">Everything in one workspace</PillBadge>
         <h2 className="mt-6 text-balance text-4xl font-bold tracking-tight md:text-5xl">
-          The features your co-founders <span className="text-primary-strong">stop asking for</span>
-          .
+          Everything you need, <span className="text-primary-strong">nothing you don't</span>.
         </h2>
         <p className="mt-4 text-pretty text-base leading-relaxed text-fg-muted">
-          Stop juggling four spreadsheets and three apps. FounderFlow gives your team a shared
-          source of truth — and gets out of the way.
+          One workspace for finances, tasks, and team — no spreadsheets, no context-switching.
         </p>
       </div>
 
@@ -381,10 +379,10 @@ function DashboardShowcase() {
       <Lamp>
         <PillBadge>The product</PillBadge>
         <h2 className="mt-6 max-w-3xl text-balance text-4xl font-bold tracking-tight md:text-5xl">
-          A workspace that <span className="text-primary-strong">scales with the chaos</span>.
+          A workspace that <span className="text-primary-strong">scales with you</span>.
         </h2>
         <p className="mt-4 max-w-xl text-pretty text-base leading-relaxed text-fg-muted">
-          See your runway, founder contributions, active tasks, and live activity feed — all without
+          Runway, contributions, active tasks, and a live activity feed — one screen, no
           context-switching.
         </p>
       </Lamp>
@@ -505,8 +503,8 @@ function Testimonial() {
           </div>
 
           <blockquote className="mt-6 font-serif text-2xl italic leading-relaxed text-fg md:text-3xl">
-            "We replaced four Google Sheets, one Notion doc, and three Trello boards. The first
-            week, my co-founder and I had zero finance arguments. That's never happened before."
+            "We replaced four spreadsheets and three Trello boards. Our first week with zero finance
+            arguments — that had never happened before."
           </blockquote>
 
           <div className="mt-8 flex items-center gap-4">
@@ -665,23 +663,23 @@ function Pricing({ onDemo }: { onDemo: () => void }) {
 const FAQS = [
   {
     q: "Do I need a credit card to start?",
-    a: "No. The Solo plan is free forever — no card, no signup gymnastics. Hit Start and you're in.",
+    a: "No. The Solo plan is free forever — no card required.",
   },
   {
     q: "Can my co-founder and I share one workspace?",
-    a: "Yes. Workspaces are designed for 2-5 co-founders by default. Invite them via email, assign roles, and you're set.",
+    a: "Yes. Invite co-founders by email, assign roles, and you're set — built for teams of 2–5.",
   },
   {
     q: "Does FounderFlow replace QuickBooks or Xero?",
-    a: "It doesn't replace formal accounting software — it sits in front of it. Track day-to-day co-founder contributions and team finances, then export clean reports for your accountant.",
+    a: "No — it sits in front of them. Track day-to-day finances, then export clean reports for your accountant.",
   },
   {
     q: "How is my data secured?",
-    a: "All data is encrypted in transit and at rest. Role-based access is enforced server-side on every read and write. You can export everything at any time.",
+    a: "Encrypted in transit and at rest, with role-based access enforced server-side on every request.",
   },
   {
     q: "Can I export my data?",
-    a: "Yes — to PDF, Excel, and JSON. Your data is yours; we'll never hold it hostage.",
+    a: "Yes — to PDF, Excel, and JSON, any time.",
   },
 ];
 
