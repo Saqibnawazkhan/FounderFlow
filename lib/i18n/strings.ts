@@ -215,6 +215,8 @@ export const en = {
     supervisorChangedToast: "Supervisor changed",
     projectArchivedToast: "Project archived",
     projectDeletedToast: "Project deleted",
+    unarchiveProject: "Restore",
+    projectRestoredToast: "Project restored",
   },
   settings: {
     workspaceBadge: "Workspace",
@@ -472,6 +474,8 @@ export const ur: typeof en = {
     supervisorChangedToast: "سپروائزر تبدیل ہو گیا",
     projectArchivedToast: "منصوبہ آرکائیو ہو گیا",
     projectDeletedToast: "منصوبہ حذف ہو گیا",
+    unarchiveProject: "بحال کریں",
+    projectRestoredToast: "منصوبہ بحال ہو گیا",
   },
   settings: {
     workspaceBadge: "ورک اسپیس",

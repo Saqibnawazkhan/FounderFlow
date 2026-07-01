@@ -64,16 +64,16 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 ## 3. Tasks · Projects · Comments
 
 - [x] **T1 · 🔴 [BUG] Task notification deep-link broken** — shipped in P0-5.
-- [ ] **T2 · 🔴 [BUG] N+1 on project list.** `timeEntry.findMany()` with no `projectId` WHERE clause; filters in JS. Add the WHERE and index the FK. → [lib/queries/projects.ts:124-128](lib/queries/projects.ts#L124-L128)
-- [ ] **T3 · 🟠 [FEAT] No kanban drag-reorder, no bulk edit, no bulk delete.** → [app/(app)/tasks/tasks-client.tsx](app/(app)/tasks/tasks-client.tsx)
-- [ ] **T4 · 🟠 [FEAT] Task filters limited to all/mine/assigned-by-me.** Add priority / due-date / project / status. → [tasks-client.tsx:106-112](app/(app)/tasks/tasks-client.tsx#L106-L112)
-- [ ] **T5 · 🟠 [FEAT] Filters don't persist.** Reset on every nav. Save to localStorage per-user. → [tasks-client.tsx](app/(app)/tasks/tasks-client.tsx)
-- [ ] **T6 · 🟠 [FEAT] No @mention autocomplete UI.** Slug hints only, no live picker as user types `@`. → [components/comments/comment-thread.tsx:67-70](components/comments/comment-thread.tsx#L67-L70)
-- [ ] **T7 · 🟠 [FEAT] No archived-project unarchive button.** Detail page blocks all actions when archived. → [app/(app)/projects/[id]/project-detail-client.tsx:206](app/(app)/projects/[id]/project-detail-client.tsx#L206)
-- [ ] **T8 · 🟠 [UI] Priority is color-only in cards + list.** A11y fail for color-blind users — add a shape/icon differentiator. → [tasks-client.tsx:60-65](app/(app)/tasks/tasks-client.tsx#L60-L65)
-- [ ] **T9 · 🟠 [UI] Overdue indicator only in list view, missing from kanban cards.** → [tasks-client.tsx:326-327](app/(app)/tasks/tasks-client.tsx#L326-L327)
-- [ ] **T10 · 🟠 [BUG] Optimistic drag-drop status change doesn't rollback.** Card stays painted after failure toast; needs to revert to prior column. → [tasks-client.tsx:169-176](app/(app)/tasks/tasks-client.tsx#L169-L176)
-- [ ] **T11 · 🟠 [BUG] Comment badge count stale after post.** No optimistic bump; card stays showing old count until refresh. → [tasks-client.tsx:439](app/(app)/tasks/tasks-client.tsx#L439)
+- [~] **T2 · 🔴 [BUG] N+1 on project list.** FALSE POSITIVE — [lib/queries/projects.ts:124-128](lib/queries/projects.ts#L124-L128) already scopes `where: { projectId: { in: projectIds } }` and pulls only 3 columns. JS-side aggregation via `durationMs` is intentional so the still-running clock (null `clockOutAt`) counts against `now`. No SQL rewrite would help without losing that semantic.
+- [ ] **T3 · 🟠 [FEAT] No kanban drag-reorder, no bulk edit, no bulk delete.** Deferred to a P2 pass — bulk-edit UI (selection state + bulk-action bar + server actions) is a proper feature commit, not a batch cleanup. → [app/(app)/tasks/tasks-client.tsx](app/(app)/tasks/tasks-client.tsx)
+- [ ] **T4 · 🟠 [FEAT] Task filters limited to all/mine/assigned-by-me.** Deferred to P2 (needs priority + due-date + project + status filter surface).
+- [x] **T5 · 🟠 [FEAT] Filters don't persist.** ✔ `view` + `filter` now round-trip through `localStorage` (`ff.tasks.view`, `ff.tasks.filter`) with a private-mode-Safari safe try/catch.
+- [ ] **T6 · 🟠 [FEAT] No @mention autocomplete UI.** Deferred to P2 (needs cursor-position tracking + a floating dropdown list).
+- [x] **T7 · 🟠 [FEAT] No archived-project unarchive button.** ✔ Added a "Restore" button (ArchiveRestore icon, primary tone) that shows only when `project.status === "archived"`; calls `updateProjectAction` with `status: "active"`. i18n keys added in en + ur.
+- [x] **T8 · 🟠 [UI] Priority is color-only in cards + list.** ✔ Added a `PRIORITY_ICONS` map (`AlertOctagon`, `ArrowUp`, `Minus`, `ArrowDown`) rendered inside the pill so priority now carries color + text + shape (three redundant channels for a11y).
+- [~] **T9 · 🟠 [UI] Overdue indicator only in list view, missing from kanban cards.** FALSE POSITIVE — the board card at [tasks-client.tsx:739](app/(app)/tasks/tasks-client.tsx#L739) already renders `AlertCircle` on overdue rows. Auditor missed the second render site.
+- [x] **T10 · 🟠 [BUG] Optimistic drag-drop status change doesn't rollback.** ✔ We now capture `priorStatus` before the optimistic write and restore the exact prior column on server error, before the `router.refresh()` round-trip.
+- [x] **T11 · 🟠 [BUG] Comment badge count stale after post.** ✔ The tasks page's `CommentThreadModal` `onChanged` handler now optimistically bumps `commentCount + 1` on the target card before `router.refresh()` corrects the canonical number.
 - [ ] **T12 · 🟡 [FEAT] No subtasks, dependencies, tags/labels, attachments, recurring tasks.** → [lib/schemas/task.ts:7-27](lib/schemas/task.ts#L7-L27)
 - [ ] **T13 · 🟡 [FEAT] No project templates / "duplicate project".**
 - [ ] **T14 · 🔵 [OPP] Inline task edit, quick-add row, keyboard shortcuts (N/Esc/⌘K), ICS calendar export, project Gantt.**

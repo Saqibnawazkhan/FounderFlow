@@ -19,6 +19,7 @@ import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   Archive,
+  ArchiveRestore,
   Briefcase,
   Clock,
   Pencil,
@@ -123,6 +124,25 @@ export function ProjectDetailClient({
     refresh();
   }
 
+  async function handleUnarchive() {
+    // Reactivate straight to "active" — the confirm modal would be friction
+    // here; the header's delete/archive buttons are the destructive path.
+    const res = await updateProjectAction({
+      projectId: project.id,
+      name: project.name,
+      description: project.description ?? undefined,
+      color: project.color as "primary",
+      status: "active",
+      targetEndDate: project.targetEndDate ?? null,
+    });
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    toast.success(t.projects.projectRestoredToast);
+    refresh();
+  }
+
   async function handleDelete() {
     const ok = await confirm({
       title: t.projects.deleteConfirmTitle,
@@ -218,6 +238,24 @@ export function ProjectDetailClient({
               >
                 <Archive className="h-3.5 w-3.5" aria-hidden="true" />
                 {t.projects.archiveProject}
+              </button>
+              <button
+                onClick={handleDelete}
+                className="inline-flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs font-medium text-danger transition hover:bg-danger/20"
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                {t.projects.deleteProject}
+              </button>
+            </div>
+          )}
+          {canManage && project.status === "archived" && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={handleUnarchive}
+                className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary-strong transition hover:bg-primary/20"
+              >
+                <ArchiveRestore className="h-3.5 w-3.5" aria-hidden="true" />
+                {t.projects.unarchiveProject}
               </button>
               <button
                 onClick={handleDelete}

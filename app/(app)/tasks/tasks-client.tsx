@@ -4,6 +4,9 @@ import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   AlertCircle,
+  AlertOctagon,
+  ArrowDown,
+  ArrowUp,
   Calendar,
   CheckCircle2,
   CheckSquare,
@@ -13,6 +16,7 @@ import {
   LayoutGrid,
   LayoutList,
   MessageSquare,
+  Minus,
   Plus,
   Trash2,
   type LucideIcon,
@@ -62,6 +66,16 @@ const PRIORITY_STYLES: Record<TaskPriority, string> = {
   high: "border-warning/30 bg-warning/10 text-warning",
   medium: "border-info/30 bg-info/10 text-info",
   low: "border-border bg-bg text-fg-muted",
+};
+
+// Shape/icon differentiator so priority isn't communicated via color alone
+// — meets the a11y ask from audit row T8. The text label stays; the icon is
+// a redundant channel that a color-blind user can still parse at a glance.
+const PRIORITY_ICONS: Record<TaskPriority, LucideIcon> = {
+  urgent: AlertOctagon,
+  high: ArrowUp,
+  medium: Minus,
+  low: ArrowDown,
 };
 
 type Props = {
@@ -130,8 +144,33 @@ export function TasksClient({
   }
 
   const [modalOpen, setModalOpen] = useState(false);
+  // View + filter live in localStorage so a user's chosen slice survives a
+  // page refresh. Reads happen behind a hydration effect so SSR + first
+  // client paint agree; without the effect gate we'd hit a hydration diff.
   const [view, setView] = useState<"board" | "list">("board");
   const [filter, setFilter] = useState<"all" | "mine" | "assigned-by-me">("all");
+  useEffect(() => {
+    try {
+      const savedView = localStorage.getItem("ff.tasks.view");
+      const savedFilter = localStorage.getItem("ff.tasks.filter");
+      if (savedView === "board" || savedView === "list") setView(savedView);
+      if (savedFilter === "all" || savedFilter === "mine" || savedFilter === "assigned-by-me") {
+        setFilter(savedFilter);
+      }
+    } catch {
+      // localStorage can throw on private-mode Safari — silently fall back.
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("ff.tasks.view", view);
+    } catch {}
+  }, [view]);
+  useEffect(() => {
+    try {
+      localStorage.setItem("ff.tasks.filter", filter);
+    } catch {}
+  }, [filter]);
 
   const filtered = useMemo(() => {
     if (filter === "mine") return tasks.filter((t) => t.assignedTo === currentUserId);
@@ -194,11 +233,16 @@ export function TasksClient({
     if (!overStatus) return;
     const task = tasks.find((t) => t.id === taskId);
     if (!task || task.status === overStatus) return;
-    // Optimistic — paint the new column instantly, then fire-and-roll-back.
+    // Capture the prior status so we can restore the exact card position on
+    // server error — audit T10 called out that we previously waited for a
+    // router.refresh() round-trip, leaving the card visually mid-drop until
+    // the RSC arrived.
+    const priorStatus = task.status;
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: overStatus } : t)));
     void updateTaskStatusAction({ id: taskId, status: overStatus }).then((res) => {
       if (!res.success) {
         toast.error(res.error);
+        setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: priorStatus } : t)));
         refresh();
       }
     });
@@ -392,10 +436,14 @@ export function TasksClient({
                       <td className="px-6 py-4">
                         <span
                           className={cn(
-                            "inline-flex items-center rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+                            "inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider",
                             PRIORITY_STYLES[task.priority]
                           )}
                         >
+                          {(() => {
+                            const Icon = PRIORITY_ICONS[task.priority];
+                            return <Icon className="h-3 w-3" aria-hidden="true" />;
+                          })()}
                           {task.priority}
                         </span>
                       </td>
@@ -485,7 +533,18 @@ export function TasksClient({
           currentUserId={currentUserId}
           currentUserRole={currentUserRole}
           companyUsers={mentionUsers}
-          onChanged={refresh}
+          onChanged={() => {
+            // Optimistic bump on the card so the badge count updates in the
+            // same frame the modal fires onChanged, not after router.refresh()
+            // arrives with the canonical count. The RSC refresh corrects the
+            // number if we drifted (e.g. a delete happened concurrently).
+            setTasks((prev) =>
+              prev.map((t) =>
+                t.id === commentingTask.id ? { ...t, commentCount: t.commentCount + 1 } : t
+              )
+            );
+            refresh();
+          }}
         />
       )}
     </div>
@@ -695,10 +754,14 @@ function TaskCard({
           )}
           <span
             className={cn(
-              "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+              "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
               PRIORITY_STYLES[task.priority]
             )}
           >
+            {(() => {
+              const Icon = PRIORITY_ICONS[task.priority];
+              return <Icon className="h-3 w-3" aria-hidden="true" />;
+            })()}
             {task.priority}
           </span>
         </div>
