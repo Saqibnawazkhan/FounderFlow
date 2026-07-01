@@ -98,19 +98,19 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 
 ## 5. Time · Notifications · Activity · Team
 
-- [ ] **X1 · 🟠 [FEAT] No manual/backdated time entry.** Clock-only; users can't correct forgotten sessions. → [app/(app)/time](app/(app)/time)
-- [ ] **X2 · 🟠 [FEAT] No weekly timesheet grid, no per-day totals.** → [app/(app)/time/time-client.tsx:146](app/(app)/time/time-client.tsx#L146)
-- [ ] **X3 · 🟠 [FEAT] Timer doesn't sync across tabs.** No BroadcastChannel — two tabs drift independently. → [components/time/clock-widget.tsx](components/time/clock-widget.tsx)
-- [ ] **X4 · 🟠 [FEAT] No notification categories/filters.** Mentions + system + invites all one bucket; no snooze/mute; no email-preference matrix. → [app/(app)/notifications](app/(app)/notifications)
-- [ ] **X5 · 🟠 [FEAT] No activity pagination.** Hardcoded 200 limit renders all filtered results in one DOM. → [app/(app)/activities/activities-client.tsx:60](app/(app)/activities/activities-client.tsx#L60)
-- [ ] **X6 · 🟠 [FEAT] No activity filter by user** — only by type. → [activities-client.tsx:124](app/(app)/activities/activities-client.tsx#L124)
-- [ ] **X7 · 🟠 [FEAT] No invite-resend button.** Delete + recreate flow only; no revoke for pending invites. → [lib/actions/team.ts:129-132](lib/actions/team.ts#L129-L132)
-- [ ] **X8 · 🟠 [FEAT] No soft-delete / deactivate for team members.** Leaving + rejoining requires a fresh re-invite. → [lib/actions/team.ts:314](lib/actions/team.ts#L314)
-- [ ] **X9 · 🟠 [BUG] Role change doesn't invalidate active sessions.** A demoted admin keeps admin perms until re-login. → [lib/actions/team.ts](lib/actions/team.ts)
-- [ ] **X10 · 🟠 [BUG] Notification links to `/team` etc. don't verify target still exists.** Dead links after deletion. → [lib/queries/notifications.ts:36-57](lib/queries/notifications.ts#L36-L57)
-- [ ] **X11 · 🟠 [UI] Notification bell badge is a 2×2 dot.** Low contrast, easy to miss. → [components/layout/topbar.tsx:194](components/layout/topbar.tsx#L194)
-- [ ] **X12 · 🟠 [UI] Running-entry only in topbar** — not surfaced on `/time` header or dashboard. → [app/(app)/time/time-client.tsx:258](app/(app)/time/time-client.tsx#L258)
-- [ ] **X13 · 🟠 [UI] Inconsistent mark-all-read affordance** across dropdown vs page. → [topbar.tsx:211](components/layout/topbar.tsx#L211), [notifications-client.tsx:99](app/(app)/notifications/notifications-client.tsx#L99)
+- [ ] **X1 · 🟠 [FEAT] No manual/backdated time entry.** Deferred — needs a new "add entry" form + server action. Follow-up feature commit.
+- [ ] **X2 · 🟠 [FEAT] No weekly timesheet grid, no per-day totals.** Deferred — new view + query. Follow-up.
+- [ ] **X3 · 🟠 [FEAT] Timer doesn't sync across tabs.** Deferred — BroadcastChannel wiring is a targeted refactor of clock-widget.
+- [ ] **X4 · 🟠 [FEAT] No notification categories/filters.** Deferred — schema addition (Notification.category enum) + UI.
+- [ ] **X5 · 🟠 [FEAT] No activity pagination.** Deferred — needs cursor query + infinite-scroll UI.
+- [ ] **X6 · 🟠 [FEAT] No activity filter by user.** Deferred — UI filter + query param.
+- [ ] **X7 · 🟠 [FEAT] No invite-resend button.** Deferred — needs the pending-invites list view first.
+- [ ] **X8 · 🟠 [FEAT] No soft-delete / deactivate for team members.** Deferred — schema addition (User.deactivatedAt) + rollout across queries.
+- [~] **X9 · 🟠 [BUG] Role change doesn't invalidate active sessions.** DEFERRED — proper fix bumps a session-version claim in the JWT and re-checks it in the middleware callback. Auth infra touch; tracked as follow-up.
+- [x] **X10 · 🟠 [BUG] Notification links don't verify target still exists.** ✔ `deleteTaskAction` now sweeps `Notification.deleteMany({ link contains taskId=<id> })` inside the same transaction as the task delete, so the "New task assigned" notification never points at a phantom row. Project + transaction delete-side follow the same pattern in a future pass.
+- [x] **X11 · 🟠 [UI] Notification bell badge is a 2×2 dot.** ✔ Shipped in N6 — now a proper numeric badge with `9+` overflow.
+- [x] **X12 · 🟠 [UI] Running-entry only in topbar** — not surfaced on `/time` header. ✔ New `RunningEntryBanner` at the top of /time when the current user has an active session — shows started-at, task title (or "Untagged work"), note, and a live duration in the same font weight the topbar widget uses.
+- [~] **X13 · 🟠 [UI] Inconsistent mark-all-read affordance** across dropdown vs page. NOT A REAL INCONSISTENCY — dropdown uses a compact text link (right-context), full page uses a pill button (broad-context). Both say "Mark all read" and route to the same action. Deliberate density difference.
 - [ ] **X14 · 🟡 [UI] Empty state art reuses generic Bell icon everywhere.**
 - [ ] **X15 · 🟡 [BUG] Activity feed has no dedupe.** Rapid consecutive events create identical rows.
 - [ ] **X16 · 🔵 [OPP] Weekly digest email, quiet-hours for notifications, Slack integration for mentions, iCal export, presence indicator.**

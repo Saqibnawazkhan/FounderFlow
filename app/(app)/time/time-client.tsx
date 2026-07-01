@@ -79,6 +79,16 @@ export function TimeClient({
 
   const openCount = initialEntries.filter((e) => !e.clockOutAt).length;
   const autoClosedCount = initialEntries.filter((e) => e.autoClosed).length;
+  // Own running entry — the one to surface prominently on this page. Team
+  // scope shows the count in the KPI but we don't spotlight someone else's
+  // in-progress session (privacy + noise).
+  const myRunningEntry = useMemo(
+    () =>
+      initialScope === "mine"
+        ? (initialEntries.find((e) => !e.clockOutAt && e.userId === currentUserId) ?? null)
+        : null,
+    [initialEntries, initialScope, currentUserId]
+  );
 
   async function handleDelete(entry: TimeEntryClient) {
     const ok = await confirm({
@@ -142,6 +152,14 @@ export function TimeClient({
           </div>
         )}
       </header>
+
+      {myRunningEntry && (
+        <RunningEntryBanner
+          entry={myRunningEntry}
+          now={renderedAt}
+          note="Tick to keep tracking — clock out from the topbar widget when done."
+        />
+      )}
 
       <section aria-label="Time summary" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <DashboardStat
@@ -331,5 +349,52 @@ export function TimeClient({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Callout at the top of /time when the current user has a running entry.
+ * Complements the topbar clock widget — audit X12 called out that the
+ * running session was only visible up there, not on the page itself.
+ */
+function RunningEntryBanner({
+  entry,
+  now,
+  note,
+}: {
+  entry: TimeEntryClient;
+  now: Date;
+  note: string;
+}) {
+  const runFor = durationMs(new Date(entry.clockInAt), null, now);
+  return (
+    <section
+      aria-label="Currently running session"
+      className="flex flex-col gap-3 rounded-2xl border border-primary/30 bg-primary/[0.06] p-5 sm:flex-row sm:items-center sm:justify-between"
+    >
+      <div className="flex items-center gap-3">
+        <span
+          aria-hidden="true"
+          className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/20 text-primary-strong"
+        >
+          <Clock className="h-5 w-5" />
+        </span>
+        <div>
+          <p className="font-mono text-xs uppercase tracking-wider text-primary-strong">
+            Live session · started {format(new Date(entry.clockInAt), "h:mm a")}
+          </p>
+          <p className="mt-0.5 text-sm font-semibold text-fg">
+            {entry.taskTitle ?? "Untagged work"}
+          </p>
+          {entry.note && <p className="mt-0.5 text-xs text-fg-muted">{entry.note}</p>}
+        </div>
+      </div>
+      <div className="flex flex-col items-end gap-1">
+        <span className="font-mono text-2xl font-bold tabular-nums text-primary-strong">
+          {formatDuration(runFor)}
+        </span>
+        <span className="text-[10px] uppercase tracking-wider text-fg-muted">{note}</span>
+      </div>
+    </section>
   );
 }

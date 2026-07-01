@@ -287,6 +287,13 @@ export async function deleteTaskAction(id: string): Promise<ActionResult> {
 
   await db.$transaction(async (tx) => {
     await tx.task.delete({ where: { id } });
+    // Sweep any outstanding notifications that deep-link at this specific
+    // task (`/tasks?taskId=<id>`). Otherwise clicking a "New task assigned"
+    // notification for a since-deleted task lands on /tasks with nothing to
+    // highlight — audit row X10.
+    await tx.notification.deleteMany({
+      where: { companyId: task.companyId, link: { contains: `taskId=${task.id}` } },
+    });
     await tx.activity.create({
       data: {
         companyId: task.companyId,
