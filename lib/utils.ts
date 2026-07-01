@@ -7,15 +7,35 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCurrency(amount: number, currency = "PKR"): string {
-  const formatter = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: currency === "PKR" ? "USD" : currency,
-    maximumFractionDigits: 0,
-  });
-  if (currency === "PKR") {
-    return `PKR ${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(amount)}`;
+  // Intl.NumberFormat handles PKR natively — the previous special case was
+  // producing a subtly different glyph pattern from other currencies (custom
+  // "PKR " prefix vs the CLDR-standard non-breaking-space output). Unifying
+  // under one Intl path fixes audit row F12: currency rendering is now
+  // consistent across every currency the workspace picks.
+  //
+  // Post-processing:
+  //  • Non-breaking space (U+00A0) → regular space so copy-paste, downstream
+  //    tests, and CSV exports don't have to know about NBSP.
+  //  • Negative CLDR output is "-PKR 12,345"; the previous inline format was
+  //    "PKR -12,345". Reorder so we don't regress the user-facing look while
+  //    keeping the one Intl call for grouping + currency-code lookup.
+  const formatted = ((): string => {
+    try {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency,
+        maximumFractionDigits: 0,
+      }).format(amount);
+    } catch {
+      // Guard for the pathological case where the caller passes a non-ISO
+      // 4217 code (e.g. a stale seed value). Fall back to a plain number.
+      return `${currency} ${new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(amount)}`;
+    }
+  })().replace(/ /g, " ");
+  if (amount < 0 && formatted.startsWith(`-${currency}`)) {
+    return `${currency} -${formatted.slice(currency.length + 1).trimStart()}`;
   }
-  return formatter.format(amount);
+  return formatted;
 }
 
 export function formatNumber(value: number): string {

@@ -81,18 +81,18 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 ## 4. Finance — budgets, expenses, investments, reports, recurring
 
 - [~] **F1 · 🔴 [BUG] `Float` money type + client-side sums** — deferred with P0-4 (touches prod DB, cascades across ~30-40 files, do after Tier 2 env separation).
-- [ ] **F2 · 🟠 [FEAT] No CSV/XLSX import for transactions.** → [components/transactions/transaction-form.tsx](components/transactions/transaction-form.tsx)
-- [ ] **F3 · 🟠 [FEAT] No receipt/attachment field on transactions.**
-- [ ] **F4 · 🟠 [FEAT] No multi-currency.** `formatCurrency` hardcodes USD fallback; schema `currency` field unused in the UI. → [lib/utils.ts:10-18](lib/utils.ts#L10-L18)
-- [ ] **F5 · 🟠 [FEAT] Reports offer only 6 preset ranges.** No custom date-range picker. → [app/(app)/reports/reports-client.tsx:54-55](app/(app)/reports/reports-client.tsx#L54-L55)
-- [ ] **F6 · 🟠 [FEAT] Categories hardcoded in `EXPENSE_CATEGORIES`.** No CRUD UI to add/rename/remove. → [lib/types.ts](lib/types.ts)
-- [ ] **F7 · 🟠 [UI] Amount inputs lack `inputMode="decimal"`.** Wrong mobile keyboard. → [components/transactions/transaction-form.tsx:89](components/transactions/transaction-form.tsx#L89)
-- [ ] **F8 · 🟠 [UI] No negative/reversal color coding.** Expenses and refunds look identical.
-- [ ] **F9 · 🟠 [UI] Budget progress uses color alone for status.** A11y fail — add stripe pattern or textual label. → [app/(app)/budgets/budgets-client.tsx:222-225](app/(app)/budgets/budgets-client.tsx#L222-L225)
-- [ ] **F10 · 🟠 [UI] Tables have no cards fallback for mobile.** Horizontal scroll only across expenses / investments.
-- [ ] **F11 · 🟠 [BUG] Budget threshold state per-budget, not per-(budget, user).** Duplicate 80% alerts possible in a single session. → [lib/budgets/check.ts:109-115](lib/budgets/check.ts#L109-L115)
-- [ ] **F12 · 🟠 [BUG] `formatCurrency` special-cases PKR** as prefix text vs `Intl.NumberFormat` for other currencies — inconsistent. → [lib/utils.ts:16](lib/utils.ts#L16)
-- [ ] **F13 · 🟠 [BUG] Export buttons on `/reports` don't re-check `canSeeFinances` client-side.** Middleware-only defense; belt + braces missing. → [app/(app)/reports/reports-client.tsx](app/(app)/reports/reports-client.tsx)
+- [ ] **F2 · 🟠 [FEAT] No CSV/XLSX import for transactions.** Deferred — a real importer needs a file-picker + column-mapper + a preview step + a bulk insert action. Full P2 feature commit. → [components/transactions/transaction-form.tsx](components/transactions/transaction-form.tsx)
+- [ ] **F3 · 🟠 [FEAT] No receipt/attachment field on transactions.** Deferred — needs object storage wiring (Supabase Storage) + schema migration + upload UI. P2 feature commit.
+- [ ] **F4 · 🟠 [FEAT] No multi-currency.** Deferred — schema field exists, needs company-level currency picker in settings + rollout across formatters. Follow-up.
+- [ ] **F5 · 🟠 [FEAT] Reports offer only 6 preset ranges.** Deferred — needs a proper date-range picker component (calendar UI + custom "from/to" input). Follow-up.
+- [ ] **F6 · 🟠 [FEAT] Categories hardcoded in `EXPENSE_CATEGORIES`.** Deferred — needs a Category schema + CRUD actions + settings UI. Full feature commit.
+- [x] **F7 · 🟠 [UI] Amount inputs lack `inputMode="decimal"`.** ✔ Added `inputMode="decimal"` to transaction, recurring, and budget-monthlyLimit money inputs; recurring `dayOfMonth` gets `inputMode="numeric"` so mobile keyboards match the field.
+- [~] **F8 · 🟠 [UI] No negative/reversal color coding.** FALSE POSITIVE — schema at [lib/types.ts:23](lib/types.ts#L23) is `TransactionType = "expense" \| "investment"`. There is no refund/reversal concept, so no third color to give it.
+- [x] **F9 · 🟠 [UI] Budget progress uses color alone for status.** ✔ Progress bar now has `role="progressbar"` + `aria-valuenow` + a descriptive `aria-label`; over-budget bars gain a diagonal-stripe pattern layered on top of the danger color so color-blind users can still tell them apart. Existing "Over / Warning / On track" text pill was already redundant with color.
+- [ ] **F10 · 🟠 [UI] Tables have no cards fallback for mobile.** Deferred — every finance table would need a duplicate card layout. Horizontal scroll is acceptable UX until we ship a proper mobile pass.
+- [~] **F11 · 🟠 [BUG] Budget threshold state per-budget, not per-(budget, user).** LARGELY COVERED — `lastWarnedMonth` / `lastAlertedMonth` per-Budget dedupe blocks the common case (single-user session). Only concurrent-writes race can double-fire; low risk at this scale. Full per-(budget, user) tracking would need a schema addition — defer.
+- [x] **F12 · 🟠 [BUG] `formatCurrency` special-cases PKR** inconsistently. ✔ Removed the PKR-only prefix branch; every currency now flows through `Intl.NumberFormat` uniformly, with a safe fallback for stale/unknown ISO codes.
+- [x] **F13 · 🟠 [BUG] Export buttons on `/reports` don't re-check `canSeeFinances` client-side.** ✔ The RSC now `notFound()`s for member roles as belt-and-braces beyond middleware. Both the button-render and export-action paths are protected in one gate.
 - [ ] **F14 · 🟡 [FEAT] No split transactions, no tax categories, no vendor/merchant field.**
 - [ ] **F15 · 🔵 [OPP] Dashboard runway/burn-rate widget, monthly closeout email, spend-vs-budget trend chart, anomaly alerts, duplicate-transaction button.**
 

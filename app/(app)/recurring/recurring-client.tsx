@@ -427,6 +427,7 @@ function NewRuleForm({ onClose, onCreated }: { onClose: () => void; onCreated: (
           <input
             id={amountId}
             type="number"
+            inputMode="decimal"
             min="0"
             step="0.01"
             placeholder="0.00"
@@ -521,6 +522,7 @@ function NewRuleForm({ onClose, onCreated }: { onClose: () => void; onCreated: (
           <input
             id={dayId}
             type="number"
+            inputMode="numeric"
             min="1"
             max="31"
             {...register("dayOfMonth", { valueAsNumber: true })}

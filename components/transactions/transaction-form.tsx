@@ -87,6 +87,7 @@ export function TransactionForm({ type, projects = [], onClose, onSuccess }: Pro
           <input
             id={amountId}
             type="number"
+            inputMode="decimal"
             min="0"
             step="0.01"
             placeholder="0.00"

@@ -218,9 +218,24 @@ function BudgetCard({
       </div>
 
       <div className="space-y-2">
-        <div className="h-2.5 overflow-hidden rounded-full bg-glass/[0.06]">
+        <div
+          role="progressbar"
+          aria-label={`${budget.category} budget: ${pctLabel}% of ${formatCurrency(budget.monthlyLimit)} used`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.min(100, pctLabel)}
+          className="h-2.5 overflow-hidden rounded-full bg-glass/[0.06]"
+        >
           <div
-            className={cn("h-full rounded-full transition-[width] duration-700", tone.bar)}
+            className={cn(
+              "h-full rounded-full transition-[width] duration-700",
+              tone.bar,
+              // A11y row F9: over-budget bars carry a diagonal stripe pattern
+              // on top of the danger color so a color-blind user can still
+              // tell them apart from the on-track and warning states.
+              isOver &&
+                "bg-[repeating-linear-gradient(45deg,rgb(255_255_255_/_0.2)_0,rgb(255_255_255_/_0.2)_4px,transparent_4px,transparent_8px)]"
+            )}
             style={{ width: `${barWidth}%` }}
           />
         </div>
@@ -376,6 +391,7 @@ function NewBudgetForm({
         <input
           id={limitId}
           type="number"
+          inputMode="decimal"
           min="0"
           step="100"
           placeholder="50000"
