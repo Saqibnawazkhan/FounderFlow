@@ -45,6 +45,8 @@ export const authConfig = {
         pathname === "/offline" || // PWA offline fallback — must work without a session
         pathname.startsWith("/login") ||
         pathname.startsWith("/signup") ||
+        pathname.startsWith("/forgot-password") ||
+        pathname.startsWith("/reset-password") ||
         pathname.startsWith("/invite/") || // /invite/[token] for email-link onboarding
         pathname.startsWith("/api/auth") ||
         pathname.startsWith("/api/cron/") || // protected by CRON_SECRET header instead

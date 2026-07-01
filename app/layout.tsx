@@ -32,6 +32,15 @@ export const metadata: Metadata = {
   keywords: ["startup", "co-founder", "management", "expense tracker", "task management"],
   manifest: "/manifest.json",
   applicationName: "FounderFlow",
+  // Explicit icon set. `app/icon.svg` covers Next.js's file-based metadata,
+  // but bare `/favicon.ico` and legacy Safari need the URL spelled out. The
+  // duplicate `public/icon.svg` (identical to `app/icon.svg`) exists so the
+  // manifest + service-worker precache resolve at the literal URL.
+  icons: {
+    icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
+  },
   // PWA / iOS: tell Safari this is a standalone web app so the user gets the
   // "Add to Home Screen" experience without browser chrome on launch.
   appleWebApp: {
@@ -46,6 +55,8 @@ export const metadata: Metadata = {
     url: "/",
     siteName: "FounderFlow",
     type: "website",
+    // The actual PNG comes from app/opengraph-image.tsx, which Next.js
+    // auto-wires — listing it here would double up the tag.
   },
   twitter: {
     card: "summary_large_image",

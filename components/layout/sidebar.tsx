@@ -4,54 +4,13 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-  BarChart3,
-  Bell,
-  Briefcase,
-  CheckSquare,
-  Clock,
-  FileText,
-  Home,
-  LayoutDashboard,
-  Repeat,
-  Settings,
-  Sparkles,
-  Target,
-  TrendingDown,
-  TrendingUp,
-  Users,
-  X,
-  Zap,
-} from "lucide-react";
+import { Sparkles, X } from "lucide-react";
 import { useStore, useStoreHasHydrated } from "@/lib/store";
 import { listNotificationsAction } from "@/lib/actions/notifications";
 import { useT } from "@/lib/i18n/use-t";
-import type { Strings } from "@/lib/i18n/strings";
 import { cn } from "@/lib/utils";
 import { homeRouteForRole, isMemberBlockedRoute, type Role } from "@/lib/auth/role-gates";
-
-// nav items pair href + icon + a function that returns the localized label.
-// We deliberately don't bake the strings in at module scope — that'd
-// freeze them at English on first render.
-const navItems: {
-  href: string;
-  icon: typeof LayoutDashboard;
-  labelKey: keyof Strings["nav"];
-}[] = [
-  { href: "/dashboard", icon: LayoutDashboard, labelKey: "dashboard" },
-  { href: "/expenses", icon: TrendingDown, labelKey: "expenses" },
-  { href: "/investments", icon: TrendingUp, labelKey: "investments" },
-  { href: "/recurring", icon: Repeat, labelKey: "recurring" },
-  { href: "/budgets", icon: Target, labelKey: "budgets" },
-  { href: "/projects", icon: Briefcase, labelKey: "projects" },
-  { href: "/tasks", icon: CheckSquare, labelKey: "tasks" },
-  { href: "/time", icon: Clock, labelKey: "time" },
-  { href: "/activities", icon: Zap, labelKey: "activity" },
-  { href: "/team", icon: Users, labelKey: "team" },
-  { href: "/reports", icon: BarChart3, labelKey: "reports" },
-  { href: "/notifications", icon: Bell, labelKey: "notifications" },
-  { href: "/settings", icon: Settings, labelKey: "settings" },
-];
+import { NAV_ITEMS } from "@/lib/nav";
 
 export function Sidebar() {
   // Mobile open/close lives in Zustand so the topbar burger can drive it
@@ -126,8 +85,8 @@ export function Sidebar() {
   const role: Role = (currentUser?.role as Role | undefined) ?? "member";
   const visibleNavItems =
     hasHydrated && role === "member"
-      ? navItems.filter((item) => !isMemberBlockedRoute(item.href))
-      : navItems;
+      ? NAV_ITEMS.filter((item) => !isMemberBlockedRoute(item.href))
+      : NAV_ITEMS;
   // Brand logo also routes to the role-appropriate home so members don't
   // hit a /dashboard bounce when they click the logo.
   const brandHref = homeRouteForRole(role);

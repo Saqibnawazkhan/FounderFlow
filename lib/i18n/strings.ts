@@ -37,6 +37,7 @@ export const en = {
     confirm: "Confirm",
     loading: "Loading…",
     search: "Search expenses, tasks, team...",
+    noResults: "No results",
     workspace: "Workspace",
     signOut: "Sign out",
     yes: "Yes",
@@ -100,7 +101,7 @@ export const en = {
     signUpShowcaseHeadingEm: "under a minute",
     signUpShowcaseHeadingPost: ".",
     signUpShowcaseDesc:
-      "Set up your company, invite your co-founders, and start tracking every PKR and task — together, in real time.",
+      "Set up your company, invite co-founders, and track finances and tasks together — in real time.",
     startupsLabel: "Startups",
     tasksDoneLabel: "Tasks done",
     cofounderDuosLabel: "Co-founder duos",
@@ -132,6 +133,30 @@ export const en = {
     haveAccount: "Already have an account?",
     welcomeToFFToast: "Welcome to FounderFlow",
     signupFailedToast: "Sign up failed",
+    // Password reset — request + set flows
+    forgotPassword: "Forgot password?",
+    forgotPasswordTitle: "Reset your password",
+    forgotPasswordTagline:
+      "Enter your email and we'll send you a link to set a new password. The link expires in 15 minutes.",
+    sendResetLink: "Send reset link",
+    sendingResetLink: "Sending…",
+    resetLinkSentTitle: "Check your inbox",
+    resetLinkSentBody:
+      "If an account matches that email, we've sent a link to reset your password. Follow it within 15 minutes.",
+    backToSignIn: "Back to sign in",
+    rememberPassword: "Remember your password?",
+    resetPasswordTitle: "Set a new password",
+    resetPasswordTagline:
+      "Choose a password you don't use anywhere else. Mixed case + a digit, at least 8 characters.",
+    newPassword: "New password",
+    newPasswordPlaceholder: "At least 8 characters",
+    setNewPassword: "Set new password",
+    settingNewPassword: "Saving…",
+    resetPasswordSuccessTitle: "Password reset",
+    resetPasswordSuccessBody: "Sign in with your new password to continue.",
+    resetLinkInvalidTitle: "This link isn't valid",
+    resetLinkInvalidBody:
+      "It may have expired or already been used. Request a fresh link and try again.",
   },
   topbar: {
     profileSettings: "Profile & settings",
@@ -273,6 +298,7 @@ export const ur: typeof en = {
     confirm: "تصدیق کریں",
     loading: "لوڈ ہو رہا ہے…",
     search: "اخراجات، کام، ٹیم تلاش کریں...",
+    noResults: "کوئی نتیجہ نہیں",
     workspace: "ورک اسپیس",
     signOut: "سائن آؤٹ",
     yes: "ہاں",
@@ -332,7 +358,7 @@ export const ur: typeof en = {
     signUpShowcaseHeadingEm: "ہم آہنگ",
     signUpShowcaseHeadingPost: " کو فاؤنڈرز۔",
     signUpShowcaseDesc:
-      "اپنی کمپنی سیٹ اپ کریں، کو فاؤنڈرز کو دعوت دیں، اور ہر روپیہ اور کام کو ساتھ مل کر، حقیقی وقت میں ٹریک کریں۔",
+      "اپنی کمپنی سیٹ اپ کریں، کو فاؤنڈرز کو دعوت دیں، اور مالیات اور کام ایک ساتھ حقیقی وقت میں ٹریک کریں۔",
     startupsLabel: "اسٹارٹ اپس",
     tasksDoneLabel: "مکمل کام",
     cofounderDuosLabel: "کو فاؤنڈر جوڑے",
@@ -364,6 +390,30 @@ export const ur: typeof en = {
     haveAccount: "پہلے سے اکاؤنٹ ہے؟",
     welcomeToFFToast: "FounderFlow میں خوش آمدید",
     signupFailedToast: "اکاؤنٹ نہیں بن سکا",
+    // Password reset
+    forgotPassword: "پاس ورڈ بھول گئے؟",
+    forgotPasswordTitle: "اپنا پاس ورڈ ری سیٹ کریں",
+    forgotPasswordTagline:
+      "اپنا ای میل درج کریں، ہم نیا پاس ورڈ سیٹ کرنے کا لنک بھیج دیں گے۔ لنک ۱۵ منٹ میں ختم ہو جاتا ہے۔",
+    sendResetLink: "ری سیٹ لنک بھیجیں",
+    sendingResetLink: "بھیجا جا رہا ہے…",
+    resetLinkSentTitle: "اپنا ان باکس چیک کریں",
+    resetLinkSentBody:
+      "اگر اس ای میل سے کوئی اکاؤنٹ منسلک ہے تو ری سیٹ لنک بھیج دیا گیا ہے۔ اسے ۱۵ منٹ میں استعمال کریں۔",
+    backToSignIn: "سائن ان پر واپس",
+    rememberPassword: "پاس ورڈ یاد آ گیا؟",
+    resetPasswordTitle: "نیا پاس ورڈ سیٹ کریں",
+    resetPasswordTagline:
+      "کوئی نیا پاس ورڈ چنیں جو کہیں اور استعمال نہ کر رہے ہوں۔ چھوٹے اور بڑے حرف + ایک نمبر، کم از کم ۸ حروف۔",
+    newPassword: "نیا پاس ورڈ",
+    newPasswordPlaceholder: "کم از کم ۸ حروف",
+    setNewPassword: "نیا پاس ورڈ سیٹ کریں",
+    settingNewPassword: "محفوظ کیا جا رہا ہے…",
+    resetPasswordSuccessTitle: "پاس ورڈ ری سیٹ ہو گیا",
+    resetPasswordSuccessBody: "اپنے نئے پاس ورڈ سے سائن ان کریں۔",
+    resetLinkInvalidTitle: "یہ لنک کارآمد نہیں ہے",
+    resetLinkInvalidBody:
+      "یہ لنک ختم ہو چکا ہے یا پہلے استعمال ہو چکا ہے۔ نیا لنک منگوا کر دوبارہ کوشش کریں۔",
   },
   topbar: {
     profileSettings: "پروفائل اور ترتیبات",

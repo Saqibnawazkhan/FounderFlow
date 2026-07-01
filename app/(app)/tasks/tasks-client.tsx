@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   AlertCircle,
   Calendar,
@@ -80,8 +80,36 @@ export function TasksClient({
   currentUserRole,
 }: Props) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
+
+  // When a task-notification link lands here as `?taskId=...`, scroll the
+  // matching card into view and flash a highlight ring on it. The ring is
+  // driven by `highlightId`; the effect below clears it after 2.5s and then
+  // wipes the query param so a page refresh doesn't re-flash.
+  const highlightIdParam = searchParams.get("taskId");
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const scrollRefs = useRef<Map<string, HTMLElement>>(new Map());
+  useEffect(() => {
+    if (!highlightIdParam) return;
+    setHighlightId(highlightIdParam);
+    const el = scrollRefs.current.get(highlightIdParam);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const t = setTimeout(() => {
+      setHighlightId(null);
+      const url = new URL(window.location.href);
+      url.searchParams.delete("taskId");
+      window.history.replaceState({}, "", url.toString());
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [highlightIdParam]);
+  function registerRef(id: string) {
+    return (el: HTMLElement | null) => {
+      if (el) scrollRefs.current.set(id, el);
+      else scrollRefs.current.delete(id);
+    };
+  }
 
   // Optimistic local copy of the task list. Seeded from the RSC prop, then
   // mutated in place for snappy DnD updates. router.refresh() in the parent
@@ -264,6 +292,8 @@ export function TasksClient({
                     currentUserId === task.assignedBy || currentUserRole === "admin"
                   }
                   isDragActive={draggingTask !== null}
+                  highlightId={highlightId}
+                  registerRef={registerRef}
                 />
               </div>
             ))}
@@ -324,10 +354,15 @@ export function TasksClient({
               <tbody>
                 {filtered.map((task) => {
                   const overdue = isPast(new Date(task.deadline)) && task.status !== "completed";
+                  const isHighlighted = highlightId === task.id;
                   return (
                     <tr
                       key={task.id}
-                      className="border-b border-border/60 transition-colors last:border-b-0 hover:bg-bg"
+                      ref={registerRef(task.id)}
+                      className={cn(
+                        "border-b border-border/60 transition-all last:border-b-0 hover:bg-bg",
+                        isHighlighted && "bg-primary/[0.08] shadow-inner"
+                      )}
                     >
                       <td className="px-6 py-4">
                         <p className="text-sm font-medium text-fg">{task.title}</p>
@@ -516,6 +551,8 @@ function DroppableColumn({
   onOpenComments,
   canDeleteTask,
   isDragActive,
+  highlightId,
+  registerRef,
 }: {
   column: Column;
   tasks: TaskWithCount[];
@@ -524,6 +561,8 @@ function DroppableColumn({
   onOpenComments: (task: TaskWithCount) => void;
   canDeleteTask: (task: TaskWithCount) => boolean;
   isDragActive: boolean;
+  highlightId: string | null;
+  registerRef: (id: string) => (el: HTMLElement | null) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: column.status });
 
@@ -578,6 +617,8 @@ function DroppableColumn({
               onDelete={onDelete}
               onOpenComments={onOpenComments}
               canDelete={canDeleteTask(task)}
+              highlighted={highlightId === task.id}
+              externalRef={registerRef(task.id)}
             />
           ))
         )}
@@ -597,6 +638,8 @@ function TaskCard({
   onOpenComments,
   canDelete,
   isDragging: isOverlay = false,
+  highlighted = false,
+  externalRef,
 }: {
   task: TaskWithCount;
   onStatusChange: (id: string, status: TaskStatus) => void;
@@ -604,6 +647,8 @@ function TaskCard({
   onOpenComments?: (task: TaskWithCount) => void;
   canDelete: boolean;
   isDragging?: boolean;
+  highlighted?: boolean;
+  externalRef?: (el: HTMLElement | null) => void;
 }) {
   const { attributes, listeners, setNodeRef, isDragging, transform } = useDraggable({
     id: task.id,
@@ -622,12 +667,17 @@ function TaskCard({
 
   return (
     <div
-      ref={setNodeRef}
+      ref={(el) => {
+        setNodeRef(el);
+        externalRef?.(el);
+      }}
       style={style}
       className={cn(
-        "group rounded-xl border border-border bg-bg p-4 transition-colors hover:border-primary/30",
+        "group rounded-xl border border-border bg-bg p-4 transition-all hover:border-primary/30",
         isDragging && !isOverlay && "opacity-30",
-        isOverlay && "cursor-grabbing border-primary/40 bg-surface"
+        isOverlay && "cursor-grabbing border-primary/40 bg-surface",
+        highlighted &&
+          "border-primary/60 shadow-[0_0_30px_rgb(182_244_37_/_0.35)] ring-2 ring-primary/50"
       )}
     >
       <div className="mb-3 flex items-start justify-between gap-2">

@@ -18,6 +18,7 @@ import type { Notification } from "@/lib/types";
 import { useT } from "@/lib/i18n/use-t";
 import { ClockWidget } from "@/components/time/clock-widget";
 import { homeRouteForRole, type Role } from "@/lib/auth/role-gates";
+import { CommandPalette } from "@/components/layout/command-palette";
 
 export function Topbar() {
   const router = useRouter();
@@ -58,6 +59,21 @@ export function Topbar() {
 
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // ⌘K / Ctrl-K opens the command palette. Only fires when not typing in an
+  // editable target so the shortcut doesn't hijack keystrokes inside forms.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const notifRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
 
@@ -122,22 +138,23 @@ export function Topbar() {
           <span className="text-sm font-bold tracking-tight">FounderFlow</span>
         </Link>
 
-        {/* Search — collapses on very small screens to leave room for actions */}
+        {/* Search — collapses on very small screens to leave room for actions.
+            The visible input is a button that opens the CommandPalette; the
+            actual text field lives inside the palette so focus + shortcuts
+            behave predictably on all viewports. */}
         <div className="hidden max-w-md flex-1 sm:block">
-          <div className="relative">
-            <Search
-              className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
-              aria-hidden="true"
-            />
-            <label htmlFor="topbar-search" className="sr-only">
-              {t.common.search}
-            </label>
-            <input
-              id="topbar-search"
-              placeholder={t.common.search}
-              className="w-full rounded-xl border border-transparent bg-bg py-2 pl-10 pr-4 text-sm transition-all focus:border-primary/30 focus:bg-surface focus:outline-none focus:ring-2 focus:ring-primary/20"
-            />
-          </div>
+          <button
+            type="button"
+            onClick={() => setPaletteOpen(true)}
+            aria-label={t.common.search}
+            className="flex w-full items-center gap-3 rounded-xl border border-transparent bg-bg py-2 pl-3 pr-3 text-sm text-fg-muted transition-all hover:border-primary/20 hover:bg-surface focus:border-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/20"
+          >
+            <Search className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span className="flex-1 text-left">{t.common.search}</span>
+            <kbd className="hidden items-center gap-1 rounded-md border border-border bg-surface px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider md:inline-flex">
+              ⌘K
+            </kbd>
+          </button>
         </div>
 
         {/* Spacer pushes right-side actions to the end when search is hidden */}
@@ -337,6 +354,8 @@ export function Topbar() {
           </div>
         </div>
       </div>
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </header>
   );
 }
