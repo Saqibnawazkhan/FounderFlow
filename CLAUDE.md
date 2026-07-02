@@ -2,23 +2,49 @@
 
 ## Database safety (READ THIS BEFORE WRITING ANY DESTRUCTIVE COMMAND)
 
-The local `.env` `DATABASE_URL` points at the **production Supabase**.
-There is currently no separate dev/staging database — running
-`prisma db seed` or `prisma migrate reset` here writes against live customer data.
+**Tier 2 has landed as of 2026-07-02.** Local dev runs against a docker-
+compose Postgres on `127.0.0.1:5433`. `.env` no longer points at production.
+The seed guard from Tier 1 still exists as a belt-and-braces backup.
 
-A past incident wiped a real signup's account because the seed script
-fired against this URL with no guard. The seed now refuses to run unless
-you explicitly opt in. **Don't paper over the guard. Don't add a workflow
-that bypasses it.** If you genuinely need to reseed, follow the runbook below.
+### Local development from scratch
 
-### Safe commands
+```bash
+docker compose up -d              # postgres on 127.0.0.1:5433
+cp .env.local.example .env.local  # never commit — gitignored
+npm run db:migrate:local          # applies every migration
+npm run db:seed:local              # loads the demo workspace
+npm run dev                       # Next.js reads .env.local first
+```
 
-- `npm run db:seed:local` — wraps `prisma db seed` with `SEED_RESET=true`.
-  Refuses if the connection URL looks like Supabase (production).
-- `npm run db:reset:local` — same env, plus `prisma migrate reset --force`.
-  Wipes the whole local schema. Refuses against production.
+### Everyday commands
 
-### What the guard does (`prisma/seed.ts`)
+| Command | What it does |
+|---|---|
+| `npm run db:up` | Starts the local Postgres container. |
+| `npm run db:down` | Stops it. Data volume survives. |
+| `npm run db:nuke` | Stops + wipes the volume. Full teardown. |
+| `npm run db:migrate:local` | `prisma migrate dev` against local. |
+| `npm run db:seed:local` | Reseeds the `demo-nimbus` workspace. |
+| `npm run db:reset:local` | Drops schema + reruns migrations + seed. |
+| `npm run db:migrate:staging` | `prisma migrate deploy` — CI-only path. |
+
+### Environment layout
+
+| Env | DB | Where creds live |
+|---|---|---|
+| **Local dev** | docker-compose Postgres 16 (127.0.0.1:5433) | `.env.local` (gitignored) |
+| **Staging** | Distinct Supabase project (`founderflow-staging`) | Vercel Preview env vars |
+| **Production** | Live Supabase (`founderflow`) | Vercel Production env vars only |
+
+Production credentials **never** land in a local file. If you need to
+inspect prod data, do it through Supabase's dashboard, not through a
+Prisma client pointed at the pooler URL.
+
+### The seed guard (`prisma/seed.ts`) — belt and braces
+
+Even with Tier 2 pointing local dev away from prod, the seed guard stays.
+It's cheap insurance if someone temporarily aims `.env.local` at Supabase
+for a one-off inspection.
 
 1. Bails unless `SEED_RESET=true`. Stops accidental `prisma migrate reset`
    from auto-firing the seed.
@@ -29,20 +55,7 @@ that bypasses it.** If you genuinely need to reseed, follow the runbook below.
    Real signup workspaces live under different company ids and are
    physically out of reach even if 1 + 2 are bypassed.
 
-### Not-yet-shipped roadmap (Tier 2 / Tier 3)
-
-If you (Claude, future you, or anyone else) finds yourself reaching for
-the seed against production, that's the cue to actually do this work
-instead of bypassing the guard:
-
-**Tier 2 — environment separation**
-
-- Local Postgres via docker compose for day-to-day dev (`DATABASE_URL`
-  in `.env.local` points there).
-- Separate Supabase project for staging; CI uses that.
-- Production stays where it is. No agent has prod creds in `.env`.
-
-**Tier 3 — recovery layer**
+### What's still deferred (Tier 3 — recovery layer)
 
 - Soft delete on User, Company, Project, Task, Budget, Transaction.
   Hard delete becomes `update({ deletedAt: now })`. A nightly cron purges
@@ -50,9 +63,6 @@ instead of bypassing the guard:
   SQL update from coming back.
 - Nightly `pg_dump` to an R2/S3 bucket (free-tier-friendly cron + storage).
 - Sentry alerts on any single mutation that touches >100 rows.
-
-If you're about to do something destructive and any of those would have
-mitigated the consequences, build the mitigation **first**.
 
 ## Repo conventions
 

@@ -55,9 +55,13 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files
+# env files — Tier 2 env separation: `.env*` blanks everything, then the
+# three `.example` templates are opted back in. Never commit `.env`,
+# `.env.local`, `.env.staging`, or `.env.production`.
 .env*
 !.env.example
+!.env.local.example
+!.env.staging.example
 
 # local SQLite scratch databases (dev only — real DB is Postgres)
 *.db

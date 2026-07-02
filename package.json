@@ -18,8 +18,13 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "analyze": "cross-env ANALYZE=true next build",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:nuke": "docker compose down -v",
+    "db:migrate:local": "prisma migrate dev",
     "db:seed:local": "cross-env SEED_RESET=true tsx prisma/seed.ts",
     "db:reset:local": "cross-env SEED_RESET=true prisma migrate reset --force",
+    "db:migrate:staging": "prisma migrate deploy",
     "postinstall": "prisma generate",
     "prepare": "husky"
   },

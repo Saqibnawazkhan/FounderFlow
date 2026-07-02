@@ -1,0 +1,58 @@
+# Local development database — Tier 2 env separation.
+#
+# Why: the app's DATABASE_URL used to point at production Supabase, so every
+# `prisma migrate dev` and `prisma db seed` ran against live customer data.
+# A past incident wiped a real signup's account. This compose file gives
+# every dev their own Postgres, on their laptop, that nobody else can reach.
+#
+# Postgres version pinned at 16 to match Supabase's current major (whose
+# behavior we care about — extension defaults, JSON operators, upcoming
+# `pg_upgrade` targets all shift between majors).
+#
+# Volumes:
+#   • ff_pgdata — persistent DB storage. `docker compose down` keeps it;
+#     `docker compose down -v` nukes it. `npm run db:reset:local` is the
+#     supported way to wipe schema + data in place without losing the volume.
+#
+# Ports:
+#   • 5433 (not 5432) on the host so this can coexist with a system-installed
+#     Postgres or with a second FounderFlow checkout. `.env.local.example`
+#     spells out the resulting DATABASE_URL.
+#
+# Once this is up:
+#   1. `cp .env.local.example .env.local` and pick a password (matching the
+#      POSTGRES_PASSWORD below)
+#   2. `npm run db:migrate:local` — applies every migration to the fresh DB
+#   3. `npm run db:seed:local` — loads the demo workspace
+#
+# Prod remains untouched. There is deliberately no compose service pointing
+# at Supabase — the whole point of Tier 2 is that day-to-day dev never
+# opens a socket to production.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: founderflow-postgres
+    restart: unless-stopped
+    environment:
+      # Overridable via `.env.local` for people who want their own secret,
+      # but a shared local password is fine — this DB is bound to 127.0.0.1
+      # on the host and never leaves the machine.
+      POSTGRES_USER: ${POSTGRES_USER:-founderflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-founderflow_local}
+      POSTGRES_DB: ${POSTGRES_DB:-founderflow}
+      # Slightly kinder default so `docker logs` reads like Supabase.
+      TZ: UTC
+    ports:
+      - "5433:5432"
+    volumes:
+      - ff_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-founderflow} -d ${POSTGRES_DB:-founderflow}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  ff_pgdata:
+    name: founderflow_pgdata
