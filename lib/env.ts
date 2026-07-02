@@ -1,12 +1,17 @@
 import { z } from "zod";
 
+// Treat empty-string envs the same as unset — `.env.local.example` ships
+// with `SENTRY_DSN=""` etc. so devs can see the slot without opting into
+// the feature, and z.string().url() would otherwise reject "" as invalid.
+const optionalUrl = z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional());
+
 const envSchema = z.object({
   NEXT_PUBLIC_APP_URL: z.string().url().default("http://localhost:3000"),
   NEXT_PUBLIC_DEFAULT_CURRENCY: z.string().default("PKR"),
 
   DATABASE_URL: z.string().optional(),
   AUTH_SECRET: z.string().optional(),
-  AUTH_URL: z.string().url().optional(),
+  AUTH_URL: optionalUrl,
 
   EMAIL_VERIFICATION_REQUIRED: z
     .enum(["true", "false"])
@@ -15,10 +20,10 @@ const envSchema = z.object({
   RESEND_API_KEY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
 
-  UPSTASH_REDIS_REST_URL: z.string().url().optional(),
+  UPSTASH_REDIS_REST_URL: optionalUrl,
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
 
-  SENTRY_DSN: z.string().url().optional(),
+  SENTRY_DSN: optionalUrl,
 });
 
 const parsed = envSchema.safeParse({

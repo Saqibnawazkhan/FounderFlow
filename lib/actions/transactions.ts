@@ -17,6 +17,7 @@
  *   5. revalidatePath(s) so any RSC consumers re-render with fresh data
  */
 
+import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -28,12 +29,14 @@ import type { Transaction } from "@/lib/types";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
 
-/** Plain serializable shape returned to client components. */
+/** Plain serializable shape returned to client components. Amount is
+ *  Prisma.Decimal on the way in (BUGS.md P0-4) and needs `.toNumber()` for
+ *  JSON transport across the RSC boundary. */
 function toClient(t: {
   id: string;
   companyId: string;
   type: string;
-  amount: number;
+  amount: Prisma.Decimal;
   category: string;
   description: string;
   date: Date;
@@ -45,7 +48,7 @@ function toClient(t: {
     id: t.id,
     companyId: t.companyId,
     type: t.type as "expense" | "investment",
-    amount: t.amount,
+    amount: t.amount.toNumber(),
     category: t.category,
     description: t.description,
     date: t.date.toISOString(),

@@ -65,18 +65,22 @@ export async function getBudgetsWithSpend(
     },
     _sum: { amount: true },
   });
+  // BUGS.md P0-4: `_sum` and `monthlyLimit` are `Prisma.Decimal` after the
+  // Float→Decimal migration. Convert to Number at the client-shape
+  // boundary — the RSC / JSON transport needs a primitive.
   const spendByCategory = new Map<string, number>(
-    sums.map((s) => [s.category, s._sum.amount ?? 0])
+    sums.map((s) => [s.category, s._sum.amount ? s._sum.amount.toNumber() : 0])
   );
 
   return budgets.map((b) => {
     const spend = spendByCategory.get(b.category) ?? 0;
+    const limit = b.monthlyLimit.toNumber();
     return {
       id: b.id,
       companyId: b.companyId,
       projectId: b.projectId,
       category: b.category,
-      monthlyLimit: b.monthlyLimit,
+      monthlyLimit: limit,
       createdBy: b.createdBy,
       createdByName: b.createdByName,
       active: b.active,
@@ -84,7 +88,7 @@ export async function getBudgetsWithSpend(
       lastAlertedMonth: b.lastAlertedMonth,
       createdAt: b.createdAt.toISOString(),
       monthToDateSpend: spend,
-      percentUsed: b.monthlyLimit > 0 ? spend / b.monthlyLimit : 0,
+      percentUsed: limit > 0 ? spend / limit : 0,
     };
   });
 }

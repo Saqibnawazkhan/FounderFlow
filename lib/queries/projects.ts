@@ -133,7 +133,8 @@ export async function listProjectsForUser(): Promise<ProjectListItem[]> {
   }
   const spendByProject = new Map<string, number>();
   for (const r of spendRows) {
-    if (r.projectId) spendByProject.set(r.projectId, r._sum.amount ?? 0);
+    // BUGS.md P0-4: _sum.amount is Prisma.Decimal after the schema change.
+    if (r.projectId) spendByProject.set(r.projectId, r._sum.amount ? r._sum.amount.toNumber() : 0);
   }
   const trackedByProject = new Map<string, number>();
   for (const e of timeEntryRows) {
@@ -221,7 +222,8 @@ export async function getProjectOverview(projectId: string): Promise<ProjectOver
     ...project,
     openTaskCount: openTasks,
     totalTaskCount: totalTasks,
-    monthToDateSpendPkr: spendSum._sum.amount ?? 0,
+    // BUGS.md P0-4: aggregate is Prisma.Decimal after Float→Decimal.
+    monthToDateSpendPkr: spendSum._sum.amount ? spendSum._sum.amount.toNumber() : 0,
     trackedMs,
     memberCount: memberSet.size,
   };

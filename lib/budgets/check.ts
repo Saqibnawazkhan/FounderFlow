@@ -55,9 +55,12 @@ export async function checkBudgetThresholdAfterExpense({
       },
       _sum: { amount: true },
     });
-    const monthToDate = sum._sum.amount ?? 0;
+    // BUGS.md P0-4: aggregate + budget.monthlyLimit are Prisma.Decimal after
+    // Float→Decimal. decideThreshold operates on numbers; convert at boundary.
+    const monthToDate = sum._sum.amount ? sum._sum.amount.toNumber() : 0;
+    const monthlyLimit = budget.monthlyLimit.toNumber();
 
-    const decision = decideThreshold(budget, monthToDate, now);
+    const decision = decideThreshold({ ...budget, monthlyLimit }, monthToDate, now);
     if (!decision) return;
 
     const project = await db.project.findUnique({
@@ -67,7 +70,7 @@ export async function checkBudgetThresholdAfterExpense({
     if (!project) return; // race: project deleted between writes
 
     const mk = monthKey(now);
-    const limitLabel = budget.monthlyLimit.toLocaleString();
+    const limitLabel = monthlyLimit.toLocaleString();
     const spentLabel = monthToDate.toLocaleString();
     const pctLabel = Math.round(decision.percentUsed * 100);
 

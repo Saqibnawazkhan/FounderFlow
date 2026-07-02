@@ -6,6 +6,7 @@
  * Writes still live in lib/actions/transactions.ts (server actions).
  */
 
+import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requireScopedSession } from "@/lib/queries/session";
 import type { Transaction } from "@/lib/types";
@@ -17,7 +18,9 @@ function toClient(
     id: string;
     companyId: string;
     type: string;
-    amount: number;
+    // Prisma.Decimal on read (P0-4). RSC/client boundary needs a plain
+    // number for JSON serialization, so we convert here.
+    amount: Prisma.Decimal;
     category: string;
     description: string;
     date: Date;
@@ -31,7 +34,7 @@ function toClient(
     id: t.id,
     companyId: t.companyId,
     type: t.type as "expense" | "investment",
-    amount: t.amount,
+    amount: t.amount.toNumber(),
     category: t.category,
     description: t.description,
     date: t.date.toISOString(),

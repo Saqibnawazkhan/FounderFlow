@@ -97,7 +97,10 @@ model Transaction {
   id          String   @id @default(cuid())
   companyId   String
   type        String // "expense" | "investment"
-  amount      Float
+  // Decimal(12, 2) — up to 10 billion with cent precision. Previously
+  // `Float`, which drifts on SUM() past a few million rows and can't
+  // represent 0.10 exactly. See BUGS.md P0-4.
+  amount      Decimal  @db.Decimal(12, 2)
   category    String
   description String
   date        DateTime
@@ -144,7 +147,8 @@ model RecurringRule {
   id            String  @id @default(cuid())
   companyId     String
   type          String // "expense" | "investment"
-  amount        Float
+  // See Transaction.amount comment — same precision, same reason.
+  amount        Decimal @db.Decimal(12, 2)
   category      String
   description   String
   addedBy       String // userId who created the rule
@@ -289,7 +293,9 @@ model Budget {
   // while it still has budgets attached (admin must archive or reparent).
   projectId        String
   category         String // single expense category, e.g. "Office Rent"
-  monthlyLimit     Float
+  // Decimal(12, 2) matches Transaction.amount so any (limit − sum) math
+  // stays on the same numeric domain. See BUGS.md P0-4.
+  monthlyLimit     Decimal @db.Decimal(12, 2)
   createdBy        String
   createdByName    String
   active           Boolean  @default(true)

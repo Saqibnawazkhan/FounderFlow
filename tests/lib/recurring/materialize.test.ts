@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { Prisma } from "@prisma/client";
 import { alreadyFiredToday, isRuleDueOn, materialize } from "@/lib/recurring/materialize";
 import type { RecurringRule } from "@prisma/client";
 
@@ -11,7 +12,8 @@ function rule(overrides: Partial<RecurringRule> = {}): RecurringRule {
     id: "rule-1",
     companyId: "co-1",
     type: "expense",
-    amount: 100,
+    // Prisma.Decimal after the Float→Decimal migration (BUGS.md P0-4).
+    amount: new Prisma.Decimal(100),
     category: "Office Rent",
     description: "test",
     addedBy: "user-1",
@@ -148,7 +150,7 @@ describe("materialize", () => {
           id: "r1",
           companyId: "co-x",
           type: "investment",
-          amount: 50_000,
+          amount: new Prisma.Decimal(50_000),
           category: "Founder Investment",
           description: "Saqib's monthly top-up",
           addedBy: "user-saqib",
