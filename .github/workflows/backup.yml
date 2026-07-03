@@ -63,15 +63,48 @@ jobs:
         env:
           BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
         run: |
+          # set -e alone doesn't catch failures on the LEFT side of a pipe;
+          # pipefail promotes them so a pg_dump error kills the step even
+          # though `gzip` writes a (near-empty) file downstream. Without
+          # this, a broken dump silently uploads a 20-byte gzip header to
+          # R2 and the workflow shows green — the exact false-positive that
+          # burned us on 2026-07-03.
+          set -euo pipefail
+
+          # BACKUP_DATABASE_URL is stored as the session-pooler URL (port
+          # 5432) so it can double as a migration URL if we ever need to.
+          # Supabase's session pooler rejects pg_dump though — the
+          # documented workaround is the TRANSACTION pooler (port 6543)
+          # plus a `options=reference=<project-ref>` query parameter that
+          # tells the pooler which project to route to. Derive that URL
+          # from the stored secret instead of asking the user to paste
+          # two different URLs.
+          PROJECT_REF="$(printf '%s' "$BACKUP_DATABASE_URL" | sed -nE 's|.*://postgres\.([^:]+):.*|\1|p')"
+          if [ -z "$PROJECT_REF" ]; then
+            echo "::error::Could not extract Supabase project ref from BACKUP_DATABASE_URL. Expected user part 'postgres.<project-ref>'." >&2
+            exit 1
+          fi
+          PGDUMP_URL="$(printf '%s' "$BACKUP_DATABASE_URL" | sed -E 's|:5432/postgres([?].*)?$|:6543/postgres|')?options=reference%3D${PROJECT_REF}"
+
           # --no-owner / --no-privileges keep the dump portable across
           # Supabase projects, so a restore into a fresh project (staging,
           # dev) isn't blocked by permission grants.
-          pg_dump "$BACKUP_DATABASE_URL" \
+          pg_dump "$PGDUMP_URL" \
             --no-owner \
             --no-privileges \
             --format=plain \
             | gzip -9 > "${{ steps.filename.outputs.path }}"
+
+          # Belt + braces: refuse to upload anything under 512 bytes. Even
+          # a schema-only dump of an empty DB is a few KB; a 20-byte file
+          # is a broken gzip header of an empty stream.
+          file_size=$(stat -c%s "${{ steps.filename.outputs.path }}")
+          if [ "$file_size" -lt 512 ]; then
+            echo "::error::Dump file is only ${file_size} bytes — pg_dump likely failed. Refusing to upload." >&2
+            exit 1
+          fi
           ls -lh "${{ steps.filename.outputs.path }}"
+          echo "Dump size: ${file_size} bytes"
 
       - name: Upload to S3-compatible bucket
         env:
