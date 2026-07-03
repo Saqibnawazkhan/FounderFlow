@@ -44,10 +44,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Install Postgres 16 client + awscli
+      - name: Install Postgres 16 client
         run: |
+          # awscli v2 is pre-installed on ubuntu-latest runners, so we only
+          # need pg_dump 16 here. Ubuntu 24.04 dropped the `awscli` apt
+          # package (upstream is v1); the pre-installed v2 is what we want.
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-16 awscli
+          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          pg_dump --version
+          aws --version
 
       - name: Compute filename
         id: filename
