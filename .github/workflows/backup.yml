@@ -44,13 +44,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Install Postgres 16 client
+      - name: Install Postgres 17 client
         run: |
           # awscli v2 is pre-installed on ubuntu-latest runners, so we only
-          # need pg_dump 16 here. Ubuntu 24.04 dropped the `awscli` apt
-          # package (upstream is v1); the pre-installed v2 is what we want.
+          # need pg_dump here. Ubuntu 24.04 ships client 16 by default, but
+          # Supabase runs Postgres 17.6 as of 2026-07-04 and pg_dump refuses
+          # to dump from a newer server — add PGDG's apt source to get 17.
+          # If Supabase upgrades again, bump the version number in three
+          # places here (pg key install is version-agnostic).
+          sudo apt-get install -y --no-install-recommends curl ca-certificates lsb-release
+          curl -fsS https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/postgresql.asc > /dev/null
+          echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends postgresql-client-16
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
           pg_dump --version
           aws --version
 
