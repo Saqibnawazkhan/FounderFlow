@@ -10,7 +10,7 @@
 // - createdAt uses DateTime (stored as ISO 8601 string in SQLite).
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
   // Generate engines for both the local dev OS (native) AND Vercel's
   // serverless runtime (Linux + OpenSSL 3). Without the rhel target, the
   // deployed function throws PrismaClientInitializationError "could not
@@ -51,24 +51,24 @@ model User {
   // ops can restore with `UPDATE "User" SET "deletedAt" = NULL`.
   deletedAt    DateTime?
 
-  company        Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  ownedCompany   Company?        @relation("CompanyOwner")
-  transactions   Transaction[]
-  assignedTasks  Task[]          @relation("TaskAssignee")
-  createdTasks   Task[]          @relation("TaskCreator")
-  activities     Activity[]
-  notifications  Notification[]
-  recurringRules RecurringRule[]
-  budgets        Budget[]
-  comments       Comment[]       @relation("CommentAuthor")
-  timeEntries    TimeEntry[]     @relation("TimeEntryUser")
-  editedEntries  TimeEntry[]     @relation("TimeEntryEditor")
+  company            Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  ownedCompany       Company?        @relation("CompanyOwner")
+  transactions       Transaction[]
+  assignedTasks      Task[]          @relation("TaskAssignee")
+  createdTasks       Task[]          @relation("TaskCreator")
+  activities         Activity[]
+  notifications      Notification[]
+  recurringRules     RecurringRule[]
+  budgets            Budget[]
+  comments           Comment[]       @relation("CommentAuthor")
+  timeEntries        TimeEntry[]     @relation("TimeEntryUser")
+  editedEntries      TimeEntry[]     @relation("TimeEntryEditor")
   // Projects this user supervises (1:N — one user can supervise many).
   // SetNull on delete so the project survives the supervisor leaving;
   // the actions layer re-assigns via changeSupervisorAction immediately
   // after, but the DB never blocks the user delete.
-  supervisedProjects Project[]   @relation("ProjectSupervisor")
-  createdProjects    Project[]   @relation("ProjectCreator")
+  supervisedProjects Project[]       @relation("ProjectSupervisor")
+  createdProjects    Project[]       @relation("ProjectCreator")
 
   @@index([companyId])
   @@index([email])
@@ -105,19 +105,19 @@ model Company {
 }
 
 model Transaction {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   companyId   String
   type        String // "expense" | "investment"
   // Decimal(12, 2) — up to 10 billion with cent precision. Previously
   // `Float`, which drifts on SUM() past a few million rows and can't
   // represent 0.10 exactly. See BUGS.md P0-4.
-  amount      Decimal  @db.Decimal(12, 2)
+  amount      Decimal   @db.Decimal(12, 2)
   category    String
   description String
   date        DateTime
   addedBy     String
   addedByName String // denormalized for fast read paths
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
   // Tier 3 soft-delete sentinel — see User.deletedAt for semantics.
   deletedAt   DateTime?
 
@@ -158,26 +158,26 @@ model Transaction {
 // We keep both day fields nullable to avoid a column-per-frequency table —
 // the materializer + zod schema enforce that the right one is set.
 model RecurringRule {
-  id            String  @id @default(cuid())
-  companyId     String
-  type          String // "expense" | "investment"
+  id                 String    @id @default(cuid())
+  companyId          String
+  type               String // "expense" | "investment"
   // See Transaction.amount comment — same precision, same reason.
-  amount        Decimal @db.Decimal(12, 2)
-  category      String
-  description   String
-  addedBy       String // userId who created the rule
-  addedByName   String // denormalized (same pattern as Transaction)
-  frequency     String // "monthly" | "weekly"
-  dayOfMonth    Int? // 1-31 (when frequency=monthly)
-  dayOfWeek     Int? // 0-6  (when frequency=weekly)
-  active        Boolean @default(true)
+  amount             Decimal   @db.Decimal(12, 2)
+  category           String
+  description        String
+  addedBy            String // userId who created the rule
+  addedByName        String // denormalized (same pattern as Transaction)
+  frequency          String // "monthly" | "weekly"
+  dayOfMonth         Int? // 1-31 (when frequency=monthly)
+  dayOfWeek          Int? // 0-6  (when frequency=weekly)
+  active             Boolean   @default(true)
   // First-fire date — also the date used for the immediate "seed" transaction
   // we create at rule-creation time so the user gets instant feedback.
-  startDate     DateTime
+  startDate          DateTime
   // Set on every successful materialization so the cron can detect "already
   // ran today" and stay idempotent if it fires twice in a 24h window.
   lastMaterializedAt DateTime?
-  createdAt     DateTime @default(now())
+  createdAt          DateTime  @default(now())
 
   company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   user         User          @relation(fields: [addedBy], references: [id], onDelete: Cascade)
@@ -278,16 +278,16 @@ model Notification {
 // leave a placeholder account with no password if the invite is never
 // accepted, and it'd block the same email from re-inviting later.
 model InviteToken {
-  id         String    @id @default(cuid())
-  token      String    @unique // random ~32-char, used in the email URL
-  email      String // lowercased, what the invitee will sign in with
-  name       String
-  role       String // "cofounder" | "member"  (never "admin" — separate flow)
-  companyId  String
-  invitedBy  String // userId of the admin who sent the invite
-  expiresAt  DateTime
-  usedAt     DateTime?
-  createdAt  DateTime  @default(now())
+  id        String    @id @default(cuid())
+  token     String    @unique // random ~32-char, used in the email URL
+  email     String // lowercased, what the invitee will sign in with
+  name      String
+  role      String // "cofounder" | "member"  (never "admin" — separate flow)
+  companyId String
+  invitedBy String // userId of the admin who sent the invite
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
@@ -303,7 +303,7 @@ model InviteToken {
 // month per budget — `lastWarnedMonth` and `lastAlertedMonth` track which
 // "YYYY-MM" string the budget last fired for so we don't spam.
 model Budget {
-  id               String   @id @default(cuid())
+  id               String    @id @default(cuid())
   companyId        String
   // Required after add_projects backfills every legacy row to a "General"
   // project per company. onDelete: Restrict so a project can't be deleted
@@ -312,10 +312,10 @@ model Budget {
   category         String // single expense category, e.g. "Office Rent"
   // Decimal(12, 2) matches Transaction.amount so any (limit − sum) math
   // stays on the same numeric domain. See BUGS.md P0-4.
-  monthlyLimit     Decimal @db.Decimal(12, 2)
+  monthlyLimit     Decimal   @db.Decimal(12, 2)
   createdBy        String
   createdByName    String
-  active           Boolean  @default(true)
+  active           Boolean   @default(true)
   // "2026-05" sentinels — set when the corresponding threshold fired this
   // calendar month; cleared/rotated on first hit of the next month.
   lastWarnedMonth  String? // 80%+ fired in this YYYY-MM
@@ -456,24 +456,24 @@ model TimeEntry {
 //     and back-fills every existing Task + Budget row's projectId there.
 //   - After that backfill, Task.projectId and Budget.projectId are NOT NULL.
 model Project {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   companyId     String
   name          String
-  description   String?  // one-line summary shown on cards
+  description   String? // one-line summary shown on cards
   supervisorId  String
   // Lifecycle: active | on_hold | completed | archived. Status drives the
   // default filter on /projects (archived hidden by default) and shifts
   // the card's visual tone.
-  status        String   @default("active")
+  status        String    @default("active")
   // Color tag drawn from a fixed palette (primary | cyan | pink | warning
   // | info). Stored as a string slug, NOT a hex — keeps swatches in lock
   // step with the design tokens defined in app/globals.css.
-  color         String   @default("primary")
+  color         String    @default("primary")
   // Optional planned end. When set + status="active" + past today, the
   // project card renders an overdue chip.
   targetEndDate DateTime?
   createdBy     String
-  createdAt     DateTime @default(now())
+  createdAt     DateTime  @default(now())
   // Tier 3 soft-delete sentinel — see User.deletedAt for semantics.
   deletedAt     DateTime?
 

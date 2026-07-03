@@ -26,6 +26,20 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      # Static checks that don't need a DB connection but catch the class
+      # of bug that took the site down on 2026-07-03:
+      #   `prisma validate` fails if schema.prisma is malformed or the
+      #     migrations directory is inconsistent with the schema.
+      #   `prisma format --check` fails if someone hand-edited the schema
+      #     without formatting.
+      # The real guardrail is scripts/vercel-build.mjs which runs
+      # `prisma migrate deploy` during the actual production build; this
+      # is just an earlier signal.
+      - name: Prisma schema check
+        run: |
+          npx prisma validate
+          npx prisma format --check
+
       - name: Type check
         run: npm run typecheck
 

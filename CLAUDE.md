@@ -40,6 +40,30 @@ Production credentials **never** land in a local file. If you need to
 inspect prod data, do it through Supabase's dashboard, not through a
 Prisma client pointed at the pooler URL.
 
+### Production migrations run at BUILD time
+
+**Landed 2026-07-03** after an outage where two schema-changing commits
+shipped to Vercel without their migrations being applied to production
+Supabase. Every RSC that touched the affected tables errored until someone
+ran `prisma migrate deploy` by hand.
+
+The fix: `vercel.json`'s `buildCommand` now points at
+`scripts/vercel-build.mjs`, which runs `prisma migrate deploy` before
+`next build` **on production Vercel builds only**. If the migration fails,
+the build fails and Vercel keeps serving the previous deployment. Preview
+builds skip the migrate step (they don't have their own DB yet).
+
+**Vercel env vars this depends on** (Production scope):
+
+| Var | What it points at | Used by |
+|---|---|---|
+| `DATABASE_URL` | Pooler URL, port 6543 (`?pgbouncer=true`) | Runtime queries |
+| `DIRECT_URL` | Session pooler / direct connection, port 5432 | `prisma migrate deploy` at build |
+
+If `DIRECT_URL` is missing, the build script exits with an explicit error
+message (never falls back to the transaction pooler — pgbouncer doesn't
+support the migration protocol).
+
 ### The seed guard (`prisma/seed.ts`) — belt and braces
 
 Even with Tier 2 pointing local dev away from prod, the seed guard stays.
