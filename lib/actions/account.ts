@@ -2,7 +2,7 @@
 
 /**
  * Danger-zone server actions — the two irreversible operations that used to
- * be a GDPR/CCPA gap.
+ * be a GDPR/CCPA gap (now recoverable for 90 days via Tier 3 soft-delete).
  *
  *  1. `deleteAccountAction`  — "Delete my account"
  *  2. `deleteWorkspaceAction` — "Delete this workspace" (admin only)
@@ -12,14 +12,22 @@
  * shouldn't be able to erase their data by accident; the password prompt
  * is the friction that makes the action deliberate.
  *
- * Cascade reliance:
- *   The Prisma schema is already thoroughly wired for `onDelete: Cascade`
- *   from Company → most owned rows and from User → most user-owned rows.
- *   The two hand-managed edges are Project.supervisor / Project.creator,
- *   which are marked non-null with no cascade — a naive `db.user.delete`
- *   would foreign-key-error if the leaver supervises or created any project.
- *   `deleteAccountAction` reassigns those FKs to the company owner first
- *   (so the projects survive) before removing the user row.
+ * Soft-delete cascade:
+ *   Instead of `db.company.delete()` we UPDATE a nullable `deletedAt`
+ *   sentinel on Company + its child rows that carry the same column
+ *   (Users, Projects, Tasks, Budgets, Transactions). Reads all filter
+ *   `deletedAt: null`, so tombstoned rows disappear from the UI, the
+ *   team list, mention pickers, and auth — but the physical rows stay
+ *   for 90 days. `/api/cron/purge-soft-deleted` hard-deletes them after
+ *   the window; nothing survives past that.
+ *
+ * Recovery within the window (ops, no user UI):
+ *   UPDATE "Company" SET "deletedAt" = NULL WHERE id = '<id>';
+ *   UPDATE "User"    SET "deletedAt" = NULL WHERE "companyId" = '<id>';
+ *   -- child rows share the same tombstone timestamp, so a range filter
+ *   -- reunites them:
+ *   UPDATE "Transaction" SET "deletedAt" = NULL
+ *     WHERE "deletedAt" BETWEEN '<t - 1s>' AND '<t + 1s>';
  */
 
 import bcrypt from "bcryptjs";
