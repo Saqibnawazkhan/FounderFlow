@@ -14,7 +14,7 @@
  *                               the project still has tasks/budgets
  */
 
-import { useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
@@ -44,6 +44,9 @@ import type { ProjectOverview } from "@/lib/queries/projects";
 import type { TaskWithCount } from "@/lib/queries/tasks";
 import type { BudgetWithSpend } from "@/lib/queries/budgets";
 import type { User } from "@/lib/types";
+import { TaskDetailModal } from "@/components/tasks/task-detail-modal";
+import { deleteTaskAction, updateTaskStatusAction } from "@/lib/actions/tasks";
+import type { TaskStatus } from "@/lib/types";
 import { EditProjectModal } from "./edit-project-modal";
 import { ChangeSupervisorModal } from "./change-supervisor-modal";
 
@@ -95,9 +98,44 @@ export function ProjectDetailClient({
 
   const [editOpen, setEditOpen] = useState(false);
   const [supOpen, setSupOpen] = useState(false);
+  // Clicking any task row on this page opens the shared TaskDetailModal —
+  // same component the /tasks page uses so the "read a task's full body"
+  // affordance is identical everywhere.
+  const [detailTask, setDetailTask] = useState<TaskWithCount | null>(null);
+  useEffect(() => {
+    if (!detailTask) return;
+    const fresh = tasks.find((t) => t.id === detailTask.id);
+    if (fresh && fresh !== detailTask) setDetailTask(fresh);
+  }, [tasks, detailTask]);
+  const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
 
   function refresh() {
     startTransition(() => router.refresh());
+  }
+
+  async function handleTaskStatusChange(id: string, status: TaskStatus) {
+    const res = await updateTaskStatusAction({ id, status });
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    refresh();
+  }
+  async function handleTaskDelete(id: string) {
+    const ok = await confirm({
+      title: "Delete this task?",
+      description: "This action cannot be undone.",
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!ok) return;
+    const res = await deleteTaskAction(id);
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    toast.success("Task deleted");
+    refresh();
   }
 
   async function handleArchive() {
@@ -306,34 +344,38 @@ export function ProjectDetailClient({
         ) : (
           <ul className="space-y-2">
             {tasks.slice(0, 10).map((task) => (
-              <li
-                key={task.id}
-                className="flex items-center justify-between gap-3 rounded-xl border border-border bg-bg px-4 py-3"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold">{task.title}</p>
-                  <div className="mt-0.5 flex items-center gap-3 text-xs text-fg-muted">
-                    <span>{task.assignedToName}</span>
-                    <span>·</span>
-                    <span className="capitalize">{task.status.replace("_", " ")}</span>
-                    <span>·</span>
-                    <span>{formatDate(task.deadline)}</span>
-                  </div>
-                </div>
-                <span
-                  className={cn(
-                    "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
-                    task.priority === "urgent"
-                      ? "border-danger/30 bg-danger/10 text-danger"
-                      : task.priority === "high"
-                        ? "border-warning/30 bg-warning/10 text-warning"
-                        : task.priority === "medium"
-                          ? "border-info/30 bg-info/10 text-info"
-                          : "border-border bg-bg text-fg-muted"
-                  )}
+              <li key={task.id}>
+                <button
+                  type="button"
+                  onClick={() => setDetailTask(task)}
+                  aria-label={`Open task ${task.title}`}
+                  className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-xl border border-border bg-bg px-4 py-3 text-left transition-colors hover:border-primary/30 hover:bg-surface-hover focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
                 >
-                  {task.priority}
-                </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold">{task.title}</p>
+                    <div className="mt-0.5 flex items-center gap-3 text-xs text-fg-muted">
+                      <span>{task.assignedToName}</span>
+                      <span>·</span>
+                      <span className="capitalize">{task.status.replace("_", " ")}</span>
+                      <span>·</span>
+                      <span>{formatDate(task.deadline)}</span>
+                    </div>
+                  </div>
+                  <span
+                    className={cn(
+                      "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+                      task.priority === "urgent"
+                        ? "border-danger/30 bg-danger/10 text-danger"
+                        : task.priority === "high"
+                          ? "border-warning/30 bg-warning/10 text-warning"
+                          : task.priority === "medium"
+                            ? "border-info/30 bg-info/10 text-info"
+                            : "border-border bg-bg text-fg-muted"
+                    )}
+                  >
+                    {task.priority}
+                  </span>
+                </button>
               </li>
             ))}
           </ul>
@@ -417,6 +459,21 @@ export function ProjectDetailClient({
             setSupOpen(false);
             refresh();
           }}
+        />
+      )}
+
+      {detailTask && (
+        <TaskDetailModal
+          task={detailTask}
+          open={Boolean(detailTask)}
+          onClose={() => setDetailTask(null)}
+          currentUserId={currentUserId}
+          currentUserRole={currentUserRole}
+          companyUsers={mentionUsers}
+          canDelete={detailTask.assignedBy === currentUserId || currentUserRole === "admin"}
+          onStatusChange={handleTaskStatusChange}
+          onDelete={handleTaskDelete}
+          onCommentsChanged={refresh}
         />
       )}
     </div>

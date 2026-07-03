@@ -44,6 +44,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
+import { TaskDetailModal } from "@/components/tasks/task-detail-modal";
 import { cn } from "@/lib/utils";
 import type { TaskStatus, TaskPriority, User } from "@/lib/types";
 import type { TaskWithCount } from "@/lib/queries/tasks";
@@ -137,7 +138,20 @@ export function TasksClient({
   // Active task whose comment thread is open. Null = drawer closed. Stays
   // a reference to the original row so the modal title can show the title.
   const [commentingTask, setCommentingTask] = useState<TaskWithCount | null>(null);
+  // Active task whose full detail modal is open. Separate from the comment
+  // drawer so a card click gives the whole picture (metadata + description +
+  // comments inline), while the comment icon still jumps straight to the
+  // thread for people who know what they want.
+  const [detailTask, setDetailTask] = useState<TaskWithCount | null>(null);
   const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
+  // Keep the detail modal's task snapshot in sync with the RSC prop after a
+  // status change or comment write — otherwise the modal would keep showing
+  // the stale row until the user closed and reopened it.
+  useEffect(() => {
+    if (!detailTask) return;
+    const fresh = initialTasks.find((t) => t.id === detailTask.id);
+    if (fresh && fresh !== detailTask) setDetailTask(fresh);
+  }, [initialTasks, detailTask]);
 
   function refresh() {
     startTransition(() => router.refresh());
@@ -332,6 +346,7 @@ export function TasksClient({
                   onStatusChange={handleStatusChange}
                   onDelete={handleDelete}
                   onOpenComments={setCommentingTask}
+                  onOpenDetail={setDetailTask}
                   canDeleteTask={(task) =>
                     currentUserId === task.assignedBy || currentUserRole === "admin"
                   }
@@ -403,8 +418,18 @@ export function TasksClient({
                     <tr
                       key={task.id}
                       ref={registerRef(task.id)}
+                      onClick={() => setDetailTask(task)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setDetailTask(task);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Open task ${task.title}`}
                       className={cn(
-                        "border-b border-border/60 transition-all last:border-b-0 hover:bg-bg",
+                        "cursor-pointer border-b border-border/60 transition-all last:border-b-0 hover:bg-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
                         isHighlighted && "bg-primary/[0.08] shadow-inner"
                       )}
                     >
@@ -426,6 +451,7 @@ export function TasksClient({
                           onChange={(e) =>
                             handleStatusChange(task.id, e.target.value as TaskStatus)
                           }
+                          onClick={(e) => e.stopPropagation()}
                           className="rounded-full border border-border bg-bg px-3 py-1 text-xs font-medium text-fg focus:border-primary/50 focus:outline-none"
                         >
                           <option value="pending">Pending</option>
@@ -469,7 +495,10 @@ export function TasksClient({
                       <td className="px-6 py-4 text-right">
                         <div className="inline-flex items-center gap-1">
                           <button
-                            onClick={() => setCommentingTask(task)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCommentingTask(task);
+                            }}
                             aria-label={
                               task.commentCount > 0
                                 ? `Open comments (${task.commentCount}) for ${task.title}`
@@ -489,7 +518,10 @@ export function TasksClient({
                           </button>
                           {(currentUserId === task.assignedBy || currentUserRole === "admin") && (
                             <button
-                              onClick={() => handleDelete(task.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDelete(task.id);
+                              }}
                               aria-label={`Delete task ${task.title}`}
                               className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
                             >
@@ -542,6 +574,27 @@ export function TasksClient({
               prev.map((t) =>
                 t.id === commentingTask.id ? { ...t, commentCount: t.commentCount + 1 } : t
               )
+            );
+            refresh();
+          }}
+        />
+      )}
+
+      {detailTask && (
+        <TaskDetailModal
+          task={detailTask}
+          open={Boolean(detailTask)}
+          onClose={() => setDetailTask(null)}
+          currentUserId={currentUserId}
+          currentUserRole={currentUserRole}
+          companyUsers={mentionUsers}
+          canDelete={detailTask.assignedBy === currentUserId || currentUserRole === "admin"}
+          onStatusChange={handleStatusChange}
+          onDelete={handleDelete}
+          onCommentsChanged={() => {
+            const targetId = detailTask.id;
+            setTasks((prev) =>
+              prev.map((t) => (t.id === targetId ? { ...t, commentCount: t.commentCount + 1 } : t))
             );
             refresh();
           }}
@@ -608,6 +661,7 @@ function DroppableColumn({
   onStatusChange,
   onDelete,
   onOpenComments,
+  onOpenDetail,
   canDeleteTask,
   isDragActive,
   highlightId,
@@ -618,6 +672,7 @@ function DroppableColumn({
   onStatusChange: (id: string, status: TaskStatus) => void;
   onDelete: (id: string) => void;
   onOpenComments: (task: TaskWithCount) => void;
+  onOpenDetail: (task: TaskWithCount) => void;
   canDeleteTask: (task: TaskWithCount) => boolean;
   isDragActive: boolean;
   highlightId: string | null;
@@ -675,6 +730,7 @@ function DroppableColumn({
               onStatusChange={onStatusChange}
               onDelete={onDelete}
               onOpenComments={onOpenComments}
+              onOpenDetail={onOpenDetail}
               canDelete={canDeleteTask(task)}
               highlighted={highlightId === task.id}
               externalRef={registerRef(task.id)}
@@ -695,6 +751,7 @@ function TaskCard({
   onStatusChange,
   onDelete,
   onOpenComments,
+  onOpenDetail,
   canDelete,
   isDragging: isOverlay = false,
   highlighted = false,
@@ -704,6 +761,7 @@ function TaskCard({
   onStatusChange: (id: string, status: TaskStatus) => void;
   onDelete: (id: string) => void;
   onOpenComments?: (task: TaskWithCount) => void;
+  onOpenDetail?: (task: TaskWithCount) => void;
   canDelete: boolean;
   isDragging?: boolean;
   highlighted?: boolean;
@@ -724,6 +782,15 @@ function TaskCard({
       ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
       : {};
 
+  // Card body is a genuine click target for the detail modal — but only when
+  // we're not the DragOverlay clone (its parent doesn't know about the modal)
+  // and only when a real onOpenDetail handler is wired in. Guarding here
+  // keeps the drag preview and other future consumers hover-only.
+  const clickable = !isOverlay && !!onOpenDetail;
+  function openDetail() {
+    if (clickable) onOpenDetail!(task);
+  }
+
   return (
     <div
       ref={(el) => {
@@ -731,8 +798,21 @@ function TaskCard({
         externalRef?.(el);
       }}
       style={style}
+      onClick={openDetail}
+      onKeyDown={(e) => {
+        if (!clickable) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openDetail();
+        }
+      }}
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      aria-label={clickable ? `Open task ${task.title}` : undefined}
       className={cn(
         "group rounded-xl border border-border bg-bg p-4 transition-all hover:border-primary/30",
+        clickable &&
+          "cursor-pointer focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
         isDragging && !isOverlay && "opacity-30",
         isOverlay && "cursor-grabbing border-primary/40 bg-surface",
         highlighted &&
@@ -747,6 +827,11 @@ function TaskCard({
               aria-label={`Drag ${task.title} to change status`}
               {...attributes}
               {...listeners}
+              // Bare click on the drag handle (no 8px movement so DnD Kit
+              // never activates) would otherwise bubble to the card wrapper
+              // and open the detail modal. stopPropagation keeps the handle
+              // as a drag-only affordance.
+              onClick={(e) => e.stopPropagation()}
               className="cursor-grab touch-none rounded-md p-0.5 text-fg-muted/70 transition-colors hover:bg-glass/[0.06] hover:text-fg active:cursor-grabbing"
             >
               <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
