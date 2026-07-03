@@ -3,9 +3,15 @@
 ## bucket every night at 04:15 UTC.
 ##
 ## Setup (one-time, in the repo's GitHub Settings → Secrets and variables):
-##   BACKUP_DATABASE_URL   direct-connection Postgres URL for prod (NOT the
-##                         pooler URL — pg_dump wants a real connection).
-##                         Use the "Direct connection" string from Supabase.
+##   BACKUP_DATABASE_URL   Supabase SESSION-pooler URL (port 5432, user
+##                         `postgres.<project-ref>`). The dump step rewrites
+##                         it to the transaction pooler (6543 +
+##                         `options=reference`) because that's the only
+##                         pg_dump-compatible path from an IPv4-only GHA
+##                         runner — direct connection is IPv6-only, session
+##                         pooler rejects pg_dump. Do NOT paste the
+##                         "Direct connection" string; the rewrite expects
+##                         the `postgres.<ref>` session-pooler shape.
 ##   BACKUP_S3_BUCKET      target bucket, e.g. `founderflow-backups`. Works
 ##                         with R2, S3, Backblaze B2 — anything that speaks
 ##                         the S3 API.
@@ -118,23 +124,58 @@ jobs:
           # Supabase projects, so a restore into a fresh project (staging,
           # dev) isn't blocked by permission grants. $PG_DUMP is exported
           # by the install step above and points at the versioned 17 binary
-          # so pg_wrapper's version pick never rides.
+          # so pg_wrapper's version pick never rides. Do NOT add -j (parallel):
+          # snapshot sharing across pgbouncer-scattered worker backends
+          # breaks a transaction-pooler dump. Single-connection only.
+          #
+          # Dump to a PLAIN file first (no pipe), then validate, then gzip.
+          # Piping straight into gzip means `set -e` can't see a pg_dump
+          # failure without pipefail gymnastics, and — more importantly —
+          # a gzip'd stream can't be content-checked before upload. Writing
+          # the raw .sql lets us assert the dump actually contains data.
+          RAW="${{ steps.filename.outputs.path }}.raw.sql"
           "$PG_DUMP" "$PGDUMP_URL" \
             --no-owner \
             --no-privileges \
             --format=plain \
-            | gzip -9 > "${{ steps.filename.outputs.path }}"
+            > "$RAW"
 
-          # Belt + braces: refuse to upload anything under 512 bytes. Even
-          # a schema-only dump of an empty DB is a few KB; a 20-byte file
-          # is a broken gzip header of an empty stream.
+          # ── Content validation ────────────────────────────────────────
+          # The old check was byte-size only. A size floor proves the file
+          # is non-empty; it does NOT prove the dump contains our data. A
+          # schema-only dump, or one that lost rows mid-COPY but still exited
+          # 0, would sail past a size gate. That's the same class of
+          # "green but wrong" that burned us on 2026-07-03 — so assert
+          # actual content: core-table DDL, a COPY data block, and a
+          # plausible table count. Any failure aborts before upload.
+          if ! grep -qE 'CREATE TABLE (public\.)?"?User"?' "$RAW"; then
+            echo "::error::Dump is missing the User table DDL — refusing to upload a broken backup." >&2
+            exit 1
+          fi
+          # plain-format pg_dump emits data as COPY (not INSERT, since we
+          # don't pass --inserts). A dump with schema but zero data would
+          # miss this — catches the schema-only failure mode.
+          if ! grep -qE 'COPY (public\.)?"?User"? ' "$RAW"; then
+            echo "::error::Dump has no COPY data block for User — likely schema-only or data lost mid-dump. Refusing to upload." >&2
+            exit 1
+          fi
+          table_count=$(grep -cE '^CREATE TABLE ' "$RAW" || true)
+          if [ "${table_count:-0}" -lt 12 ]; then
+            echo "::error::Dump has only ${table_count} CREATE TABLE statements, expected >= 12 app tables. Refusing to upload." >&2
+            exit 1
+          fi
+
+          gzip -9 -c "$RAW" > "${{ steps.filename.outputs.path }}"
+          rm -f "$RAW"
+
+          # Final belt: a real gzipped dump of this schema is tens of KB.
           file_size=$(stat -c%s "${{ steps.filename.outputs.path }}")
           if [ "$file_size" -lt 512 ]; then
-            echo "::error::Dump file is only ${file_size} bytes — pg_dump likely failed. Refusing to upload." >&2
+            echo "::error::Gzipped dump is only ${file_size} bytes — refusing to upload." >&2
             exit 1
           fi
           ls -lh "${{ steps.filename.outputs.path }}"
-          echo "Dump size: ${file_size} bytes"
+          echo "Content check passed: ${table_count} tables, User DDL + COPY data present. Gzip size: ${file_size} bytes"
 
       - name: Upload to S3-compatible bucket
         env:
