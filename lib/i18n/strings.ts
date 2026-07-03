@@ -285,6 +285,25 @@ export const en = {
     companySaved: "Company updated",
     // Sections only admin / cofounder see
     companyEditNoteAdmin: "Founders and co-founders can update these details.",
+    // Danger zone — S2, GDPR/CCPA
+    dangerZone: "Danger zone",
+    dangerZoneNote: "Irreversible operations. Take a moment before clicking — there is no undo.",
+    deleteAccount: "Delete my account",
+    deleteAccountDesc:
+      "Permanently remove your user record and everything you own. If you're the only person in this workspace, the workspace goes with you.",
+    deleteAccountAction: "Delete account",
+    deleteAccountConfirmDesc: "This is permanent. Enter your password below to confirm.",
+    passwordConfirm: "Enter your password",
+    deleteWorkspace: "Delete this workspace",
+    deleteWorkspaceDesc:
+      "Wipes the workspace, every teammate on it, and every transaction, task, budget, and comment. Not reversible.",
+    deleteWorkspaceAction: "Delete workspace",
+    deleteWorkspaceConfirmDesc:
+      "Everyone loses access immediately. Type the workspace name exactly, then your password.",
+    workspaceNameConfirm: "Type the workspace name",
+    accountDeletedToast: "Account deleted",
+    workspaceDeletedToast: "Workspace deleted",
+    deleteFailedToast: "Couldn't delete — try again",
   },
 };
 
@@ -539,6 +558,25 @@ export const ur: typeof en = {
     editCompany: "کمپنی ترمیم کریں",
     companySaved: "کمپنی اپ ڈیٹ ہو گئی",
     companyEditNoteAdmin: "فاؤنڈرز اور کو فاؤنڈرز یہ تفصیلات اپ ڈیٹ کر سکتے ہیں۔",
+    // Danger zone
+    dangerZone: "خطرناک زون",
+    dangerZoneNote: "ناقابلِ واپسی کارروائیاں۔ کلک کرنے سے پہلے سوچ لیں — واپس نہیں کیا جا سکتا۔",
+    deleteAccount: "میرا اکاؤنٹ حذف کریں",
+    deleteAccountDesc:
+      "آپ کا یوزر ریکارڈ اور اس کی سب چیزیں مستقل ختم ہو جائیں گی۔ اگر آپ اس ورک اسپیس کے واحد فرد ہیں تو ورک اسپیس بھی ساتھ چلا جائے گا۔",
+    deleteAccountAction: "اکاؤنٹ حذف کریں",
+    deleteAccountConfirmDesc: "یہ عمل مستقل ہے۔ تصدیق کے لیے اپنا پاس ورڈ درج کریں۔",
+    passwordConfirm: "پاس ورڈ درج کریں",
+    deleteWorkspace: "یہ ورک اسپیس حذف کریں",
+    deleteWorkspaceDesc:
+      "ورک اسپیس، اس کے سب ٹیم ممبرز، ٹرانزیکشنز، کام، بجٹ اور تبصرے سب مٹ جائیں گے۔ واپس نہیں ہو گا۔",
+    deleteWorkspaceAction: "ورک اسپیس حذف کریں",
+    deleteWorkspaceConfirmDesc:
+      "سب کو فوراً رسائی ختم ہو جائے گی۔ ورک اسپیس کا نام بالکل ویسا ہی ٹائپ کریں اور پھر پاس ورڈ درج کریں۔",
+    workspaceNameConfirm: "ورک اسپیس کا نام ٹائپ کریں",
+    accountDeletedToast: "اکاؤنٹ حذف ہو گیا",
+    workspaceDeletedToast: "ورک اسپیس حذف ہو گیا",
+    deleteFailedToast: "حذف نہیں ہو سکا — دوبارہ کوشش کریں",
   },
 };
 

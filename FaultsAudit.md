@@ -125,7 +125,7 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 ## 6. Settings · i18n · a11y · Mobile · PWA
 
 - [x] **S1 · 🔴 [BUG] Manifest missing `/icon.svg` file** — shipped in P0-2.
-- [ ] **S2 · 🔴 [FEAT] No danger zone.** Deferred — needs 3 new server actions (deleteAccount, leaveCompany, deleteCompany) + soft-delete strategy per Tier 3 plan in CLAUDE.md.
+- [x] **S2 · 🔴 [FEAT] No danger zone.** ✔ Shipped `deleteAccountAction` + `deleteWorkspaceAction` (see [lib/actions/account.ts](lib/actions/account.ts)) with password re-auth on both, and a workspace-name-match confirm on delete-workspace. Sole-user "delete account" cascades to workspace delete; multi-user path reassigns supervised/created projects to the company owner first so the projects survive the leaver. Two new modals + a settings Danger Zone section; en + ur i18n covered. Tier 3 soft-delete stays deferred — hard delete for now, but the surface exists.
 - [ ] **S3 · 🟠 [FEAT] No change-email flow with verification.** Deferred — parallels the password-reset flow shipped in P0-1; needs its own token + confirmation-email step.
 - [ ] **S4 · 🟠 [FEAT] No MFA/2FA setup.** Deferred — Auth.js supports TOTP with a follow-up integration commit.
 - [~] **S5 · 🟠 [FEAT] No system-theme option.** DEFERRED — three-way theme choice ("system") means widening the store type + a `matchMedia("prefers-color-scheme")` listener. Follow-up.

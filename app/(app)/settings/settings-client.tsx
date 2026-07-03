@@ -28,7 +28,9 @@ import {
   Palette,
   Pencil,
   Shield,
+  Skull,
   Sun,
+  Trash2,
   User,
   type LucideIcon,
 } from "lucide-react";
@@ -49,6 +51,8 @@ import type { AccountStats } from "@/lib/queries/stats";
 import { EditProfileModal } from "./edit-profile-modal";
 import { ChangePasswordModal } from "./change-password-modal";
 import { EditCompanyModal } from "./edit-company-modal";
+import { DeleteAccountModal } from "./delete-account-modal";
+import { DeleteWorkspaceModal } from "./delete-workspace-modal";
 
 type Props = {
   user: UserType;
@@ -72,6 +76,9 @@ export function SettingsClient({ user, company, stats }: Props) {
   const [profileOpen, setProfileOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [deleteWorkspaceOpen, setDeleteWorkspaceOpen] = useState(false);
+  const canDeleteWorkspace = user.role === "admin";
 
   function refresh() {
     startTransition(() => router.refresh());
@@ -310,6 +317,42 @@ export function SettingsClient({ user, company, stats }: Props) {
         </div>
       </Section>
 
+      <Section icon={Skull} label={t.settings.dangerZone} tone="danger">
+        <p className="mb-4 text-sm text-fg-muted">{t.settings.dangerZoneNote}</p>
+        <div className="space-y-3">
+          <div className="flex flex-col items-start gap-3 rounded-xl border border-danger/30 bg-danger/[0.04] p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-fg">{t.settings.deleteAccount}</p>
+              <p className="mt-0.5 text-xs text-fg-muted">{t.settings.deleteAccountDesc}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDeleteAccountOpen(true)}
+              className="inline-flex shrink-0 items-center gap-2 rounded-full border border-danger/40 bg-danger/10 px-4 py-2 text-sm font-bold text-danger transition-colors hover:bg-danger/20 active:scale-95"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+              {t.settings.deleteAccountAction}
+            </button>
+          </div>
+          {canDeleteWorkspace && (
+            <div className="flex flex-col items-start gap-3 rounded-xl border border-danger/30 bg-danger/[0.04] p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-fg">{t.settings.deleteWorkspace}</p>
+                <p className="mt-0.5 text-xs text-fg-muted">{t.settings.deleteWorkspaceDesc}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDeleteWorkspaceOpen(true)}
+                className="inline-flex shrink-0 items-center gap-2 rounded-full bg-danger px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-danger/90 active:scale-95"
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+                {t.settings.deleteWorkspaceAction}
+              </button>
+            </div>
+          )}
+        </div>
+      </Section>
+
       {/* Modals */}
       <EditProfileModal
         open={profileOpen}
@@ -333,6 +376,15 @@ export function SettingsClient({ user, company, stats }: Props) {
             setCompanyOpen(false);
             refresh();
           }}
+        />
+      )}
+
+      <DeleteAccountModal open={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} />
+      {canDeleteWorkspace && (
+        <DeleteWorkspaceModal
+          open={deleteWorkspaceOpen}
+          onClose={() => setDeleteWorkspaceOpen(false)}
+          workspaceName={company.name}
         />
       )}
     </div>
