@@ -71,20 +71,31 @@ jobs:
           # burned us on 2026-07-03.
           set -euo pipefail
 
-          # BACKUP_DATABASE_URL is stored as the session-pooler URL (port
-          # 5432) so it can double as a migration URL if we ever need to.
-          # Supabase's session pooler rejects pg_dump though — the
-          # documented workaround is the TRANSACTION pooler (port 6543)
-          # plus a `options=reference=<project-ref>` query parameter that
-          # tells the pooler which project to route to. Derive that URL
-          # from the stored secret instead of asking the user to paste
-          # two different URLs.
+          # Supabase's connection story is a maze that needs walking:
+          #   - Direct connection (db.<ref>.supabase.co:5432): IPv6-only on
+          #     newer projects → GHA runners are IPv4-only → not reachable.
+          #   - Session pooler (aws-*.pooler.supabase.com:5432): Supavisor,
+          #     user format `postgres.<ref>`. Rejects pg_dump with "database
+          #     postgres does not exist" (Supavisor doesn't like pg_dump's
+          #     startup message).
+          #   - Transaction pooler (aws-*.pooler.supabase.com:6543):
+          #     classic pgbouncer. Routes by `options=reference=<ref>` and
+          #     wants the user to be plain `postgres`, NOT `postgres.<ref>`
+          #     — passing the dotted form makes the underlying auth_query
+          #     return zero rows → EAUTHQUERY.
+          #
+          # We store the URL as the session pooler variant so it can double
+          # as a migration URL if we ever need it, and rewrite it here for
+          # pg_dump: strip `.<ref>` from the user, swap 5432 → 6543, append
+          # options=reference.
           PROJECT_REF="$(printf '%s' "$BACKUP_DATABASE_URL" | sed -nE 's|.*://postgres\.([^:]+):.*|\1|p')"
           if [ -z "$PROJECT_REF" ]; then
             echo "::error::Could not extract Supabase project ref from BACKUP_DATABASE_URL. Expected user part 'postgres.<project-ref>'." >&2
             exit 1
           fi
-          PGDUMP_URL="$(printf '%s' "$BACKUP_DATABASE_URL" | sed -E 's|:5432/postgres([?].*)?$|:6543/postgres|')?options=reference%3D${PROJECT_REF}"
+          PGDUMP_URL="$(printf '%s' "$BACKUP_DATABASE_URL" \
+            | sed -E "s|://postgres\\.${PROJECT_REF}:|://postgres:|" \
+            | sed -E 's|:5432/postgres([?].*)?$|:6543/postgres|')?options=reference%3D${PROJECT_REF}"
 
           # --no-owner / --no-privileges keep the dump portable across
           # Supabase projects, so a restore into a fresh project (staging,
