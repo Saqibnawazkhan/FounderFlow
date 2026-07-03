@@ -241,6 +241,13 @@ export const en = {
     dataStorage: "Data & storage",
     dataNote:
       "Your workspace data lives in Supabase. Clearing local data only wipes UI prefs (theme, sidebar state) — it does not delete server data.",
+    exportWorkspace: "Export workspace",
+    exportWorkspaceDesc:
+      "Download a machine-readable JSON copy of everything in this workspace — projects, tasks, transactions, budgets, time, comments. Password hashes are never included.",
+    exportWorkspaceAction: "Export JSON",
+    exportPreparing: "Preparing…",
+    exportReadyToast: "Export downloaded",
+    exportFailedToast: "Couldn't export — try again",
     resetLocalPrefs: "Reset local preferences",
     signOutSection: "Sign out",
     signOutNote: "Sign out of your FounderFlow workspace.",
@@ -519,6 +526,13 @@ export const ur: typeof en = {
     dataStorage: "ڈیٹا اور اسٹوریج",
     dataNote:
       "آپ کا ورک اسپیس ڈیٹا Supabase پر محفوظ ہے۔ لوکل ڈیٹا صاف کرنا صرف UI ترجیحات (تھیم، سائڈبار اسٹیٹ) کو مٹاتا ہے — سرور ڈیٹا متاثر نہیں ہوتا۔",
+    exportWorkspace: "ورک اسپیس ایکسپورٹ کریں",
+    exportWorkspaceDesc:
+      "اس ورک اسپیس کی ہر چیز کی مشین ریڈایبل JSON کاپی ڈاؤن لوڈ کریں — منصوبے، کام، ٹرانزیکشنز، بجٹ، ٹائم، تبصرے۔ پاس ورڈ ہیش کبھی شامل نہیں ہوتے۔",
+    exportWorkspaceAction: "JSON ایکسپورٹ",
+    exportPreparing: "تیار کیا جا رہا ہے…",
+    exportReadyToast: "ایکسپورٹ ڈاؤن لوڈ ہو گیا",
+    exportFailedToast: "ایکسپورٹ نہیں ہو سکا — دوبارہ کوشش کریں",
     resetLocalPrefs: "لوکل ترجیحات ری سیٹ کریں",
     signOutSection: "سائن آؤٹ",
     signOutNote: "اپنے FounderFlow ورک اسپیس سے سائن آؤٹ کریں۔",

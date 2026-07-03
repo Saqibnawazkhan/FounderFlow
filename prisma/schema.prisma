@@ -267,6 +267,10 @@ model Notification {
 
   @@index([userId, read])
   @@index([userId, createdAt])
+  // Company-scoped reads (workspace export, admin views) were doing a full
+  // table scan — Notification was the one company-scoped table with no
+  // companyId-leading index. Matches the pattern on Transaction/Comment/etc.
+  @@index([companyId, createdAt])
 }
 
 // Closes audit flaw #7: admins no longer set temp passwords directly. The

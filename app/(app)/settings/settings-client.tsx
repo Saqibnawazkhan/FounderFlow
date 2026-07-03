@@ -20,6 +20,7 @@ import {
   Clock,
   Crown,
   Database,
+  Download,
   KeyRound,
   Languages,
   LogIn,
@@ -41,7 +42,7 @@ import { logoutAction } from "@/lib/actions/auth";
 import { Avatar } from "@/components/ui/avatar";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { cn, formatDate } from "@/lib/utils";
+import { cn, downloadFile, formatDate } from "@/lib/utils";
 import type { Company, User as UserType } from "@/lib/types";
 import { useT } from "@/lib/i18n/use-t";
 import type { Locale } from "@/lib/i18n/strings";
@@ -78,7 +79,12 @@ export function SettingsClient({ user, company, stats }: Props) {
   const [companyOpen, setCompanyOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [deleteWorkspaceOpen, setDeleteWorkspaceOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const canDeleteWorkspace = user.role === "admin";
+  // Same gate the /api/export route enforces server-side: only finance-
+  // seeing roles can pull a full-workspace JSON (a member export would
+  // leak every transaction past the app's finance wall).
+  const canExport = canSeeFinances(user.role as Role);
 
   function refresh() {
     startTransition(() => router.refresh());
@@ -116,6 +122,31 @@ export function SettingsClient({ user, company, stats }: Props) {
     if (typeof window !== "undefined") {
       localStorage.removeItem("founderflow-storage");
       window.location.href = "/login";
+    }
+  }
+
+  async function handleExport() {
+    // Fetch-then-blob (rather than a bare <a href>) so a 403/500 surfaces
+    // as a toast instead of navigating the user to a raw JSON error page.
+    setExporting(true);
+    try {
+      const res = await fetch("/api/export");
+      // An expired session gets a 302 → /login (public, returns 200 HTML).
+      // fetch follows it, so res.ok would be true — guard on redirect +
+      // content-type so we don't hand the user login HTML named .json with
+      // a success toast. (Adversarial review finding, 2026-07-04.)
+      const contentType = res.headers.get("content-type") ?? "";
+      if (!res.ok || res.redirected || !contentType.includes("application/json")) {
+        throw new Error("export-failed");
+      }
+      const blob = await res.blob();
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadFile(blob, `founderflow-export-${stamp}.json`, "application/json");
+      toast.success(t.settings.exportReadyToast);
+    } catch {
+      toast.error(t.settings.exportFailedToast);
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -297,6 +328,22 @@ export function SettingsClient({ user, company, stats }: Props) {
 
       <Section icon={Database} label={t.settings.dataStorage}>
         <p className="mb-4 text-sm text-fg-muted">{t.settings.dataNote}</p>
+        {canExport && (
+          <div className="mb-4 flex flex-col items-start gap-3 rounded-xl border border-border bg-bg/40 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-fg">{t.settings.exportWorkspace}</p>
+              <p className="mt-0.5 text-xs text-fg-muted">{t.settings.exportWorkspaceDesc}</p>
+            </div>
+            <button
+              onClick={handleExport}
+              disabled={exporting}
+              className="inline-flex shrink-0 items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-4 py-2 text-sm font-bold text-primary-strong transition-colors hover:bg-primary/20 active:scale-95 disabled:opacity-60"
+            >
+              <Download className="h-4 w-4" aria-hidden="true" />
+              {exporting ? t.settings.exportPreparing : t.settings.exportWorkspaceAction}
+            </button>
+          </div>
+        )}
         <button
           onClick={handleResetData}
           className="inline-flex items-center gap-2 rounded-full border border-danger/30 bg-danger/10 px-5 py-2.5 text-sm font-medium text-danger transition-colors hover:bg-danger/15"
