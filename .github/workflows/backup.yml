@@ -59,7 +59,16 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends postgresql-client-17
-          pg_dump --version
+          # `pg_dump` on PATH goes through Debian's pg_wrapper, which picks
+          # the highest installed version — but the ubuntu-latest image can
+          # already ship a client-16 binary at higher alternatives priority,
+          # so we saw pg_dump 16 running even after client-17 installed.
+          # Print both to make the mismatch loud, and export the explicit
+          # path so the dump step never resolves ambiguously.
+          echo "which pg_dump: $(which pg_dump)"
+          echo "wrapper reports: $(pg_dump --version)"
+          echo "17 binary reports: $(/usr/lib/postgresql/17/bin/pg_dump --version)"
+          echo "PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump" >> "$GITHUB_ENV"
           aws --version
 
       - name: Compute filename
@@ -107,8 +116,10 @@ jobs:
 
           # --no-owner / --no-privileges keep the dump portable across
           # Supabase projects, so a restore into a fresh project (staging,
-          # dev) isn't blocked by permission grants.
-          pg_dump "$PGDUMP_URL" \
+          # dev) isn't blocked by permission grants. $PG_DUMP is exported
+          # by the install step above and points at the versioned 17 binary
+          # so pg_wrapper's version pick never rides.
+          "$PG_DUMP" "$PGDUMP_URL" \
             --no-owner \
             --no-privileges \
             --format=plain \
