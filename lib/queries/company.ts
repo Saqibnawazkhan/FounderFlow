@@ -28,7 +28,11 @@ function toClient(c: {
 
 export async function getCurrentCompany(): Promise<Company> {
   const { companyId } = await requireScopedSession();
-  const row = await db.company.findUnique({ where: { id: companyId } });
+  // Tier 3: a tombstoned company must not render as a live workspace.
+  // The RSC boundary throws → error.tsx boundary catches → user sees
+  // the standard error UI. Middleware also treats their session as
+  // stale enough that the next nav bounces to /login.
+  const row = await db.company.findFirst({ where: { id: companyId, deletedAt: null } });
   if (!row) throw new Error("Company not found");
   return toClient(row);
 }

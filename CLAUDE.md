@@ -55,14 +55,47 @@ for a one-off inspection.
    Real signup workspaces live under different company ids and are
    physically out of reach even if 1 + 2 are bypassed.
 
-### What's still deferred (Tier 3 — recovery layer)
+### Tier 3 recovery layer — landed 2026-07-03
 
-- Soft delete on User, Company, Project, Task, Budget, Transaction.
-  Hard delete becomes `update({ deletedAt: now })`. A nightly cron purges
-  rows older than 90 days. Anything destroyed in the last quarter is one
-  SQL update from coming back.
-- Nightly `pg_dump` to an R2/S3 bucket (free-tier-friendly cron + storage).
-- Sentry alerts on any single mutation that touches >100 rows.
+- **Soft delete** on User, Company, Project, Task, Budget, Transaction. A
+  nullable `deletedAt` timestamp on each. Auth + every scoped query
+  filter `deletedAt: null`. `deleteAccountAction` and
+  `deleteWorkspaceAction` write the sentinel instead of hard-deleting;
+  recovery within the retention window is one SQL UPDATE per table:
+
+  ```sql
+  UPDATE "Company" SET "deletedAt" = NULL WHERE id = '<companyId>';
+  UPDATE "User" SET "deletedAt" = NULL WHERE "companyId" = '<companyId>';
+  -- repeat for Project / Task / Budget / Transaction — they share the
+  -- same tombstone timestamp so a range filter reunites them:
+  UPDATE "Transaction" SET "deletedAt" = NULL
+    WHERE "deletedAt" BETWEEN '<t - 1s>' AND '<t + 1s>';
+  ```
+
+- **Nightly purge cron** at `/api/cron/purge-soft-deleted` runs at 03:15
+  UTC. Hard-deletes rows whose `deletedAt` is past the 90-day window.
+  Companies purge first (their cascade takes children with them);
+  orphaned per-row tombstones follow.
+
+- **Nightly pg_dump** via GitHub Actions (`.github/workflows/backup.yml`)
+  at 04:15 UTC — an hour after the purge, so the snapshot reflects the
+  post-purge state. Uploads to an S3-compatible bucket via awscli.
+  Setup: repo Secrets → `BACKUP_DATABASE_URL`, `BACKUP_S3_BUCKET`,
+  `BACKUP_S3_REGION`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY`,
+  optional `BACKUP_S3_ENDPOINT` for R2 / other non-AWS providers.
+
+- **Bulk-mutation canary** — `lib/safety/bulk-mutation-guard.ts` fires a
+  Sentry warning tagged `boundary: bulk-mutation` whenever a single
+  mutation touches more than 100 rows. Wired into workspace delete and
+  the purge cron. If a bug ever wipes 10,000 rows overnight, on-call
+  sees it before customers do.
+
+Known gap: soft-delete does not force existing JWTs to invalidate. A
+tombstoned user's session cookie stays valid until it expires
+naturally. Auth re-login is blocked immediately, and their next
+navigation trips the RSC `deletedAt: null` filter and 404s, but a
+live tab could keep reading stale data until the session dies. Fixing
+this needs a session-version JWT claim — deferred as auth-infra work.
 
 ## Repo conventions
 

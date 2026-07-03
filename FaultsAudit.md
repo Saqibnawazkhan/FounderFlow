@@ -42,7 +42,7 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 
 - [x] **A1 · 🔴 [FEAT] No password-reset flow** — shipped in P0-1.
 - [ ] **A2 · 🔴 [FEAT] No email verification post-signup.** Typo'd emails persist forever. Add a `verify-email` step or grace-period gate. → [app/signup](app/signup)
-- [ ] **A3 · 🔴 [FEAT] No account deletion (GDPR/CCPA gap).** Danger-zone section missing from settings. → [app/(app)/settings](app/(app)/settings)
+- [x] **A3 · 🔴 [FEAT] No account deletion (GDPR/CCPA gap).** ✔ Shipped alongside S2 — soft-delete (Tier 3) so recovery is possible for 90 days.
 - [x] **A4 · 🔴 [FEAT] No favicon + OG image** — shipped in P0-6.
 - [~] **A5 · 🟠 [FEAT] Admin can't generate/manage invite tokens from UI.** Partial false positive — creation UI DOES exist at [app/(app)/team/team-client.tsx:87](app/(app)/team/team-client.tsx#L87) (Invite member button + modal). The "list pending invites with resend/revoke" side is real but tracked separately under X7.
 - [x] **A6 · 🟠 [UI] Password inputs lack `maxLength`; email lacks `inputMode="email"`.** ✔ Login + signup emails now carry `inputMode="email" maxLength={254}`, passwords `maxLength={256}`. Signup name `maxLength={80}`.
@@ -125,7 +125,7 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 ## 6. Settings · i18n · a11y · Mobile · PWA
 
 - [x] **S1 · 🔴 [BUG] Manifest missing `/icon.svg` file** — shipped in P0-2.
-- [x] **S2 · 🔴 [FEAT] No danger zone.** ✔ Shipped `deleteAccountAction` + `deleteWorkspaceAction` (see [lib/actions/account.ts](lib/actions/account.ts)) with password re-auth on both, and a workspace-name-match confirm on delete-workspace. Sole-user "delete account" cascades to workspace delete; multi-user path reassigns supervised/created projects to the company owner first so the projects survive the leaver. Two new modals + a settings Danger Zone section; en + ur i18n covered. Tier 3 soft-delete stays deferred — hard delete for now, but the surface exists.
+- [x] **S2 · 🔴 [FEAT] No danger zone.** ✔ Shipped `deleteAccountAction` + `deleteWorkspaceAction` (see [lib/actions/account.ts](lib/actions/account.ts)) with password re-auth on both, and a workspace-name-match confirm on delete-workspace. Sole-user "delete account" cascades to workspace delete; multi-user path only tombstones the leaving user so the workspace history survives. **Since Tier 3 landed 2026-07-03 both actions are SOFT deletes** — the row stays with a `deletedAt` sentinel for 90 days, then the nightly purge cron hard-deletes it. Recovery within the window is one SQL `UPDATE` per table.
 - [ ] **S3 · 🟠 [FEAT] No change-email flow with verification.** Deferred — parallels the password-reset flow shipped in P0-1; needs its own token + confirmation-email step.
 - [ ] **S4 · 🟠 [FEAT] No MFA/2FA setup.** Deferred — Auth.js supports TOTP with a follow-up integration commit.
 - [~] **S5 · 🟠 [FEAT] No system-theme option.** DEFERRED — three-way theme choice ("system") means widening the store type + a `matchMedia("prefers-color-scheme")` listener. Follow-up.

@@ -29,22 +29,27 @@ import { limiters } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
 import { captureServerError } from "@/lib/sentry-server";
 import { DeleteAccountSchema, DeleteWorkspaceSchema } from "@/lib/schemas/account";
+import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
 
 /**
  * Delete the caller's User row.
  *
- * Special case: if the caller is the SOLE user of their company (whether or
- * not they're the admin), we cascade to a workspace delete because there's
- * nothing left worth preserving after they leave.
+ * Since Tier 3 this is a SOFT delete — the row stays in Postgres with a
+ * `deletedAt` timestamp so ops can recover within 90 days by clearing the
+ * column. A nightly cron at /api/cron/purge-soft-deleted hard-purges rows
+ * whose deletedAt is older than 90 days.
  *
- * Blocked cases (returns error, no writes):
- *   - Caller is admin AND another admin exists → they can leave, delete
- *     just their user
- *   - Caller is admin AND is the sole admin AND other members exist →
- *     refuse; ask them to promote another admin first, or use
- *     `deleteWorkspaceAction` to wipe the whole workspace
+ * Cascade semantics:
+ *   - Sole-user branch (Abdul's solo-founder shape): tombstones the whole
+ *     workspace so the recovery is one UPDATE per table.
+ *   - Multi-user branch: only tombstones the leaving user. Their tasks +
+ *     comments + activity + notifications survive so the workspace history
+ *     stays intact for their teammates.
+ *
+ * Blocked case: sole-admin-with-teammates. Same guardrail as before —
+ * promote another admin first, or delete the whole workspace.
  */
 export async function deleteAccountAction(input: unknown): Promise<ActionResult<void>> {
   const session = await auth();
@@ -69,16 +74,23 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
 
     const companyId = me.companyId;
     const otherUsers = await db.user.count({
-      where: { companyId, id: { not: me.id } },
+      where: { companyId, id: { not: me.id }, deletedAt: null },
     });
     const otherAdmins = await db.user.count({
-      where: { companyId, id: { not: me.id }, role: "admin" },
+      where: { companyId, id: { not: me.id }, role: "admin", deletedAt: null },
     });
 
-    // Sole-user branch: cascade to workspace delete. This is what happens
-    // when Abdul (single-admin solo-founder shape) hits "Delete my account".
+    const now = new Date();
+
+    // Sole-user branch: tombstone the whole workspace (same cascade as the
+    // admin-triggered workspace delete). Recovery is one UPDATE per table.
     if (otherUsers === 0) {
-      await db.company.delete({ where: { id: companyId } });
+      const rowsTouched = await softDeleteWorkspace(companyId, now);
+      warnBulkMutation(rowsTouched, {
+        action: "deleteAccountAction.soleUser",
+        userId: me.id,
+        companyId,
+      });
       await signOut({ redirect: false });
       return { success: true, data: undefined };
     }
@@ -92,28 +104,12 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
       };
     }
 
-    // Non-sole path: reassign the FKs that would otherwise block delete,
-    // then remove the user. The company owner picks up orphaned projects
-    // (they're always still around — Company.ownerId is only null during
-    // signup transactions, never in steady state).
-    const company = await db.company.findUnique({
-      where: { id: companyId },
-      select: { ownerId: true },
-    });
-    const fallbackUserId = company?.ownerId && company.ownerId !== me.id ? company.ownerId : null;
-
-    await db.$transaction(async (tx) => {
-      if (fallbackUserId) {
-        await tx.project.updateMany({
-          where: { supervisorId: me.id },
-          data: { supervisorId: fallbackUserId },
-        });
-        await tx.project.updateMany({
-          where: { createdBy: me.id },
-          data: { createdBy: fallbackUserId },
-        });
-      }
-      await tx.user.delete({ where: { id: me.id } });
+    // Multi-user branch: only tombstone the leaving user. Teammates still
+    // see who created what — Project.supervisor and Task.assignee joins
+    // still resolve because the row physically exists.
+    await db.user.update({
+      where: { id: me.id },
+      data: { deletedAt: now },
     });
 
     await signOut({ redirect: false });
@@ -132,16 +128,62 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
 }
 
 /**
+ * Tombstone a company + every child row that carries a `deletedAt` sentinel
+ * (Users, Projects, Tasks, Budgets, Transactions). Runs inside a single
+ * Prisma $transaction so a partial failure never leaves half the workspace
+ * tombstoned. Returns the total row count touched (for the bulk-mutation
+ * canary).
+ *
+ * Skipped tables: Activity, Notification, Comment, TimeEntry, InviteToken,
+ * RecurringRule. They don't carry `deletedAt` (yet) — the nightly purge
+ * still catches their orphans when the parent Company is hard-purged, via
+ * the existing `onDelete: Cascade` chain.
+ */
+async function softDeleteWorkspace(companyId: string, now: Date): Promise<number> {
+  const [txn, budget, task, project, user, company] = await db.$transaction([
+    db.transaction.updateMany({
+      where: { companyId, deletedAt: null },
+      data: { deletedAt: now },
+    }),
+    db.budget.updateMany({
+      where: { companyId, deletedAt: null },
+      data: { deletedAt: now },
+    }),
+    db.task.updateMany({
+      where: { companyId, deletedAt: null },
+      data: { deletedAt: now },
+    }),
+    db.project.updateMany({
+      where: { companyId, deletedAt: null },
+      data: { deletedAt: now },
+    }),
+    db.user.updateMany({
+      where: { companyId, deletedAt: null },
+      data: { deletedAt: now },
+    }),
+    db.company.update({
+      where: { id: companyId },
+      data: { deletedAt: now },
+    }),
+  ]);
+  return txn.count + budget.count + task.count + project.count + user.count + (company ? 1 : 0);
+}
+
+/**
  * Delete the entire workspace and everything inside it — every user, every
  * transaction, every task. Admin-only, and requires typing the workspace
  * name exactly to guard against muscle-memory clicks.
  *
- * Cascade goes:
- *   Company → users (onDelete: Cascade)
- *     → each user's transactions / tasks / activities / etc. cascade in turn
- *   Company → transactions / tasks / activities / budgets / … direct cascades
+ * Since Tier 3 this is a SOFT delete via `softDeleteWorkspace()` — same
+ * cascade the sole-user account-delete branch takes. Recovery in ops:
  *
- * Net result: one `db.company.delete` erases the whole workspace.
+ *   UPDATE "Company" SET "deletedAt" = NULL WHERE id = '<id>';
+ *   UPDATE "User" SET "deletedAt" = NULL WHERE "companyId" = '<id>';
+ *   -- (repeat for Transaction/Task/Budget/Project — they share the
+ *   -- same tombstone timestamp so a range filter reunites them)
+ *
+ * The nightly cron at /api/cron/purge-soft-deleted hard-deletes rows past
+ * the 90-day window; nothing is recoverable after that.
  */
 export async function deleteWorkspaceAction(input: unknown): Promise<ActionResult<void>> {
   const session = await auth();
@@ -185,7 +227,14 @@ export async function deleteWorkspaceAction(input: unknown): Promise<ActionResul
       };
     }
 
-    await db.company.delete({ where: { id: me.companyId } });
+    const now = new Date();
+    const rowsTouched = await softDeleteWorkspace(me.companyId, now);
+    warnBulkMutation(rowsTouched, {
+      action: "deleteWorkspaceAction",
+      userId: me.id,
+      companyId: me.companyId,
+      extra: { workspaceName: company.name },
+    });
     await signOut({ redirect: false });
     return { success: true, data: undefined };
   } catch (e) {

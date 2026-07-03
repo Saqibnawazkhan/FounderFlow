@@ -44,6 +44,12 @@ model User {
   // "Last sign-in" so the user can spot rogue logins. Nullable for
   // legacy rows that predate the column.
   lastSignInAt DateTime?
+  // Tier 3 soft-delete sentinel. NULL = live row. Any timestamp = soft
+  // deleted; the row survives until the nightly purge cron hard-deletes
+  // it after 90 days. Auth + queries filter `deletedAt: null` so a
+  // soft-deleted user can't sign in and their data isn't rendered, but
+  // ops can restore with `UPDATE "User" SET "deletedAt" = NULL`.
+  deletedAt    DateTime?
 
   company        Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
   ownedCompany   Company?        @relation("CompanyOwner")
@@ -66,18 +72,21 @@ model User {
 
   @@index([companyId])
   @@index([email])
+  @@index([deletedAt])
 }
 
 model Company {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   name      String
   industry  String
-  currency  String   @default("PKR")
+  currency  String    @default("PKR")
   // Nullable to break the circular FK with User (User.companyId required,
   // and Company would also require ownerId). The signup server action
   // creates the company first, then the owner, then updates ownerId.
-  ownerId   String?  @unique
-  createdAt DateTime @default(now())
+  ownerId   String?   @unique
+  createdAt DateTime  @default(now())
+  // Tier 3 soft-delete sentinel — see User.deletedAt for semantics.
+  deletedAt DateTime?
 
   owner          User?           @relation("CompanyOwner", fields: [ownerId], references: [id])
   users          User[]
@@ -91,6 +100,8 @@ model Company {
   comments       Comment[]
   timeEntries    TimeEntry[]
   projects       Project[]
+
+  @@index([deletedAt])
 }
 
 model Transaction {
@@ -107,6 +118,8 @@ model Transaction {
   addedBy     String
   addedByName String // denormalized for fast read paths
   createdAt   DateTime @default(now())
+  // Tier 3 soft-delete sentinel — see User.deletedAt for semantics.
+  deletedAt   DateTime?
 
   // Set when this row was materialized from a RecurringRule. Lets the UI
   // show a 🔁 badge and lets the user audit which rule generated what.
@@ -131,6 +144,7 @@ model Transaction {
   @@index([addedBy])
   @@index([ruleId])
   @@index([projectId, date])
+  @@index([deletedAt])
 }
 
 // Repeating-transaction template. A daily cron at /api/cron/materialize-recurring
@@ -192,6 +206,8 @@ model Task {
   deadline       DateTime
   createdAt      DateTime  @default(now())
   completedAt    DateTime?
+  // Tier 3 soft-delete sentinel — see User.deletedAt for semantics.
+  deletedAt      DateTime?
 
   company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
   project     Project     @relation(fields: [projectId], references: [id], onDelete: Restrict)
@@ -203,6 +219,7 @@ model Task {
   @@index([companyId, status])
   @@index([projectId, status])
   @@index([assignedTo])
+  @@index([deletedAt])
 }
 
 model Activity {
@@ -303,7 +320,9 @@ model Budget {
   // calendar month; cleared/rotated on first hit of the next month.
   lastWarnedMonth  String? // 80%+ fired in this YYYY-MM
   lastAlertedMonth String? // 100%+ fired in this YYYY-MM
-  createdAt        DateTime @default(now())
+  createdAt        DateTime  @default(now())
+  // Tier 3 soft-delete sentinel — see User.deletedAt for semantics.
+  deletedAt        DateTime?
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   project Project @relation(fields: [projectId], references: [id], onDelete: Restrict)
@@ -316,6 +335,7 @@ model Budget {
   @@index([companyId, category])
   @@index([projectId, active])
   @@index([projectId, category])
+  @@index([deletedAt])
 }
 
 // Threaded discussion attached to either a Task or a Transaction (XOR —
@@ -454,6 +474,8 @@ model Project {
   targetEndDate DateTime?
   createdBy     String
   createdAt     DateTime @default(now())
+  // Tier 3 soft-delete sentinel — see User.deletedAt for semantics.
+  deletedAt     DateTime?
 
   company    Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   supervisor User    @relation("ProjectSupervisor", fields: [supervisorId], references: [id])
@@ -468,4 +490,5 @@ model Project {
 
   @@index([companyId, status])
   @@index([supervisorId])
+  @@index([deletedAt])
 }

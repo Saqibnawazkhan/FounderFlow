@@ -30,8 +30,10 @@ function toClient(u: {
 
 export async function getCompanyUsers(): Promise<User[]> {
   const { companyId } = await requireScopedSession();
+  // Tier 3: hide soft-deleted teammates from the team list, comment
+  // @-mention autocomplete, task assignee picker, etc.
   const rows = await db.user.findMany({
-    where: { companyId },
+    where: { companyId, deletedAt: null },
     orderBy: [{ role: "asc" }, { name: "asc" }],
   });
   return rows.map(toClient);
@@ -40,7 +42,10 @@ export async function getCompanyUsers(): Promise<User[]> {
 /** The signed-in user's full record — used by /settings for joined-date etc. */
 export async function getCurrentUser(): Promise<User> {
   const { userId } = await requireScopedSession();
-  const row = await db.user.findUnique({ where: { id: userId } });
+  // Belt + braces: findFirst with deletedAt filter so a session that
+  // outlived its user (edge case: user tombstoned mid-session) throws
+  // instead of returning ghost data.
+  const row = await db.user.findFirst({ where: { id: userId, deletedAt: null } });
   if (!row) throw new Error("User not found");
   return toClient(row);
 }

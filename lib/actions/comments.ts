@@ -88,7 +88,7 @@ export async function createCommentAction(input: unknown): Promise<
     const [author, roster] = await Promise.all([
       db.user.findUnique({ where: { id: userId } }),
       db.user.findMany({
-        where: { companyId },
+        where: { companyId, deletedAt: null },
         select: { id: true, name: true },
       }),
     ]);

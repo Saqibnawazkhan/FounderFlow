@@ -62,7 +62,8 @@ export async function listCompanyUsersAction(): Promise<ActionResult<User[]>> {
   if (!session?.user?.companyId) return { success: false, error: "Not authenticated" };
 
   const rows = await db.user.findMany({
-    where: { companyId: session.user.companyId },
+    // Tier 3: soft-deleted teammates disappear from the team list.
+    where: { companyId: session.user.companyId, deletedAt: null },
     orderBy: [{ role: "asc" }, { name: "asc" }],
   });
   return { success: true, data: rows.map(toClient) };
@@ -216,7 +217,7 @@ export async function updateUserRoleAction(input: unknown): Promise<ActionResult
     // Don't let an admin demote themselves out of admin if they're the last one.
     if (target.id === actorId && role !== "admin") {
       const adminCount = await db.user.count({
-        where: { companyId, role: "admin" },
+        where: { companyId, role: "admin", deletedAt: null },
       });
       if (adminCount <= 1) {
         return {
@@ -294,7 +295,7 @@ export async function removeUserAction(userId: string): Promise<ActionResult> {
     // Don't let the last admin be removed (the company would be ownerless).
     if (target.role === "admin") {
       const adminCount = await db.user.count({
-        where: { companyId, role: "admin" },
+        where: { companyId, role: "admin", deletedAt: null },
       });
       if (adminCount <= 1) {
         return {

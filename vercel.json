@@ -9,6 +9,10 @@
     {
       "path": "/api/cron/sweep-time-entries",
       "schedule": "10 0 * * *"
+    },
+    {
+      "path": "/api/cron/purge-soft-deleted",
+      "schedule": "15 3 * * *"
     }
   ]
 }

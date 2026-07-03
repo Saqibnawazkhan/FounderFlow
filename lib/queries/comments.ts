@@ -37,7 +37,7 @@ export async function listCommentsForTarget(target: CommentTarget): Promise<Comm
       orderBy: { createdAt: "asc" },
     }),
     db.user.findMany({
-      where: { companyId },
+      where: { companyId, deletedAt: null },
       select: { id: true, name: true },
     }),
   ]);

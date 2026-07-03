@@ -53,8 +53,11 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
         if (!parsed.success) return null;
         const { email, password } = parsed.data;
 
-        const user = await db.user.findUnique({
-          where: { email: email.toLowerCase() },
+        // findFirst instead of findUnique so we can add the deletedAt filter.
+        // Soft-deleted users (Tier 3) MUST not be able to sign back in —
+        // that's the whole point of tombstoning them.
+        const user = await db.user.findFirst({
+          where: { email: email.toLowerCase(), deletedAt: null },
         });
         if (!user) return null;
 

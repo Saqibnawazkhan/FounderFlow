@@ -1,0 +1,88 @@
+##
+## Tier 3 nightly backup — pg_dump the production database to an S3-shaped
+## bucket every night at 04:15 UTC.
+##
+## Setup (one-time, in the repo's GitHub Settings → Secrets and variables):
+##   BACKUP_DATABASE_URL   direct-connection Postgres URL for prod (NOT the
+##                         pooler URL — pg_dump wants a real connection).
+##                         Use the "Direct connection" string from Supabase.
+##   BACKUP_S3_BUCKET      target bucket, e.g. `founderflow-backups`. Works
+##                         with R2, S3, Backblaze B2 — anything that speaks
+##                         the S3 API.
+##   BACKUP_S3_REGION      e.g. `auto` (R2), `us-east-1` (S3).
+##   BACKUP_S3_ACCESS_KEY  access-key id.
+##   BACKUP_S3_SECRET_KEY  secret access key.
+##   BACKUP_S3_ENDPOINT    (optional) custom S3 endpoint. Leave blank for AWS.
+##                         Example for R2:
+##                         https://<account>.r2.cloudflarestorage.com
+##
+## Retention: adjust the bucket's lifecycle policy at the bucket side, not
+## here — S3-standard lifecycle rules give you the same 90-day sliding window
+## the app-side purge cron uses, and they clean up dumps this workflow won't
+## re-touch after upload.
+##
+## Restoring: fetch the dump from S3, run
+##   gunzip -c founderflow-YYYY-MM-DD.sql.gz | psql "$RESTORE_DATABASE_URL"
+## There is deliberately no automated restore workflow — that's the kind of
+## "one wrong click nukes a customer's data" button we do not need.
+##
+
+name: Nightly database backup
+
+on:
+  schedule:
+    # 04:15 UTC daily. Runs an hour after the purge cron so the dump captures
+    # today's post-purge state — the tombstoned rows past 90 days are gone
+    # by the time we snapshot.
+    - cron: "15 4 * * *"
+  workflow_dispatch:
+    # Manual "back it up now" button in the Actions tab. Useful before a
+    # scary migration or a schema-change deploy.
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install Postgres 16 client + awscli
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-16 awscli
+
+      - name: Compute filename
+        id: filename
+        run: |
+          echo "path=founderflow-$(date -u +%Y-%m-%d).sql.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Dump database
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+        run: |
+          # --no-owner / --no-privileges keep the dump portable across
+          # Supabase projects, so a restore into a fresh project (staging,
+          # dev) isn't blocked by permission grants.
+          pg_dump "$BACKUP_DATABASE_URL" \
+            --no-owner \
+            --no-privileges \
+            --format=plain \
+            | gzip -9 > "${{ steps.filename.outputs.path }}"
+          ls -lh "${{ steps.filename.outputs.path }}"
+
+      - name: Upload to S3-compatible bucket
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.BACKUP_S3_REGION }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+        run: |
+          # --endpoint-url is optional; awscli accepts an empty flag gracefully
+          # if we don't pass it, so branch on whether BACKUP_S3_ENDPOINT is set.
+          if [ -n "$BACKUP_S3_ENDPOINT" ]; then
+            aws s3 cp "${{ steps.filename.outputs.path }}" \
+              "s3://$BACKUP_S3_BUCKET/nightly/${{ steps.filename.outputs.path }}" \
+              --endpoint-url "$BACKUP_S3_ENDPOINT"
+          else
+            aws s3 cp "${{ steps.filename.outputs.path }}" \
+              "s3://$BACKUP_S3_BUCKET/nightly/${{ steps.filename.outputs.path }}"
+          fi
