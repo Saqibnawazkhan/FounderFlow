@@ -36,7 +36,12 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { deleteTaskAction, updateTaskStatusAction } from "@/lib/actions/tasks";
+import {
+  bulkDeleteTasksAction,
+  bulkUpdateTaskStatusAction,
+  deleteTaskAction,
+  updateTaskStatusAction,
+} from "@/lib/actions/tasks";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TaskForm } from "@/components/tasks/task-form";
@@ -191,6 +196,84 @@ export function TasksClient({
     if (filter === "assigned-by-me") return tasks.filter((t) => t.assignedBy === currentUserId);
     return tasks;
   }, [tasks, filter, currentUserId]);
+
+  // Bulk selection (list view). `selected` holds task ids; we prune any that
+  // fall out of the filtered set so the action bar count never lies after a
+  // filter switch or an RSC refresh removes rows.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkPending, setBulkPending] = useState(false);
+  useEffect(() => {
+    setSelected((prev) => {
+      const live = new Set(filtered.map((t) => t.id));
+      let changed = false;
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (live.has(id)) next.add(id);
+        else changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }, [filtered]);
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectAll() {
+    setSelected((prev) =>
+      prev.size === filtered.length ? new Set() : new Set(filtered.map((t) => t.id))
+    );
+  }
+  function clearSelection() {
+    setSelected(new Set());
+  }
+
+  async function handleBulkStatus(status: TaskStatus) {
+    if (selected.size === 0) return;
+    setBulkPending(true);
+    const res = await bulkUpdateTaskStatusAction({ ids: Array.from(selected), status });
+    setBulkPending(false);
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    const skipped = selected.size - res.data.updated;
+    toast.success(
+      `Moved ${res.data.updated} task${res.data.updated === 1 ? "" : "s"} to ${status.replace("_", " ")}` +
+        (skipped > 0 ? ` (${skipped} skipped — not yours to change)` : "")
+    );
+    clearSelection();
+    refresh();
+  }
+
+  async function handleBulkDelete() {
+    if (selected.size === 0) return;
+    const ok = await confirm({
+      title: `Delete ${selected.size} task${selected.size === 1 ? "" : "s"}?`,
+      description: "This action cannot be undone. Only tasks you created will be deleted.",
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setBulkPending(true);
+    const res = await bulkDeleteTasksAction({ ids: Array.from(selected) });
+    setBulkPending(false);
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    const skipped = selected.size - res.data.deleted;
+    toast.success(
+      `Deleted ${res.data.deleted} task${res.data.deleted === 1 ? "" : "s"}` +
+        (skipped > 0 ? ` (${skipped} skipped — only the creator can delete)` : "")
+    );
+    clearSelection();
+    refresh();
+  }
 
   const grouped = useMemo(
     () => ({
@@ -375,6 +458,22 @@ export function TasksClient({
             <table className="w-full">
               <thead className="sticky top-0 bg-surface">
                 <tr className="border-b border-border">
+                  <th scope="col" className="w-12 px-4 py-3.5">
+                    <label className="sr-only" htmlFor="select-all-tasks">
+                      Select all tasks
+                    </label>
+                    <input
+                      id="select-all-tasks"
+                      type="checkbox"
+                      checked={filtered.length > 0 && selected.size === filtered.length}
+                      ref={(el) => {
+                        if (el)
+                          el.indeterminate = selected.size > 0 && selected.size < filtered.length;
+                      }}
+                      onChange={toggleSelectAll}
+                      className="h-4 w-4 cursor-pointer accent-primary"
+                    />
+                  </th>
                   <th
                     scope="col"
                     className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
@@ -414,6 +513,7 @@ export function TasksClient({
                 {filtered.map((task) => {
                   const overdue = isPast(new Date(task.deadline)) && task.status !== "completed";
                   const isHighlighted = highlightId === task.id;
+                  const isSelected = selected.has(task.id);
                   return (
                     <tr
                       key={task.id}
@@ -430,9 +530,23 @@ export function TasksClient({
                       aria-label={`Open task ${task.title}`}
                       className={cn(
                         "cursor-pointer border-b border-border/60 transition-all last:border-b-0 hover:bg-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
-                        isHighlighted && "bg-primary/[0.08] shadow-inner"
+                        isHighlighted && "bg-primary/[0.08] shadow-inner",
+                        isSelected && "bg-primary/[0.06]"
                       )}
                     >
+                      <td className="px-4 py-4">
+                        <label className="sr-only" htmlFor={`select-${task.id}`}>
+                          Select {task.title}
+                        </label>
+                        <input
+                          id={`select-${task.id}`}
+                          type="checkbox"
+                          checked={isSelected}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={() => toggleSelected(task.id)}
+                          className="h-4 w-4 cursor-pointer accent-primary"
+                        />
+                      </td>
                       <td className="px-6 py-4">
                         <p className="text-sm font-medium text-fg">{task.title}</p>
                         {task.description && (
@@ -537,6 +651,55 @@ export function TasksClient({
             </table>
           </div>
         </section>
+      )}
+
+      {/* Bulk-action bar — floats when the list view has a selection. Fixed
+          so it stays reachable while scrolling a long list. */}
+      {view === "list" && selected.size > 0 && (
+        <div className="pointer-events-none fixed inset-x-0 bottom-4 z-sticky flex justify-center px-4">
+          <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-surface/95 p-2 pl-4 shadow-card-hover backdrop-blur-xl">
+            <span className="text-sm font-semibold text-fg">{selected.size} selected</span>
+            <span className="mx-1 hidden h-4 w-px bg-border sm:block" />
+            <label className="sr-only" htmlFor="bulk-status">
+              Set status for selected tasks
+            </label>
+            <select
+              id="bulk-status"
+              defaultValue=""
+              disabled={bulkPending}
+              onChange={(e) => {
+                const v = e.target.value as TaskStatus | "";
+                if (v) handleBulkStatus(v);
+                e.currentTarget.value = "";
+              }}
+              className="cursor-pointer rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg focus:border-primary/50 focus:outline-none disabled:opacity-50"
+            >
+              <option value="" disabled>
+                Move to…
+              </option>
+              <option value="pending">Pending</option>
+              <option value="in_progress">In progress</option>
+              <option value="completed">Completed</option>
+            </select>
+            <button
+              type="button"
+              onClick={handleBulkDelete}
+              disabled={bulkPending}
+              className="inline-flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs font-bold text-danger transition-colors hover:bg-danger/20 disabled:opacity-50"
+            >
+              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              Delete
+            </button>
+            <button
+              type="button"
+              onClick={clearSelection}
+              disabled={bulkPending}
+              className="rounded-full px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg disabled:opacity-50"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
       )}
 
       <Modal

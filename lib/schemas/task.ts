@@ -32,3 +32,19 @@ export const TaskStatusUpdateSchema = z.object({
   id: z.string().min(1),
   status: z.enum(["pending", "in_progress", "completed"]),
 });
+
+// Bulk operations. `ids` is capped so a malicious client can't ask us to
+// touch an unbounded set in one request — 200 is well above any realistic
+// on-screen selection.
+const TaskIdList = z.array(z.string().min(1)).min(1, "Select at least one task").max(200);
+
+export const BulkTaskStatusSchema = z.object({
+  ids: TaskIdList,
+  status: z.enum(["pending", "in_progress", "completed"]),
+});
+export type BulkTaskStatusInput = z.infer<typeof BulkTaskStatusSchema>;
+
+export const BulkTaskDeleteSchema = z.object({
+  ids: TaskIdList,
+});
+export type BulkTaskDeleteInput = z.infer<typeof BulkTaskDeleteSchema>;

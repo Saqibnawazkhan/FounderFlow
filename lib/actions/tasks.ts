@@ -18,9 +18,16 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { NewTaskSchema, TaskStatusUpdateSchema } from "@/lib/schemas/task";
+import {
+  NewTaskSchema,
+  TaskStatusUpdateSchema,
+  BulkTaskStatusSchema,
+  BulkTaskDeleteSchema,
+} from "@/lib/schemas/task";
 import { limiters } from "@/lib/rate-limit";
 import { canManageProject } from "@/lib/auth/project-permissions";
+import { captureServerError } from "@/lib/sentry-server";
+import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
 import type { Role } from "@/lib/auth/role-gates";
 import type { Task, TaskStatus } from "@/lib/types";
 
@@ -316,4 +323,183 @@ export async function deleteTaskAction(id: string): Promise<ActionResult> {
   revalidatePath(`/projects/${task.projectId}`);
 
   return { success: true, data: undefined };
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* Bulk writes (audit T3)                                                       */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Permission-encoded WHERE for bulk task writes. Rather than loop-and-check
+ * per task, we push the same rule the single-task actions enforce into the
+ * SQL: an admin can touch any company task; everyone else only tasks they're
+ * the assignee or creator of. deletedAt: null keeps tombstoned rows out.
+ * Anything the caller isn't allowed to touch is simply not matched — a bulk
+ * op silently skips forbidden rows rather than failing the whole batch.
+ */
+function bulkTaskScope(
+  session: {
+    user: { id: string; companyId: string; role: string };
+  },
+  ids: string[]
+) {
+  const base = { id: { in: ids }, companyId: session.user.companyId, deletedAt: null };
+  if (session.user.role === "admin") return base;
+  return {
+    ...base,
+    OR: [{ assignedTo: session.user.id }, { assignedBy: session.user.id }],
+  };
+}
+
+export async function bulkUpdateTaskStatusAction(
+  input: unknown
+): Promise<ActionResult<{ updated: number }>> {
+  const session = await auth();
+  if (!session?.user?.companyId || !session.user.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
+  const parsed = BulkTaskStatusSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid request" };
+  }
+  const { ids, status } = parsed.data;
+
+  try {
+    const me = await db.user.findUnique({ where: { id: session.user.id } });
+    if (!me) return { success: false, error: "User no longer exists" };
+
+    const scope = bulkTaskScope(
+      { user: { id: session.user.id, companyId: session.user.companyId, role: session.user.role } },
+      ids
+    );
+
+    const result = await db.$transaction(async (tx) => {
+      const { count } = await tx.task.updateMany({
+        where: scope,
+        data: {
+          status,
+          completedAt: status === "completed" ? new Date() : null,
+        },
+      });
+      // One SUMMARY activity row — not one per task — so a 40-task bulk
+      // update doesn't flood the feed (and matches the dedupe intent).
+      if (count > 0) {
+        await tx.activity.create({
+          data: {
+            companyId: session.user.companyId,
+            type: status === "completed" ? "task_completed" : "task_updated",
+            message: `${me.name} moved ${count} task${count === 1 ? "" : "s"} to ${status.replace("_", " ")}`,
+            userId: me.id,
+            userName: me.name,
+            metadata: JSON.stringify({ kind: "task", bulk: true, count, status }),
+          },
+        });
+      }
+      return count;
+    });
+
+    warnBulkMutation(result, {
+      action: "bulkUpdateTaskStatus",
+      userId: session.user.id,
+      companyId: session.user.companyId,
+      extra: { requested: ids.length, status },
+    });
+
+    revalidatePath("/tasks");
+    revalidatePath("/dashboard");
+    revalidatePath("/activities");
+    return { success: true, data: { updated: result } };
+  } catch (e) {
+    captureServerError(e, {
+      action: "bulkUpdateTaskStatus",
+      userId: session.user.id,
+      companyId: session.user.companyId,
+    });
+    return { success: false, error: "Couldn't update those tasks right now. Try again." };
+  }
+}
+
+export async function bulkDeleteTasksAction(
+  input: unknown
+): Promise<ActionResult<{ deleted: number }>> {
+  const session = await auth();
+  if (!session?.user?.companyId || !session.user.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
+  const parsed = BulkTaskDeleteSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid request" };
+  }
+  const { ids } = parsed.data;
+
+  try {
+    const me = await db.user.findUnique({ where: { id: session.user.id } });
+    if (!me) return { success: false, error: "User no longer exists" };
+
+    // Delete is stricter than status change: only the creator or an admin,
+    // matching the single-task deleteTaskAction. Non-admins can't bulk-delete
+    // tasks merely assigned to them.
+    const scope =
+      session.user.role === "admin"
+        ? { id: { in: ids }, companyId: session.user.companyId, deletedAt: null }
+        : {
+            id: { in: ids },
+            companyId: session.user.companyId,
+            deletedAt: null,
+            assignedBy: session.user.id,
+          };
+
+    const result = await db.$transaction(async (tx) => {
+      // Capture the ids we're actually allowed to delete so the notification
+      // sweep + count are accurate (deleteMany doesn't return the rows).
+      const deletable = await tx.task.findMany({ where: scope, select: { id: true } });
+      const deletableIds = deletable.map((t) => t.id);
+      if (deletableIds.length === 0) return 0;
+
+      await tx.task.deleteMany({ where: { id: { in: deletableIds } } });
+      // Sweep task-deep-link notifications for every deleted task (audit X10).
+      await tx.notification.deleteMany({
+        where: {
+          companyId: session.user.companyId,
+          OR: deletableIds.map((id) => ({ link: { contains: `taskId=${id}` } })),
+        },
+      });
+      await tx.activity.create({
+        data: {
+          companyId: session.user.companyId,
+          type: "task_deleted",
+          message: `${me.name} deleted ${deletableIds.length} task${deletableIds.length === 1 ? "" : "s"}`,
+          userId: me.id,
+          userName: me.name,
+          metadata: JSON.stringify({ kind: "task", bulk: true, count: deletableIds.length }),
+        },
+      });
+      return deletableIds.length;
+    });
+
+    warnBulkMutation(result, {
+      action: "bulkDeleteTasks",
+      userId: session.user.id,
+      companyId: session.user.companyId,
+      extra: { requested: ids.length },
+    });
+
+    revalidatePath("/tasks");
+    revalidatePath("/dashboard");
+    revalidatePath("/activities");
+    return { success: true, data: { deleted: result } };
+  } catch (e) {
+    captureServerError(e, {
+      action: "bulkDeleteTasks",
+      userId: session.user.id,
+      companyId: session.user.companyId,
+    });
+    return { success: false, error: "Couldn't delete those tasks right now. Try again." };
+  }
 }
