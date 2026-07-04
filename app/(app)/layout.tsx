@@ -17,6 +17,7 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
 import { VerifyEmailBanner } from "@/components/layout/verify-email-banner";
 import { PreferenceHydrator } from "@/components/layout/preference-hydrator";
+import { Breadcrumbs } from "@/components/layout/breadcrumbs";
 import { cn } from "@/lib/utils";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -52,6 +53,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
         <Topbar />
         <VerifyEmailBanner />
         <PreferenceHydrator />
+        <Breadcrumbs />
         <main id="main" className="flex-1 overflow-x-hidden p-4 md:p-6 lg:p-8">
           {children}
         </main>

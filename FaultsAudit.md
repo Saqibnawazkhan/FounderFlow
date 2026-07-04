@@ -57,7 +57,7 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 ## 2. Dashboard · Nav · Global shell
 
 - [x] **N1 · 🔴 [BUG] Topbar search stub** — shipped in P0-3 (command palette + ⌘K).
-- [ ] **N2 · 🟠 [FEAT] No breadcrumbs anywhere.** Follow-up: bake per-route metadata into a shared `PageHeader` and hoist it into the app layout.
+- [x] **N2 · 🟠 [FEAT] No breadcrumbs anywhere.** ✔ A path-driven `Breadcrumbs` bar hoisted into the app shell (renders on every route, no per-page wiring). Known segments use their localized `t.nav.*` label; a dynamic id under `/projects/[id]` renders a generic "Project" crumb (the page H1 carries the real name), and the leading Home link routes to the **role's** home so a member never lands on a finance page. `aria-label="Breadcrumb"` + `aria-current="page"` on the leaf; i18n en + ur. (Also folded in an S6 coherence fix: the topbar's quick theme/locale toggles now persist to the DB like the settings controls.)
 - [x] **N3 · 🟠 [FEAT] No language switcher in UI.** ✔ Added a `Languages` icon button in the topbar (between clock widget and theme toggle). Two-locale toggle (en ↔ ur); would upgrade to a dropdown if we add a third locale.
 - [x] **N4 · 🟠 [FEAT] No desktop sidebar-collapse toggle.** ✔ New `sidebarCollapsed` in the persisted store; sidebar shrinks to a 64 px icon rail with an inline `⟵ Collapse / ⟶` toggle in its footer; app layout's left margin animates between `lg:ml-64` and `lg:ml-16`.
 - [x] **N5 · 🟠 [UI] Sidebar active-state too subtle.** ✔ Stronger `border-primary/50 bg-primary/[0.14]` + a 2 px inset shadow rail + colored icon.

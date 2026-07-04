@@ -58,6 +58,10 @@ export const en = {
     notifications: "Notifications",
     settings: "Settings",
   },
+  breadcrumb: {
+    home: "Home",
+    project: "Project",
+  },
   auth: {
     // Login form (3-part headings let us keep the inline lime emphasis word
     // distinct from the surrounding prose in both English and Urdu)
@@ -384,6 +388,10 @@ export const ur: typeof en = {
     reports: "رپورٹس",
     notifications: "اطلاعات",
     settings: "ترتیبات",
+  },
+  breadcrumb: {
+    home: "ہوم",
+    project: "منصوبہ",
   },
   auth: {
     welcomeBack: "خوش آمدید",

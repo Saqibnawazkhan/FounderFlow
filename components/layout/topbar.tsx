@@ -19,6 +19,7 @@ import {
 import { useStore } from "@/lib/store";
 import { SUPPORTED_LOCALES, type Locale } from "@/lib/i18n/strings";
 import { logoutAction } from "@/lib/actions/auth";
+import { updateAppearanceAction } from "@/lib/actions/appearance";
 import {
   listNotificationsAction,
   markAllNotificationsReadAction,
@@ -48,6 +49,14 @@ export function Topbar() {
   function toggleLocale() {
     const next: Locale = locale === "en" ? "ur" : "en";
     setLocale(next);
+    // S6: keep the DB in sync so the quick toggle also follows the user
+    // across devices, matching the settings controls.
+    void updateAppearanceAction({ locale: next });
+  }
+  function handleToggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    toggleTheme();
+    void updateAppearanceAction({ theme: next });
   }
   const nextLocaleLabel = SUPPORTED_LOCALES.find((l) => l.code !== locale)?.label ?? "English";
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -196,7 +205,7 @@ export function Topbar() {
           </button>
 
           <button
-            onClick={toggleTheme}
+            onClick={handleToggleTheme}
             className="flex h-9 w-9 items-center justify-center rounded-xl text-fg-muted transition hover:bg-surface-hover"
             aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
           >
