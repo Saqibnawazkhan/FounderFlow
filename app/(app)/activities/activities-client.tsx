@@ -57,17 +57,55 @@ const TONE_FILL: Record<ActivityTone, string> = {
   info: "bg-info/15 text-info border-info/30",
 };
 
+/** An activity row plus how many identical consecutive events it absorbed.
+ *  repeatCount = 1 → a normal single event; > 1 → rendered with a ×N badge. */
+type DedupedActivity = Activity & { repeatCount: number };
+
+// Collapse window: identical events this close together are one user action
+// stuttering (double-click, retried request, HMR double-fire), not two
+// separate pieces of news. 5 minutes is wide enough to absorb bursts and
+// narrow enough that genuinely repeated work (same task re-completed the
+// next morning) still shows as separate rows.
+const DEDUPE_WINDOW_MS = 5 * 60 * 1000;
+
+/** Read-side dedupe (audit X15): rapid consecutive events with the same
+ *  type + message + actor collapse into one row carrying a repeat count.
+ *  Server rows are untouched — this is presentation-only, so the audit
+ *  trail in the DB stays complete. Assumes input is newest-first (the
+ *  query orders by createdAt desc). */
+function dedupeConsecutive(rows: Activity[]): DedupedActivity[] {
+  const out: DedupedActivity[] = [];
+  for (const a of rows) {
+    const prev = out[out.length - 1];
+    if (
+      prev &&
+      prev.type === a.type &&
+      prev.message === a.message &&
+      prev.userId === a.userId &&
+      Math.abs(new Date(prev.createdAt).getTime() - new Date(a.createdAt).getTime()) <=
+        DEDUPE_WINDOW_MS
+    ) {
+      prev.repeatCount += 1;
+      continue;
+    }
+    out.push({ ...a, repeatCount: 1 });
+  }
+  return out;
+}
+
 export function ActivitiesClient({ activities }: { activities: Activity[] }) {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
 
   const filtered = useMemo(
     () =>
-      activities.filter((a) => {
-        const matchSearch = !search || a.message.toLowerCase().includes(search.toLowerCase());
-        const matchType = typeFilter === "all" || a.type === typeFilter;
-        return matchSearch && matchType;
-      }),
+      dedupeConsecutive(
+        activities.filter((a) => {
+          const matchSearch = !search || a.message.toLowerCase().includes(search.toLowerCase());
+          const matchType = typeFilter === "all" || a.type === typeFilter;
+          return matchSearch && matchType;
+        })
+      ),
     [activities, search, typeFilter]
   );
 
@@ -186,7 +224,17 @@ export function ActivitiesClient({ activities }: { activities: Activity[] }) {
                         <div className="flex items-start gap-3">
                           <Avatar name={activity.userName} size="sm" />
                           <div className="min-w-0 flex-1">
-                            <p className="text-sm leading-relaxed text-fg">{activity.message}</p>
+                            <p className="text-sm leading-relaxed text-fg">
+                              {activity.message}
+                              {activity.repeatCount > 1 && (
+                                <span
+                                  title={`This event fired ${activity.repeatCount} times within a few minutes`}
+                                  className="ml-2 inline-flex items-center rounded-full border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] font-bold text-fg-muted"
+                                >
+                                  ×{activity.repeatCount}
+                                </span>
+                              )}
+                            </p>
                             <div className="mt-1.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
                               <span>{format(new Date(activity.createdAt), "h:mm a")}</span>
                               <span>·</span>

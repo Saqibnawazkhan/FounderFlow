@@ -31,9 +31,14 @@ export default function OfflinePage() {
       </div>
       <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">Offline</p>
       <h1 className="mt-2 text-3xl font-bold tracking-tight md:text-4xl">You&apos;re offline</h1>
+      {/* Copy fix (audit N10): the SW intentionally does NOT cache document
+          pages (navigations are network-first so auth/session state never
+          goes stale) — so don't promise "cached pages still work". Nothing
+          was lost, though: unsent form input survives in the open tab. */}
       <p className="mt-3 max-w-md text-sm text-fg-muted">
-        FounderFlow needs an internet connection to load fresh data. Reconnect and we&apos;ll be
-        right back — your last-cached pages still work.
+        FounderFlow needs an internet connection to load your workspace. Nothing was lost — any tab
+        you already have open keeps its state, and we&apos;ll pick up right where you left off once
+        you reconnect.
       </p>
 
       {/* Plain anchor (not Link) so it doesn't try to prefetch through the SW. */}

@@ -50,8 +50,8 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 - [x] **A8 · 🟠 [UI] Password eye-toggle has no `:focus-visible` ring.** ✔ Added `focus-visible:ring-2 focus-visible:ring-primary/50` to the toggle button on login, signup, and the new reset-password page.
 - [~] **A9 · 🟠 [BUG] Rate-limit message "Too many requests" is opaque.** Partial false positive — [lib/rate-limit.ts:103](lib/rate-limit.ts#L103) already returns `"Too many requests. Try again in Xs."`. The toast surfaces that verbatim via `gate.error`. A LIVE countdown timer is a P3 nice-to-have, not a P1.
 - [~] **A10 · 🟠 [BUG] Session expiry silently 401s server actions.** DEFERRED — a proper fix means a global "action result" interceptor or wrapping every callsite. Middleware already redirects expired sessions on the next navigation; the only silent case is mid-session for a single action call, which shows a toast. Full fix tracked as follow-up under a broader "auth error boundary" line item.
-- [ ] **A11 · 🟡 [UI] Landing hero contrast risk.** `text-primary-strong` on gradient may fail WCAG AA in some themes. → [app/page.tsx](app/page.tsx)
-- [ ] **A12 · 🟡 [OPP] No welcome tour / empty-state guidance post-signup.** New users land on blank dashboard. → [app/(app)/dashboard](app/(app)/dashboard)
+- [~] **A11 · 🟡 [UI] Landing hero contrast risk.** FALSE POSITIVE — `--primary-strong` is a theme-aware token already contrast-tuned per theme (light: lime-700, documented ~6.3:1 on `#f7f8f5`; dark: bright lime ~14:1 on near-black). The hero gradients behind it are 0.10-0.12 opacity tints that don't move the ratio below AA.
+- [x] **A12 · 🟡 [OPP] No welcome tour / empty-state guidance post-signup.** ✔ Shipped a `GettingStarted` checklist on the dashboard (2026-07-04): four steps (record capital, log expense, create task, invite co-founder) whose done-state derives from live data — the card fills in as they work and disappears at ≥3 of 4 done. No dismissal state needed; the data is the dismissal.
 - [ ] **A13 · 🔵 [OPP] Magic-link login, sign-in-with-Google, 2FA / TOTP.** → [auth.config.ts](auth.config.ts)
 
 ## 2. Dashboard · Nav · Global shell
@@ -64,9 +64,9 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 - [x] **N6 · 🟠 [UI] Duplicate notification affordance.** ✔ Replaced the topbar 2×2 dot with a proper numeric badge (`9+` when over). Sidebar still counts; the two now agree instead of racing.
 - [~] **N7 · 🟠 [BUG] No scroll-restoration between route transitions.** DEFERRED — Next.js 14 App Router scroll-restores by default on `<Link>` nav and browser back/forward; audit finding needs empirical verification against a real regression, not blind wiring.
 - [~] **N8 · 🟠 [BUG] Hydration paint flash from Zustand skeleton.** DEFERRED — proper fix moves `currentUser` hydration into a Suspense boundary in Providers so the layout renders in the same paint as content. Full refactor for a future session.
-- [ ] **N9 · 🟡 [UI] Sparse / inconsistent page metadata.** Dashboard has 4 words, tasks has a full sentence. Standardize `"FounderFlow — <page>"` prefix + description shape.
-- [ ] **N10 · 🟡 [UI] 404 doesn't suggest related pages; offline page has no cached-page list.** → [app/not-found.tsx](app/not-found.tsx), [app/offline/page.tsx](app/offline/page.tsx)
-- [ ] **N11 · 🔵 [OPP] Cmd-K palette, recent-items widget, activity ticker, install-PWA button.**
+- [x] **N9 · 🟡 [UI] Sparse / inconsistent page metadata.** ✔ Mostly a stale finding — every (app) page already had title + full-sentence description and the root layout supplies the `%s · FounderFlow` template. Real gap was the client-component auth pages (forgot-password, reset-password) falling back to the default title; added thin metadata layouts for both (login/signup already had them). 2026-07-04.
+- [x] **N10 · 🟡 [UI] 404 doesn't suggest related pages; offline page has no cached-page list.** ✔ 404 now offers Dashboard / Tasks / Projects buttons + a ⌘K tip and uses the app's design tokens. Offline page: a cached-page list would list nothing (the SW deliberately never caches documents — navigations are network-first), so fixed the misleading "your last-cached pages still work" copy instead. 2026-07-04.
+- [~] **N11 · 🔵 [OPP] Cmd-K palette, recent-items widget, activity ticker, install-PWA button.** PARTIAL — the Cmd-K palette shipped back in P0-3. Recents/ticker/install-button stay long-horizon.
 
 ## 3. Tasks · Projects · Comments
 
@@ -101,7 +101,7 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 - [x] **F12 · 🟠 [BUG] `formatCurrency` special-cases PKR** inconsistently. ✔ Removed the PKR-only prefix branch; every currency now flows through `Intl.NumberFormat` uniformly, with a safe fallback for stale/unknown ISO codes.
 - [x] **F13 · 🟠 [BUG] Export buttons on `/reports` don't re-check `canSeeFinances` client-side.** ✔ The RSC now `notFound()`s for member roles as belt-and-braces beyond middleware. Both the button-render and export-action paths are protected in one gate.
 - [ ] **F14 · 🟡 [FEAT] No split transactions, no tax categories, no vendor/merchant field.**
-- [ ] **F15 · 🔵 [OPP] Dashboard runway/burn-rate widget, monthly closeout email, spend-vs-budget trend chart, anomaly alerts, duplicate-transaction button.**
+- [~] **F15 · 🔵 [OPP] Dashboard runway/burn-rate widget, monthly closeout email, spend-vs-budget trend chart, anomaly alerts, duplicate-transaction button.** PARTIAL — the runway figure already ships on the dashboard's Balance KPI ("61.3 mo runway" delta label). The rest stay long-horizon.
 
 ## 5. Time · Notifications · Activity · Team
 
@@ -118,8 +118,8 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 - [x] **X11 · 🟠 [UI] Notification bell badge is a 2×2 dot.** ✔ Shipped in N6 — now a proper numeric badge with `9+` overflow.
 - [x] **X12 · 🟠 [UI] Running-entry only in topbar** — not surfaced on `/time` header. ✔ New `RunningEntryBanner` at the top of /time when the current user has an active session — shows started-at, task title (or "Untagged work"), note, and a live duration in the same font weight the topbar widget uses.
 - [~] **X13 · 🟠 [UI] Inconsistent mark-all-read affordance** across dropdown vs page. NOT A REAL INCONSISTENCY — dropdown uses a compact text link (right-context), full page uses a pill button (broad-context). Both say "Mark all read" and route to the same action. Deliberate density difference.
-- [ ] **X14 · 🟡 [UI] Empty state art reuses generic Bell icon everywhere.**
-- [ ] **X15 · 🟡 [BUG] Activity feed has no dedupe.** Rapid consecutive events create identical rows.
+- [~] **X14 · 🟡 [UI] Empty state art reuses generic Bell icon everywhere.** FALSE POSITIVE — surveyed all nine `EmptyState` call sites: each already uses a context-appropriate icon (Target/budgets, TrendingDown/expenses, Wallet/investments, Briefcase/projects, CheckSquare/tasks, Clock/time, Repeat/recurring, Activity/activities). Bell appears only on notifications, where it belongs.
+- [x] **X15 · 🟡 [BUG] Activity feed has no dedupe.** ✔ Read-side dedupe shipped 2026-07-04: consecutive events with identical type + message + actor within a 5-minute window collapse into one row with a ×N badge. Presentation-only — DB audit trail stays complete.
 - [ ] **X16 · 🔵 [OPP] Weekly digest email, quiet-hours for notifications, Slack integration for mentions, iCal export, presence indicator.**
 
 ## 6. Settings · i18n · a11y · Mobile · PWA

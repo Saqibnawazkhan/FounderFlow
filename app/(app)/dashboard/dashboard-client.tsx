@@ -6,8 +6,10 @@ import dynamic from "next/dynamic";
 import {
   ArrowRight,
   CheckCircle2,
+  Circle,
   CircleDot,
   Clock,
+  Rocket,
   TrendingDown,
   TrendingUp,
   Users,
@@ -192,6 +194,8 @@ export function DashboardClient({
           </Link>
         </div>
       </header>
+
+      <GettingStarted transactions={transactions} tasks={tasks} users={users} />
 
       <section
         aria-label="Key metrics"
@@ -419,5 +423,114 @@ function Legend({ dot, label }: { dot: string; label: string }) {
       />
       <span className="text-fg-muted">{label}</span>
     </div>
+  );
+}
+
+/**
+ * Getting-started checklist (audit A12) — shows on a fresh workspace so a
+ * brand-new signup isn't staring at an all-zeros dashboard with no idea
+ * what to do first. Each step's done-state derives from live data, so the
+ * card fills in as they work and disappears entirely once every step is
+ * complete. No dismissal state to persist — the data IS the dismissal.
+ */
+function GettingStarted({
+  transactions,
+  tasks,
+  users,
+}: {
+  transactions: Transaction[];
+  tasks: Task[];
+  users: User[];
+}) {
+  const steps = [
+    {
+      done: transactions.some((t) => t.type === "investment"),
+      label: "Record your starting capital",
+      desc: "Add the money already in the company as an investment.",
+      href: "/investments",
+    },
+    {
+      done: transactions.some((t) => t.type === "expense"),
+      label: "Log your first expense",
+      desc: "Rent, tools, salaries — start the money trail.",
+      href: "/expenses",
+    },
+    {
+      done: tasks.length > 0,
+      label: "Create a task",
+      desc: "Put the next piece of work on the board.",
+      href: "/tasks",
+    },
+    {
+      done: users.length > 1,
+      label: "Invite your co-founder",
+      desc: "FounderFlow is built for more than one pair of hands.",
+      href: "/team",
+    },
+  ];
+
+  const remaining = steps.filter((s) => !s.done).length;
+  // Fully-onboarded workspaces never see this. Also hide once the workspace
+  // is clearly active (3 of 4 done) — at that point the card is nagging,
+  // not helping.
+  if (remaining <= 1) return null;
+
+  return (
+    <section
+      aria-label="Getting started"
+      className="rounded-2xl border border-primary/30 bg-primary/[0.04] p-6"
+    >
+      <div className="mb-4 flex items-center gap-3">
+        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/15 text-primary-strong">
+          <Rocket className="h-4 w-4" aria-hidden="true" />
+        </span>
+        <div>
+          <h2 className="text-sm font-bold text-fg">Get your workspace rolling</h2>
+          <p className="text-xs text-fg-muted">
+            {steps.length - remaining} of {steps.length} done — a couple of minutes each.
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {steps.map((step) => (
+          <Link
+            key={step.label}
+            href={step.href}
+            className={cn(
+              "group flex items-start gap-3 rounded-xl border p-3 transition-colors",
+              step.done
+                ? "border-border/40 bg-bg/40 opacity-60"
+                : "border-border bg-bg hover:border-primary/40 hover:bg-surface-hover"
+            )}
+          >
+            {step.done ? (
+              <CheckCircle2
+                className="mt-0.5 h-4 w-4 shrink-0 text-primary-strong"
+                aria-hidden="true"
+              />
+            ) : (
+              <Circle className="mt-0.5 h-4 w-4 shrink-0 text-fg-muted" aria-hidden="true" />
+            )}
+            <div className="min-w-0">
+              <p
+                className={cn(
+                  "text-sm font-semibold",
+                  step.done ? "text-fg-muted line-through" : "text-fg"
+                )}
+              >
+                {step.label}
+              </p>
+              {!step.done && <p className="mt-0.5 text-xs text-fg-muted">{step.desc}</p>}
+            </div>
+            {!step.done && (
+              <ArrowRight
+                className="ml-auto mt-1 h-3.5 w-3.5 shrink-0 text-fg-muted transition-transform group-hover:translate-x-0.5"
+                aria-hidden="true"
+              />
+            )}
+          </Link>
+        ))}
+      </div>
+    </section>
   );
 }
