@@ -12,6 +12,7 @@ import {
   Search,
   Trash2,
   TrendingDown,
+  Upload,
   Wallet,
 } from "lucide-react";
 import toast from "react-hot-toast";
@@ -19,6 +20,7 @@ import { deleteTransactionAction } from "@/lib/actions/transactions";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TransactionForm } from "@/components/transactions/transaction-form";
+import { ImportTransactionsModal } from "@/components/transactions/import-transactions-modal";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
@@ -62,6 +64,7 @@ export function ExpensesClient({
   const expenses = useMemo(() => transactions.filter((t) => t.type === "expense"), [transactions]);
 
   const [modalOpen, setModalOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
 
@@ -125,12 +128,20 @@ export function ExpensesClient({
             Track every penny going out of your company.
           </p>
         </div>
-        <button
-          onClick={() => setModalOpen(true)}
-          className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" /> Log expense
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setImportOpen(true)}
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-5 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-surface-hover active:scale-95"
+          >
+            <Upload className="h-4 w-4" aria-hidden="true" /> Import CSV
+          </button>
+          <button
+            onClick={() => setModalOpen(true)}
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" /> Log expense
+          </button>
+        </div>
       </header>
 
       <section aria-label="Expense metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -263,7 +274,7 @@ export function ExpensesClient({
             }
           />
         ) : (
-          <div className="scrollbar-thin overflow-x-auto">
+          <div className="scrollbar-thin hidden overflow-x-auto md:block">
             <table className="w-full">
               <thead className="sticky top-0 bg-surface">
                 <tr className="border-b border-border">
@@ -369,7 +380,76 @@ export function ExpensesClient({
             </table>
           </div>
         )}
+
+        {/* Mobile card fallback (F10) — the table scrolls horizontally on a
+            phone; cards read far better. Same rows, same actions. */}
+        {filtered.length > 0 && (
+          <ul className="divide-y divide-border md:hidden">
+            {filtered.map((t) => (
+              <li key={t.id} className="p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <p className="min-w-0 flex-1 text-sm font-medium text-fg">{t.description}</p>
+                  <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm font-bold tabular-nums text-pink-strong">
+                    <ArrowDown className="h-3 w-3" aria-hidden="true" />
+                    {formatCurrency(t.amount)}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center rounded-full border border-border bg-bg px-2.5 py-0.5 text-xs font-medium text-fg-muted">
+                    {t.category}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-xs text-fg-muted">
+                    <Avatar name={t.addedByName} size="xs" /> {t.addedByName}
+                  </span>
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
+                    {formatDate(t.date)}
+                  </span>
+                  <div className="ml-auto flex items-center gap-1">
+                    <button
+                      onClick={() => setCommentingTxn(t)}
+                      aria-label={
+                        t.commentCount > 0
+                          ? `Open comments (${t.commentCount}) for ${t.description}`
+                          : `Add a comment to ${t.description}`
+                      }
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors",
+                        t.commentCount > 0
+                          ? "text-cyan-strong hover:bg-cyan/10"
+                          : "text-fg-muted hover:bg-glass/[0.06] hover:text-fg"
+                      )}
+                    >
+                      <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
+                      {t.commentCount > 0 && (
+                        <span className="font-mono font-bold">{t.commentCount}</span>
+                      )}
+                    </button>
+                    {(currentUserId === t.addedBy || currentUserRole === "admin") && (
+                      <button
+                        onClick={() => handleDelete(t.id)}
+                        aria-label={`Delete expense ${t.description}`}
+                        className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
+
+      <ImportTransactionsModal
+        type="expense"
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={() => {
+          setImportOpen(false);
+          refresh();
+        }}
+      />
 
       <Modal
         open={modalOpen}

@@ -21,11 +21,13 @@ import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { NewTransactionSchema } from "@/lib/schemas/transaction";
+import { ImportTransactionsSchema, NewTransactionSchema } from "@/lib/schemas/transaction";
 import { limiters } from "@/lib/rate-limit";
 import { checkBudgetThresholdAfterExpense } from "@/lib/budgets/check";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
-import type { Transaction } from "@/lib/types";
+import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
+import { captureServerError } from "@/lib/sentry-server";
+import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES, type Transaction } from "@/lib/types";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
 
@@ -194,6 +196,102 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
   }
 
   return { success: true, data: toClient(created) };
+}
+
+/**
+ * CSV import (F2). Bulk-inserts a batch of parsed rows for the current user.
+ * Rows whose category isn't a recognised one for the chosen type are dropped
+ * and counted in `skipped` — the server is the authority on categories, never
+ * the client. Deliberately does NOT fan out per-row notifications or run the
+ * budget-threshold check: importing historical data shouldn't ping the whole
+ * team or fire "over budget" alerts retroactively. Logs one summary activity.
+ */
+export async function bulkImportTransactionsAction(
+  input: unknown
+): Promise<ActionResult<{ imported: number; skipped: number }>> {
+  const session = await auth();
+  if (!session?.user?.companyId || !session.user.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+  if (!canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
+  }
+
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
+  const parsed = ImportTransactionsSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid import" };
+  }
+  const { type, rows } = parsed.data;
+  const { id: userId, companyId } = session.user;
+
+  // Category is validated server-side against the type's set. Unknown ones
+  // are dropped (reported as skipped) rather than trusted from the client.
+  const validCats = new Set<string>(
+    type === "expense" ? EXPENSE_CATEGORIES : INVESTMENT_CATEGORIES
+  );
+  const accepted = rows.filter((r) => validCats.has(r.category));
+  const skipped = rows.length - accepted.length;
+  if (accepted.length === 0) {
+    return { success: false, error: "No rows had a valid category for this type." };
+  }
+
+  const user = await db.user.findUnique({ where: { id: userId } });
+  if (!user) return { success: false, error: "User no longer exists" };
+
+  try {
+    const total = accepted.reduce((s, r) => s + r.amount, 0);
+    const result = await db.$transaction(async (tx) => {
+      const created = await tx.transaction.createMany({
+        data: accepted.map((r) => ({
+          companyId,
+          projectId: null,
+          type,
+          amount: new Prisma.Decimal(r.amount),
+          category: r.category,
+          description: r.description,
+          date: new Date(r.date),
+          addedBy: userId,
+          addedByName: user.name,
+        })),
+      });
+      await tx.activity.create({
+        data: {
+          companyId,
+          type: type === "expense" ? "expense_added" : "investment_added",
+          message: `${user.name} imported ${created.count} ${
+            type === "expense" ? "expense" : "investment"
+          }${created.count === 1 ? "" : "s"} from CSV`,
+          userId,
+          userName: user.name,
+          metadata: JSON.stringify({ kind: "transaction", amount: total, category: "CSV import" }),
+        },
+      });
+      return created;
+    });
+
+    // Tier 3 canary — an import that lands thousands of rows should be visible.
+    warnBulkMutation(result.count, {
+      action: "bulkImportTransactions",
+      userId,
+      companyId,
+      extra: { type },
+    });
+
+    revalidatePath("/expenses");
+    revalidatePath("/investments");
+    revalidatePath("/dashboard");
+    revalidatePath("/reports");
+    revalidatePath("/activities");
+    revalidatePath("/budgets");
+
+    return { success: true, data: { imported: result.count, skipped } };
+  } catch (e) {
+    captureServerError(e, { action: "bulkImportTransactionsAction" });
+    return { success: false, error: "Couldn't import right now. Try again." };
+  }
 }
 
 export async function deleteTransactionAction(id: string): Promise<ActionResult> {

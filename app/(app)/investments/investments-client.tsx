@@ -10,6 +10,7 @@ import {
   Search,
   Trash2,
   TrendingUp,
+  Upload,
   Users,
   Wallet,
 } from "lucide-react";
@@ -18,6 +19,7 @@ import { deleteTransactionAction } from "@/lib/actions/transactions";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TransactionForm } from "@/components/transactions/transaction-form";
+import { ImportTransactionsModal } from "@/components/transactions/import-transactions-modal";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
@@ -56,6 +58,7 @@ export function InvestmentsClient({
   );
 
   const [modalOpen, setModalOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
 
@@ -120,12 +123,20 @@ export function InvestmentsClient({
             Capital injected by founders and outside investors.
           </p>
         </div>
-        <button
-          onClick={() => setModalOpen(true)}
-          className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" /> Add investment
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setImportOpen(true)}
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-5 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-surface-hover active:scale-95"
+          >
+            <Upload className="h-4 w-4" aria-hidden="true" /> Import CSV
+          </button>
+          <button
+            onClick={() => setModalOpen(true)}
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" /> Add investment
+          </button>
+        </div>
       </header>
 
       <section aria-label="Investment metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -268,7 +279,7 @@ export function InvestmentsClient({
             }
           />
         ) : (
-          <div className="scrollbar-thin overflow-x-auto">
+          <div className="scrollbar-thin hidden overflow-x-auto md:block">
             <table className="w-full">
               <thead className="sticky top-0 bg-surface">
                 <tr className="border-b border-border">
@@ -353,7 +364,54 @@ export function InvestmentsClient({
             </table>
           </div>
         )}
+
+        {/* Mobile card fallback (F10). */}
+        {filtered.length > 0 && (
+          <ul className="divide-y divide-border md:hidden">
+            {filtered.map((t) => (
+              <li key={t.id} className="p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <p className="min-w-0 flex-1 text-sm font-medium text-fg">{t.description}</p>
+                  <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm font-bold tabular-nums text-primary-strong">
+                    <ArrowUp className="h-3 w-3" aria-hidden="true" />
+                    {formatCurrency(t.amount)}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center rounded-full border border-cyan/30 bg-cyan/10 px-2.5 py-0.5 text-xs font-medium text-cyan-strong">
+                    {t.category}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-xs text-fg-muted">
+                    <Avatar name={t.addedByName} size="xs" /> {t.addedByName}
+                  </span>
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
+                    {formatDate(t.date)}
+                  </span>
+                  {(currentUserId === t.addedBy || currentUserRole === "admin") && (
+                    <button
+                      onClick={() => handleDelete(t.id)}
+                      aria-label={`Delete investment ${t.description}`}
+                      className="ml-auto rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
+
+      <ImportTransactionsModal
+        type="investment"
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={() => {
+          setImportOpen(false);
+          refresh();
+        }}
+      />
 
       <Modal
         open={modalOpen}

@@ -9,7 +9,15 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatCurrency, cn } from "@/lib/utils";
 import type { Company, Transaction, User } from "@/lib/types";
-import { endOfMonth, format, startOfMonth, subMonths } from "date-fns";
+import {
+  eachMonthOfInterval,
+  endOfDay,
+  endOfMonth,
+  format,
+  startOfDay,
+  startOfMonth,
+  subMonths,
+} from "date-fns";
 
 // Inlined palette — must NOT import named constants from reports-charts.tsx
 // at top level, that pulls recharts into the initial chunk and defeats the
@@ -51,63 +59,108 @@ type Props = {
 };
 
 export function ReportsClient({ transactions, users, company }: Props) {
-  const [period, setPeriod] = useState<"3m" | "6m" | "1y" | "all">("6m");
-  const periodMonths = { "3m": 3, "6m": 6, "1y": 12, all: 24 }[period];
+  // Date window (F5): presets OR a custom from/to range. The whole report —
+  // charts, category mix, per-founder totals — scopes to this window, so the
+  // range picker is a single source of truth (previously the presets only
+  // moved the cash-flow chart while the totals stayed all-time).
+  const [mode, setMode] = useState<"3m" | "6m" | "1y" | "all" | "custom">("6m");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
 
-  const monthlyData = useMemo(
+  const { rangeStart, rangeEnd } = useMemo(() => {
+    const now = new Date();
+    if (mode === "custom") {
+      if (!customFrom || !customTo) {
+        return { rangeStart: startOfMonth(subMonths(now, 5)), rangeEnd: endOfMonth(now) };
+      }
+      let from = startOfDay(new Date(customFrom));
+      let to = endOfDay(new Date(customTo));
+      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+        return { rangeStart: startOfMonth(subMonths(now, 5)), rangeEnd: endOfMonth(now) };
+      }
+      // Forgive a reversed range instead of showing nothing.
+      if (from > to) [from, to] = [startOfDay(new Date(customTo)), endOfDay(new Date(customFrom))];
+      return { rangeStart: from, rangeEnd: to };
+    }
+    if (mode === "all") {
+      const earliest = transactions.reduce((min, t) => {
+        const d = new Date(t.date);
+        return d < min ? d : min;
+      }, now);
+      return { rangeStart: startOfMonth(earliest), rangeEnd: endOfMonth(now) };
+    }
+    const months = { "3m": 3, "6m": 6, "1y": 12 }[mode] ?? 6;
+    return {
+      rangeStart: startOfMonth(subMonths(now, months - 1)),
+      rangeEnd: endOfMonth(now),
+    };
+  }, [mode, customFrom, customTo, transactions]);
+
+  // Every downstream metric derives from the windowed set.
+  const rangedTxns = useMemo(
     () =>
-      Array.from({ length: periodMonths }).map((_, i) => {
-        const ref = subMonths(new Date(), periodMonths - 1 - i);
-        const monthStart = startOfMonth(ref);
-        const monthEnd = endOfMonth(ref);
-        const monthTxns = transactions.filter((t) => {
-          const d = new Date(t.date);
-          return d >= monthStart && d <= monthEnd;
-        });
-        const expenses = monthTxns
-          .filter((t) => t.type === "expense")
-          .reduce((s, t) => s + t.amount, 0);
-        const investments = monthTxns
-          .filter((t) => t.type === "investment")
-          .reduce((s, t) => s + t.amount, 0);
-        return {
-          month: format(monthStart, "MMM yy"),
-          expenses,
-          investments,
-          netFlow: investments - expenses,
-        };
+      transactions.filter((t) => {
+        const d = new Date(t.date);
+        return d >= rangeStart && d <= rangeEnd;
       }),
-    [transactions, periodMonths]
+    [transactions, rangeStart, rangeEnd]
   );
+
+  const monthlyData = useMemo(() => {
+    // Bucket every month spanned by the window. Guard the interval call — a
+    // custom end before start would throw; the range logic already forgives
+    // reversal, but clamp defensively.
+    const start = rangeStart <= rangeEnd ? rangeStart : rangeEnd;
+    const months = eachMonthOfInterval({ start: startOfMonth(start), end: rangeEnd });
+    return months.map((monthStart) => {
+      const monthEnd = endOfMonth(monthStart);
+      const monthTxns = rangedTxns.filter((t) => {
+        const d = new Date(t.date);
+        return d >= monthStart && d <= monthEnd;
+      });
+      const expenses = monthTxns
+        .filter((t) => t.type === "expense")
+        .reduce((s, t) => s + t.amount, 0);
+      const investments = monthTxns
+        .filter((t) => t.type === "investment")
+        .reduce((s, t) => s + t.amount, 0);
+      return {
+        month: format(monthStart, "MMM yy"),
+        expenses,
+        investments,
+        netFlow: investments - expenses,
+      };
+    });
+  }, [rangedTxns, rangeStart, rangeEnd]);
 
   const categoryData = useMemo(() => {
     const map = new Map<string, number>();
-    transactions
+    rangedTxns
       .filter((t) => t.type === "expense")
       .forEach((t) => map.set(t.category, (map.get(t.category) || 0) + t.amount));
     return Array.from(map.entries())
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value);
-  }, [transactions]);
+  }, [rangedTxns]);
 
   const founderData = useMemo(
     () =>
       users.map((u) => ({
         name: u.name.split(" ")[0],
-        investments: transactions
+        investments: rangedTxns
           .filter((t) => t.addedBy === u.id && t.type === "investment")
           .reduce((s, t) => s + t.amount, 0),
-        expenses: transactions
+        expenses: rangedTxns
           .filter((t) => t.addedBy === u.id && t.type === "expense")
           .reduce((s, t) => s + t.amount, 0),
       })),
-    [transactions, users]
+    [rangedTxns, users]
   );
 
-  const totalExpenses = transactions
+  const totalExpenses = rangedTxns
     .filter((t) => t.type === "expense")
     .reduce((s, t) => s + t.amount, 0);
-  const totalInvestments = transactions
+  const totalInvestments = rangedTxns
     .filter((t) => t.type === "investment")
     .reduce((s, t) => s + t.amount, 0);
 
@@ -139,7 +192,11 @@ export function ReportsClient({ transactions, users, company }: Props) {
           ["Total Investments", formatCurrency(totalInvestments)],
           ["Total Expenses", formatCurrency(totalExpenses)],
           ["Net Balance", formatCurrency(totalInvestments - totalExpenses)],
-          ["Number of Transactions", transactions.length.toString()],
+          [
+            "Date range",
+            `${format(rangeStart, "MMM d, yyyy")} – ${format(rangeEnd, "MMM d, yyyy")}`,
+          ],
+          ["Number of Transactions", rangedTxns.length.toString()],
           ["Team Members", users.length.toString()],
         ],
         theme: "striped",
@@ -154,10 +211,10 @@ export function ReportsClient({ transactions, users, company }: Props) {
         startY: lastY + 4,
         head: [["Name", "Role", "Invested", "Logged Expenses"]],
         body: users.map((u) => {
-          const inv = transactions
+          const inv = rangedTxns
             .filter((t) => t.addedBy === u.id && t.type === "investment")
             .reduce((s, t) => s + t.amount, 0);
-          const exp = transactions
+          const exp = rangedTxns
             .filter((t) => t.addedBy === u.id && t.type === "expense")
             .reduce((s, t) => s + t.amount, 0);
           return [u.name, u.role, formatCurrency(inv), formatCurrency(exp)];
@@ -174,7 +231,7 @@ export function ReportsClient({ transactions, users, company }: Props) {
       autoTable(doc, {
         startY: 26,
         head: [["Date", "Type", "Category", "Description", "Added By", "Amount"]],
-        body: transactions.map((t) => [
+        body: rangedTxns.map((t) => [
           format(new Date(t.date), "MMM dd, yyyy"),
           t.type,
           t.category,
@@ -209,15 +266,16 @@ export function ReportsClient({ transactions, users, company }: Props) {
         ["Generated", format(new Date(), "MMM dd, yyyy")],
         [],
         ["Financial Summary"],
+        ["Date range", `${format(rangeStart, "yyyy-MM-dd")} to ${format(rangeEnd, "yyyy-MM-dd")}`],
         ["Total Investments", totalInvestments],
         ["Total Expenses", totalExpenses],
         ["Net Balance", totalInvestments - totalExpenses],
-        ["Transactions", transactions.length],
+        ["Transactions", rangedTxns.length],
       ];
 
       const txnData = [
-        ["Date", "Type", "Category", "Description", "Added By", "Amount (PKR)"],
-        ...transactions.map((t) => [
+        ["Date", "Type", "Category", "Description", "Added By", `Amount (${company.currency})`],
+        ...rangedTxns.map((t) => [
           format(new Date(t.date), "yyyy-MM-dd"),
           t.type,
           t.category,
@@ -230,10 +288,10 @@ export function ReportsClient({ transactions, users, company }: Props) {
       const founderSheet = XLSX.utils.aoa_to_sheet([
         ["Name", "Email", "Role", "Investments", "Expenses Logged"],
         ...users.map((u) => {
-          const inv = transactions
+          const inv = rangedTxns
             .filter((t) => t.addedBy === u.id && t.type === "investment")
             .reduce((s, t) => s + t.amount, 0);
-          const exp = transactions
+          const exp = rangedTxns
             .filter((t) => t.addedBy === u.id && t.type === "expense")
             .reduce((s, t) => s + t.amount, 0);
           return [u.name, u.email, u.role, inv, exp];
@@ -290,28 +348,65 @@ export function ReportsClient({ transactions, users, company }: Props) {
         </div>
       </header>
 
-      <div className="inline-flex w-fit gap-1 rounded-full border border-border bg-bg p-1">
-        {[
-          { key: "3m", label: "3 months" },
-          { key: "6m", label: "6 months" },
-          { key: "1y", label: "1 year" },
-          { key: "all", label: "All time" },
-        ].map((p) => {
-          const active = period === p.key;
-          return (
-            <button
-              key={p.key}
-              onClick={() => setPeriod(p.key as typeof period)}
-              aria-pressed={active}
-              className={cn(
-                "rounded-full px-4 py-1.5 text-xs font-medium transition-colors",
-                active ? "bg-surface text-fg shadow-card" : "text-fg-muted hover:text-fg"
-              )}
-            >
-              {p.label}
-            </button>
-          );
-        })}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="inline-flex w-fit flex-wrap gap-1 rounded-full border border-border bg-bg p-1">
+          {[
+            { key: "3m", label: "3 months" },
+            { key: "6m", label: "6 months" },
+            { key: "1y", label: "1 year" },
+            { key: "all", label: "All time" },
+            { key: "custom", label: "Custom" },
+          ].map((p) => {
+            const active = mode === p.key;
+            return (
+              <button
+                key={p.key}
+                onClick={() => setMode(p.key as typeof mode)}
+                aria-pressed={active}
+                className={cn(
+                  "rounded-full px-4 py-1.5 text-xs font-medium transition-colors",
+                  active ? "bg-surface text-fg shadow-card" : "text-fg-muted hover:text-fg"
+                )}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {mode === "custom" && (
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1.5 text-xs text-fg-muted">
+              <span className="font-mono uppercase tracking-wider">From</span>
+              <input
+                type="date"
+                value={customFrom}
+                max={customTo || undefined}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                className="rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:border-primary/50 focus:outline-none"
+              />
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-fg-muted">
+              <span className="font-mono uppercase tracking-wider">To</span>
+              <input
+                type="date"
+                value={customTo}
+                min={customFrom || undefined}
+                onChange={(e) => setCustomTo(e.target.value)}
+                className="rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:border-primary/50 focus:outline-none"
+              />
+            </label>
+            {!customFrom || !customTo ? (
+              <span className="text-[11px] text-fg-muted">
+                Pick both dates — showing last 6 months meanwhile.
+              </span>
+            ) : (
+              <span className="font-mono text-[11px] text-fg-muted">
+                {format(rangeStart, "MMM d, yyyy")} → {format(rangeEnd, "MMM d, yyyy")}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <section className="rounded-2xl border border-border bg-surface p-6">
@@ -430,10 +525,10 @@ export function ReportsClient({ transactions, users, company }: Props) {
             </thead>
             <tbody>
               {users.map((u) => {
-                const inv = transactions
+                const inv = rangedTxns
                   .filter((t) => t.addedBy === u.id && t.type === "investment")
                   .reduce((s, t) => s + t.amount, 0);
-                const exp = transactions
+                const exp = rangedTxns
                   .filter((t) => t.addedBy === u.id && t.type === "expense")
                   .reduce((s, t) => s + t.amount, 0);
                 const pct = totalInvestments > 0 ? (inv / totalInvestments) * 100 : 0;
