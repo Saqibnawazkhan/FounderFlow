@@ -23,6 +23,7 @@ import { LoginSchema, SignupSchema } from "@/lib/schemas/auth";
 import { limiters } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
 import { captureServerError } from "@/lib/sentry-server";
+import { sendVerificationEmail } from "@/lib/email/verification";
 
 // Discriminated union so TS narrows `error` to `string` after `if (!success)`.
 // The previous shape `{ success: boolean; error?: string }` left error
@@ -57,7 +58,7 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
 
     // Two-step inside a transaction to break the User <-> Company circular FK
     // (Company.ownerId is nullable; we backfill it after the user is created).
-    await db.$transaction(async (tx) => {
+    const createdUser = await db.$transaction(async (tx) => {
       const company = await tx.company.create({
         data: { name: companyName, industry, currency: "PKR" },
       });
@@ -83,7 +84,19 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
           userName: name,
         },
       });
+      return user;
     });
+
+    // Fire the email-verification link. Fire-and-forget OUTSIDE the signup
+    // transaction — a slow or failing SMTP send must never roll back the
+    // account, and the user can always resend from the in-app banner. We log
+    // failures so a stuck credential is visible.
+    void sendVerificationEmail({ userId: createdUser.id, name, email }).catch((e: unknown) =>
+      captureServerError(e, {
+        action: "signupAction.sendVerification",
+        extra: { userId: createdUser.id },
+      })
+    );
 
     // signIn with redirect:false so the caller controls the navigation; if
     // we let it redirect, the server action throws and the client never gets

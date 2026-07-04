@@ -157,6 +157,22 @@ export const en = {
     resetLinkInvalidTitle: "This link isn't valid",
     resetLinkInvalidBody:
       "It may have expired or already been used. Request a fresh link and try again.",
+    // Email verification (A2)
+    verifyingTitle: "Confirming your email…",
+    verifyingBody: "One moment while we verify your link.",
+    verifiedTitle: "Email confirmed",
+    verifiedBody: "Thanks — your email is verified. You're all set.",
+    verifiedCta: "Go to dashboard",
+    verifyInvalidTitle: "This link isn't valid",
+    verifyInvalidBody:
+      "It may have expired or already been used. Sign in and resend a fresh confirmation email.",
+    verifyBannerTitle: "Confirm your email.",
+    verifyBannerBody: "We sent a link to {email}. Confirm it to secure account recovery.",
+    verifyResend: "Resend email",
+    verifyResending: "Sending…",
+    verifyResendToast: "Confirmation email sent",
+    verifyAlreadyDone: "Your email is already verified",
+    verifyDismiss: "Dismiss",
   },
   topbar: {
     profileSettings: "Profile & settings",
@@ -442,6 +458,23 @@ export const ur: typeof en = {
     resetLinkInvalidTitle: "یہ لنک کارآمد نہیں ہے",
     resetLinkInvalidBody:
       "یہ لنک ختم ہو چکا ہے یا پہلے استعمال ہو چکا ہے۔ نیا لنک منگوا کر دوبارہ کوشش کریں۔",
+    // Email verification
+    verifyingTitle: "آپ کا ای میل تصدیق ہو رہا ہے…",
+    verifyingBody: "ایک لمحہ، ہم آپ کا لنک تصدیق کر رہے ہیں۔",
+    verifiedTitle: "ای میل تصدیق ہو گیا",
+    verifiedBody: "شکریہ — آپ کا ای میل تصدیق ہو گیا ہے۔ سب تیار ہے۔",
+    verifiedCta: "ڈیش بورڈ پر جائیں",
+    verifyInvalidTitle: "یہ لنک کارآمد نہیں ہے",
+    verifyInvalidBody:
+      "یہ لنک ختم ہو چکا ہے یا پہلے استعمال ہو چکا ہے۔ سائن ان کر کے نیا تصدیقی ای میل منگوائیں۔",
+    verifyBannerTitle: "اپنا ای میل تصدیق کریں۔",
+    verifyBannerBody:
+      "ہم نے {email} پر لنک بھیجا ہے۔ اکاؤنٹ ریکوری محفوظ بنانے کے لیے اس کی تصدیق کریں۔",
+    verifyResend: "ای میل دوبارہ بھیجیں",
+    verifyResending: "بھیجا جا رہا ہے…",
+    verifyResendToast: "تصدیقی ای میل بھیج دیا گیا",
+    verifyAlreadyDone: "آپ کا ای میل پہلے ہی تصدیق شدہ ہے",
+    verifyDismiss: "بند کریں",
   },
   topbar: {
     profileSettings: "پروفائل اور ترتیبات",

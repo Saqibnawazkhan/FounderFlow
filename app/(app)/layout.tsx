@@ -15,6 +15,7 @@
 import { useStore } from "@/lib/store";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
+import { VerifyEmailBanner } from "@/components/layout/verify-email-banner";
 import { cn } from "@/lib/utils";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -48,6 +49,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
         )}
       >
         <Topbar />
+        <VerifyEmailBanner />
         <main id="main" className="flex-1 overflow-x-hidden p-4 md:p-6 lg:p-8">
           {children}
         </main>

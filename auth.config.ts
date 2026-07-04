@@ -47,6 +47,7 @@ export const authConfig = {
         pathname.startsWith("/signup") ||
         pathname.startsWith("/forgot-password") ||
         pathname.startsWith("/reset-password") ||
+        pathname.startsWith("/verify-email") ||
         pathname.startsWith("/invite/") || // /invite/[token] for email-link onboarding
         pathname.startsWith("/api/auth") ||
         pathname.startsWith("/api/cron/") || // protected by CRON_SECRET header instead

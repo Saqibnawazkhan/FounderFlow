@@ -44,6 +44,12 @@ model User {
   // "Last sign-in" so the user can spot rogue logins. Nullable for
   // legacy rows that predate the column.
   lastSignInAt DateTime?
+  // Set the moment the user clicks their email-verification link. NULL =
+  // unverified (the default for a fresh signup, and for legacy rows that
+  // predate the column). Drives the "verify your email" banner. Soft gate
+  // for now — nothing is blocked while null; the EMAIL_VERIFICATION_REQUIRED
+  // env flag is reserved for a future hard gate.
+  emailVerifiedAt DateTime?
   // Tier 3 soft-delete sentinel. NULL = live row. Any timestamp = soft
   // deleted; the row survives until the nightly purge cron hard-deletes
   // it after 90 days. Auth + queries filter `deletedAt: null` so a

@@ -41,7 +41,7 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 ## 1. Auth · Onboarding · Landing
 
 - [x] **A1 · 🔴 [FEAT] No password-reset flow** — shipped in P0-1.
-- [ ] **A2 · 🔴 [FEAT] No email verification post-signup.** Typo'd emails persist forever. Add a `verify-email` step or grace-period gate. → [app/signup](app/signup)
+- [x] **A2 · 🔴 [FEAT] No email verification post-signup.** ✔ Shipped 2026-07-04 (soft gate). `User.emailVerifiedAt` column + migration; HMAC-signed stateless verification token (`lib/auth/email-verification-token.ts`, 7-day TTL, `purpose` claim so it can't cross with reset tokens); email fired fire-and-forget from `signupAction`; `/verify-email?token=` page verifies (token-scoped, works logged-out); a dismissible app-shell banner (`VerifyEmailBanner`) reads live DB status on mount + offers Resend. Nothing is blocked while unverified — the `EMAIL_VERIFICATION_REQUIRED` env flag is reserved for a future hard gate. en + ur i18n.
 - [x] **A3 · 🔴 [FEAT] No account deletion (GDPR/CCPA gap).** ✔ Shipped alongside S2 — soft-delete (Tier 3) so recovery is possible for 90 days.
 - [x] **A4 · 🔴 [FEAT] No favicon + OG image** — shipped in P0-6.
 - [~] **A5 · 🟠 [FEAT] Admin can't generate/manage invite tokens from UI.** Partial false positive — creation UI DOES exist at [app/(app)/team/team-client.tsx:87](app/(app)/team/team-client.tsx#L87) (Invite member button + modal). The "list pending invites with resend/revoke" side is real but tracked separately under X7.
