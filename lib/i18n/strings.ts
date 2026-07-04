@@ -310,6 +310,14 @@ export const en = {
     changeEmailInvalidTitle: "This link isn't valid",
     changeEmailInvalidBody:
       "It may have expired or already been used. Request the change again from Settings.",
+    // Install app (PWA)
+    installApp: "Install app",
+    installAppNote:
+      "Add FounderFlow to your home screen or dock for a full-screen, app-like experience that works offline.",
+    installAppAction: "Install FounderFlow",
+    installAppInstalled: "FounderFlow is installed.",
+    installAppUnavailable:
+      "Your browser doesn't offer install here. On iOS, use Share → Add to Home Screen.",
     currentPassword: "Current password",
     newPassword: "New password",
     confirmPassword: "Confirm new password",
@@ -624,6 +632,14 @@ export const ur: typeof en = {
     changeEmailInvalidTitle: "یہ لنک کارآمد نہیں ہے",
     changeEmailInvalidBody:
       "یہ لنک ختم ہو چکا ہے یا پہلے استعمال ہو چکا ہے۔ ترتیبات سے دوبارہ تبدیلی کی درخواست کریں۔",
+    // Install app (PWA)
+    installApp: "ایپ انسٹال کریں",
+    installAppNote:
+      "مکمل اسکرین، ایپ جیسے تجربے کے لیے FounderFlow کو اپنی ہوم اسکرین یا ڈاک میں شامل کریں جو آف لائن بھی کام کرے۔",
+    installAppAction: "FounderFlow انسٹال کریں",
+    installAppInstalled: "FounderFlow انسٹال ہو چکا ہے۔",
+    installAppUnavailable:
+      "آپ کا براؤزر یہاں انسٹال کی سہولت نہیں دیتا۔ iOS پر Share ← Add to Home Screen استعمال کریں۔",
     currentPassword: "موجودہ پاس ورڈ",
     newPassword: "نیا پاس ورڈ",
     confirmPassword: "نئے پاس ورڈ کی تصدیق کریں",

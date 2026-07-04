@@ -31,6 +31,7 @@ import {
   Pencil,
   Shield,
   Skull,
+  Smartphone,
   Sun,
   Trash2,
   User,
@@ -40,6 +41,8 @@ import { formatDistanceToNow } from "date-fns";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { logoutAction } from "@/lib/actions/auth";
+import { updateAppearanceAction } from "@/lib/actions/appearance";
+import { InstallAppButton } from "@/components/pwa/install-button";
 import { Avatar } from "@/components/ui/avatar";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PillBadge } from "@/components/landing/pill-badge";
@@ -75,6 +78,18 @@ export function SettingsClient({ user, company, stats }: Props) {
   const [, startTransition] = useTransition();
 
   const canEditCompany = canSeeFinances(user.role as Role);
+
+  // S6: apply the choice instantly (store → localStorage + <html> class),
+  // then persist to the DB so it follows the user to other devices. The
+  // write is fire-and-forget — a failed save just means the pref stays local.
+  function chooseTheme(next: "light" | "dark") {
+    setTheme(next);
+    void updateAppearanceAction({ theme: next });
+  }
+  function chooseLocale(next: Locale) {
+    setLocale(next);
+    void updateAppearanceAction({ locale: next });
+  }
 
   const [profileOpen, setProfileOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
@@ -301,14 +316,14 @@ export function SettingsClient({ user, company, stats }: Props) {
         <div className="grid grid-cols-2 gap-3">
           <ThemeChoice
             active={theme === "light"}
-            onSelect={() => setTheme("light")}
+            onSelect={() => chooseTheme("light")}
             icon={Sun}
             label={t.settings.light}
             desc={t.settings.lightDesc}
           />
           <ThemeChoice
             active={theme === "dark"}
-            onSelect={() => setTheme("dark")}
+            onSelect={() => chooseTheme("dark")}
             icon={Moon}
             label={t.settings.dark}
             desc={t.settings.darkDesc}
@@ -321,17 +336,28 @@ export function SettingsClient({ user, company, stats }: Props) {
         <div className="grid grid-cols-2 gap-3">
           <LocaleChoice
             active={locale === "en"}
-            onSelect={() => setLocale("en")}
+            onSelect={() => chooseLocale("en")}
             code="en"
             label={t.settings.english}
             desc={t.settings.englishDesc}
           />
           <LocaleChoice
             active={locale === "ur"}
-            onSelect={() => setLocale("ur")}
+            onSelect={() => chooseLocale("ur")}
             code="ur"
             label={t.settings.urdu}
             desc={t.settings.urduDesc}
+          />
+        </div>
+      </Section>
+
+      <Section icon={Smartphone} label={t.settings.installApp}>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="max-w-md text-sm text-fg-muted">{t.settings.installAppNote}</p>
+          <InstallAppButton
+            label={t.settings.installAppAction}
+            installedLabel={t.settings.installAppInstalled}
+            unavailableLabel={t.settings.installAppUnavailable}
           />
         </div>
       </Section>

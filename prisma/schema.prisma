@@ -50,6 +50,11 @@ model User {
   // for now — nothing is blocked while null; the EMAIL_VERIFICATION_REQUIRED
   // env flag is reserved for a future hard gate.
   emailVerifiedAt DateTime?
+  // Cross-device UI preferences (S6). Synced from the settings appearance +
+  // language controls so a user's theme/locale follow them to a new device
+  // instead of living only in that browser's localStorage.
+  theme  String @default("dark") // "light" | "dark"
+  locale String @default("en") // "en" | "ur"
   // Tier 3 soft-delete sentinel. NULL = live row. Any timestamp = soft
   // deleted; the row survives until the nightly purge cron hard-deletes
   // it after 90 days. Auth + queries filter `deletedAt: null` so a
