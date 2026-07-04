@@ -75,6 +75,28 @@ export function ClockWidget() {
     void reload();
   }, [reload]);
 
+  // Cross-tab sync (X3): a single BroadcastChannel shared by every open tab.
+  // When one tab clocks in/out/auto-closes it posts "time-changed"; the others
+  // re-fetch their open-entry state so the pill agrees everywhere. reload()
+  // itself never posts, so there's no echo loop.
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return; // graceful no-op
+    const ch = new BroadcastChannel("ff-time");
+    ch.onmessage = (ev: MessageEvent) => {
+      if (ev.data?.type === "time-changed") void reload();
+    };
+    channelRef.current = ch;
+    return () => {
+      channelRef.current = null;
+      ch.close();
+    };
+  }, [reload]);
+
+  const broadcastChange = useCallback(() => {
+    channelRef.current?.postMessage({ type: "time-changed" });
+  }, []);
+
   // Two modals. They're mutually exclusive in practice — you can't clock-in
   // while one is open, and the warn modal only shows for a running entry.
   const [startOpen, setStartOpen] = useState(false);
@@ -152,10 +174,11 @@ export function ClockWidget() {
             icon: "⏱️",
           });
           startTransition(() => router.refresh());
+          broadcastChange();
         }
       });
     }
-  }, [entry, now, warnOpen, stopOpen, router]);
+  }, [entry, now, warnOpen, stopOpen, router, broadcastChange]);
 
   async function handleClockIn(taskId: string | undefined, note: string) {
     const res = await clockInAction({
@@ -190,6 +213,7 @@ export function ClockWidget() {
     });
     startTransition(() => router.refresh());
     void reload();
+    broadcastChange();
   }
 
   async function handleClockOut(note: string) {
@@ -208,6 +232,7 @@ export function ClockWidget() {
     setEntry(null);
     startTransition(() => router.refresh());
     void reload();
+    broadcastChange();
   }
 
   async function keepWorking() {

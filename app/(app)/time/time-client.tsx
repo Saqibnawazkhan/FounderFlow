@@ -10,10 +10,10 @@
  * admins/cofounders can clean up anyone's row. The server action re-checks.
  */
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { format } from "date-fns";
-import { Clock, Pencil, Trash2, Users } from "lucide-react";
+import { CalendarDays, Clock, List, Pencil, Plus, Trash2, Users } from "lucide-react";
 import toast from "react-hot-toast";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -22,10 +22,12 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { deleteTimeEntryAction } from "@/lib/actions/time";
 import { canEditEntryTimes, durationMs, formatDuration, sumDurations } from "@/lib/time/thresholds";
+import { WeeklyTimesheet } from "@/components/time/weekly-timesheet";
 import { cn } from "@/lib/utils";
 import type { TimeEntryClient } from "@/lib/queries/time";
 import type { User } from "@/lib/types";
 import { EditEntryModal } from "./edit-entry-modal";
+import { ManualEntryModal } from "./manual-entry-modal";
 
 type Props = {
   initialEntries: TimeEntryClient[];
@@ -52,6 +54,44 @@ export function TimeClient({
   const canEdit = canEditEntryTimes(currentUserRole);
 
   const [editing, setEditing] = useState<TimeEntryClient | null>(null);
+  const [manualOpen, setManualOpen] = useState(false);
+
+  // List ↔ Week view, persisted like the tasks view (T5 pattern).
+  const [viewMode, setViewMode] = useState<"list" | "week">("list");
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("ff.time.view");
+      if (saved === "list" || saved === "week") setViewMode(saved);
+    } catch {
+      // private-mode Safari can throw — fall back to the default.
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("ff.time.view", viewMode);
+    } catch {}
+  }, [viewMode]);
+
+  // Cross-tab sync (X3): shared channel with the topbar clock widget. We
+  // refresh when another tab changes the timer, and post on our own writes
+  // (manual log / edit / delete) so other tabs — and the widget — keep up.
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return;
+    const ch = new BroadcastChannel("ff-time");
+    ch.onmessage = (ev: MessageEvent) => {
+      if (ev.data?.type === "time-changed") startTransition(() => router.refresh());
+    };
+    channelRef.current = ch;
+    return () => {
+      channelRef.current = null;
+      ch.close();
+    };
+  }, [router]);
+
+  function broadcastChange() {
+    channelRef.current?.postMessage({ type: "time-changed" });
+  }
 
   // Switching scope is a URL change so the RSC re-fetches.
   function switchScope(scope: "mine" | "team") {
@@ -104,6 +144,7 @@ export function TimeClient({
       return;
     }
     toast.success("Entry deleted");
+    broadcastChange();
     startTransition(() => router.refresh());
   }
 
@@ -121,36 +162,45 @@ export function TimeClient({
               : "Your clocked sessions and the time they consumed."}
           </p>
         </div>
-        {canSeeTeam && (
-          <div className="inline-flex w-fit gap-1 rounded-full border border-border bg-bg p-1">
-            <button
-              type="button"
-              onClick={() => switchScope("mine")}
-              aria-pressed={initialScope === "mine"}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
-                initialScope === "mine"
-                  ? "bg-surface text-fg shadow-card"
-                  : "text-fg-muted hover:text-fg"
-              )}
-            >
-              <Clock className="h-3.5 w-3.5" aria-hidden="true" /> Mine
-            </button>
-            <button
-              type="button"
-              onClick={() => switchScope("team")}
-              aria-pressed={initialScope === "team"}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
-                initialScope === "team"
-                  ? "bg-surface text-fg shadow-card"
-                  : "text-fg-muted hover:text-fg"
-              )}
-            >
-              <Users className="h-3.5 w-3.5" aria-hidden="true" /> Team
-            </button>
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-3">
+          {canSeeTeam && (
+            <div className="inline-flex w-fit gap-1 rounded-full border border-border bg-bg p-1">
+              <button
+                type="button"
+                onClick={() => switchScope("mine")}
+                aria-pressed={initialScope === "mine"}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                  initialScope === "mine"
+                    ? "bg-surface text-fg shadow-card"
+                    : "text-fg-muted hover:text-fg"
+                )}
+              >
+                <Clock className="h-3.5 w-3.5" aria-hidden="true" /> Mine
+              </button>
+              <button
+                type="button"
+                onClick={() => switchScope("team")}
+                aria-pressed={initialScope === "team"}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                  initialScope === "team"
+                    ? "bg-surface text-fg shadow-card"
+                    : "text-fg-muted hover:text-fg"
+                )}
+              >
+                <Users className="h-3.5 w-3.5" aria-hidden="true" /> Team
+              </button>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setManualOpen(true)}
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" /> Log time
+          </button>
+        </div>
       </header>
 
       {myRunningEntry && (
@@ -185,156 +235,211 @@ export function TimeClient({
         />
       </section>
 
-      <section className="overflow-hidden rounded-2xl border border-border bg-surface">
-        {initialEntries.length === 0 ? (
-          <EmptyState
-            icon={Clock}
-            title="No time entries yet"
-            description="Click the clock pill in the topbar to start tracking."
-          />
+      <div className="inline-flex w-fit gap-1 rounded-full border border-border bg-bg p-1">
+        <button
+          type="button"
+          onClick={() => setViewMode("list")}
+          aria-pressed={viewMode === "list"}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+            viewMode === "list" ? "bg-surface text-fg shadow-card" : "text-fg-muted hover:text-fg"
+          )}
+        >
+          <List className="h-3.5 w-3.5" aria-hidden="true" /> List
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewMode("week")}
+          aria-pressed={viewMode === "week"}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+            viewMode === "week" ? "bg-surface text-fg shadow-card" : "text-fg-muted hover:text-fg"
+          )}
+        >
+          <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" /> Week
+        </button>
+      </div>
+
+      {viewMode === "week" ? (
+        initialEntries.length === 0 ? (
+          <section className="overflow-hidden rounded-2xl border border-border bg-surface">
+            <EmptyState
+              icon={Clock}
+              title="No time entries yet"
+              description="Log a session with “Log time”, or clock in from the topbar."
+            />
+          </section>
         ) : (
-          <div className="scrollbar-thin overflow-x-auto">
-            <table className="w-full">
-              <thead className="sticky top-0 bg-surface">
-                <tr className="border-b border-border">
-                  {initialScope === "team" && (
+          <WeeklyTimesheet
+            entries={initialEntries}
+            showPerson={initialScope === "team"}
+            renderedAt={renderedAt}
+          />
+        )
+      ) : (
+        <section className="overflow-hidden rounded-2xl border border-border bg-surface">
+          {initialEntries.length === 0 ? (
+            <EmptyState
+              icon={Clock}
+              title="No time entries yet"
+              description="Click the clock pill in the topbar to start tracking."
+            />
+          ) : (
+            <div className="scrollbar-thin overflow-x-auto">
+              <table className="w-full">
+                <thead className="sticky top-0 bg-surface">
+                  <tr className="border-b border-border">
+                    {initialScope === "team" && (
+                      <th
+                        scope="col"
+                        className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                      >
+                        Person
+                      </th>
+                    )}
                     <th
                       scope="col"
                       className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                     >
-                      Person
+                      Started
                     </th>
-                  )}
-                  <th
-                    scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-                  >
-                    Started
-                  </th>
-                  <th
-                    scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-                  >
-                    Ended
-                  </th>
-                  <th
-                    scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-                  >
-                    Duration
-                  </th>
-                  <th
-                    scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-                  >
-                    Task
-                  </th>
-                  <th
-                    scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-                  >
-                    Note
-                  </th>
-                  <th scope="col" className="px-6 py-3.5">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {initialEntries.map((e) => {
-                  const startedAt = new Date(e.clockInAt);
-                  const endedAt = e.clockOutAt ? new Date(e.clockOutAt) : null;
-                  const dur = durationMs(startedAt, endedAt, renderedAt);
-                  const isOwn = e.userId === currentUserId;
-                  const canDeleteRow = isOwn || canEdit;
-                  return (
-                    <tr
-                      key={e.id}
-                      className="border-b border-border/60 transition-colors last:border-b-0 hover:bg-bg"
+                    <th
+                      scope="col"
+                      className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                     >
-                      {initialScope === "team" && (
-                        <td className="px-6 py-4">
-                          <div className="flex items-center gap-2">
-                            <Avatar name={e.userName} size="xs" />
-                            <span className="text-sm text-fg">{e.userName}</span>
+                      Ended
+                    </th>
+                    <th
+                      scope="col"
+                      className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    >
+                      Duration
+                    </th>
+                    <th
+                      scope="col"
+                      className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    >
+                      Task
+                    </th>
+                    <th
+                      scope="col"
+                      className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    >
+                      Note
+                    </th>
+                    <th scope="col" className="px-6 py-3.5">
+                      <span className="sr-only">Actions</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {initialEntries.map((e) => {
+                    const startedAt = new Date(e.clockInAt);
+                    const endedAt = e.clockOutAt ? new Date(e.clockOutAt) : null;
+                    const dur = durationMs(startedAt, endedAt, renderedAt);
+                    const isOwn = e.userId === currentUserId;
+                    const canDeleteRow = isOwn || canEdit;
+                    return (
+                      <tr
+                        key={e.id}
+                        className="border-b border-border/60 transition-colors last:border-b-0 hover:bg-bg"
+                      >
+                        {initialScope === "team" && (
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2">
+                              <Avatar name={e.userName} size="xs" />
+                              <span className="text-sm text-fg">{e.userName}</span>
+                            </div>
+                          </td>
+                        )}
+                        <td className="px-6 py-4 font-mono text-xs text-fg-muted">
+                          {format(startedAt, "MMM dd · HH:mm")}
+                        </td>
+                        <td className="px-6 py-4 font-mono text-xs">
+                          {endedAt ? (
+                            <span
+                              className={cn("text-fg-muted", e.autoClosed && "text-warning")}
+                              title={e.autoClosed ? "Auto-closed after 12.5h idle" : undefined}
+                            >
+                              {format(endedAt, "MMM dd · HH:mm")}
+                              {e.autoClosed && " ⏱"}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/15 px-2 py-0.5 text-primary-strong">
+                              <span
+                                className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary"
+                                aria-hidden="true"
+                              />
+                              Running
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 font-mono text-sm font-bold tabular-nums">
+                          {formatDuration(dur)}
+                        </td>
+                        <td className="px-6 py-4 text-sm">
+                          {e.taskTitle ? (
+                            <span className="text-fg">{e.taskTitle}</span>
+                          ) : (
+                            <span className="text-fg-muted">—</span>
+                          )}
+                        </td>
+                        <td className="max-w-xs truncate px-6 py-4 text-xs text-fg-muted">
+                          {e.note || "—"}
+                          {e.editedAt && (
+                            <span
+                              title={`Edited by ${e.editedByName ?? "unknown"} on ${new Date(
+                                e.editedAt
+                              ).toLocaleString()}`}
+                              className="ml-1 inline-flex items-center text-cyan-strong"
+                            >
+                              ✎
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <div className="inline-flex items-center gap-1">
+                            {canEdit && (
+                              <button
+                                onClick={() => setEditing(e)}
+                                aria-label={`Edit time entry for ${e.userName}`}
+                                className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-glass/[0.06] hover:text-fg"
+                              >
+                                <Pencil className="h-4 w-4" aria-hidden="true" />
+                              </button>
+                            )}
+                            {canDeleteRow && (
+                              <button
+                                onClick={() => handleDelete(e)}
+                                aria-label={`Delete time entry for ${e.userName}`}
+                                className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                              >
+                                <Trash2 className="h-4 w-4" aria-hidden="true" />
+                              </button>
+                            )}
                           </div>
                         </td>
-                      )}
-                      <td className="px-6 py-4 font-mono text-xs text-fg-muted">
-                        {format(startedAt, "MMM dd · HH:mm")}
-                      </td>
-                      <td className="px-6 py-4 font-mono text-xs">
-                        {endedAt ? (
-                          <span
-                            className={cn("text-fg-muted", e.autoClosed && "text-warning")}
-                            title={e.autoClosed ? "Auto-closed after 12.5h idle" : undefined}
-                          >
-                            {format(endedAt, "MMM dd · HH:mm")}
-                            {e.autoClosed && " ⏱"}
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/15 px-2 py-0.5 text-primary-strong">
-                            <span
-                              className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary"
-                              aria-hidden="true"
-                            />
-                            Running
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 font-mono text-sm font-bold tabular-nums">
-                        {formatDuration(dur)}
-                      </td>
-                      <td className="px-6 py-4 text-sm">
-                        {e.taskTitle ? (
-                          <span className="text-fg">{e.taskTitle}</span>
-                        ) : (
-                          <span className="text-fg-muted">—</span>
-                        )}
-                      </td>
-                      <td className="max-w-xs truncate px-6 py-4 text-xs text-fg-muted">
-                        {e.note || "—"}
-                        {e.editedAt && (
-                          <span
-                            title={`Edited by ${e.editedByName ?? "unknown"} on ${new Date(
-                              e.editedAt
-                            ).toLocaleString()}`}
-                            className="ml-1 inline-flex items-center text-cyan-strong"
-                          >
-                            ✎
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <div className="inline-flex items-center gap-1">
-                          {canEdit && (
-                            <button
-                              onClick={() => setEditing(e)}
-                              aria-label={`Edit time entry for ${e.userName}`}
-                              className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-glass/[0.06] hover:text-fg"
-                            >
-                              <Pencil className="h-4 w-4" aria-hidden="true" />
-                            </button>
-                          )}
-                          {canDeleteRow && (
-                            <button
-                              onClick={() => handleDelete(e)}
-                              aria-label={`Delete time entry for ${e.userName}`}
-                              className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
-                            >
-                              <Trash2 className="h-4 w-4" aria-hidden="true" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      {manualOpen && (
+        <ManualEntryModal
+          tasks={tasks}
+          onClose={() => setManualOpen(false)}
+          onSaved={() => {
+            setManualOpen(false);
+            broadcastChange();
+            startTransition(() => router.refresh());
+          }}
+        />
+      )}
 
       {editing && canEdit && (
         <EditEntryModal
@@ -344,6 +449,7 @@ export function TimeClient({
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
+            broadcastChange();
             startTransition(() => router.refresh());
           }}
         />

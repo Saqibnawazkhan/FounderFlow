@@ -105,9 +105,9 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 
 ## 5. Time · Notifications · Activity · Team
 
-- [ ] **X1 · 🟠 [FEAT] No manual/backdated time entry.** Deferred — needs a new "add entry" form + server action. Follow-up feature commit.
-- [ ] **X2 · 🟠 [FEAT] No weekly timesheet grid, no per-day totals.** Deferred — new view + query. Follow-up.
-- [ ] **X3 · 🟠 [FEAT] Timer doesn't sync across tabs.** Deferred — BroadcastChannel wiring is a targeted refactor of clock-widget.
+- [x] **X1 · 🟠 [FEAT] No manual/backdated time entry.** ✔ A **Log time** button on `/time` opens a modal to record a *completed* session (start + end both required, live duration preview). `createManualEntryAction` is self-scoped — any member can log their own forgotten work with no elevated permission. `CreateManualEntrySchema` (7 unit tests) guarantees end > start and neither end is in the future; `lastActivityAt` pins to clock-out so a manual row can never trip the idle sweeper.
+- [x] **X2 · 🟠 [FEAT] No weekly timesheet grid, no per-day totals.** ✔ A **List ↔ Week** toggle (persisted to localStorage) on `/time`. The Week view (`components/time/weekly-timesheet.tsx`) buckets the loaded entries into a Mon–Sun grid with per-day totals, a week total, prev/next/"This week" navigation, and today highlighted; team scope tags each row with the person. Pure client-side over the RSC's entries — no extra query (the 500-newest server cap is the only bound, noted here).
+- [x] **X3 · 🟠 [FEAT] Timer doesn't sync across tabs.** ✔ A shared `BroadcastChannel("ff-time")`. The topbar clock widget posts `time-changed` on clock-in / clock-out / auto-close so every other tab re-fetches its open-entry state and the running pill agrees everywhere; `/time` both listens (refreshes on any timer change) and posts on its own writes (manual log / edit / delete). `reload()` never posts, so there's no echo loop; falls back to a silent no-op where `BroadcastChannel` is unavailable.
 - [ ] **X4 · 🟠 [FEAT] No notification categories/filters.** Deferred — schema addition (Notification.category enum) + UI.
 - [ ] **X5 · 🟠 [FEAT] No activity pagination.** Deferred — needs cursor query + infinite-scroll UI.
 - [ ] **X6 · 🟠 [FEAT] No activity filter by user.** Deferred — UI filter + query param.

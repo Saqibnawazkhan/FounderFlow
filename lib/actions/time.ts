@@ -19,6 +19,7 @@ import { db } from "@/lib/db";
 import {
   ClockInSchema,
   ClockOutSchema,
+  CreateManualEntrySchema,
   HeartbeatSchema,
   UpdateTimeEntrySchema,
 } from "@/lib/schemas/time";
@@ -122,6 +123,71 @@ export async function clockInAction(input: unknown): Promise<ActionResult<{ entr
   } catch (e) {
     captureServerError(e, { action: "clockInAction" });
     return { success: false, error: "Couldn't clock in right now." };
+  }
+}
+
+/**
+ * Manual/backdated entry (X1). Creates a COMPLETED entry for the current
+ * user — always self-scoped (no userId in the input), so a member can log
+ * their own forgotten sessions without any elevated permission. The schema
+ * guarantees clock-out > clock-in and neither end is in the future.
+ */
+export async function createManualEntryAction(
+  input: unknown
+): Promise<ActionResult<{ entryId: string }>> {
+  const session = await auth();
+  if (!session?.user?.companyId || !session.user.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
+  const parsed = CreateManualEntrySchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid entry" };
+  }
+  const { clockInAt, clockOutAt, taskId, note } = parsed.data;
+  const { id: userId, companyId } = session.user;
+
+  try {
+    // Snapshot the task title so a later rename/delete doesn't strand the row.
+    let taskTitle: string | null = null;
+    if (taskId) {
+      const task = await db.task.findUnique({
+        where: { id: taskId },
+        select: { companyId: true, title: true },
+      });
+      if (!task || task.companyId !== companyId) {
+        return { success: false, error: "Task not found" };
+      }
+      taskTitle = task.title;
+    }
+
+    const user = await db.user.findUnique({ where: { id: userId } });
+    if (!user) return { success: false, error: "User no longer exists" };
+
+    const created = await db.timeEntry.create({
+      data: {
+        companyId,
+        userId,
+        userName: user.name,
+        taskId: taskId ?? null,
+        taskTitle,
+        note: note ?? null,
+        clockInAt,
+        clockOutAt,
+        // lastActivityAt is only meaningful for the idle-sweep of *open*
+        // entries; a completed manual row pins it to clock-out so it can
+        // never trip the sweeper.
+        lastActivityAt: clockOutAt,
+      },
+    });
+
+    revalidatePath("/time");
+    return { success: true, data: { entryId: created.id } };
+  } catch (e) {
+    captureServerError(e, { action: "createManualEntryAction" });
+    return { success: false, error: "Couldn't log that entry right now." };
   }
 }
 
