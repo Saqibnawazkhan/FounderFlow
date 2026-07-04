@@ -48,3 +48,12 @@ export const BulkTaskDeleteSchema = z.object({
   ids: TaskIdList,
 });
 export type BulkTaskDeleteInput = z.infer<typeof BulkTaskDeleteSchema>;
+
+// Kanban drag-reorder. The client computes the target `order` (a midpoint
+// between the drop neighbors) and sends it; the server just validates the
+// caller can touch the task and persists it.
+export const ReorderTaskSchema = z.object({
+  id: z.string().min(1),
+  order: z.number().finite(),
+});
+export type ReorderTaskInput = z.infer<typeof ReorderTaskSchema>;

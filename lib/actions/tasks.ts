@@ -23,6 +23,7 @@ import {
   TaskStatusUpdateSchema,
   BulkTaskStatusSchema,
   BulkTaskDeleteSchema,
+  ReorderTaskSchema,
 } from "@/lib/schemas/task";
 import { limiters } from "@/lib/rate-limit";
 import { canManageProject } from "@/lib/auth/project-permissions";
@@ -48,6 +49,7 @@ function toClient(t: {
   deadline: Date;
   createdAt: Date;
   completedAt: Date | null;
+  order: number;
 }): Task {
   return {
     id: t.id,
@@ -64,6 +66,7 @@ function toClient(t: {
     deadline: t.deadline.toISOString(),
     createdAt: t.createdAt.toISOString(),
     completedAt: t.completedAt ? t.completedAt.toISOString() : undefined,
+    order: t.order,
   };
 }
 
@@ -144,6 +147,9 @@ export async function addTaskAction(input: unknown): Promise<ActionResult<Task>>
         assignedByName: actor.name,
         deadline: new Date(deadline),
         completedAt: status === "completed" ? new Date() : null,
+        // Smaller order = higher in the column; -now() lands the new task at
+        // the top, matching the previous newest-first behavior.
+        order: -Date.now(),
       },
     });
 
@@ -272,6 +278,54 @@ export async function updateTaskStatusAction(input: unknown): Promise<ActionResu
   revalidatePath("/activities");
 
   return { success: true, data: toClient(updated) };
+}
+
+/**
+ * Persist a manual kanban reorder. The client computes the target `order`
+ * (a midpoint between the drop neighbors) so the server work is just a
+ * permission check + a one-field update — no activity row (reordering is
+ * noise, not news) and no revalidatePath (the client already applied the
+ * move optimistically; a refresh would fight the drag animation).
+ *
+ * Permission mirrors updateTaskStatusAction: assignee, creator, or admin.
+ */
+export async function reorderTaskAction(input: unknown): Promise<ActionResult> {
+  const session = await auth();
+  if (!session?.user?.companyId || !session.user.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
+  const parsed = ReorderTaskSchema.safeParse(input);
+  if (!parsed.success) return { success: false, error: "Invalid reorder" };
+  const { id, order } = parsed.data;
+
+  try {
+    const task = await db.task.findUnique({
+      where: { id },
+      select: { companyId: true, assignedTo: true, assignedBy: true, deletedAt: true },
+    });
+    if (!task || task.deletedAt) return { success: false, error: "Task not found" };
+    if (task.companyId !== session.user.companyId) {
+      return { success: false, error: "Not authorized" };
+    }
+    const canEdit =
+      task.assignedTo === session.user.id ||
+      task.assignedBy === session.user.id ||
+      session.user.role === "admin";
+    if (!canEdit) return { success: false, error: "Not authorized" };
+
+    await db.task.update({ where: { id }, data: { order } });
+    return { success: true, data: undefined };
+  } catch (e) {
+    captureServerError(e, {
+      action: "reorderTask",
+      userId: session.user.id,
+      companyId: session.user.companyId,
+    });
+    return { success: false, error: "Couldn't reorder that task right now." };
+  }
 }
 
 export async function deleteTaskAction(id: string): Promise<ActionResult> {

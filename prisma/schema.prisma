@@ -212,6 +212,12 @@ model Task {
   deadline       DateTime
   createdAt      DateTime  @default(now())
   completedAt    DateTime?
+  // Manual sort key for kanban drag-reorder within a column. Smaller = higher
+  // in the column. Backfilled to `-epoch(createdAt)` so the initial order
+  // matches the old newest-first default; new tasks get `-Date.now()` to land
+  // at the top. Reorder sets a midpoint between neighbors (Float so we rarely
+  // need to renumber). See lib/actions/tasks.ts reorderTaskAction.
+  order          Float     @default(0)
   // Tier 3 soft-delete sentinel — see User.deletedAt for semantics.
   deletedAt      DateTime?
 

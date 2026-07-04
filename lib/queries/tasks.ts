@@ -33,6 +33,7 @@ function toClient(
     deadline: Date;
     createdAt: Date;
     completedAt: Date | null;
+    order: number;
     project?: { name: string } | null;
   },
   commentCount = 0
@@ -53,6 +54,7 @@ function toClient(
     deadline: t.deadline.toISOString(),
     createdAt: t.createdAt.toISOString(),
     completedAt: t.completedAt ? t.completedAt.toISOString() : undefined,
+    order: t.order,
     commentCount,
   };
 }
@@ -61,7 +63,9 @@ export async function getTasks(opts: { projectId?: string } = {}): Promise<TaskW
   const { companyId } = await requireScopedSession();
   const rows = await db.task.findMany({
     where: { companyId, ...(opts.projectId ? { projectId: opts.projectId } : {}) },
-    orderBy: { createdAt: "desc" },
+    // Manual sort key first (kanban reorder), createdAt as a stable tiebreak
+    // for any rows that still share an order value.
+    orderBy: [{ order: "asc" }, { createdAt: "desc" }],
     include: {
       _count: { select: { comments: true } },
       project: { select: { name: true } },

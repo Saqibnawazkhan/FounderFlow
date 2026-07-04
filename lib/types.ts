@@ -56,6 +56,8 @@ export interface Task {
   deadline: string;
   createdAt: string;
   completedAt?: string;
+  // Manual sort key for kanban reorder (smaller = higher in the column).
+  order: number;
 }
 
 export type ActivityType =

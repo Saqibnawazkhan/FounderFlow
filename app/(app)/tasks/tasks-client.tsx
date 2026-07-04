@@ -29,7 +29,6 @@ import {
   KeyboardSensor,
   PointerSensor,
   closestCorners,
-  useDraggable,
   useDroppable,
   useSensor,
   useSensors,
@@ -37,9 +36,17 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
   bulkDeleteTasksAction,
   bulkUpdateTaskStatusAction,
   deleteTaskAction,
+  reorderTaskAction,
   updateTaskStatusAction,
 } from "@/lib/actions/tasks";
 import { Modal } from "@/components/ui/modal";
@@ -275,14 +282,19 @@ export function TasksClient({
     refresh();
   }
 
-  const grouped = useMemo(
-    () => ({
-      pending: filtered.filter((t) => t.status === "pending"),
-      in_progress: filtered.filter((t) => t.status === "in_progress"),
-      completed: filtered.filter((t) => t.status === "completed"),
-    }),
-    [filtered]
-  );
+  const grouped = useMemo(() => {
+    // Sort each column by the manual order key (smaller = higher), createdAt
+    // desc as the tiebreak. Sorting here — not just relying on the server
+    // order — means an optimistic reorder (which only mutates one task's
+    // `order`) re-lays-out the column immediately, before the RSC refresh.
+    const byOrder = (a: TaskWithCount, b: TaskWithCount) =>
+      a.order - b.order || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    return {
+      pending: filtered.filter((t) => t.status === "pending").sort(byOrder),
+      in_progress: filtered.filter((t) => t.status === "in_progress").sort(byOrder),
+      completed: filtered.filter((t) => t.status === "completed").sort(byOrder),
+    };
+  }, [filtered]);
 
   async function handleStatusChange(id: string, status: TaskStatus) {
     const result = await updateTaskStatusAction({ id, status });
@@ -326,20 +338,63 @@ export function TasksClient({
   function handleDragEnd(e: DragEndEvent) {
     setDraggingTask(null);
     const taskId = String(e.active.id);
-    const overStatus = e.over?.id as TaskStatus | undefined;
-    if (!overStatus) return;
+    const overId = e.over?.id ? String(e.over.id) : null;
+    if (!overId) return;
     const task = tasks.find((t) => t.id === taskId);
-    if (!task || task.status === overStatus) return;
-    // Capture the prior status so we can restore the exact card position on
-    // server error — audit T10 called out that we previously waited for a
-    // router.refresh() round-trip, leaving the card visually mid-drop until
-    // the RSC arrived.
-    const priorStatus = task.status;
-    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: overStatus } : t)));
-    void updateTaskStatusAction({ id: taskId, status: overStatus }).then((res) => {
+    if (!task) return;
+
+    // `over` is either a column droppable (its id IS the status) or another
+    // card (its id is a task id). Resolve the destination status from either.
+    const STATUS_IDS: TaskStatus[] = ["pending", "in_progress", "completed"];
+    const overIsColumn = (STATUS_IDS as string[]).includes(overId);
+    const destStatus = overIsColumn
+      ? (overId as TaskStatus)
+      : tasks.find((t) => t.id === overId)?.status;
+    if (!destStatus) return;
+
+    // ── Cross-column: change status (unchanged behavior + rollback). ──
+    if (destStatus !== task.status) {
+      const priorStatus = task.status;
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: destStatus } : t)));
+      void updateTaskStatusAction({ id: taskId, status: destStatus }).then((res) => {
+        if (!res.success) {
+          toast.error(res.error);
+          setTasks((prev) =>
+            prev.map((t) => (t.id === taskId ? { ...t, status: priorStatus } : t))
+          );
+          refresh();
+        }
+      });
+      return;
+    }
+
+    // ── Same column: reorder. Only meaningful when dropped over another card. ──
+    if (overIsColumn || overId === taskId) return;
+    const column = grouped[destStatus];
+    const oldIndex = column.findIndex((t) => t.id === taskId);
+    const newIndex = column.findIndex((t) => t.id === overId);
+    if (oldIndex === -1 || newIndex === -1 || oldIndex === newIndex) return;
+
+    // Midpoint between the drop neighbors after the move. Float `order` means
+    // one row write, not a full-column renumber. (If the gap ever collapses
+    // to equal floats, the createdAt tiebreak keeps rendering stable and a
+    // future reorder re-spreads it.)
+    const reordered = arrayMove(column, oldIndex, newIndex);
+    const pos = reordered.findIndex((t) => t.id === taskId);
+    const prevOrder = pos > 0 ? reordered[pos - 1].order : null;
+    const nextOrder = pos < reordered.length - 1 ? reordered[pos + 1].order : null;
+    let newOrder: number;
+    if (prevOrder === null && nextOrder === null) newOrder = task.order;
+    else if (prevOrder === null) newOrder = (nextOrder as number) - 1000;
+    else if (nextOrder === null) newOrder = prevOrder + 1000;
+    else newOrder = (prevOrder + nextOrder) / 2;
+
+    const priorOrder = task.order;
+    setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, order: newOrder } : t)));
+    void reorderTaskAction({ id: taskId, order: newOrder }).then((res) => {
       if (!res.success) {
         toast.error(res.error);
-        setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: priorStatus } : t)));
+        setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, order: priorOrder } : t)));
         refresh();
       }
     });
@@ -442,12 +497,12 @@ export function TasksClient({
           </div>
           <DragOverlay dropAnimation={null}>
             {draggingTask && (
-              <TaskCard
+              <TaskCardView
                 task={draggingTask}
                 onStatusChange={handleStatusChange}
                 onDelete={handleDelete}
                 canDelete={false}
-                isDragging
+                isOverlay
               />
             )}
           </DragOverlay>
@@ -886,19 +941,21 @@ function DroppableColumn({
             </p>
           </div>
         ) : (
-          tasks.map((task) => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              onStatusChange={onStatusChange}
-              onDelete={onDelete}
-              onOpenComments={onOpenComments}
-              onOpenDetail={onOpenDetail}
-              canDelete={canDeleteTask(task)}
-              highlighted={highlightId === task.id}
-              externalRef={registerRef(task.id)}
-            />
-          ))
+          <SortableContext items={tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+            {tasks.map((task) => (
+              <TaskCard
+                key={task.id}
+                task={task}
+                onStatusChange={onStatusChange}
+                onDelete={onDelete}
+                onOpenComments={onOpenComments}
+                onOpenDetail={onOpenDetail}
+                canDelete={canDeleteTask(task)}
+                highlighted={highlightId === task.id}
+                externalRef={registerRef(task.id)}
+              />
+            ))}
+          </SortableContext>
         )}
       </div>
     </section>
@@ -909,6 +966,10 @@ function DroppableColumn({
 /* TaskCard                                                                    */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
+// Thin sortable wrapper: owns the useSortable hook + drag handle, and hands
+// a presentational <TaskCardView> the ref/style/handle. Only the live column
+// cards use this — the DragOverlay renders TaskCardView directly so it never
+// registers a second sortable node for the same id.
 function TaskCard({
   task,
   onStatusChange,
@@ -916,7 +977,6 @@ function TaskCard({
   onOpenComments,
   onOpenDetail,
   canDelete,
-  isDragging: isOverlay = false,
   highlighted = false,
   externalRef,
 }: {
@@ -926,29 +986,88 @@ function TaskCard({
   onOpenComments?: (task: TaskWithCount) => void;
   onOpenDetail?: (task: TaskWithCount) => void;
   canDelete: boolean;
-  isDragging?: boolean;
   highlighted?: boolean;
   externalRef?: (el: HTMLElement | null) => void;
 }) {
-  const { attributes, listeners, setNodeRef, isDragging, transform } = useDraggable({
+  const { attributes, listeners, setNodeRef, isDragging, transform, transition } = useSortable({
     id: task.id,
-    disabled: isOverlay,
   });
 
+  const dragHandle = (
+    <button
+      type="button"
+      aria-label={`Drag ${task.title} to reorder or change status`}
+      {...attributes}
+      {...listeners}
+      // Bare click on the handle (no 8px movement so DnD Kit never activates)
+      // would otherwise bubble to the card wrapper and open the detail modal.
+      onClick={(e) => e.stopPropagation()}
+      className="cursor-grab touch-none rounded-md p-0.5 text-fg-muted/70 transition-colors hover:bg-glass/[0.06] hover:text-fg active:cursor-grabbing"
+    >
+      <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
+    </button>
+  );
+
+  return (
+    <TaskCardView
+      task={task}
+      onStatusChange={onStatusChange}
+      onDelete={onDelete}
+      onOpenComments={onOpenComments}
+      onOpenDetail={onOpenDetail}
+      canDelete={canDelete}
+      highlighted={highlighted}
+      rootRef={(el) => {
+        setNodeRef(el);
+        externalRef?.(el);
+      }}
+      rootStyle={{ transform: CSS.Transform.toString(transform), transition }}
+      dragging={isDragging}
+      dragHandle={dragHandle}
+      isOverlay={false}
+    />
+  );
+}
+
+// Presentational card. NO dnd hooks — safe to render inside the DragOverlay
+// (which would otherwise duplicate the sortable id of the live card).
+function TaskCardView({
+  task,
+  onStatusChange,
+  onDelete,
+  onOpenComments,
+  onOpenDetail,
+  canDelete,
+  highlighted = false,
+  rootRef,
+  rootStyle,
+  dragging = false,
+  dragHandle,
+  isOverlay = false,
+}: {
+  task: TaskWithCount;
+  onStatusChange: (id: string, status: TaskStatus) => void;
+  onDelete: (id: string) => void;
+  onOpenComments?: (task: TaskWithCount) => void;
+  onOpenDetail?: (task: TaskWithCount) => void;
+  canDelete: boolean;
+  highlighted?: boolean;
+  rootRef?: (el: HTMLElement | null) => void;
+  rootStyle?: React.CSSProperties;
+  dragging?: boolean;
+  dragHandle?: React.ReactNode;
+  isOverlay?: boolean;
+}) {
   const deadline = new Date(task.deadline);
   const overdue = isPast(deadline) && task.status !== "completed";
   const dueToday = isToday(deadline);
 
   const style: React.CSSProperties = isOverlay
     ? { boxShadow: "0 20px 50px rgb(0 0 0 / 0.30)", transform: "rotate(-1.5deg)" }
-    : transform
-      ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
-      : {};
+    : (rootStyle ?? {});
 
   // Card body is a genuine click target for the detail modal — but only when
-  // we're not the DragOverlay clone (its parent doesn't know about the modal)
-  // and only when a real onOpenDetail handler is wired in. Guarding here
-  // keeps the drag preview and other future consumers hover-only.
+  // we're not the DragOverlay clone and a real onOpenDetail handler is wired.
   const clickable = !isOverlay && !!onOpenDetail;
   function openDetail() {
     if (clickable) onOpenDetail!(task);
@@ -956,10 +1075,7 @@ function TaskCard({
 
   return (
     <div
-      ref={(el) => {
-        setNodeRef(el);
-        externalRef?.(el);
-      }}
+      ref={rootRef}
       style={style}
       onClick={openDetail}
       onKeyDown={(e) => {
@@ -976,7 +1092,7 @@ function TaskCard({
         "group rounded-xl border border-border bg-bg p-4 transition-all hover:border-primary/30",
         clickable &&
           "cursor-pointer focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
-        isDragging && !isOverlay && "opacity-30",
+        dragging && !isOverlay && "opacity-30",
         isOverlay && "cursor-grabbing border-primary/40 bg-surface",
         highlighted &&
           "border-primary/60 shadow-[0_0_30px_rgb(182_244_37_/_0.35)] ring-2 ring-primary/50"
@@ -984,22 +1100,7 @@ function TaskCard({
     >
       <div className="mb-3 flex items-start justify-between gap-2">
         <div className="flex items-center gap-1.5">
-          {!isOverlay && (
-            <button
-              type="button"
-              aria-label={`Drag ${task.title} to change status`}
-              {...attributes}
-              {...listeners}
-              // Bare click on the drag handle (no 8px movement so DnD Kit
-              // never activates) would otherwise bubble to the card wrapper
-              // and open the detail modal. stopPropagation keeps the handle
-              // as a drag-only affordance.
-              onClick={(e) => e.stopPropagation()}
-              className="cursor-grab touch-none rounded-md p-0.5 text-fg-muted/70 transition-colors hover:bg-glass/[0.06] hover:text-fg active:cursor-grabbing"
-            >
-              <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
-            </button>
-          )}
+          {!isOverlay && dragHandle}
           <span
             className={cn(
               "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
