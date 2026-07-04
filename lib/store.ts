@@ -130,7 +130,13 @@ function logActivity(
 
 function notifyAllUsers(
   state: AppState,
-  data: { title: string; message: string; type: Notification["type"]; link?: string },
+  data: {
+    title: string;
+    message: string;
+    type: Notification["type"];
+    category?: Notification["category"];
+    link?: string;
+  },
   excludeUserId?: string
 ): Notification[] {
   const companyUsers = state.users.filter(
@@ -143,6 +149,7 @@ function notifyAllUsers(
     title: data.title,
     message: data.message,
     type: data.type,
+    category: data.category ?? "system",
     read: false,
     link: data.link,
     createdAt: new Date().toISOString(),
@@ -443,6 +450,7 @@ export const useStore = create<AppState>()(
             title: "New Task Assigned",
             message: `${state.currentUser.name} assigned you "${data.title}"`,
             type: "info",
+            category: "task",
             read: false,
             link: "/tasks",
             createdAt: new Date().toISOString(),
@@ -484,6 +492,7 @@ export const useStore = create<AppState>()(
             title: "Task Completed",
             message: `${state.currentUser.name} completed "${task.title}"`,
             type: "success",
+            category: "task",
             read: false,
             link: "/tasks",
             createdAt: new Date().toISOString(),

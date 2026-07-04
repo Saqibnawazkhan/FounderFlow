@@ -130,6 +130,7 @@ export async function createProjectAction(
             title: "You're a project supervisor",
             message: `${creator.name} made you supervisor of "${name}"`,
             type: "info",
+            category: "task",
             link: `/projects/${created.id}`,
           },
         });
@@ -281,6 +282,7 @@ export async function changeSupervisorAction(input: unknown): Promise<ActionResu
             title: "You're a project supervisor",
             message: `You now supervise "${project.name}"`,
             type: "info",
+            category: "task",
             link: `/projects/${projectId}`,
           },
         });

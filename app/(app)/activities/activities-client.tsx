@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   Activity as ActivityIcon,
   Archive,
@@ -9,6 +10,7 @@ import {
   Edit3,
   FolderPlus,
   Filter,
+  Loader2,
   Search,
   ShieldCheck,
   Trash2,
@@ -17,11 +19,14 @@ import {
   UserMinus,
   UserPlus,
   UserCog,
+  Users,
   Zap,
   type LucideIcon,
 } from "lucide-react";
+import toast from "react-hot-toast";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
+import { loadMoreActivitiesAction } from "@/lib/actions/activities";
 import { cn } from "@/lib/utils";
 import type { Activity, ActivityType } from "@/lib/types";
 import { format, isToday, isYesterday, startOfDay } from "date-fns";
@@ -93,9 +98,56 @@ function dedupeConsecutive(rows: Activity[]): DedupedActivity[] {
   return out;
 }
 
-export function ActivitiesClient({ activities }: { activities: Activity[] }) {
+type Props = {
+  initialActivities: Activity[];
+  initialCursor: string | null;
+  users: { id: string; name: string }[];
+  activeUserId: string; // "all" or a userId
+};
+
+export function ActivitiesClient({ initialActivities, initialCursor, users, activeUserId }: Props) {
+  const router = useRouter();
+  const [, startTransition] = useTransition();
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
+
+  // Accumulated feed + the cursor for the next page (X5). Seeded from the
+  // RSC's first page; re-seeded whenever the server re-fetches (e.g. the
+  // per-user filter changes the URL and a fresh first page arrives).
+  const [activities, setActivities] = useState<Activity[]>(initialActivities);
+  const [cursor, setCursor] = useState<string | null>(initialCursor);
+  const [loadingMore, setLoadingMore] = useState(false);
+  useEffect(() => {
+    setActivities(initialActivities);
+    setCursor(initialCursor);
+  }, [initialActivities, initialCursor]);
+
+  // Per-user filter (X6) — a URL change so the server re-queries from page 1.
+  function changeUser(userId: string) {
+    const url = userId === "all" ? "/activities" : `/activities?user=${userId}`;
+    startTransition(() => router.push(url));
+  }
+
+  async function loadMore() {
+    if (!cursor || loadingMore) return;
+    setLoadingMore(true);
+    const res = await loadMoreActivitiesAction({
+      cursor,
+      userId: activeUserId === "all" ? null : activeUserId,
+    });
+    setLoadingMore(false);
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    // De-dupe by id on append — a row created between page fetches could
+    // otherwise slip into two pages and render twice.
+    setActivities((prev) => {
+      const seen = new Set(prev.map((a) => a.id));
+      return [...prev, ...res.data.items.filter((a) => !seen.has(a.id))];
+    });
+    setCursor(res.data.nextCursor);
+  }
 
   const filtered = useMemo(
     () =>
@@ -171,6 +223,28 @@ export function ActivitiesClient({ activities }: { activities: Activity[] }) {
             <option value="task_assigned">Tasks assigned</option>
             <option value="task_completed">Tasks completed</option>
             <option value="user_joined">Team updates</option>
+          </select>
+        </div>
+        <div className="relative">
+          <Users
+            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+            aria-hidden="true"
+          />
+          <label htmlFor="activity-user" className="sr-only">
+            Filter by person
+          </label>
+          <select
+            id="activity-user"
+            value={activeUserId}
+            onChange={(e) => changeUser(e.target.value)}
+            className="w-full min-w-[180px] appearance-none rounded-xl border border-border bg-bg py-2.5 pl-10 pr-10 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
+          >
+            <option value="all">Everyone</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name}
+              </option>
+            ))}
           </select>
         </div>
       </section>
@@ -249,6 +323,30 @@ export function ActivitiesClient({ activities }: { activities: Activity[] }) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {cursor && (
+        <div className="flex flex-col items-center gap-2 pt-2">
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-5 py-2.5 text-sm font-semibold text-fg transition-colors hover:border-primary/40 hover:text-primary-strong disabled:opacity-60"
+          >
+            {loadingMore ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Loading…
+              </>
+            ) : (
+              "Load more"
+            )}
+          </button>
+          {(search || typeFilter !== "all") && (
+            <p className="text-center text-[11px] text-fg-muted">
+              Search and type filters apply to loaded events — load more to search further back.
+            </p>
+          )}
         </div>
       )}
     </>

@@ -7,7 +7,8 @@
  */
 
 import type { Metadata } from "next";
-import { getActivities } from "@/lib/queries/activities";
+import { getActivitiesPage } from "@/lib/queries/activities";
+import { getCompanyUsers } from "@/lib/queries/users";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { ActivitiesClient } from "./activities-client";
 
@@ -16,8 +17,18 @@ export const metadata: Metadata = {
   description: "A live timeline of every action your team takes, grouped by day.",
 };
 
-export default async function ActivitiesPage() {
-  const activities = await getActivities();
+type SearchParams = { user?: string };
+
+export default async function ActivitiesPage({ searchParams }: { searchParams: SearchParams }) {
+  const userFilter = searchParams.user ?? null;
+  const [page, users] = await Promise.all([
+    getActivitiesPage({ userId: userFilter }),
+    getCompanyUsers(),
+  ]);
+
+  // Guard: a stale ?user= for someone no longer on the roster falls back to
+  // "all" in the UI so the select never shows a phantom selection.
+  const activeUserId = userFilter && users.some((u) => u.id === userFilter) ? userFilter : "all";
 
   return (
     <div className="mx-auto max-w-4xl space-y-8">
@@ -30,7 +41,12 @@ export default async function ActivitiesPage() {
           A live timeline of everything happening in your company.
         </p>
       </header>
-      <ActivitiesClient activities={activities} />
+      <ActivitiesClient
+        initialActivities={page.items}
+        initialCursor={page.nextCursor}
+        users={users.map((u) => ({ id: u.id, name: u.name }))}
+        activeUserId={activeUserId}
+      />
     </div>
   );
 }

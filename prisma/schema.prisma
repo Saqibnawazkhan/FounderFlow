@@ -269,6 +269,10 @@ model Notification {
   title     String
   message   String
   type      String // "info" | "success" | "warning" | "danger"
+  // Topic bucket for the notifications-page filter (X4): "task" | "finance"
+  // | "team" | "system". Set at every creation site; defaults to "system"
+  // so an un-tagged write (or a legacy row) still lands somewhere valid.
+  category  String   @default("system")
   read      Boolean  @default(false)
   link      String?
   createdAt DateTime @default(now())

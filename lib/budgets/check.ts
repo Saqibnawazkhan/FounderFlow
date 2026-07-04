@@ -105,6 +105,7 @@ export async function checkBudgetThresholdAfterExpense({
             title,
             message,
             type: notifType,
+            category: "finance",
             link: `/projects/${projectId}`,
           })),
         });

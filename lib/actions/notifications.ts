@@ -23,6 +23,7 @@ function toClient(n: {
   title: string;
   message: string;
   type: string;
+  category: string;
   read: boolean;
   link: string | null;
   createdAt: Date;
@@ -34,6 +35,7 @@ function toClient(n: {
     title: n.title,
     message: n.message,
     type: n.type as Notification["type"],
+    category: n.category as Notification["category"],
     read: n.read,
     link: n.link ?? undefined,
     createdAt: n.createdAt.toISOString(),

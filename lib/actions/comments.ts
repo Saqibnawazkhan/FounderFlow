@@ -118,6 +118,8 @@ export async function createCommentAction(input: unknown): Promise<
     let notifiedCount = 0;
     if (mentionedUserIds.length > 0) {
       const link = taskId ? `/tasks?comment=${created.id}` : `/expenses?comment=${created.id}`;
+      // A mention rides the category of whatever it's attached to.
+      const category = taskId ? "task" : "finance";
       const truncated = body.length > 140 ? body.slice(0, 137) + "…" : body;
       try {
         const { count } = await db.notification.createMany({
@@ -127,6 +129,7 @@ export async function createCommentAction(input: unknown): Promise<
             title: `${author.name} mentioned you`,
             message: truncated,
             type: "info",
+            category,
             link,
           })),
         });

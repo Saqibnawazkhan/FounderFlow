@@ -46,3 +46,35 @@ export async function getActivities(limit = 500): Promise<Activity[]> {
   });
   return rows.map(toClient);
 }
+
+export interface ActivityPage {
+  items: Activity[];
+  nextCursor: string | null;
+}
+
+/**
+ * Cursor-paginated activity feed (X5). Returns `take` items plus a
+ * `nextCursor` (the id to pass back for the following page, or null at the
+ * end). Optionally filtered to a single actor (X6). Ordering carries an id
+ * tiebreaker so same-millisecond rows page deterministically.
+ */
+export async function getActivitiesPage(opts?: {
+  cursor?: string | null;
+  take?: number;
+  userId?: string | null;
+}): Promise<ActivityPage> {
+  const { companyId } = await requireScopedSession();
+  const take = Math.min(Math.max(opts?.take ?? 40, 1), 100);
+  const rows = await db.activity.findMany({
+    where: { companyId, ...(opts?.userId ? { userId: opts.userId } : {}) },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: take + 1, // fetch one extra to detect whether more remain
+    ...(opts?.cursor ? { cursor: { id: opts.cursor }, skip: 1 } : {}),
+  });
+  const hasMore = rows.length > take;
+  const page = hasMore ? rows.slice(0, take) : rows;
+  return {
+    items: page.map(toClient),
+    nextCursor: hasMore ? (page[page.length - 1]?.id ?? null) : null,
+  };
+}

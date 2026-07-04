@@ -186,6 +186,7 @@ export async function addTaskAction(input: unknown): Promise<ActionResult<Task>>
           title: "New task assigned",
           message: `${actor.name} assigned you "${title}" in ${project.name}`,
           type: "info",
+          category: "task",
           // Deep-link into the tasks page and scroll/flash the specific card.
           // The tasks-client reads ?taskId= on mount and highlights the row.
           link: `/tasks?taskId=${task.id}`,
@@ -265,6 +266,7 @@ export async function updateTaskStatusAction(input: unknown): Promise<ActionResu
           title: "Task completed",
           message: `${me.name} completed "${task.title}"`,
           type: "success",
+          category: "task",
           link: `/tasks?taskId=${task.id}`,
         },
       });

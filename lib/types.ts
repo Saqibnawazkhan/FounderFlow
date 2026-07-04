@@ -116,6 +116,15 @@ export interface Activity {
   createdAt: string;
 }
 
+export type NotificationCategory = "task" | "finance" | "team" | "system";
+
+export const NOTIFICATION_CATEGORY_LABELS: Record<NotificationCategory, string> = {
+  task: "Tasks",
+  finance: "Finance",
+  team: "Team",
+  system: "System",
+};
+
 export interface Notification {
   id: string;
   userId: string;
@@ -123,6 +132,7 @@ export interface Notification {
   title: string;
   message: string;
   type: "info" | "success" | "warning" | "danger";
+  category: NotificationCategory;
   read: boolean;
   link?: string;
   createdAt: string;

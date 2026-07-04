@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { Bell, CheckCheck, Trash2 } from "lucide-react";
 import toast from "react-hot-toast";
 import {
@@ -14,7 +14,11 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, formatRelativeTime } from "@/lib/utils";
-import type { Notification } from "@/lib/types";
+import {
+  NOTIFICATION_CATEGORY_LABELS,
+  type Notification,
+  type NotificationCategory,
+} from "@/lib/types";
 
 const TYPE_FILL = {
   success: "bg-success/15 text-success",
@@ -23,11 +27,34 @@ const TYPE_FILL = {
   info: "bg-info/15 text-info",
 } as const;
 
+const CATEGORY_ORDER: NotificationCategory[] = ["task", "finance", "team", "system"];
+
 export function NotificationsClient({ notifications }: { notifications: Notification[] }) {
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
   const unreadCount = notifications.filter((n) => !n.read).length;
+
+  // Category + unread filters (X4). Client-side over the loaded list (the
+  // page fetches all of the user's notifications).
+  const [category, setCategory] = useState<"all" | NotificationCategory>("all");
+  const [unreadOnly, setUnreadOnly] = useState(false);
+
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<NotificationCategory, number>();
+    for (const n of notifications) counts.set(n.category, (counts.get(n.category) ?? 0) + 1);
+    return counts;
+  }, [notifications]);
+
+  const visible = useMemo(
+    () =>
+      notifications.filter((n) => {
+        if (category !== "all" && n.category !== category) return false;
+        if (unreadOnly && n.read) return false;
+        return true;
+      }),
+    [notifications, category, unreadOnly]
+  );
 
   // Server actions already revalidatePath('/notifications'), but router.refresh
   // re-renders the current RSC tree without a full nav so the new props arrive
@@ -113,6 +140,39 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
         )}
       </header>
 
+      {notifications.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <FilterChip
+            active={category === "all"}
+            onClick={() => setCategory("all")}
+            label="All"
+            count={notifications.length}
+          />
+          {CATEGORY_ORDER.filter((c) => (categoryCounts.get(c) ?? 0) > 0).map((c) => (
+            <FilterChip
+              key={c}
+              active={category === c}
+              onClick={() => setCategory(c)}
+              label={NOTIFICATION_CATEGORY_LABELS[c]}
+              count={categoryCounts.get(c) ?? 0}
+            />
+          ))}
+          <button
+            type="button"
+            onClick={() => setUnreadOnly((v) => !v)}
+            aria-pressed={unreadOnly}
+            className={cn(
+              "ml-auto inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors",
+              unreadOnly
+                ? "border-primary/50 bg-primary/10 text-primary-strong"
+                : "border-border bg-bg text-fg-muted hover:text-fg"
+            )}
+          >
+            Unread only
+          </button>
+        </div>
+      )}
+
       {notifications.length === 0 ? (
         <div className="rounded-2xl border border-border bg-surface">
           <EmptyState
@@ -121,9 +181,17 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
             description="When your team adds expenses, completes tasks, or invites new members, you'll see updates here."
           />
         </div>
+      ) : visible.length === 0 ? (
+        <div className="rounded-2xl border border-border bg-surface">
+          <EmptyState
+            icon={Bell}
+            title="Nothing here"
+            description="No notifications match this filter. Try another category or clear the unread toggle."
+          />
+        </div>
       ) : (
         <ul className="space-y-2">
-          {notifications.map((n) => (
+          {visible.map((n) => (
             <li key={n.id}>
               <Link
                 href={n.link || "#"}
@@ -166,5 +234,41 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
         </ul>
       )}
     </div>
+  );
+}
+
+function FilterChip({
+  active,
+  onClick,
+  label,
+  count,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  count: number;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors",
+        active
+          ? "border-primary/50 bg-primary/10 text-primary-strong"
+          : "border-border bg-bg text-fg-muted hover:text-fg"
+      )}
+    >
+      {label}
+      <span
+        className={cn(
+          "font-mono text-[10px] tabular-nums",
+          active ? "text-primary-strong/70" : "text-fg-muted/70"
+        )}
+      >
+        {count}
+      </span>
+    </button>
   );
 }

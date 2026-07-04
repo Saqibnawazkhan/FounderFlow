@@ -167,6 +167,7 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
           title: isExpense ? "New expense" : "New investment",
           message: `${user.name} ${isExpense ? "logged" : "added"} ${amount.toLocaleString()} PKR`,
           type: isExpense ? "warning" : "success",
+          category: "finance",
           link: projectId ? `/projects/${projectId}` : isExpense ? "/expenses" : "/investments",
         })),
       });

@@ -364,6 +364,7 @@ export async function updateUserRoleAction(input: unknown): Promise<ActionResult
             title: "Your role changed",
             message: `${actor.name} updated your role to ${role}`,
             type: "info",
+            category: "team",
             link: "/team",
           },
         });
@@ -512,6 +513,7 @@ export async function reactivateUserAction(userId: string): Promise<ActionResult
           title: "Your access was restored",
           message: `${actor.name} reactivated your account. Welcome back.`,
           type: "info",
+          category: "team",
           link: "/dashboard",
         },
       });
@@ -617,6 +619,7 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
           title: "Welcome to FounderFlow",
           message: `${inviterName} invited you to the workspace. Get started by exploring the dashboard.`,
           type: "info",
+          category: "team",
           link: "/dashboard",
         },
       });
