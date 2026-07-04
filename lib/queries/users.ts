@@ -5,7 +5,7 @@
 
 import { db } from "@/lib/db";
 import { requireScopedSession } from "@/lib/queries/session";
-import type { User } from "@/lib/types";
+import type { DeactivatedUser, PendingInvite, User } from "@/lib/types";
 
 function toClient(u: {
   id: string;
@@ -37,6 +37,51 @@ export async function getCompanyUsers(): Promise<User[]> {
     orderBy: [{ role: "asc" }, { name: "asc" }],
   });
   return rows.map(toClient);
+}
+
+/**
+ * Unused invites for the roster's pending-invites panel (X7). Admin-only —
+ * returns [] for anyone else so the list never leaks who's been invited even
+ * if a non-admin somehow reaches the page. Expired-but-unused invites stay
+ * in the list (flagged) so an admin can re-send.
+ */
+export async function getPendingInvites(): Promise<PendingInvite[]> {
+  const { companyId, role } = await requireScopedSession();
+  if (role !== "admin") return [];
+  const now = new Date();
+  const rows = await db.inviteToken.findMany({
+    where: { companyId, usedAt: null },
+    orderBy: { createdAt: "desc" },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    email: r.email,
+    name: r.name,
+    role: r.role,
+    createdAt: r.createdAt.toISOString(),
+    expiresAt: r.expiresAt.toISOString(),
+    expired: r.expiresAt < now,
+  }));
+}
+
+/**
+ * Soft-deleted teammates for the roster's deactivated panel (X8). Admin-only;
+ * [] for anyone else. These are restorable until the 90-day purge cron.
+ */
+export async function getDeactivatedUsers(): Promise<DeactivatedUser[]> {
+  const { companyId, role } = await requireScopedSession();
+  if (role !== "admin") return [];
+  const rows = await db.user.findMany({
+    where: { companyId, deletedAt: { not: null } },
+    orderBy: { deletedAt: "desc" },
+  });
+  return rows.map((u) => ({
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    role: u.role,
+    deactivatedAt: (u.deletedAt ?? new Date()).toISOString(),
+  }));
 }
 
 /** The signed-in user's full record — used by /settings for joined-date etc. */

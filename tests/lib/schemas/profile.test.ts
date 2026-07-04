@@ -1,28 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { ChangePasswordSchema, UpdateProfileSchema } from "@/lib/schemas/profile";
+import { RequestEmailChangeSchema } from "@/lib/schemas/email-change";
 
 describe("UpdateProfileSchema", () => {
-  it("accepts a valid name + email", () => {
-    const r = UpdateProfileSchema.safeParse({
-      name: "Sarah Khan",
-      email: "Sarah@Nimbus.app",
-    });
+  // Email was removed from the profile update (audit S3) — name-only now;
+  // email changes go through RequestEmailChangeSchema + the verified flow.
+  it("accepts a valid name and ignores extra fields", () => {
+    const r = UpdateProfileSchema.safeParse({ name: "Sarah Khan" });
     expect(r.success).toBe(true);
-    if (r.success) {
-      // Email should be lowercased + trimmed by the transform.
-      expect(r.data.email).toBe("sarah@nimbus.app");
-      expect(r.data.name).toBe("Sarah Khan");
-    }
+    if (r.success) expect(r.data.name).toBe("Sarah Khan");
   });
 
   it("rejects empty name", () => {
-    const r = UpdateProfileSchema.safeParse({ name: "  ", email: "a@b.co" });
+    const r = UpdateProfileSchema.safeParse({ name: "  " });
     expect(r.success).toBe(false);
+  });
+});
+
+describe("RequestEmailChangeSchema", () => {
+  it("lowercases + trims a valid new email", () => {
+    const r = RequestEmailChangeSchema.safeParse({ newEmail: " Sarah@Nimbus.app " });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.newEmail).toBe("sarah@nimbus.app");
   });
 
   it("rejects non-email strings", () => {
-    const r = UpdateProfileSchema.safeParse({ name: "Ali", email: "not-an-email" });
-    expect(r.success).toBe(false);
+    expect(RequestEmailChangeSchema.safeParse({ newEmail: "not-an-email" }).success).toBe(false);
   });
 });
 

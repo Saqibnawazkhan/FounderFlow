@@ -296,6 +296,20 @@ export const en = {
     editProfile: "Edit profile",
     profileSaved: "Profile updated",
     changePassword: "Change password",
+    // Change-email flow (S3)
+    changeEmail: "Change email",
+    changeEmailDesc:
+      "Your current email is {email}. We'll send a confirmation link to the new address — the change only takes effect once you click it.",
+    newEmail: "New email",
+    changeEmailSend: "Send confirmation",
+    changeEmailSentBody:
+      "Confirmation sent to {email}. Click the link in that inbox to finish the change. Your current email stays active until then.",
+    changeEmailConfirming: "Confirming your new email…",
+    changeEmailDoneTitle: "Email changed",
+    changeEmailDoneBody: "Your login email is updated. Use it next time you sign in.",
+    changeEmailInvalidTitle: "This link isn't valid",
+    changeEmailInvalidBody:
+      "It may have expired or already been used. Request the change again from Settings.",
     currentPassword: "Current password",
     newPassword: "New password",
     confirmPassword: "Confirm new password",
@@ -595,6 +609,21 @@ export const ur: typeof en = {
     editProfile: "پروفائل ترمیم کریں",
     profileSaved: "پروفائل اپ ڈیٹ ہو گیا",
     changePassword: "پاس ورڈ تبدیل کریں",
+    // Change-email flow (S3)
+    changeEmail: "ای میل تبدیل کریں",
+    changeEmailDesc:
+      "آپ کا موجودہ ای میل {email} ہے۔ ہم نئے پتے پر تصدیقی لنک بھیجیں گے — تبدیلی تبھی نافذ ہوگی جب آپ اس پر کلک کریں گے۔",
+    newEmail: "نیا ای میل",
+    changeEmailSend: "تصدیق بھیجیں",
+    changeEmailSentBody:
+      "{email} پر تصدیق بھیج دی گئی۔ تبدیلی مکمل کرنے کے لیے اس ان باکس میں موجود لنک پر کلک کریں۔ تب تک آپ کا موجودہ ای میل فعال رہے گا۔",
+    changeEmailConfirming: "آپ کا نیا ای میل تصدیق ہو رہا ہے…",
+    changeEmailDoneTitle: "ای میل تبدیل ہو گیا",
+    changeEmailDoneBody:
+      "آپ کا لاگ ان ای میل اپ ڈیٹ ہو گیا ہے۔ اگلی بار سائن ان کرتے وقت یہی استعمال کریں۔",
+    changeEmailInvalidTitle: "یہ لنک کارآمد نہیں ہے",
+    changeEmailInvalidBody:
+      "یہ لنک ختم ہو چکا ہے یا پہلے استعمال ہو چکا ہے۔ ترتیبات سے دوبارہ تبدیلی کی درخواست کریں۔",
     currentPassword: "موجودہ پاس ورڈ",
     newPassword: "نیا پاس ورڈ",
     confirmPassword: "نئے پاس ورڈ کی تصدیق کریں",

@@ -42,23 +42,14 @@ export async function updateProfileAction(input: unknown): Promise<ActionResult>
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid profile" };
   }
-  const { name, email } = parsed.data;
+  const { name } = parsed.data;
 
   try {
-    // If the email is changing, ensure it isn't taken. The unique constraint
-    // catches it too but a clean error message is friendlier.
-    const me = await db.user.findUnique({ where: { id: session.user.id } });
-    if (!me) return { success: false, error: "User no longer exists" };
-    if (email !== me.email) {
-      const collision = await db.user.findUnique({ where: { email } });
-      if (collision && collision.id !== me.id) {
-        return { success: false, error: "An account with this email already exists" };
-      }
-    }
-
+    // Name only — email changes route through the verified change flow
+    // (lib/actions/email-change.ts) so they can't skip inbox ownership.
     await db.user.update({
       where: { id: session.user.id },
-      data: { name, email },
+      data: { name },
     });
 
     revalidatePath("/settings");

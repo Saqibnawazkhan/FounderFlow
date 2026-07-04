@@ -6,7 +6,7 @@
  */
 
 import type { Metadata } from "next";
-import { getCompanyUsers } from "@/lib/queries/users";
+import { getCompanyUsers, getDeactivatedUsers, getPendingInvites } from "@/lib/queries/users";
 import { getTransactions } from "@/lib/queries/transactions";
 import { getTasks } from "@/lib/queries/tasks";
 import { requireScopedSession } from "@/lib/queries/session";
@@ -18,18 +18,24 @@ export const metadata: Metadata = {
 };
 
 export default async function TeamPage() {
-  const [session, users, transactions, tasks] = await Promise.all([
-    requireScopedSession(),
-    getCompanyUsers(),
-    getTransactions(),
-    getTasks(),
-  ]);
+  const [session, users, transactions, tasks, pendingInvites, deactivatedUsers] = await Promise.all(
+    [
+      requireScopedSession(),
+      getCompanyUsers(),
+      getTransactions(),
+      getTasks(),
+      getPendingInvites(),
+      getDeactivatedUsers(),
+    ]
+  );
 
   return (
     <TeamClient
       users={users}
       transactions={transactions}
       tasks={tasks}
+      pendingInvites={pendingInvites}
+      deactivatedUsers={deactivatedUsers}
       currentUserId={session.userId}
       currentUserRole={session.role}
     />

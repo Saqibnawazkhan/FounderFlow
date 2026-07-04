@@ -28,7 +28,6 @@ type Props = {
 export function EditProfileModal({ open, onClose, defaultName, defaultEmail, onSaved }: Props) {
   const t = useT();
   const nameId = useId();
-  const emailId = useId();
   const [submitting, setSubmitting] = useState(false);
 
   const {
@@ -38,13 +37,13 @@ export function EditProfileModal({ open, onClose, defaultName, defaultEmail, onS
     reset,
   } = useForm<UpdateProfileInput>({
     resolver: zodResolver(UpdateProfileSchema),
-    defaultValues: { name: defaultName, email: defaultEmail },
+    defaultValues: { name: defaultName },
   });
 
   // Re-seed when the parent re-opens with a possibly-changed profile
   // (e.g. after the user just saved).
   function onClosed() {
-    reset({ name: defaultName, email: defaultEmail });
+    reset({ name: defaultName });
     onClose();
   }
 
@@ -69,14 +68,17 @@ export function EditProfileModal({ open, onClose, defaultName, defaultEmail, onS
           error={errors.name?.message}
           inputProps={register("name")}
         />
-        <Field
-          id={emailId}
-          label={t.auth.email}
-          type="email"
-          autoComplete="email"
-          error={errors.email?.message}
-          inputProps={register("email")}
-        />
+        {/* Email is read-only here — changing it goes through the verified
+            "Change email" flow (Settings → Profile) so a typo can't lock the
+            user out of their own account. */}
+        <div>
+          <p className="mb-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted">
+            {t.auth.email}
+          </p>
+          <p className="rounded-xl border border-border bg-bg/40 px-4 py-2.5 text-sm text-fg-muted">
+            {defaultEmail}
+          </p>
+        </div>
         <div className="flex justify-end gap-2 pt-1">
           <button
             type="button"

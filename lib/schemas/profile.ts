@@ -5,14 +5,11 @@
 
 import { z } from "zod";
 
+// Name only. Email changes go through the verify-the-new-address flow in
+// lib/actions/email-change.ts (audit S3) — a login email can't be swapped
+// without proving control of the destination inbox.
 export const UpdateProfileSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(80, "Name is too long"),
-  email: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .email("Enter a valid email address")
-    .max(200, "Email is too long"),
 });
 export type UpdateProfileInput = z.infer<typeof UpdateProfileSchema>;
 

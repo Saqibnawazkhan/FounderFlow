@@ -53,6 +53,42 @@ function toClient(u: {
   };
 }
 
+function roleLabel(role: string): string {
+  return role === "cofounder" ? "Co-Founder" : "Team Member";
+}
+
+/**
+ * Render + send the invite email for a token. Shared by inviteUserAction
+ * (fresh invite) and resendInviteAction (re-send an existing pending one).
+ * Never throws on a delivery failure — returns `emailSent: false` so the
+ * caller can surface the copyable URL as a fallback.
+ */
+async function deliverInviteEmail(params: {
+  email: string;
+  inviteeName: string;
+  inviterName: string;
+  companyName: string;
+  role: string;
+  token: string;
+}): Promise<{ emailSent: boolean; inviteUrl: string }> {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000";
+  const inviteUrl = `${baseUrl}/invite/${params.token}`;
+  const { html, text } = renderInviteEmail({
+    inviteeName: params.inviteeName,
+    inviterName: params.inviterName,
+    companyName: params.companyName,
+    roleLabel: roleLabel(params.role),
+    acceptUrl: inviteUrl,
+  });
+  const sendResult = await sendEmail({
+    to: params.email,
+    subject: `${params.inviterName} invited you to ${params.companyName} on FounderFlow`,
+    html,
+    text,
+  });
+  return { emailSent: sendResult.delivered, inviteUrl };
+}
+
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Reads                                                                       */
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -148,7 +184,7 @@ export async function inviteUserAction(
         data: {
           companyId,
           type: "user_joined",
-          message: `${actor.name} invited ${name} (${role === "cofounder" ? "Co-Founder" : "Team Member"})`,
+          message: `${actor.name} invited ${name} (${roleLabel(role)})`,
           userId: actorId,
           userName: actor.name,
           metadata: JSON.stringify({ kind: "user", invitedUser: name, role }),
@@ -156,24 +192,16 @@ export async function inviteUserAction(
       });
     });
 
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000";
-    const inviteUrl = `${baseUrl}/invite/${token}`;
-
-    // Render + send the email. Result is ignored on failure — the invite
+    // Render + send the email. A delivery failure is non-fatal — the invite
     // row exists, so the admin can copy the URL from the response and
     // share it manually if Resend rejects.
-    const { html, text } = renderInviteEmail({
+    const { emailSent, inviteUrl } = await deliverInviteEmail({
+      email,
       inviteeName: name,
       inviterName: actor.name,
       companyName: company.name,
-      roleLabel: role === "cofounder" ? "Co-Founder" : "Team Member",
-      acceptUrl: inviteUrl,
-    });
-    const sendResult = await sendEmail({
-      to: email,
-      subject: `${actor.name} invited you to ${company.name} on FounderFlow`,
-      html,
-      text,
+      role,
+      token,
     });
 
     revalidatePath("/team");
@@ -181,7 +209,7 @@ export async function inviteUserAction(
 
     return {
       success: true,
-      data: { email, emailSent: sendResult.delivered, inviteUrl },
+      data: { email, emailSent, inviteUrl },
     };
   } catch (e) {
     captureServerError(e, { action: "inviteUserAction" });
@@ -189,6 +217,86 @@ export async function inviteUserAction(
       success: false,
       error: "Couldn't invite right now. Try again in a moment.",
     };
+  }
+}
+
+/**
+ * Re-send a pending invite (X7). Rotates the token + pushes the 7-day
+ * expiry out again, then re-delivers the email. Rotating the token means an
+ * older forwarded link stops working — the freshest link is the only valid
+ * one, which is the safer default.
+ */
+export async function resendInviteAction(
+  inviteId: string
+): Promise<ActionResult<{ email: string; emailSent: boolean; inviteUrl: string }>> {
+  const gate = await requireAdmin();
+  if (!gate.ok) return { success: false, error: gate.error };
+
+  const rl = limiters.write.consume(gate.userId);
+  if (!rl.allowed) return { success: false, error: rl.error ?? "Too many requests" };
+
+  try {
+    const invite = await db.inviteToken.findUnique({ where: { id: inviteId } });
+    if (!invite || invite.companyId !== gate.companyId) {
+      return { success: false, error: "Invite not found" };
+    }
+    if (invite.usedAt) {
+      return { success: false, error: "That invite has already been accepted" };
+    }
+
+    const actor = await db.user.findUnique({ where: { id: gate.userId } });
+    if (!actor) return { success: false, error: "User no longer exists" };
+    const company = await db.company.findUnique({ where: { id: gate.companyId } });
+    if (!company) return { success: false, error: "Company no longer exists" };
+
+    const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await db.inviteToken.update({
+      where: { id: invite.id },
+      data: { token, expiresAt },
+    });
+
+    const { emailSent, inviteUrl } = await deliverInviteEmail({
+      email: invite.email,
+      inviteeName: invite.name,
+      inviterName: actor.name,
+      companyName: company.name,
+      role: invite.role,
+      token,
+    });
+
+    revalidatePath("/team");
+
+    return { success: true, data: { email: invite.email, emailSent, inviteUrl } };
+  } catch (e) {
+    captureServerError(e, { action: "resendInviteAction" });
+    return { success: false, error: "Couldn't resend right now. Try again in a moment." };
+  }
+}
+
+/**
+ * Revoke a pending invite (X7). Hard-deletes the token so its link stops
+ * working immediately. Safe to hard-delete — no user account exists yet.
+ */
+export async function revokeInviteAction(inviteId: string): Promise<ActionResult> {
+  const gate = await requireAdmin();
+  if (!gate.ok) return { success: false, error: gate.error };
+
+  try {
+    const invite = await db.inviteToken.findUnique({ where: { id: inviteId } });
+    if (!invite || invite.companyId !== gate.companyId) {
+      return { success: false, error: "Invite not found" };
+    }
+    if (invite.usedAt) {
+      return { success: false, error: "That invite has already been accepted" };
+    }
+    await db.inviteToken.delete({ where: { id: invite.id } });
+
+    revalidatePath("/team");
+    return { success: true, data: undefined };
+  } catch (e) {
+    captureServerError(e, { action: "revokeInviteAction" });
+    return { success: false, error: "Couldn't revoke right now." };
   }
 }
 
@@ -287,7 +395,7 @@ export async function removeUserAction(userId: string): Promise<ActionResult> {
 
   try {
     const target = await db.user.findUnique({ where: { id: userId } });
-    if (!target) return { success: false, error: "User not found" };
+    if (!target || target.deletedAt) return { success: false, error: "User not found" };
     if (target.companyId !== companyId) {
       return { success: false, error: "Not authorized" };
     }
@@ -308,12 +416,16 @@ export async function removeUserAction(userId: string): Promise<ActionResult> {
     const actor = await db.user.findUnique({ where: { id: actorId } });
     if (!actor) return { success: false, error: "User no longer exists" };
 
-    // Note: Prisma schema cascades on User deletion, so the target user's
-    // transactions, tasks, activities, and notifications all go with them.
-    // The UI surfaces a destructive ConfirmDialog before this fires.
+    // Tier 3 soft-delete (X8): stamp deletedAt instead of hard-deleting. The
+    // user loses access immediately (auth + queries filter deletedAt: null)
+    // but their transactions, tasks, and activities stay in the records —
+    // exactly what the confirm dialog promises — and an admin can restore
+    // them with reactivateUserAction until the 90-day purge cron fires.
+    const deletedAt = new Date();
     await db.$transaction(async (tx) => {
-      await tx.user.delete({ where: { id: userId } });
-      // Re-point company ownership if we just deleted the owner.
+      await tx.user.update({ where: { id: userId }, data: { deletedAt } });
+      // Re-point company ownership away from the deactivated owner so a
+      // tombstoned row never remains the workspace owner.
       const company = await tx.company.findUnique({ where: { id: companyId } });
       if (company?.ownerId === userId) {
         await tx.company.update({
@@ -321,11 +433,16 @@ export async function removeUserAction(userId: string): Promise<ActionResult> {
           data: { ownerId: actorId },
         });
       }
+      // Invalidate any still-pending invites addressed to them — a stale
+      // link shouldn't re-create the account they were just removed from.
+      await tx.inviteToken.deleteMany({
+        where: { email: target.email, companyId, usedAt: null },
+      });
       await tx.activity.create({
         data: {
           companyId,
           type: "user_removed",
-          message: `${actor.name} removed ${target.name} from the team`,
+          message: `${actor.name} deactivated ${target.name}`,
           userId: actorId,
           userName: actor.name,
           metadata: JSON.stringify({
@@ -344,7 +461,70 @@ export async function removeUserAction(userId: string): Promise<ActionResult> {
     return { success: true, data: undefined };
   } catch (e) {
     captureServerError(e, { action: "removeUserAction" });
-    return { success: false, error: "Couldn't remove right now." };
+    return { success: false, error: "Couldn't deactivate right now." };
+  }
+}
+
+/**
+ * Restore a soft-deleted teammate (X8). Clears the deletedAt sentinel so
+ * they can sign in again and reappear on the roster with their prior role.
+ * Admin-only. No-op-safe if they're already active.
+ */
+export async function reactivateUserAction(userId: string): Promise<ActionResult> {
+  const gate = await requireAdmin();
+  if (!gate.ok) return { success: false, error: gate.error };
+  const { userId: actorId, companyId } = gate;
+
+  try {
+    const target = await db.user.findUnique({ where: { id: userId } });
+    if (!target) return { success: false, error: "User not found" };
+    if (target.companyId !== companyId) {
+      return { success: false, error: "Not authorized" };
+    }
+    if (!target.deletedAt) {
+      // Already active — return success so the UI can refresh cleanly.
+      return { success: true, data: undefined };
+    }
+
+    const actor = await db.user.findUnique({ where: { id: actorId } });
+    if (!actor) return { success: false, error: "User no longer exists" };
+
+    await db.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { deletedAt: null } });
+      await tx.activity.create({
+        data: {
+          companyId,
+          type: "user_joined",
+          message: `${actor.name} reactivated ${target.name}`,
+          userId: actorId,
+          userName: actor.name,
+          metadata: JSON.stringify({
+            kind: "user",
+            invitedUser: target.name,
+            role: target.role,
+          }),
+        },
+      });
+      await tx.notification.create({
+        data: {
+          userId: target.id,
+          companyId,
+          title: "Your access was restored",
+          message: `${actor.name} reactivated your account. Welcome back.`,
+          type: "info",
+          link: "/dashboard",
+        },
+      });
+    });
+
+    revalidatePath("/team");
+    revalidatePath("/activities");
+    revalidatePath("/notifications");
+
+    return { success: true, data: undefined };
+  } catch (e) {
+    captureServerError(e, { action: "reactivateUserAction" });
+    return { success: false, error: "Couldn't reactivate right now." };
   }
 }
 

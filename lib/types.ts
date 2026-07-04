@@ -20,6 +20,26 @@ export interface Company {
   ownerId: string;
 }
 
+/** A still-unused invite shown in the roster's pending-invites panel (X7). */
+export interface PendingInvite {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  createdAt: string;
+  expiresAt: string;
+  expired: boolean;
+}
+
+/** A soft-deleted teammate shown in the roster's deactivated panel (X8). */
+export interface DeactivatedUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  deactivatedAt: string;
+}
+
 export type TransactionType = "expense" | "investment";
 
 export interface Transaction {

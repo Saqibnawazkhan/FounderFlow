@@ -4,9 +4,29 @@ import { forwardRef, useId, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Crown, Mail, Shield, Trash2, User as UserIcon, UserPlus, Users } from "lucide-react";
+import {
+  Clock,
+  Crown,
+  Mail,
+  MailWarning,
+  RotateCcw,
+  Send,
+  Shield,
+  Trash2,
+  User as UserIcon,
+  UserPlus,
+  Users,
+  X,
+} from "lucide-react";
 import toast from "react-hot-toast";
-import { inviteUserAction, removeUserAction, updateUserRoleAction } from "@/lib/actions/team";
+import {
+  inviteUserAction,
+  reactivateUserAction,
+  removeUserAction,
+  resendInviteAction,
+  revokeInviteAction,
+  updateUserRoleAction,
+} from "@/lib/actions/team";
 import { InviteUserSchema, type InviteUserInput } from "@/lib/schemas/user";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -14,23 +34,41 @@ import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, formatDate, formatCurrency } from "@/lib/utils";
-import type { Task, Transaction, User, UserRole } from "@/lib/types";
+import type {
+  DeactivatedUser,
+  PendingInvite,
+  Task,
+  Transaction,
+  User,
+  UserRole,
+} from "@/lib/types";
 import { ROLE_LABELS } from "@/lib/types";
 
 type Props = {
   users: User[];
   transactions: Transaction[];
   tasks: Task[];
+  pendingInvites: PendingInvite[];
+  deactivatedUsers: DeactivatedUser[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
 };
 
-export function TeamClient({ users, transactions, tasks, currentUserId, currentUserRole }: Props) {
+export function TeamClient({
+  users,
+  transactions,
+  tasks,
+  pendingInvites,
+  deactivatedUsers,
+  currentUserId,
+  currentUserRole,
+}: Props) {
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
   const [inviteOpen, setInviteOpen] = useState(false);
   const [pendingUserId, setPendingUserId] = useState<string | null>(null);
+  const [pendingInviteId, setPendingInviteId] = useState<string | null>(null);
 
   const isAdmin = currentUserRole === "admin";
 
@@ -55,9 +93,10 @@ export function TeamClient({ users, transactions, tasks, currentUserId, currentU
 
   async function handleRemove(userId: string, name: string) {
     const ok = await confirm({
-      title: `Remove ${name} from the team?`,
-      description: "They lose access immediately. Their past contributions stay in the records.",
-      confirmLabel: "Remove",
+      title: `Deactivate ${name}?`,
+      description:
+        "They lose access immediately, but their tasks, expenses, and activity stay in the records. You can reactivate them later.",
+      confirmLabel: "Deactivate",
       tone: "danger",
     });
     if (!ok) return;
@@ -65,7 +104,61 @@ export function TeamClient({ users, transactions, tasks, currentUserId, currentU
     const res = await removeUserAction(userId);
     setPendingUserId(null);
     if (res.success) {
-      toast.success(`${name} removed`);
+      toast.success(`${name} deactivated`);
+      refresh();
+    } else {
+      toast.error(res.error);
+    }
+  }
+
+  async function handleReactivate(userId: string, name: string) {
+    setPendingUserId(userId);
+    const res = await reactivateUserAction(userId);
+    setPendingUserId(null);
+    if (res.success) {
+      toast.success(`${name} reactivated`);
+      refresh();
+    } else {
+      toast.error(res.error);
+    }
+  }
+
+  async function handleResend(inviteId: string, email: string) {
+    setPendingInviteId(inviteId);
+    const res = await resendInviteAction(inviteId);
+    setPendingInviteId(null);
+    if (res.success) {
+      if (res.data.emailSent) {
+        toast.success(`Invite re-sent to ${email}`);
+      } else {
+        toast.success(
+          `Invite refreshed. Email didn't send — copy this link: ${res.data.inviteUrl}`,
+          {
+            duration: 12_000,
+          }
+        );
+        // eslint-disable-next-line no-console
+        console.info("[invite] fallback URL:", res.data.inviteUrl);
+      }
+      refresh();
+    } else {
+      toast.error(res.error);
+    }
+  }
+
+  async function handleRevoke(inviteId: string, name: string) {
+    const ok = await confirm({
+      title: `Revoke ${name}'s invite?`,
+      description: "Their invite link stops working immediately. You can always invite them again.",
+      confirmLabel: "Revoke",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setPendingInviteId(inviteId);
+    const res = await revokeInviteAction(inviteId);
+    setPendingInviteId(null);
+    if (res.success) {
+      toast.success("Invite revoked");
       refresh();
     } else {
       toast.error(res.error);
@@ -209,7 +302,8 @@ export function TeamClient({ users, transactions, tasks, currentUserId, currentU
                 <button
                   onClick={() => handleRemove(user.id, user.name)}
                   disabled={pendingUserId === user.id}
-                  aria-label={`Remove ${user.name} from the team`}
+                  aria-label={`Deactivate ${user.name}`}
+                  title="Deactivate"
                   className="absolute bottom-4 right-4 rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40"
                 >
                   <Trash2 className="h-4 w-4" aria-hidden="true" />
@@ -219,6 +313,124 @@ export function TeamClient({ users, transactions, tasks, currentUserId, currentU
           );
         })}
       </section>
+
+      {isAdmin && pendingInvites.length > 0 && (
+        <section aria-label="Pending invites" className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Send className="h-4 w-4 text-cyan-strong" aria-hidden="true" />
+            <h2 className="text-lg font-bold tracking-tight">Pending invites</h2>
+            <span className="rounded-full bg-glass/[0.06] px-2 py-0.5 font-mono text-[10px] font-bold text-fg-muted">
+              {pendingInvites.length}
+            </span>
+          </div>
+          <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
+            {pendingInvites.map((invite) => (
+              <li
+                key={invite.id}
+                className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <Avatar name={invite.name} size="md" />
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="truncate font-semibold text-fg">{invite.name}</p>
+                      <span className="rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-fg-muted">
+                        {ROLE_LABELS[invite.role as UserRole] ?? invite.role}
+                      </span>
+                      {invite.expired ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-danger/30 bg-danger/10 px-2 py-0.5 text-[10px] font-medium text-danger">
+                          <MailWarning className="h-3 w-3" aria-hidden="true" /> Expired
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-cyan/30 bg-cyan/10 px-2 py-0.5 text-[10px] font-medium text-cyan-strong">
+                          <Clock className="h-3 w-3" aria-hidden="true" /> Awaiting
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 flex items-center gap-1.5 truncate text-sm text-fg-muted">
+                      <Mail className="h-3 w-3" aria-hidden="true" /> {invite.email}
+                    </p>
+                    <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-fg-muted">
+                      {invite.expired ? "Expired" : "Expires"} {formatDate(invite.expiresAt)}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2 self-end sm:self-auto">
+                  <button
+                    onClick={() => handleResend(invite.id, invite.email)}
+                    disabled={pendingInviteId === invite.id}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-semibold text-fg transition-colors hover:border-primary/40 hover:text-primary-strong disabled:opacity-50"
+                  >
+                    <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                    {pendingInviteId === invite.id ? "Sending…" : "Resend"}
+                  </button>
+                  <button
+                    onClick={() => handleRevoke(invite.id, invite.name)}
+                    disabled={pendingInviteId === invite.id}
+                    aria-label={`Revoke ${invite.name}'s invite`}
+                    title="Revoke invite"
+                    className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40"
+                  >
+                    <X className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {isAdmin && deactivatedUsers.length > 0 && (
+        <section aria-label="Deactivated members" className="space-y-4">
+          <div className="flex items-center gap-2">
+            <UserIcon className="h-4 w-4 text-fg-muted" aria-hidden="true" />
+            <h2 className="text-lg font-bold tracking-tight">Deactivated</h2>
+            <span className="rounded-full bg-glass/[0.06] px-2 py-0.5 font-mono text-[10px] font-bold text-fg-muted">
+              {deactivatedUsers.length}
+            </span>
+          </div>
+          <p className="-mt-2 text-sm text-fg-muted">
+            Removed members keep their history. Reactivate to restore access with their previous
+            role. They&apos;re permanently purged 90 days after deactivation.
+          </p>
+          <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
+            {deactivatedUsers.map((du) => (
+              <li
+                key={du.id}
+                className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="opacity-60">
+                    <Avatar name={du.name} size="md" />
+                  </span>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="truncate font-semibold text-fg">{du.name}</p>
+                      <span className="rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-fg-muted">
+                        {ROLE_LABELS[du.role as UserRole] ?? du.role}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 flex items-center gap-1.5 truncate text-sm text-fg-muted">
+                      <Mail className="h-3 w-3" aria-hidden="true" /> {du.email}
+                    </p>
+                    <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-fg-muted">
+                      Deactivated {formatDate(du.deactivatedAt)}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleReactivate(du.id, du.name)}
+                  disabled={pendingUserId === du.id}
+                  className="inline-flex shrink-0 items-center gap-1.5 self-end rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-semibold text-fg transition-colors hover:border-primary/40 hover:text-primary-strong disabled:opacity-50 sm:self-auto"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  {pendingUserId === du.id ? "Restoring…" : "Reactivate"}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <Modal
         open={inviteOpen}

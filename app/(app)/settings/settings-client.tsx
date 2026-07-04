@@ -15,6 +15,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
+  AtSign,
   Building2,
   CalendarDays,
   Clock,
@@ -51,6 +52,7 @@ import { formatDuration } from "@/lib/time/thresholds";
 import type { AccountStats } from "@/lib/queries/stats";
 import { EditProfileModal } from "./edit-profile-modal";
 import { ChangePasswordModal } from "./change-password-modal";
+import { ChangeEmailModal } from "./change-email-modal";
 import { EditCompanyModal } from "./edit-company-modal";
 import { DeleteAccountModal } from "./delete-account-modal";
 import { DeleteWorkspaceModal } from "./delete-workspace-modal";
@@ -76,6 +78,7 @@ export function SettingsClient({ user, company, stats }: Props) {
 
   const [profileOpen, setProfileOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [emailOpen, setEmailOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [deleteWorkspaceOpen, setDeleteWorkspaceOpen] = useState(false);
@@ -198,6 +201,13 @@ export function SettingsClient({ user, company, stats }: Props) {
         label={t.settings.profile}
         action={
           <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setEmailOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg-muted transition hover:bg-surface-hover hover:text-fg"
+            >
+              <AtSign className="h-3.5 w-3.5" aria-hidden="true" />
+              {t.settings.changeEmail}
+            </button>
             <button
               onClick={() => setPasswordOpen(true)}
               className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg-muted transition hover:bg-surface-hover hover:text-fg"
@@ -412,6 +422,11 @@ export function SettingsClient({ user, company, stats }: Props) {
         }}
       />
       <ChangePasswordModal open={passwordOpen} onClose={() => setPasswordOpen(false)} />
+      <ChangeEmailModal
+        open={emailOpen}
+        onClose={() => setEmailOpen(false)}
+        currentEmail={user.email}
+      />
       {canEditCompany && (
         <EditCompanyModal
           open={companyOpen}
