@@ -17,7 +17,7 @@
  * descriptive title, the "delete" button has a per-comment aria-label.
  */
 
-import { useEffect, useId, useRef, useState, useTransition } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useTransition } from "react";
 import { formatDistanceToNow } from "date-fns";
 import { MessageSquare, Send, Trash2, AtSign } from "lucide-react";
 import toast from "react-hot-toast";
@@ -26,8 +26,8 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { createCommentAction, deleteCommentAction } from "@/lib/actions/comments";
 import { cn } from "@/lib/utils";
 import type { CommentClient, CommentTarget } from "@/lib/queries/comments";
-import type { MentionUser } from "@/lib/comments/mentions";
-import { slugifyName } from "@/lib/comments/mentions";
+import type { ActiveMention, MentionUser } from "@/lib/comments/mentions";
+import { findMentionQuery, slugifyName } from "@/lib/comments/mentions";
 
 type Props = {
   target: CommentTarget;
@@ -59,7 +59,73 @@ export function CommentThread({
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const textareaId = useId();
+  const listboxId = useId();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // @mention autocomplete (T6): `mention` is the active token span under the
+  // caret (or null); `activeIndex` is the highlighted candidate.
+  const [mention, setMention] = useState<ActiveMention | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const mentionCandidates = useMemo(() => {
+    if (!mention) return [];
+    const q = mention.query.toLowerCase();
+    return companyUsers
+      .filter((u) => u.id !== currentUserId)
+      .filter((u) => {
+        const slug = slugifyName(u.name);
+        return slug.includes(q) || u.name.toLowerCase().includes(q);
+      })
+      .slice(0, 6);
+  }, [mention, companyUsers, currentUserId]);
+
+  const showMentions = mention !== null && mentionCandidates.length > 0;
+
+  function refreshMention(value: string, caret: number) {
+    setMention(findMentionQuery(value, caret));
+    setActiveIndex(0);
+  }
+
+  function acceptMention(user: MentionUser) {
+    if (!mention) return;
+    const slug = slugifyName(user.name);
+    const before = body.slice(0, mention.from);
+    const after = body.slice(mention.to);
+    const insert = `@${slug} `;
+    const next = before + insert + after;
+    setBody(next);
+    setMention(null);
+    const caret = before.length + insert.length;
+    // Restore focus + caret after the inserted slug on the next frame, once
+    // React has flushed the new value into the textarea.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      }
+    });
+  }
+
+  function handleTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (!showMentions) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => (i + 1) % mentionCandidates.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => (i - 1 + mentionCandidates.length) % mentionCandidates.length);
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      const pick = mentionCandidates[activeIndex];
+      if (pick) {
+        e.preventDefault();
+        acceptMention(pick);
+      }
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setMention(null);
+    }
+  }
 
   // Roster slugs are useful in two places: rendering chip styling on
   // already-sent comments AND showing a tip under the composer for
@@ -81,6 +147,7 @@ export function CommentThread({
       return;
     }
     setBody("");
+    setMention(null);
     // Honest count: notifiedCount comes from the actual createMany result,
     // so if the fan-out threw, we don't overstate. mentionedUserIds is the
     // PARSED list — useful to know "we tried", but the user wants to know
@@ -194,17 +261,77 @@ export function CommentThread({
         <label htmlFor={textareaId} className="sr-only">
           Comment body
         </label>
-        <textarea
-          id={textareaId}
-          ref={textareaRef}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          placeholder={`Write a comment… use ${slugSuggestions[0] ?? "@name"} to mention someone`}
-          rows={3}
-          maxLength={2000}
-          disabled={submitting}
-          className="w-full resize-y rounded-lg border border-transparent bg-transparent p-2 text-sm text-fg placeholder:text-fg-muted/60 focus:border-primary/30 focus:bg-glass/[0.04] focus:outline-none"
-        />
+        <div className="relative">
+          <textarea
+            id={textareaId}
+            ref={textareaRef}
+            value={body}
+            onChange={(e) => {
+              setBody(e.target.value);
+              refreshMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
+            }}
+            onKeyDown={handleTextareaKeyDown}
+            onClick={(e) => refreshMention(body, e.currentTarget.selectionStart ?? body.length)}
+            onSelect={(e) => refreshMention(body, e.currentTarget.selectionStart ?? body.length)}
+            onBlur={() => setMention(null)}
+            placeholder={`Write a comment… use ${slugSuggestions[0] ?? "@name"} to mention someone`}
+            rows={3}
+            maxLength={2000}
+            disabled={submitting}
+            role="combobox"
+            aria-expanded={showMentions}
+            aria-controls={showMentions ? listboxId : undefined}
+            aria-autocomplete="list"
+            aria-activedescendant={showMentions ? `${listboxId}-opt-${activeIndex}` : undefined}
+            className="w-full resize-y rounded-lg border border-transparent bg-transparent p-2 text-sm text-fg placeholder:text-fg-muted/60 focus:border-primary/30 focus:bg-glass/[0.04] focus:outline-none"
+          />
+
+          {showMentions && (
+            <ul
+              id={listboxId}
+              role="listbox"
+              aria-label="Mention a teammate"
+              className="absolute left-1 right-1 top-full z-30 mt-1 max-h-56 overflow-auto rounded-xl border border-border bg-surface p-1 shadow-card"
+            >
+              {mentionCandidates.map((u, i) => {
+                const selected = i === activeIndex;
+                return (
+                  <li
+                    key={u.id}
+                    id={`${listboxId}-opt-${i}`}
+                    role="option"
+                    aria-selected={selected}
+                  >
+                    <button
+                      type="button"
+                      // mousedown (not click) so the textarea never blurs first,
+                      // which would null out `mention` before we can read it.
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        acceptMention(u);
+                      }}
+                      onMouseEnter={() => setActiveIndex(i)}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
+                        selected ? "bg-primary/10" : "hover:bg-glass/[0.06]"
+                      )}
+                    >
+                      <Avatar name={u.name} size="xs" />
+                      <span className="min-w-0 flex-1 truncate">
+                        <span className="block truncate text-sm font-semibold text-fg">
+                          {u.name}
+                        </span>
+                        <span className="block truncate font-mono text-[10px] text-fg-muted">
+                          @{slugifyName(u.name)}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
         <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-1.5 text-[10px] text-fg-muted">
             <AtSign className="h-3 w-3" aria-hidden="true" />

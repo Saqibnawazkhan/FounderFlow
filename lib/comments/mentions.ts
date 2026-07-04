@@ -26,6 +26,35 @@ export type MentionUser = {
   name: string;
 };
 
+/**
+ * Composer autocomplete (T6): if `caret` sits inside an in-progress `@token`,
+ * return the token's span (`from`..`to`) and the partial `query` after the
+ * `@`. A token starts at an `@` that's at the start of the string or preceded
+ * by whitespace and runs through unbroken `[a-zA-Z0-9-]` up to the caret.
+ * Returns null when the caret isn't inside a mention token.
+ *
+ * Kept next to the parser so the detection rule (what starts a mention) and
+ * the extraction rule (what resolves to a user) stay in lockstep.
+ */
+export type ActiveMention = { from: number; to: number; query: string };
+export function findMentionQuery(value: string, caret: number): ActiveMention | null {
+  let i = caret - 1;
+  while (i >= 0) {
+    const ch = value[i];
+    if (ch === "@") {
+      const prev = i > 0 ? value[i - 1] : "";
+      if (prev === "" || /\s/.test(prev)) {
+        const query = value.slice(i + 1, caret);
+        if (/^[a-zA-Z0-9-]*$/.test(query)) return { from: i, to: caret, query };
+      }
+      return null;
+    }
+    if (/\s/.test(ch)) return null; // whitespace before an @ → not a mention
+    i--;
+  }
+  return null;
+}
+
 /** Lowercase, spaces→hyphens, strip non-alphanum-hyphen. */
 export function slugifyName(name: string): string {
   return name

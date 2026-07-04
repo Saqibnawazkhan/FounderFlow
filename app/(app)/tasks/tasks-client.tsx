@@ -175,13 +175,39 @@ export function TasksClient({
   // client paint agree; without the effect gate we'd hit a hydration diff.
   const [view, setView] = useState<"board" | "list">("board");
   const [filter, setFilter] = useState<"all" | "mine" | "assigned-by-me">("all");
+  // Secondary filters (T4) — stack on top of the relationship filter above.
+  const [priorityFilter, setPriorityFilter] = useState<"all" | TaskPriority>("all");
+  const [projectFilter, setProjectFilter] = useState<string>("all");
+  const [dueFilter, setDueFilter] = useState<"all" | "overdue" | "today" | "week" | "none">("all");
   useEffect(() => {
     try {
       const savedView = localStorage.getItem("ff.tasks.view");
       const savedFilter = localStorage.getItem("ff.tasks.filter");
+      const savedPriority = localStorage.getItem("ff.tasks.priority");
+      const savedProject = localStorage.getItem("ff.tasks.project");
+      const savedDue = localStorage.getItem("ff.tasks.due");
       if (savedView === "board" || savedView === "list") setView(savedView);
       if (savedFilter === "all" || savedFilter === "mine" || savedFilter === "assigned-by-me") {
         setFilter(savedFilter);
+      }
+      if (
+        savedPriority === "all" ||
+        savedPriority === "urgent" ||
+        savedPriority === "high" ||
+        savedPriority === "medium" ||
+        savedPriority === "low"
+      ) {
+        setPriorityFilter(savedPriority);
+      }
+      if (savedProject) setProjectFilter(savedProject);
+      if (
+        savedDue === "all" ||
+        savedDue === "overdue" ||
+        savedDue === "today" ||
+        savedDue === "week" ||
+        savedDue === "none"
+      ) {
+        setDueFilter(savedDue);
       }
     } catch {
       // localStorage can throw on private-mode Safari — silently fall back.
@@ -197,12 +223,66 @@ export function TasksClient({
       localStorage.setItem("ff.tasks.filter", filter);
     } catch {}
   }, [filter]);
+  useEffect(() => {
+    try {
+      localStorage.setItem("ff.tasks.priority", priorityFilter);
+    } catch {}
+  }, [priorityFilter]);
+  useEffect(() => {
+    try {
+      localStorage.setItem("ff.tasks.project", projectFilter);
+    } catch {}
+  }, [projectFilter]);
+  useEffect(() => {
+    try {
+      localStorage.setItem("ff.tasks.due", dueFilter);
+    } catch {}
+  }, [dueFilter]);
+
+  // A project the user still has selected can vanish (archived / deleted).
+  // Fall back to "all" so the list never silently shows nothing.
+  useEffect(() => {
+    if (projectFilter !== "all" && !projects.some((p) => p.id === projectFilter)) {
+      setProjectFilter("all");
+    }
+  }, [projectFilter, projects]);
+
+  const secondaryActive =
+    priorityFilter !== "all" || projectFilter !== "all" || dueFilter !== "all";
+
+  function clearSecondary() {
+    setPriorityFilter("all");
+    setProjectFilter("all");
+    setDueFilter("all");
+  }
 
   const filtered = useMemo(() => {
-    if (filter === "mine") return tasks.filter((t) => t.assignedTo === currentUserId);
-    if (filter === "assigned-by-me") return tasks.filter((t) => t.assignedBy === currentUserId);
-    return tasks;
-  }, [tasks, filter, currentUserId]);
+    // Relationship slice first, then stack the secondary filters.
+    let rows = tasks;
+    if (filter === "mine") rows = rows.filter((t) => t.assignedTo === currentUserId);
+    else if (filter === "assigned-by-me") rows = rows.filter((t) => t.assignedBy === currentUserId);
+
+    if (priorityFilter !== "all") rows = rows.filter((t) => t.priority === priorityFilter);
+    if (projectFilter !== "all") rows = rows.filter((t) => t.projectId === projectFilter);
+
+    if (dueFilter !== "all") {
+      rows = rows.filter((t) => {
+        if (dueFilter === "none") return !t.deadline;
+        if (!t.deadline) return false;
+        const d = new Date(t.deadline);
+        if (Number.isNaN(d.getTime())) return false;
+        if (dueFilter === "overdue") return isPast(d) && !isToday(d);
+        if (dueFilter === "today") return isToday(d);
+        if (dueFilter === "week") {
+          const now = new Date();
+          const weekAhead = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+          return d >= now && d <= weekAhead;
+        }
+        return true;
+      });
+    }
+    return rows;
+  }, [tasks, filter, priorityFilter, projectFilter, dueFilter, currentUserId]);
 
   // Bulk selection (list view). `selected` holds task ids; we prune any that
   // fall out of the filtered set so the action bar count never lies after a
@@ -445,6 +525,55 @@ export function TasksClient({
             { key: "list", label: "List", icon: LayoutList },
           ]}
         />
+      </div>
+
+      {/* Secondary filters (T4): priority · project · due date. Stack on top
+          of the relationship filter; each persists to localStorage. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <FilterSelect
+          label="Priority"
+          value={priorityFilter}
+          onChange={(v) => setPriorityFilter(v as typeof priorityFilter)}
+          options={[
+            { value: "all", label: "Any priority" },
+            { value: "urgent", label: "Urgent" },
+            { value: "high", label: "High" },
+            { value: "medium", label: "Medium" },
+            { value: "low", label: "Low" },
+          ]}
+        />
+        <FilterSelect
+          label="Project"
+          value={projectFilter}
+          onChange={(v) => setProjectFilter(v)}
+          options={[
+            { value: "all", label: "All projects" },
+            ...projects.map((p) => ({ value: p.id, label: p.name })),
+          ]}
+        />
+        <FilterSelect
+          label="Due"
+          value={dueFilter}
+          onChange={(v) => setDueFilter(v as typeof dueFilter)}
+          options={[
+            { value: "all", label: "Any time" },
+            { value: "overdue", label: "Overdue" },
+            { value: "today", label: "Due today" },
+            { value: "week", label: "Next 7 days" },
+            { value: "none", label: "No deadline" },
+          ]}
+        />
+        {secondaryActive && (
+          <button
+            onClick={clearSecondary}
+            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-semibold text-fg-muted transition-colors hover:border-danger/40 hover:text-danger"
+          >
+            Clear filters
+          </button>
+        )}
+        <span className="ml-auto font-mono text-[11px] tabular-nums text-fg-muted">
+          {filtered.length} {filtered.length === 1 ? "task" : "tasks"}
+        </span>
       </div>
 
       {filtered.length === 0 ? (
@@ -866,6 +995,47 @@ function SegmentedToggle({
         );
       })}
     </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* FilterSelect — labelled dropdown for the secondary task filters (T4)       */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: { value: string; label: string }[];
+}) {
+  const active = value !== "all";
+  return (
+    <label
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border py-1 pl-3 pr-1.5 text-xs transition-colors",
+        active ? "border-primary/40 bg-primary/[0.06]" : "border-border bg-bg"
+      )}
+    >
+      <span className="font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-fg-muted">
+        {label}
+      </span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="max-w-[9rem] cursor-pointer truncate rounded-full bg-transparent py-0.5 pr-1 text-xs font-semibold text-fg focus:outline-none"
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

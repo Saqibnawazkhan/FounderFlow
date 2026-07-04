@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { extractMentions, slugifyName, tokenizeForRender } from "@/lib/comments/mentions";
+import {
+  extractMentions,
+  findMentionQuery,
+  slugifyName,
+  tokenizeForRender,
+} from "@/lib/comments/mentions";
 
 const USERS = [
   { id: "u1", name: "Ali Khan" },
@@ -24,6 +29,43 @@ describe("slugifyName", () => {
 
   it("collapses runs of whitespace", () => {
     expect(slugifyName("Ali    Khan")).toBe("ali-khan");
+  });
+});
+
+describe("findMentionQuery", () => {
+  it("detects a token the caret sits inside", () => {
+    const body = "hey @ali";
+    expect(findMentionQuery(body, body.length)).toEqual({ from: 4, to: 8, query: "ali" });
+  });
+
+  it("detects a bare @ (empty query) so suggestions show immediately", () => {
+    const body = "hey @";
+    expect(findMentionQuery(body, body.length)).toEqual({ from: 4, to: 5, query: "" });
+  });
+
+  it("matches an @ at the very start of the text", () => {
+    expect(findMentionQuery("@fat", 4)).toEqual({ from: 0, to: 4, query: "fat" });
+  });
+
+  it("returns null when the caret is past a completed mention + space", () => {
+    const body = "@ali-khan ";
+    expect(findMentionQuery(body, body.length)).toBeNull();
+  });
+
+  it("returns null for an @ glued to a preceding word (email-ish)", () => {
+    const body = "mail me at foo@bar";
+    expect(findMentionQuery(body, body.length)).toBeNull();
+  });
+
+  it("returns null when there's whitespace between @ and the caret", () => {
+    const body = "@ali khan";
+    expect(findMentionQuery(body, body.length)).toBeNull();
+  });
+
+  it("reads the query only up to the caret, not the whole token", () => {
+    const body = "@alikhan";
+    // caret after "@ali"
+    expect(findMentionQuery(body, 4)).toEqual({ from: 0, to: 4, query: "ali" });
   });
 });
 
