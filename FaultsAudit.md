@@ -24,12 +24,20 @@
 > toggle honestly labelled beta. **P7 · cleanup** — scratch gitignored, stale
 > SQLite schema header fixed.
 >
-> **Deferred (documented, not launch-blocking):** purge FK-cascade → SetNull
-> refactor (required before `PURGE_ENABLED=true`); server-side transaction
+> **Purge made safe to enable** (follow-up done): rather than the risky FK →
+> SetNull refactor across the core model, the purge cron now deletes each
+> overdue workspace in explicit dependency order inside a transaction (never
+> trips a `Restrict` FK) and has **no individual-user purge stage** — a
+> deactivated user in a live workspace keeps their content, fixing the
+> cascade-data-loss + Restrict-jam without any schema/type change.
+> `PURGE_ENABLED` is still off by default (owner decides when erasure runs).
+>
+> **Deferred (documented, not launch-blocking):** server-side transaction
 > windowing + dashboard groupBy for high volume; `/projects` TimeEntry raw-SQL
 > sum; app-shell round-trip trim; `/reports` mobile card; full Urdu page
 > coverage + RTL; nonce-based CSP; shared (Upstash/KV) rate-limit store; the
-> dead `lib/store.ts` data-layer + `lib/seed.ts` removal.
+> dead `lib/store.ts` data-layer + `lib/seed.ts` removal; full GDPR
+> anonymization of an individual account's PII in a live workspace.
 >
 > **Owner actions (I can't/didn't do):** rotate the secrets in the stale root
 > `.env` (live prod Supabase creds — Prisma CLI reads it by default, so
