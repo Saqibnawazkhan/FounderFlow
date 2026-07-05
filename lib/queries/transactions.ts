@@ -48,7 +48,9 @@ function toClient(
 export async function getTransactions(): Promise<TransactionWithCount[]> {
   const { companyId } = await requireScopedSession();
   const rows = await db.transaction.findMany({
-    where: { companyId },
+    // deletedAt:null so a tombstoned workspace's rows never render (and a
+    // stale session in a soft-deleted workspace can't read them back).
+    where: { companyId, deletedAt: null },
     orderBy: { date: "desc" },
     include: { _count: { select: { comments: true } } },
   });

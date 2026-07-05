@@ -81,11 +81,15 @@ export async function listProjectsForUser(): Promise<ProjectListItem[]> {
   const { userId, companyId, role } = await requireScopedSession();
 
   const baseWhere = canSeeFinances(role)
-    ? { companyId }
+    ? { companyId, deletedAt: null }
     : {
         companyId,
+        deletedAt: null,
         // Member-tier visibility: own supervisor OR has at least one task.
-        OR: [{ supervisorId: userId }, { tasks: { some: { assignedTo: userId } } }],
+        OR: [
+          { supervisorId: userId },
+          { tasks: { some: { assignedTo: userId, deletedAt: null } } },
+        ],
       };
 
   const projects = await db.project.findMany({
@@ -93,7 +97,7 @@ export async function listProjectsForUser(): Promise<ProjectListItem[]> {
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],
     include: {
       supervisor: { select: { name: true } },
-      _count: { select: { tasks: true } },
+      _count: { select: { tasks: { where: { deletedAt: null } } } },
     },
   });
 
@@ -109,13 +113,14 @@ export async function listProjectsForUser(): Promise<ProjectListItem[]> {
   const [openCountsRows, spendRows, timeEntryRows] = await Promise.all([
     db.task.groupBy({
       by: ["projectId"],
-      where: { projectId: { in: projectIds }, status: { not: "completed" } },
+      where: { projectId: { in: projectIds }, deletedAt: null, status: { not: "completed" } },
       _count: { _all: true },
     }),
     db.transaction.groupBy({
       by: ["projectId"],
       where: {
         projectId: { in: projectIds },
+        deletedAt: null,
         type: "expense",
         date: { gte: monthStart, lt: nextMonthStart },
       },
@@ -161,7 +166,7 @@ export async function getProjectForUser(projectId: string): Promise<ProjectClien
   const { userId, companyId, role } = await requireScopedSession();
 
   const project = await db.project.findFirst({
-    where: { id: projectId, companyId },
+    where: { id: projectId, companyId, deletedAt: null },
     include: { supervisor: { select: { name: true } } },
   });
   if (!project) return null;
@@ -169,7 +174,7 @@ export async function getProjectForUser(projectId: string): Promise<ProjectClien
   if (!canSeeFinances(role) && project.supervisorId !== userId) {
     // Cheaper exists() than findFirst when we don't need the row.
     const hasTask = await db.task.findFirst({
-      where: { projectId, assignedTo: userId },
+      where: { projectId, assignedTo: userId, deletedAt: null },
       select: { id: true },
     });
     if (!hasTask) return null;
@@ -191,12 +196,13 @@ export async function getProjectOverview(projectId: string): Promise<ProjectOver
   const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
 
   const [openTasks, totalTasks, spendSum, entries, memberIds] = await Promise.all([
-    db.task.count({ where: { projectId, status: { not: "completed" } } }),
-    db.task.count({ where: { projectId } }),
+    db.task.count({ where: { projectId, deletedAt: null, status: { not: "completed" } } }),
+    db.task.count({ where: { projectId, deletedAt: null } }),
     db.transaction.aggregate({
       _sum: { amount: true },
       where: {
         projectId,
+        deletedAt: null,
         type: "expense",
         date: { gte: monthStart, lt: nextMonthStart },
       },
@@ -206,7 +212,7 @@ export async function getProjectOverview(projectId: string): Promise<ProjectOver
       select: { clockInAt: true, clockOutAt: true },
     }),
     db.task.findMany({
-      where: { projectId },
+      where: { projectId, deletedAt: null },
       select: { assignedTo: true },
       distinct: ["assignedTo"],
     }),
@@ -238,11 +244,15 @@ export async function listProjectOptions(): Promise<{ id: string; name: string; 
   const { userId, companyId, role } = await requireScopedSession();
   const projects = await db.project.findMany({
     where: canSeeFinances(role as Role)
-      ? { companyId, status: { not: "archived" } }
+      ? { companyId, deletedAt: null, status: { not: "archived" } }
       : {
           companyId,
+          deletedAt: null,
           status: { not: "archived" },
-          OR: [{ supervisorId: userId }, { tasks: { some: { assignedTo: userId } } }],
+          OR: [
+            { supervisorId: userId },
+            { tasks: { some: { assignedTo: userId, deletedAt: null } } },
+          ],
         },
     select: { id: true, name: true, color: true },
     orderBy: { name: "asc" },

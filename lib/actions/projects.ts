@@ -306,7 +306,9 @@ export async function deleteProjectAction(projectId: string): Promise<ActionResu
   if (!projectId) return { success: false, error: "Missing project id" };
 
   try {
-    const project = await db.project.findUnique({ where: { id: projectId } });
+    const project = await db.project.findFirst({
+      where: { id: projectId, deletedAt: null },
+    });
     if (!project || project.companyId !== session.user.companyId) {
       return { success: false, error: "Project not found" };
     }
@@ -314,11 +316,10 @@ export async function deleteProjectAction(projectId: string): Promise<ActionResu
       return { success: false, error: "Only the supervisor or a founder can delete this project" };
     }
 
-    // Restrict policy in the schema would surface this as a 500 — preempt
-    // with a friendly message + a count so the user knows what to clean up.
+    // Only empty projects are deletable — otherwise archive/reparent first.
     const [taskCount, budgetCount] = await Promise.all([
-      db.task.count({ where: { projectId } }),
-      db.budget.count({ where: { projectId } }),
+      db.task.count({ where: { projectId, deletedAt: null } }),
+      db.budget.count({ where: { projectId, deletedAt: null } }),
     ]);
     if (taskCount > 0 || budgetCount > 0) {
       return {
@@ -327,7 +328,11 @@ export async function deleteProjectAction(projectId: string): Promise<ActionResu
       };
     }
 
-    await db.project.delete({ where: { id: projectId } });
+    // Tier 3 soft-delete (matches the documented recovery model): stamp
+    // deletedAt instead of a hard delete so an accidental project delete has
+    // the same 90-day recovery window as every other soft-delete table. The
+    // deletedAt:null read filters hide it immediately.
+    await db.project.update({ where: { id: projectId }, data: { deletedAt: new Date() } });
     revalidatePath("/projects");
     return { success: true, data: undefined };
   } catch (e) {

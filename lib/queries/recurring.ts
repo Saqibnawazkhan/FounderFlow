@@ -29,7 +29,9 @@ export interface RecurringRuleClient {
 export async function getRecurringRules(): Promise<RecurringRuleClient[]> {
   const { companyId } = await requireScopedSession();
   const rows = await db.recurringRule.findMany({
-    where: { companyId },
+    // RecurringRule has no own deletedAt; scope to a live company so a stale
+    // session in a soft-deleted workspace can't read its rules back.
+    where: { companyId, company: { deletedAt: null } },
     orderBy: [{ active: "desc" }, { createdAt: "desc" }],
     include: { _count: { select: { transactions: true } } },
   });

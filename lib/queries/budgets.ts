@@ -43,7 +43,7 @@ export async function getBudgetsWithSpend(
   const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
 
   const budgets = await db.budget.findMany({
-    where: { companyId, ...(opts.projectId ? { projectId: opts.projectId } : {}) },
+    where: { companyId, deletedAt: null, ...(opts.projectId ? { projectId: opts.projectId } : {}) },
     orderBy: [{ active: "desc" }, { createdAt: "desc" }],
   });
 
@@ -58,6 +58,7 @@ export async function getBudgetsWithSpend(
     by: ["category"],
     where: {
       companyId,
+      deletedAt: null,
       ...(opts.projectId ? { projectId: opts.projectId } : {}),
       type: "expense",
       category: { in: categories },

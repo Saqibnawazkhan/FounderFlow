@@ -37,7 +37,7 @@ export async function checkBudgetThresholdAfterExpense({
 
   try {
     const budget = await db.budget.findFirst({
-      where: { projectId, category, active: true },
+      where: { projectId, category, active: true, deletedAt: null },
     });
     if (!budget) return; // no budget for this category in this project
 
@@ -49,6 +49,7 @@ export async function checkBudgetThresholdAfterExpense({
       where: {
         companyId,
         projectId,
+        deletedAt: null,
         type: "expense",
         category,
         date: { gte: monthStart, lt: nextMonthStart },

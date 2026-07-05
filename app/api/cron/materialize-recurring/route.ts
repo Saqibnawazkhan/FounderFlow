@@ -22,6 +22,7 @@ import { captureServerError } from "@/lib/sentry-server";
 
 export const runtime = "nodejs"; // Prisma needs Node, not Edge
 export const dynamic = "force-dynamic"; // never cache the cron result
+export const maxDuration = 60;
 
 export async function GET(request: Request) {
   // Auth: Vercel's cron sends Authorization: Bearer <CRON_SECRET>.
@@ -40,8 +41,13 @@ export async function GET(request: Request) {
   const now = new Date();
 
   try {
-    // Pull only active rules — paused ones are skipped server-side.
-    const rules = await db.recurringRule.findMany({ where: { active: true } });
+    // Pull only active rules whose workspace is still live — paused rules and
+    // rules in a soft-deleted workspace are skipped. Without the company filter
+    // a tombstoned workspace keeps minting brand-new LIVE transactions every
+    // night for the full 90-day retention window, resurrecting "deleted" data.
+    const rules = await db.recurringRule.findMany({
+      where: { active: true, company: { deletedAt: null } },
+    });
     const toCreate = materialize(rules, now);
 
     if (toCreate.length === 0) {

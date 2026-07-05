@@ -62,7 +62,7 @@ function toClient(
 export async function getTasks(opts: { projectId?: string } = {}): Promise<TaskWithCount[]> {
   const { companyId } = await requireScopedSession();
   const rows = await db.task.findMany({
-    where: { companyId, ...(opts.projectId ? { projectId: opts.projectId } : {}) },
+    where: { companyId, deletedAt: null, ...(opts.projectId ? { projectId: opts.projectId } : {}) },
     // Manual sort key first (kanban reorder), createdAt as a stable tiebreak
     // for any rows that still share an order value.
     orderBy: [{ order: "asc" }, { createdAt: "desc" }],
