@@ -43,15 +43,30 @@ function run(cmd, args, opts = {}) {
 }
 
 if (IS_PROD_BUILD) {
-  if (!process.env.DIRECT_URL) {
-    console.error(
-      "[vercel-build] DIRECT_URL is not set. Prisma migrate needs a direct " +
-        "connection (port 5432) — the pgbouncer transaction pooler will not work. " +
-        "Set DIRECT_URL in Vercel → Project Settings → Environment Variables → " +
-        "Production scope, then redeploy."
-    );
+  // Fail the build (never a runtime outage) if a secret the app can't run
+  // without is missing. lib/env.ts marks these optional so local/preview
+  // don't need them, but a production deploy that forgets one otherwise
+  // builds green and then throws on every request (Auth.js without
+  // AUTH_SECRET, every query without DATABASE_URL). A failed build keeps the
+  // previous deployment serving.
+  const requiredProdEnv = {
+    DATABASE_URL:
+      "runtime queries (pooler URL, port 6543). Set it in Vercel → Settings → " +
+      "Environment Variables → Production scope.",
+    DIRECT_URL:
+      "prisma migrate deploy needs a direct connection (port 5432) — the pgbouncer " +
+      "transaction pooler breaks migrations. Set it in the Production scope.",
+    AUTH_SECRET:
+      "Auth.js signing secret. Without it every authenticated request throws. " +
+      "Set it in the Production scope.",
+  };
+  const missing = Object.keys(requiredProdEnv).filter((k) => !process.env[k]);
+  if (missing.length > 0) {
+    console.error("[vercel-build] Missing required Production env var(s):");
+    for (const k of missing) console.error(`  - ${k}: ${requiredProdEnv[k]}`);
     process.exit(1);
   }
+
   console.log("[vercel-build] Production build detected — applying pending migrations");
   run("npx", ["prisma", "migrate", "deploy"]);
   console.log("[vercel-build] Migrations up to date. Proceeding to next build.");

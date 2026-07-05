@@ -43,6 +43,14 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      # The unit suite is all pure-function / jsdom — no DB needed. Without
+      # this step a regression in a tested schema/parser/permission helper
+      # could merge to main green, which is exactly what CLAUDE.md's
+      # "Verification before pushing" list (typecheck && test && build) is
+      # meant to prevent.
+      - name: Test
+        run: npm test
+
       - name: Lint
         run: npm run lint
 
