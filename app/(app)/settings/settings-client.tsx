@@ -459,7 +459,6 @@ export function SettingsClient({ user, company, stats }: Props) {
           onClose={() => setCompanyOpen(false)}
           defaultName={company.name}
           defaultIndustry={company.industry}
-          defaultCurrency={company.currency}
           onSaved={() => {
             setCompanyOpen(false);
             refresh();

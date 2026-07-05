@@ -13,11 +13,7 @@ import toast from "react-hot-toast";
 import { Save } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { updateCompanyAction } from "@/lib/actions/company";
-import {
-  SUPPORTED_CURRENCIES,
-  UpdateCompanySchema,
-  type UpdateCompanyInput,
-} from "@/lib/schemas/company";
+import { UpdateCompanySchema, type UpdateCompanyInput } from "@/lib/schemas/company";
 import { useT } from "@/lib/i18n/use-t";
 import { cn } from "@/lib/utils";
 
@@ -26,18 +22,10 @@ type Props = {
   onClose: () => void;
   defaultName: string;
   defaultIndustry: string;
-  defaultCurrency: string;
   onSaved: () => void;
 };
 
-export function EditCompanyModal({
-  open,
-  onClose,
-  defaultName,
-  defaultIndustry,
-  defaultCurrency,
-  onSaved,
-}: Props) {
+export function EditCompanyModal({ open, onClose, defaultName, defaultIndustry, onSaved }: Props) {
   const t = useT();
   const nameId = useId();
   const industryId = useId();
@@ -51,24 +39,17 @@ export function EditCompanyModal({
     reset,
   } = useForm<UpdateCompanyInput>({
     resolver: zodResolver(UpdateCompanySchema),
+    // Currency is locked to PKR for v1 (see UpdateCompanySchema); the schema
+    // default fills it, so it isn't a form field.
     defaultValues: {
       name: defaultName,
       industry: defaultIndustry,
-      // Default to the existing currency if it's a known one, otherwise PKR.
-      currency: (SUPPORTED_CURRENCIES as readonly string[]).includes(defaultCurrency)
-        ? (defaultCurrency as UpdateCompanyInput["currency"])
-        : "PKR",
+      currency: "PKR",
     },
   });
 
   function onClosed() {
-    reset({
-      name: defaultName,
-      industry: defaultIndustry,
-      currency: (SUPPORTED_CURRENCIES as readonly string[]).includes(defaultCurrency)
-        ? (defaultCurrency as UpdateCompanyInput["currency"])
-        : "PKR",
-    });
+    reset({ name: defaultName, industry: defaultIndustry, currency: "PKR" });
     onClose();
   }
 
@@ -93,6 +74,9 @@ export function EditCompanyModal({
       size="md"
     >
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
+        {/* Currency is locked to PKR (v1); submitted via a hidden field so the
+            schema's z.literal("PKR") is always satisfied. */}
+        <input type="hidden" {...register("currency")} />
         <Field
           id={nameId}
           label={t.settings.name}
@@ -112,25 +96,18 @@ export function EditCompanyModal({
           >
             {t.settings.currency}
           </label>
-          <select
+          {/* v1: PKR only. Rendered read-only rather than a picker — a live
+              multi-option control would let a workspace select a currency the
+              formatters ignore (F4), silently mislabelling its money. */}
+          <div
             id={currencyId}
-            {...register("currency")}
-            className={cn(
-              "w-full appearance-none rounded-xl border bg-bg px-4 py-2.5 text-sm text-fg focus:bg-surface focus:outline-none",
-              errors.currency
-                ? "border-danger/60 focus:border-danger"
-                : "border-border focus:border-primary/50"
-            )}
+            className="flex items-center justify-between rounded-xl border border-border bg-bg px-4 py-2.5 text-sm text-fg-muted"
           >
-            {SUPPORTED_CURRENCIES.map((c) => (
-              <option key={c} value={c} className="bg-bg">
-                {c}
-              </option>
-            ))}
-          </select>
-          {errors.currency && (
-            <p className="mt-1.5 text-xs text-danger">{errors.currency.message}</p>
-          )}
+            <span className="font-medium text-fg">PKR — Pakistani Rupee</span>
+            <span className="font-mono text-[10px] uppercase tracking-wider">
+              {t.settings.currencyLockedNote}
+            </span>
+          </div>
         </div>
         <div className="flex justify-end gap-2 pt-1">
           <button
