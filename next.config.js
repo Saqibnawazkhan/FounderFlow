@@ -10,7 +10,11 @@ const cspHeader = [
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' data: blob: https://ui-avatars.com https://images.unsplash.com",
   "font-src 'self' data: https://fonts.gstatic.com",
-  "connect-src 'self'",
+  // 'self' covers RSC/Server-Action fetches + the same-origin Sentry tunnel
+  // (/monitoring). The explicit sentry.io ingest hosts are a fallback so
+  // browser-side error reporting still works when the tunnel isn't active
+  // (partial Sentry config) instead of being silently blocked by CSP.
+  "connect-src 'self' https://*.sentry.io https://*.ingest.sentry.io",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

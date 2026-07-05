@@ -29,6 +29,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { captureServerError } from "@/lib/sentry-server";
 import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
+import { safeEqual } from "@/lib/safe-compare";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,7 +43,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 500 });
   }
   const auth = request.headers.get("authorization");
-  if (auth !== `Bearer ${expected}`) {
+  if (!auth || !safeEqual(auth, `Bearer ${expected}`)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

@@ -75,7 +75,7 @@ export function AcceptInviteClient({
           <input
             id={pwId}
             type={showPassword ? "text" : "password"}
-            placeholder="At least 6 characters"
+            placeholder="8+ chars, mixed case & a number"
             autoComplete="new-password"
             aria-invalid={errors.password ? true : undefined}
             aria-describedby={errors.password ? `${pwId}-err` : undefined}

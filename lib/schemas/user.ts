@@ -4,6 +4,7 @@
  */
 
 import { z } from "zod";
+import { PasswordSchema } from "@/lib/schemas/password";
 
 const Role = z.enum(["admin", "cofounder", "member"]);
 
@@ -32,7 +33,7 @@ export type InviteUserInput = z.infer<typeof InviteUserSchema>;
  */
 export const AcceptInviteSchema = z.object({
   token: z.string().min(1, "Missing invite token"),
-  password: z.string().min(6, "Password must be at least 6 characters").max(120),
+  password: PasswordSchema,
 });
 
 export type AcceptInviteInput = z.infer<typeof AcceptInviteSchema>;

@@ -47,9 +47,10 @@ describe("InviteUserSchema", () => {
 });
 
 describe("AcceptInviteSchema", () => {
-  const valid = { token: "abc123def456", password: "newpass123" };
+  // Unified strong policy (min 8 + mixed case + digit), same as signup/reset.
+  const valid = { token: "abc123def456", password: "Newpass123" };
 
-  it("accepts a valid token + password", () => {
+  it("accepts a valid token + strong password", () => {
     expect(AcceptInviteSchema.safeParse(valid).success).toBe(true);
   });
 
@@ -57,12 +58,16 @@ describe("AcceptInviteSchema", () => {
     expect(AcceptInviteSchema.safeParse({ ...valid, token: "" }).success).toBe(false);
   });
 
-  it("rejects passwords shorter than 6 chars", () => {
-    const result = AcceptInviteSchema.safeParse({ ...valid, password: "abc" });
+  it("rejects passwords shorter than 8 chars", () => {
+    const result = AcceptInviteSchema.safeParse({ ...valid, password: "Ab1" });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues[0].message).toMatch(/at least 6/);
+      expect(result.error.issues[0].message).toMatch(/at least 8/);
     }
+  });
+
+  it("rejects a password missing a complexity class (no uppercase)", () => {
+    expect(AcceptInviteSchema.safeParse({ ...valid, password: "newpass123" }).success).toBe(false);
   });
 
   it("caps password length at 120 chars", () => {

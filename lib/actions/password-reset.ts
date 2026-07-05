@@ -24,7 +24,11 @@ import { limiters } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendEmail } from "@/lib/email/send";
-import { signPasswordResetToken, verifyPasswordResetToken } from "@/lib/auth/password-reset-token";
+import {
+  passwordVersion,
+  signPasswordResetToken,
+  verifyPasswordResetToken,
+} from "@/lib/auth/password-reset-token";
 import { RequestPasswordResetSchema, ResetPasswordSchema } from "@/lib/schemas/password-reset";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
@@ -49,14 +53,19 @@ export async function requestPasswordResetAction(
   const { email } = parsed.data;
 
   try {
-    const user = await db.user.findUnique({ where: { email }, select: { id: true, name: true } });
+    const user = await db.user.findUnique({
+      where: { email },
+      select: { id: true, name: true, passwordHash: true },
+    });
     // Anti-enumeration: same success path whether the account exists or not.
     // The email only fires when it does.
     if (!user) {
       return { success: true, data: { dispatched: false } };
     }
 
-    const token = await signPasswordResetToken(user.id);
+    // Bind the token to the current password hash so a successful reset (which
+    // rewrites the hash) makes this and any other outstanding link single-use.
+    const token = await signPasswordResetToken(user.id, passwordVersion(user.passwordHash));
     const url = `${resetLinkBase()}/reset-password?token=${encodeURIComponent(token)}`;
 
     const html = `
@@ -122,10 +131,19 @@ export async function resetPasswordAction(
   try {
     const user = await db.user.findUnique({
       where: { id: verified.userId },
-      select: { id: true, email: true },
+      select: { id: true, email: true, passwordHash: true },
     });
     if (!user) {
       return { success: false, error: "This account no longer exists." };
+    }
+    // Single-use enforcement: the token's pv must still match the live hash.
+    // Once a reset lands, the hash (and pv) change, so a replayed or stale
+    // link — including one issued before an earlier reset — is rejected here.
+    if (verified.pv !== passwordVersion(user.passwordHash)) {
+      return {
+        success: false,
+        error: "This reset link has already been used. Request a new one.",
+      };
     }
     const passwordHash = await bcrypt.hash(password, 12);
     await db.user.update({

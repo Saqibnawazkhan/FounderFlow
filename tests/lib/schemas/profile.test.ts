@@ -30,10 +30,11 @@ describe("RequestEmailChangeSchema", () => {
 });
 
 describe("ChangePasswordSchema", () => {
+  // newPassword now shares the strong policy (min 8 + mixed case + digit).
   const valid = {
-    currentPassword: "oldpassword",
-    newPassword: "newpassword",
-    confirmPassword: "newpassword",
+    currentPassword: "OldPassword1",
+    newPassword: "NewPass123",
+    confirmPassword: "NewPass123",
   };
 
   it("accepts a valid trio", () => {
@@ -41,7 +42,7 @@ describe("ChangePasswordSchema", () => {
   });
 
   it("rejects mismatched confirm", () => {
-    const r = ChangePasswordSchema.safeParse({ ...valid, confirmPassword: "different" });
+    const r = ChangePasswordSchema.safeParse({ ...valid, confirmPassword: "Different1" });
     expect(r.success).toBe(false);
     if (!r.success) {
       expect(r.error.issues.some((i) => i.path.includes("confirmPassword"))).toBe(true);
@@ -50,18 +51,27 @@ describe("ChangePasswordSchema", () => {
 
   it("rejects same-as-current new password", () => {
     const r = ChangePasswordSchema.safeParse({
-      currentPassword: "samesame",
-      newPassword: "samesame",
-      confirmPassword: "samesame",
+      currentPassword: "SameSame1",
+      newPassword: "SameSame1",
+      confirmPassword: "SameSame1",
     });
     expect(r.success).toBe(false);
   });
 
-  it("rejects new password shorter than 6 chars", () => {
+  it("rejects new password shorter than 8 chars", () => {
     const r = ChangePasswordSchema.safeParse({
-      currentPassword: "oldpassword",
-      newPassword: "short",
-      confirmPassword: "short",
+      currentPassword: "OldPassword1",
+      newPassword: "Short1",
+      confirmPassword: "Short1",
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a new password with no complexity", () => {
+    const r = ChangePasswordSchema.safeParse({
+      currentPassword: "OldPassword1",
+      newPassword: "alllowercase",
+      confirmPassword: "alllowercase",
     });
     expect(r.success).toBe(false);
   });
@@ -69,8 +79,8 @@ describe("ChangePasswordSchema", () => {
   it("requires the current password", () => {
     const r = ChangePasswordSchema.safeParse({
       currentPassword: "",
-      newPassword: "newpassword",
-      confirmPassword: "newpassword",
+      newPassword: "NewPass123",
+      confirmPassword: "NewPass123",
     });
     expect(r.success).toBe(false);
   });

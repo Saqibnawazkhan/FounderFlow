@@ -4,6 +4,7 @@
  */
 
 import { z } from "zod";
+import { PasswordSchema } from "@/lib/schemas/password";
 
 // Name only. Email changes go through the verify-the-new-address flow in
 // lib/actions/email-change.ts (audit S3) — a login email can't be swapped
@@ -16,10 +17,9 @@ export type UpdateProfileInput = z.infer<typeof UpdateProfileSchema>;
 export const ChangePasswordSchema = z
   .object({
     currentPassword: z.string().min(1, "Enter your current password"),
-    newPassword: z
-      .string()
-      .min(6, "New password must be at least 6 characters")
-      .max(200, "New password is too long"),
+    // Shared strong policy (min 8 + mixed case + digit), same as
+    // signup/invite/reset — one password bar across every set-password path.
+    newPassword: PasswordSchema,
     confirmPassword: z.string(),
   })
   .refine((v) => v.newPassword === v.confirmPassword, {

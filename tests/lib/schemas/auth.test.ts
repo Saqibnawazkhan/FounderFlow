@@ -34,7 +34,8 @@ describe("SignupSchema", () => {
   const valid = {
     name: "Jane Doe",
     email: "jane@startup.com",
-    password: "secret123",
+    // Strong policy: min 8 + mixed case + digit (shared with invite/reset).
+    password: "Secret123",
     companyName: "Nimbus Labs",
     industry: "SaaS / B2B Software",
   };
@@ -43,12 +44,16 @@ describe("SignupSchema", () => {
     expect(SignupSchema.safeParse(valid).success).toBe(true);
   });
 
-  it("rejects passwords shorter than 6 characters", () => {
-    const result = SignupSchema.safeParse({ ...valid, password: "short" });
+  it("rejects passwords shorter than 8 characters", () => {
+    const result = SignupSchema.safeParse({ ...valid, password: "Short1" });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues[0].message).toMatch(/at least 6/);
+      expect(result.error.issues[0].message).toMatch(/at least 8/);
     }
+  });
+
+  it("rejects a password missing a complexity class (no digit)", () => {
+    expect(SignupSchema.safeParse({ ...valid, password: "NoDigitsHere" }).success).toBe(false);
   });
 
   it("rejects empty name", () => {

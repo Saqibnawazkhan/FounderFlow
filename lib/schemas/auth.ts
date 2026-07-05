@@ -5,9 +5,13 @@
  */
 
 import { z } from "zod";
+import { PasswordSchema } from "@/lib/schemas/password";
 
 export const LoginSchema = z.object({
   email: z.string().trim().toLowerCase().email("Enter a valid email"),
+  // Login stays permissive — existing users must be able to sign in with
+  // whatever password they already have; the strong policy applies only when
+  // SETTING a new one (signup / invite / reset).
   password: z.string().min(1, "Password is required"),
 });
 
@@ -16,7 +20,7 @@ export type LoginInput = z.infer<typeof LoginSchema>;
 export const SignupSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(80),
   email: z.string().trim().toLowerCase().email("Enter a valid email"),
-  password: z.string().min(6, "Password must be at least 6 characters").max(120),
+  password: PasswordSchema,
   companyName: z.string().trim().min(1, "Company name is required").max(80),
   industry: z.string().trim().min(1, "Pick an industry").max(80),
 });
