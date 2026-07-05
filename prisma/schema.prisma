@@ -32,18 +32,18 @@ datasource db {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  name         String
-  email        String    @unique
-  passwordHash String // bcrypt hash, never the raw password
-  role         String // "admin" | "cofounder" | "member"
-  avatar       String?
-  companyId    String
-  createdAt    DateTime  @default(now())
+  id              String    @id @default(cuid())
+  name            String
+  email           String    @unique
+  passwordHash    String // bcrypt hash, never the raw password
+  role            String // "admin" | "cofounder" | "member"
+  avatar          String?
+  companyId       String
+  createdAt       DateTime  @default(now())
   // Updated by the Auth.js signIn callback. Surfaces on /settings as
   // "Last sign-in" so the user can spot rogue logins. Nullable for
   // legacy rows that predate the column.
-  lastSignInAt DateTime?
+  lastSignInAt    DateTime?
   // Set the moment the user clicks their email-verification link. NULL =
   // unverified (the default for a fresh signup, and for legacy rows that
   // predate the column). Drives the "verify your email" banner. Soft gate
@@ -53,14 +53,14 @@ model User {
   // Cross-device UI preferences (S6). Synced from the settings appearance +
   // language controls so a user's theme/locale follow them to a new device
   // instead of living only in that browser's localStorage.
-  theme  String @default("dark") // "light" | "dark"
-  locale String @default("en") // "en" | "ur"
+  theme           String    @default("dark") // "light" | "dark"
+  locale          String    @default("en") // "en" | "ur"
   // Tier 3 soft-delete sentinel. NULL = live row. Any timestamp = soft
   // deleted; the row survives until the nightly purge cron hard-deletes
   // it after 90 days. Auth + queries filter `deletedAt: null` so a
   // soft-deleted user can't sign in and their data isn't rendered, but
   // ops can restore with `UPDATE "User" SET "deletedAt" = NULL`.
-  deletedAt    DateTime?
+  deletedAt       DateTime?
 
   company            Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
   ownedCompany       Company?        @relation("CompanyOwner")
@@ -237,6 +237,10 @@ model Task {
   @@index([projectId, status])
   @@index([assignedTo])
   @@index([deletedAt])
+  // Support the kanban/list sort (order asc) without an in-memory sort of the
+  // whole company/project task set on every /tasks load.
+  @@index([companyId, order])
+  @@index([projectId, order])
 }
 
 model Activity {

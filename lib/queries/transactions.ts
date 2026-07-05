@@ -45,6 +45,17 @@ function toClient(
   };
 }
 
+// Scale-safety ceiling on the unbounded read. Every finance page (dashboard,
+// expenses, investments, reports) fetches through here and filters/aggregates
+// client-side, so without a cap a high-volume workspace ships its entire
+// transaction history in the RSC payload and full-scans the table on each load.
+// 5000 most-recent rows covers years of a normal startup's activity and keeps
+// the payload bounded. FOLLOW-UP (before real high-volume scale): push the
+// date-window + type filter into SQL per page and do the dashboard/reports
+// rollups as Prisma groupBy so nothing above this ceiling is silently dropped
+// from analytics. Tracked in FaultsAudit.md (F-perf).
+const MAX_TRANSACTIONS = 5000;
+
 export async function getTransactions(): Promise<TransactionWithCount[]> {
   const { companyId } = await requireScopedSession();
   const rows = await db.transaction.findMany({
@@ -52,6 +63,7 @@ export async function getTransactions(): Promise<TransactionWithCount[]> {
     // stale session in a soft-deleted workspace can't read them back).
     where: { companyId, deletedAt: null },
     orderBy: { date: "desc" },
+    take: MAX_TRANSACTIONS,
     include: { _count: { select: { comments: true } } },
   });
   return rows.map((r) => toClient(r, r._count.comments));
