@@ -37,9 +37,13 @@ export const metadata: Metadata = {
   // duplicate `public/icon.svg` (identical to `app/icon.svg`) exists so the
   // manifest + service-worker precache resolve at the literal URL.
   icons: {
-    icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/android-chrome-192x192.png", type: "image/png", sizes: "192x192" },
+    ],
     shortcut: "/icon.svg",
-    apple: "/icon.svg",
+    // iOS home-screen icon must be a PNG — SVG apple-touch-icons don't render.
+    apple: "/apple-touch-icon.png",
   },
   // PWA / iOS: tell Safari this is a standalone web app so the user gets the
   // "Add to Home Screen" experience without browser chrome on launch.

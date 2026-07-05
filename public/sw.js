@@ -21,13 +21,26 @@
  * Update by editing CACHE_VERSION below and redeploying.
  */
 
-const CACHE_VERSION = "ff-v2";
+// Bumped to v3 when the manifest gained raster PNG icons (S11 / PWA
+// installability): the old v2 shell cache still held the SVG-only manifest,
+// so returning users would have kept reading it and Chrome would never offer
+// install. The version bump forces a fresh install + precache of the new
+// manifest and its icons, and the activate handler purges the v2 caches.
+const CACHE_VERSION = "ff-v3";
 const RUNTIME_CACHE = `ff-runtime-${CACHE_VERSION}`;
 const SHELL_CACHE = `ff-shell-${CACHE_VERSION}`;
 
-// Minimal precache — the offline page + the manifest + the SVG icons.
+// Minimal precache — the offline page + the manifest + the icons Chrome needs
+// for installability (192 + 512 PNG) plus the SVG icons for crisp rendering.
 // The rest of the static asset graph gets cached on demand via stale-while-revalidate.
-const SHELL_URLS = ["/offline", "/manifest.json", "/icon.svg", "/icon-maskable.svg"];
+const SHELL_URLS = [
+  "/offline",
+  "/manifest.json",
+  "/icon.svg",
+  "/icon-maskable.svg",
+  "/android-chrome-192x192.png",
+  "/android-chrome-512x512.png",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
