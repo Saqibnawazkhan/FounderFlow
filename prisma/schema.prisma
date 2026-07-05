@@ -1,13 +1,15 @@
-// FounderFlow schema. SQLite for local dev; swap `provider = "postgresql"`
-// and update DATABASE_URL to ship to Supabase/Neon. The model shape mirrors
-// the TypeScript interfaces in lib/types.ts so the same code can call either
-// path during the Zustand -> server-action migration.
+// FounderFlow schema. Postgres everywhere: a docker-compose Postgres 16 on
+// 127.0.0.1:5433 for local dev (see CLAUDE.md), Supabase for staging + prod.
+// The model shape mirrors the TypeScript interfaces in lib/types.ts.
 //
-// Notes on SQLite vs Postgres:
-// - SQLite has no enums; role/type/status fields are stored as strings with
-//   the allowed values documented inline. Zod schemas in lib/schemas/ are
-//   the source of truth at the application boundary.
-// - createdAt uses DateTime (stored as ISO 8601 string in SQLite).
+// Conventions:
+// - role/type/status are stored as Strings (not Prisma enums) with the allowed
+//   values documented inline; the zod schemas in lib/schemas/ are the source
+//   of truth at the application boundary.
+// - Money (Transaction.amount, RecurringRule.amount, Budget.monthlyLimit) is
+//   Decimal(12,2), not Float — see the P0-4 migration.
+// - The six soft-delete tables (User/Company/Project/Task/Budget/Transaction)
+//   carry a nullable deletedAt sentinel; scoped reads filter deletedAt: null.
 
 generator client {
   provider      = "prisma-client-js"

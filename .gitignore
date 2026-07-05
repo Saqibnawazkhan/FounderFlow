@@ -49,6 +49,10 @@ SCRATCH.md
 /artifacts/
 *.local.png
 
+# favicon-generator export (raw scratch). The rasters + favicon.ico it needed
+# were copied into public/; the rest is unused. Safe to delete locally.
+/founderflow-favicons/
+
 # debug
 npm-debug.log*
 yarn-debug.log*
