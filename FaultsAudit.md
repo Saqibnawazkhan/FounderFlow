@@ -1,5 +1,41 @@
 # FounderFlow — faults audit
 
+> ## Production-delivery hardening — 2026-07-06
+>
+> An 8-dimension staff-level audit (deploy, DB, security, UI, testing,
+> dead-code, performance, completeness) fed a phased delivery. **Shipped:**
+> **P1 · data integrity** — `deletedAt: null` added to every scoped
+> transaction/task/budget/project read + their groupBy/aggregate spend paths;
+> recurring materializer skips soft-deleted workspaces; `deleteProjectAction`
+> now soft-deletes; **the destructive purge cron is DRY-RUN by default**
+> (`PURGE_ENABLED` gate) so no job auto-deletes customer data.
+> **P2 · security** — rate-limit key moved off the spoofable `x-forwarded-for[0]`
+> to the trusted `x-real-ip`; one strong password policy across signup/invite/
+> reset/change-password; reset tokens made genuinely single-use (hash-bound
+> `pv` claim); constant-time cron-secret compare; Sentry ingest allowed in CSP.
+> **P3 · currency** locked to PKR (the multi-currency picker was a no-op given
+> `formatCurrency` ignores it — F4). **P4 · deploy** — region pinned `sin1`
+> (co-located with Supabase `ap-southeast-1`), Node pinned, **CI now runs the
+> test suite**, prod build fails on missing `DATABASE_URL`/`AUTH_SECRET`/
+> `DIRECT_URL`, `favicon.ico` served, cron `maxDuration`. **P5 · perf** — 5000-row
+> ceiling on the unbounded transaction read + `(companyId,order)`/`(projectId,order)`
+> task indexes. **P6 · UI** — EmptyState onto theme tokens, danger confirms
+> focus Cancel, budgets/recurring loading skeletons, time mobile cards, Urdu
+> toggle honestly labelled beta. **P7 · cleanup** — scratch gitignored, stale
+> SQLite schema header fixed.
+>
+> **Deferred (documented, not launch-blocking):** purge FK-cascade → SetNull
+> refactor (required before `PURGE_ENABLED=true`); server-side transaction
+> windowing + dashboard groupBy for high volume; `/projects` TimeEntry raw-SQL
+> sum; app-shell round-trip trim; `/reports` mobile card; full Urdu page
+> coverage + RTL; nonce-based CSP; shared (Upstash/KV) rate-limit store; the
+> dead `lib/store.ts` data-layer + `lib/seed.ts` removal.
+>
+> **Owner actions (I can't/didn't do):** rotate the secrets in the stale root
+> `.env` (live prod Supabase creds — Prisma CLI reads it by default, so
+> `db:migrate:local` could hit prod) and delete that file; provision the shared
+> rate-limit store; confirm the Supabase region matches the `sin1` pin.
+
 Companion to [BUGS.md](BUGS.md). Where BUGS.md tracked silent-fail
 bugs, this file tracks **missing features, bad UI, other flaws, and
 improvements** surfaced by a full six-surface audit (2026-07-01).

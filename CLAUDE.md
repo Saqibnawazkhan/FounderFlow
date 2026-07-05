@@ -97,9 +97,20 @@ for a one-off inspection.
   ```
 
 - **Nightly purge cron** at `/api/cron/purge-soft-deleted` runs at 03:15
-  UTC. Hard-deletes rows whose `deletedAt` is past the 90-day window.
-  Companies purge first (their cascade takes children with them);
-  orphaned per-row tombstones follow.
+  UTC. **DRY-RUN by default** (as of the 2026-07-06 delivery): it counts
+  what *would* be purged and deletes nothing unless `PURGE_ENABLED=true`.
+  Two reasons it's opt-in: (1) auto-erasing customer data must be a
+  deliberate decision, and (2) a **known FK-cascade bug** — the "users"
+  stage hard-deletes a soft-deleted User, and Transaction/Task/Comment/
+  Budget/RecurringRule/TimeEntry all declare `onDelete: Cascade` on their
+  user FK, so purging an X8-deactivated member inside a *still-live*
+  workspace would cascade away their expenses/tasks/comments (contradicting
+  X8's "contributions stay in the records" promise), while a user who
+  created/supervises a live project trips the Project `Restrict` FK and
+  aborts the stage. **Before setting `PURGE_ENABLED=true` in production**,
+  move those user-authored content FKs to `SetNull` (the denormalized
+  `*Name` columns preserve the history) and implement supervisor/creator
+  reassignment. Companies still purge first (their cascade is intended).
 
 - **Nightly pg_dump** via GitHub Actions (`.github/workflows/backup.yml`)
   at 04:15 UTC — an hour after the purge, so the snapshot reflects the
