@@ -81,6 +81,7 @@ export function ConfirmDialogHost() {
   }
 
   const tone = pending?.opts.tone ?? "danger";
+  const isDestructive = tone === "danger" || tone === "warning";
   const toneFill =
     tone === "danger" ? "bg-danger/10" : tone === "warning" ? "bg-warning/10" : "bg-primary/10";
   const toneText =
@@ -125,6 +126,10 @@ export function ConfirmDialogHost() {
         <button
           type="button"
           onClick={() => close(false)}
+          // For destructive confirms, focus Cancel so a reflexive Enter after
+          // the dialog appears doesn't instantly trigger the delete. The
+          // confirm button keeps focus only for the benign primary tone.
+          autoFocus={isDestructive}
           className="flex-1 rounded-full border border-border bg-bg px-5 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-surface-hover active:scale-95"
         >
           {pending?.opts.cancelLabel ?? t.common.cancel}
@@ -132,7 +137,7 @@ export function ConfirmDialogHost() {
         <button
           type="button"
           onClick={() => close(true)}
-          autoFocus
+          autoFocus={!isDestructive}
           className={cn(
             "flex-1 rounded-full px-5 py-2.5 text-sm font-bold shadow-sm transition-all active:scale-95",
             confirmClass

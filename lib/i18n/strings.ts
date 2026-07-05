@@ -253,11 +253,12 @@ export const en = {
     dark: "Dark",
     darkDesc: "Easy on the eyes for long sessions",
     language: "Language",
-    languageNote: "Change the language of the interface. Page data stays as you entered it.",
+    languageNote:
+      "Change the interface language. Urdu is in beta — navigation, settings, and sign-in are translated; some pages are still in English while we finish coverage.",
     english: "English",
     urdu: "اردو",
     englishDesc: "Default left-to-right layout",
-    urduDesc: "Right-to-left, Pakistani business style",
+    urduDesc: "Right-to-left · Beta (some pages still English)",
     dataStorage: "Data & storage",
     dataNote:
       "Your workspace data lives in Supabase. Clearing local data only wipes UI prefs (theme, sidebar state) — it does not delete server data.",
@@ -582,11 +583,12 @@ export const ur: typeof en = {
     dark: "ڈارک",
     darkDesc: "طویل کام کے لیے آنکھوں پر نرم",
     language: "زبان",
-    languageNote: "انٹرفیس کی زبان تبدیل کریں۔ آپ کا ڈیٹا اسی طرح رہے گا جیسے آپ نے درج کیا۔",
+    languageNote:
+      "انٹرفیس کی زبان تبدیل کریں۔ اردو بیٹا میں ہے — نیویگیشن، ترتیبات اور سائن اِن کا ترجمہ ہو چکا ہے؛ کچھ صفحات ابھی انگریزی میں ہیں۔",
     english: "English",
     urdu: "اردو",
     englishDesc: "ڈیفالٹ بائیں سے دائیں ترتیب",
-    urduDesc: "دائیں سے بائیں، پاکستانی بزنس انداز",
+    urduDesc: "دائیں سے بائیں · بیٹا (کچھ صفحات ابھی انگریزی)",
     dataStorage: "ڈیٹا اور اسٹوریج",
     dataNote:
       "آپ کا ورک اسپیس ڈیٹا Supabase پر محفوظ ہے۔ لوکل ڈیٹا صاف کرنا صرف UI ترجیحات (تھیم، سائڈبار اسٹیٹ) کو مٹاتا ہے — سرور ڈیٹا متاثر نہیں ہوتا۔",

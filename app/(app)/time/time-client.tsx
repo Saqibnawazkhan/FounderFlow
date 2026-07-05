@@ -285,7 +285,7 @@ export function TimeClient({
               description="Click the clock pill in the topbar to start tracking."
             />
           ) : (
-            <div className="scrollbar-thin overflow-x-auto">
+            <div className="scrollbar-thin hidden overflow-x-auto md:block">
               <table className="w-full">
                 <thead className="sticky top-0 bg-surface">
                   <tr className="border-b border-border">
@@ -425,6 +425,78 @@ export function TimeClient({
                 </tbody>
               </table>
             </div>
+          )}
+
+          {/* Mobile card fallback — the 7-column time table scrolls awkwardly
+              on a phone; cards read better. Same data + actions. */}
+          {initialEntries.length > 0 && (
+            <ul className="divide-y divide-border md:hidden">
+              {initialEntries.map((e) => {
+                const startedAt = new Date(e.clockInAt);
+                const endedAt = e.clockOutAt ? new Date(e.clockOutAt) : null;
+                const dur = durationMs(startedAt, endedAt, renderedAt);
+                const isOwn = e.userId === currentUserId;
+                const canDeleteRow = isOwn || canEdit;
+                return (
+                  <li key={e.id} className="p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">
+                        {e.taskTitle ?? "Untagged work"}
+                      </span>
+                      <span className="shrink-0 font-mono text-sm font-bold tabular-nums text-fg">
+                        {formatDuration(dur)}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-fg-muted">
+                      <span>{format(startedAt, "MMM dd · HH:mm")}</span>
+                      {endedAt ? (
+                        <span className={cn(e.autoClosed && "text-warning")}>
+                          → {format(endedAt, "HH:mm")}
+                          {e.autoClosed && " ⏱"}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-primary-strong">
+                          <span
+                            className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary"
+                            aria-hidden="true"
+                          />
+                          Running
+                        </span>
+                      )}
+                      {initialScope === "team" && <span>· {e.userName}</span>}
+                      {e.editedAt && <span className="text-cyan-strong">· edited</span>}
+                    </div>
+                    {(e.note || canEdit || canDeleteRow) && (
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <span className="min-w-0 flex-1 truncate text-xs text-fg-muted">
+                          {e.note || ""}
+                        </span>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {canEdit && (
+                            <button
+                              onClick={() => setEditing(e)}
+                              aria-label={`Edit time entry for ${e.userName}`}
+                              className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-glass/[0.06] hover:text-fg"
+                            >
+                              <Pencil className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                          )}
+                          {canDeleteRow && (
+                            <button
+                              onClick={() => handleDelete(e)}
+                              aria-label={`Delete time entry for ${e.userName}`}
+                              className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                            >
+                              <Trash2 className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           )}
         </section>
       )}
