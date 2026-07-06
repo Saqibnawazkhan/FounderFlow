@@ -58,7 +58,7 @@ async function main() {
   const browser = await puppeteer.launch({
     executablePath: CHROME,
     headless: "new",
-    args: ["--no-sandbox"],
+    args: ["--no-sandbox", "--no-proxy-server", "--proxy-bypass-list=*"],
   });
 
   console.log("== member finance-restriction smoke ==");

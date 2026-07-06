@@ -14,7 +14,7 @@ const browser = await puppeteer.launch({
   executablePath: CHROME,
   headless: "new",
   defaultViewport: { width: 1280, height: 800 },
-  args: ["--no-sandbox", "--disable-gpu"],
+  args: ["--no-sandbox", "--no-proxy-server", "--proxy-bypass-list=*", "--disable-gpu"],
 });
 const page = await browser.newPage();
 page.on("pageerror", (e) => console.error("PAGEERROR:", e.message));
