@@ -19,6 +19,8 @@ export interface DashboardStatProps {
   delta?: "positive" | "negative" | "neutral";
   deltaLabel?: string;
   className?: string;
+  /** Override the value's size/typography (e.g. smaller on a 2-col mobile grid). */
+  valueClassName?: string;
 }
 
 export function DashboardStat({
@@ -29,6 +31,7 @@ export function DashboardStat({
   delta = "neutral",
   deltaLabel,
   className,
+  valueClassName = "text-3xl",
 }: DashboardStatProps) {
   const toneText =
     tone === "cyan"
@@ -67,7 +70,12 @@ export function DashboardStat({
         </div>
       </div>
 
-      <p className="relative mt-4 font-mono text-3xl font-bold tabular-nums leading-none text-fg">
+      <p
+        className={cn(
+          "relative mt-4 font-mono font-bold tabular-nums leading-none text-fg",
+          valueClassName
+        )}
+      >
         {value}
       </p>
 

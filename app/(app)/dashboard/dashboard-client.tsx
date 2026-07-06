@@ -4,13 +4,11 @@ import Link from "next/link";
 import { useMemo } from "react";
 import dynamic from "next/dynamic";
 import {
-  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   Circle,
-  CircleDot,
   ClipboardList,
-  Clock,
+  Flame,
   Rocket,
   Timer,
   TrendingDown,
@@ -85,6 +83,17 @@ export function DashboardClient({
   const monthlyBurn = last3MoExpenses / 3;
   const runwayMonths = monthlyBurn > 0 ? balance / monthlyBurn : Infinity;
 
+  // This-month spend + how it compares to the 3-month average burn — a far more
+  // frequently-checked number than all-time capital raised.
+  const currentMonthSpend = useMemo(() => {
+    const start = startOfMonth(new Date());
+    return transactions
+      .filter((t) => t.type === "expense" && new Date(t.date) >= start)
+      .reduce((s, t) => s + t.amount, 0);
+  }, [transactions]);
+  const burnDeltaPct =
+    monthlyBurn > 0 ? Math.round(((currentMonthSpend - monthlyBurn) / monthlyBurn) * 100) : 0;
+
   const monthlyData = useMemo(
     () =>
       Array.from({ length: 6 }).map((_, i) => {
@@ -148,15 +157,6 @@ export function DashboardClient({
       ).length,
     [myOpenTasks]
   );
-  const myDueTasks = useMemo(
-    () =>
-      myOpenTasks
-        .slice()
-        .sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime())
-        .slice(0, 5),
-    [myOpenTasks]
-  );
-
   const stats: DashboardStatProps[] = [
     {
       label: "Balance",
@@ -168,12 +168,15 @@ export function DashboardClient({
         runwayMonths === Infinity ? "No burn recorded" : `${runwayMonths.toFixed(1)} mo runway`,
     },
     {
-      label: "Capital raised",
-      value: formatCurrency(totalInvestments),
-      icon: TrendingUp,
+      label: "This month",
+      value: formatCurrency(currentMonthSpend),
+      icon: Flame,
       tone: "cyan",
-      delta: "positive",
-      deltaLabel: `${transactions.filter((t) => t.type === "investment").length} contributions`,
+      delta: "neutral",
+      deltaLabel:
+        monthlyBurn > 0
+          ? `${burnDeltaPct >= 0 ? "+" : ""}${burnDeltaPct}% vs avg`
+          : "spent this month",
     },
     {
       label: "Total spend",
@@ -224,12 +227,9 @@ export function DashboardClient({
 
       <GettingStarted transactions={transactions} tasks={tasks} users={users} />
 
-      <section
-        aria-label="Key metrics"
-        className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4"
-      >
+      <section aria-label="Key metrics" className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         {stats.map((s) => (
-          <DashboardStat key={s.label} {...s} />
+          <DashboardStat key={s.label} {...s} valueClassName="text-xl sm:text-3xl" />
         ))}
       </section>
 
@@ -266,7 +266,7 @@ export function DashboardClient({
           href="/tasks"
           icon={ClipboardList}
           value={myOpenCount}
-          label="Your open tasks"
+          label="Open tasks"
           alert={myOverdueCount > 0}
           sub={myOverdueCount > 0 ? `${myOverdueCount} overdue` : "Nothing overdue"}
         />
@@ -344,7 +344,7 @@ export function DashboardClient({
         </div>
       </section>
 
-      <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+      <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <div className="rounded-2xl border border-border bg-surface p-6">
           <div className="mb-5 flex items-start justify-between gap-4">
             <div>
@@ -379,79 +379,6 @@ export function DashboardClient({
                       />
                     </div>
                   </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-border bg-surface p-6">
-          <div className="mb-5 flex items-start justify-between gap-4">
-            <div>
-              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
-                Assigned to you
-              </p>
-              <h3 className="mt-1 text-lg font-bold tracking-tight">Your tasks due</h3>
-            </div>
-            <Link
-              href="/tasks"
-              className="inline-flex items-center gap-1 font-mono text-[10px] font-bold uppercase tracking-widest text-primary-strong hover:underline"
-            >
-              View all <ArrowRight className="h-3 w-3" aria-hidden="true" />
-            </Link>
-          </div>
-          <div className="space-y-2.5">
-            {myDueTasks.length === 0 ? (
-              <p className="py-6 text-center text-sm text-fg-muted">You&apos;re all caught up</p>
-            ) : (
-              myDueTasks.map((task) => {
-                const due = new Date(task.deadline);
-                const overdue = isPast(due) && !isToday(due);
-                const dueToday = isToday(due);
-                return (
-                  <Link
-                    key={task.id}
-                    href="/tasks"
-                    className="group block rounded-xl border border-border p-3 transition-colors hover:border-primary/30 hover:bg-surface-hover"
-                  >
-                    <div className="flex items-start gap-3">
-                      <div
-                        className={cn(
-                          "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg",
-                          task.priority === "urgent" && "bg-danger/15 text-danger-strong",
-                          task.priority === "high" && "bg-warning/15 text-warning-strong",
-                          task.priority === "medium" && "bg-info/15 text-info-strong",
-                          task.priority === "low" && "bg-glass/[0.06] text-fg-muted"
-                        )}
-                      >
-                        {task.status === "in_progress" ? (
-                          <CircleDot className="h-3.5 w-3.5" aria-hidden="true" />
-                        ) : (
-                          <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium transition-colors group-hover:text-primary-strong">
-                          {task.title}
-                        </p>
-                        <p
-                          className={cn(
-                            "mt-0.5 font-mono text-[10px] uppercase tracking-[0.15em]",
-                            overdue ? "text-danger-strong" : "text-fg-muted"
-                          )}
-                        >
-                          {overdue ? "Overdue · " : dueToday ? "Due today · " : "Due "}
-                          {format(due, "MMM dd")}
-                        </p>
-                      </div>
-                      {overdue && (
-                        <AlertTriangle
-                          className="mt-0.5 h-3.5 w-3.5 shrink-0 text-danger-strong"
-                          aria-hidden="true"
-                        />
-                      )}
-                    </div>
-                  </Link>
                 );
               })
             )}
