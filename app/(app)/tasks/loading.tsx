@@ -2,7 +2,7 @@ import { PageHeaderSkeleton, Skeleton } from "@/components/ui/skeleton";
 
 export default function TasksLoading() {
   return (
-    <div className="mx-auto max-w-[1280px] space-y-8">
+    <div className="mx-auto max-w-[1600px] space-y-8">
       <PageHeaderSkeleton withCta />
       {/* Filter pills + view toggle */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

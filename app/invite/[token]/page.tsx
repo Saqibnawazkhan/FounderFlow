@@ -14,7 +14,8 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, Sparkles } from "lucide-react";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { BrandMark } from "@/components/brand-mark";
 import { db } from "@/lib/db";
 import { AcceptInviteClient } from "./accept-invite-client";
 
@@ -59,9 +60,7 @@ export default async function InvitePage({ params }: { params: { token: string }
     <main className="min-h-screen bg-bg text-fg">
       <div className="mx-auto flex min-h-screen max-w-lg flex-col justify-center px-6 py-12">
         <Link href="/" className="mb-10 inline-flex w-fit items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary">
-            <Sparkles className="h-4 w-4 text-primary-fg" aria-hidden="true" />
-          </div>
+          <BrandMark className="h-9 w-9" />
           <span className="text-base font-bold tracking-tight">FounderFlow</span>
         </Link>
 

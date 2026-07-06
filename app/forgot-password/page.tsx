@@ -4,7 +4,8 @@ import { useId, useState } from "react";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowRight, MailCheck, Sparkles } from "lucide-react";
+import { ArrowRight, MailCheck } from "lucide-react";
+import { BrandMark } from "@/components/brand-mark";
 import toast from "react-hot-toast";
 import { requestPasswordResetAction } from "@/lib/actions/password-reset";
 import {
@@ -57,9 +58,7 @@ export default function ForgotPasswordPage() {
 
       <div className="w-full max-w-md">
         <Link href="/" className="mb-10 inline-flex items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary">
-            <Sparkles className="h-4 w-4 text-primary-fg" aria-hidden="true" />
-          </div>
+          <BrandMark className="h-9 w-9" />
           <span className="text-base font-bold tracking-tight">FounderFlow</span>
         </Link>
 
@@ -106,7 +105,7 @@ export default function ForgotPasswordPage() {
                   aria-describedby={errors.email ? `${emailId}-err` : undefined}
                   {...register("email")}
                   className={cn(
-                    "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:bg-glass/[0.08] focus:outline-none",
+                    "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-glass/[0.08] focus:outline-none",
                     errors.email
                       ? "border-danger/60 focus:border-danger"
                       : "border-glass/[0.10] focus:border-primary/50"

@@ -13,13 +13,13 @@ import {
   LineChart,
   Lock,
   Quote,
-  Sparkles,
   Star,
   TrendingUp,
   Users,
   Wallet,
   Zap,
 } from "lucide-react";
+import { BrandMark } from "@/components/brand-mark";
 import { motion, useReducedMotion, type Variants } from "framer-motion";
 import type { ReactNode } from "react";
 import { useStore } from "@/lib/store";
@@ -175,9 +175,7 @@ function Nav({ onDemo }: { onDemo: () => void }) {
     <header className="sticky top-0 z-sticky border-b border-glass/[0.06] bg-bg/70 backdrop-blur-xl">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
         <Link href="/" className="flex items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary">
-            <Sparkles className="h-4 w-4 text-primary-fg" aria-hidden="true" />
-          </div>
+          <BrandMark className="h-9 w-9" />
           <div className="leading-none">
             <p className="text-base font-bold tracking-tight">FounderFlow</p>
             <p className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-fg-muted">
@@ -977,9 +975,7 @@ function Footer() {
     <footer className="border-t border-glass/[0.06] bg-bg/40">
       <div className="mx-auto flex max-w-7xl flex-col items-start justify-between gap-6 px-6 py-10 md:flex-row md:items-center">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-            <Sparkles className="h-4 w-4 text-primary-fg" aria-hidden="true" />
-          </div>
+          <BrandMark className="h-8 w-8" />
           <span className="text-sm font-bold tracking-tight">FounderFlow</span>
           <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
             v1.0

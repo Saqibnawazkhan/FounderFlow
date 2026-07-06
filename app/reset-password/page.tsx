@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowRight, CheckCircle2, Eye, EyeOff, Sparkles, ShieldAlert } from "lucide-react";
+import { ArrowRight, CheckCircle2, Eye, EyeOff, ShieldAlert } from "lucide-react";
+import { BrandMark } from "@/components/brand-mark";
 import toast from "react-hot-toast";
 import { resetPasswordAction } from "@/lib/actions/password-reset";
 import { ResetPasswordSchema, type ResetPasswordInput } from "@/lib/schemas/password-reset";
@@ -78,9 +79,7 @@ function ResetPasswordInner() {
 
       <div className="w-full max-w-md">
         <Link href="/" className="mb-10 inline-flex items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary">
-            <Sparkles className="h-4 w-4 text-primary-fg" aria-hidden="true" />
-          </div>
+          <BrandMark className="h-9 w-9" />
           <span className="text-base font-bold tracking-tight">FounderFlow</span>
         </Link>
 
@@ -126,7 +125,7 @@ function ResetPasswordInner() {
                     aria-describedby={errors.password ? `${pwId}-err` : undefined}
                     {...register("password")}
                     className={cn(
-                      "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:bg-glass/[0.08] focus:outline-none",
+                      "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-glass/[0.08] focus:outline-none",
                       errors.password
                         ? "border-danger/60 focus:border-danger"
                         : "border-glass/[0.10] focus:border-primary/50"

@@ -15,6 +15,7 @@ import { UpdateCompanySchema } from "@/lib/schemas/company";
 import { limiters } from "@/lib/rate-limit";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import { captureServerError } from "@/lib/sentry-server";
+import { getCurrentCompany } from "@/lib/queries/company";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
 
@@ -49,5 +50,22 @@ export async function updateCompanyAction(input: unknown): Promise<ActionResult>
   } catch (e) {
     captureServerError(e, { action: "updateCompanyAction" });
     return { success: false, error: "Couldn't update company info right now." };
+  }
+}
+
+/**
+ * Read the caller's company name + industry for the sidebar header. Thin
+ * wrapper over the getCurrentCompany query so CompanyHydrator (a Client
+ * Component) can fetch it. Returns an error result instead of throwing when
+ * unauthenticated so the hydrator can quietly no-op.
+ */
+export async function getMyCompanyAction(): Promise<
+  ActionResult<{ name: string; industry: string }>
+> {
+  try {
+    const company = await getCurrentCompany();
+    return { success: true, data: { name: company.name, industry: company.industry } };
+  } catch {
+    return { success: false, error: "Couldn't load company info" };
   }
 }

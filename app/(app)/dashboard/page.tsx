@@ -10,6 +10,7 @@ import { getTransactions } from "@/lib/queries/transactions";
 import { getTasks } from "@/lib/queries/tasks";
 import { getActivities } from "@/lib/queries/activities";
 import { getCompanyUsers } from "@/lib/queries/users";
+import { getClockedInPeers } from "@/lib/queries/time";
 import { requireScopedSession } from "@/lib/queries/session";
 import { DashboardClient } from "./dashboard-client";
 
@@ -20,12 +21,13 @@ export const metadata: Metadata = {
 };
 
 export default async function DashboardPage() {
-  const [session, transactions, tasks, activities, users] = await Promise.all([
+  const [session, transactions, tasks, activities, users, clockedIn] = await Promise.all([
     requireScopedSession(),
     getTransactions(),
     getTasks(),
     getActivities(50),
     getCompanyUsers(),
+    getClockedInPeers(),
   ]);
 
   return (
@@ -34,6 +36,8 @@ export default async function DashboardPage() {
       tasks={tasks}
       activities={activities}
       users={users}
+      clockedIn={clockedIn}
+      currentUserId={session.userId}
       currentUserName={session.userName}
     />
   );

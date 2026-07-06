@@ -358,7 +358,7 @@ export function TimeClient({
                         <td className="px-6 py-4 font-mono text-xs">
                           {endedAt ? (
                             <span
-                              className={cn("text-fg-muted", e.autoClosed && "text-warning")}
+                              className={cn("text-fg-muted", e.autoClosed && "text-warning-strong")}
                               title={e.autoClosed ? "Auto-closed after 12.5h idle" : undefined}
                             >
                               {format(endedAt, "MMM dd · HH:mm")}
@@ -450,7 +450,7 @@ export function TimeClient({
                     <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-fg-muted">
                       <span>{format(startedAt, "MMM dd · HH:mm")}</span>
                       {endedAt ? (
-                        <span className={cn(e.autoClosed && "text-warning")}>
+                        <span className={cn(e.autoClosed && "text-warning-strong")}>
                           → {format(endedAt, "HH:mm")}
                           {e.autoClosed && " ⏱"}
                         </span>

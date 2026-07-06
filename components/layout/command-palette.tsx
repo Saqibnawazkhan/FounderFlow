@@ -155,7 +155,7 @@ export function CommandPalette({ open, onClose }: Props) {
                 >
                   <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
                   <span className="flex-1 font-medium">{item.label}</span>
-                  <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted/60">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
                     {item.href}
                   </span>
                   {active && (

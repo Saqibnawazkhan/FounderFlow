@@ -4,20 +4,24 @@ import Link from "next/link";
 import { useMemo } from "react";
 import dynamic from "next/dynamic";
 import {
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   Circle,
   CircleDot,
+  ClipboardList,
   Clock,
   Rocket,
+  Timer,
   TrendingDown,
   TrendingUp,
   Users,
   Wallet,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { Activity, Task, Transaction, User } from "@/lib/types";
 import { formatCurrency, formatRelativeTime, cn } from "@/lib/utils";
-import { endOfMonth, format, startOfMonth, subMonths } from "date-fns";
+import { endOfMonth, format, isPast, isToday, startOfMonth, subMonths } from "date-fns";
 import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat, type DashboardStatProps } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
@@ -48,6 +52,8 @@ type Props = {
   tasks: Task[];
   activities: Activity[];
   users: User[];
+  clockedIn: { count: number; peers: { userId: string; userName: string }[] };
+  currentUserId: string;
   currentUserName: string;
 };
 
@@ -56,6 +62,8 @@ export function DashboardClient({
   tasks,
   activities,
   users,
+  clockedIn,
+  currentUserId,
   currentUserName,
 }: Props) {
   const totalInvestments = transactions
@@ -125,10 +133,29 @@ export function DashboardClient({
   }, [transactions]);
 
   const recentActivities = activities.slice(0, 6);
-  const upcomingTasks = tasks
-    .filter((t) => t.status !== "completed")
-    .sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime())
-    .slice(0, 4);
+
+  // #2: surface the CURRENT user's own open tasks (overdue first) rather than
+  // the whole company backlog, so the dashboard shows what this person owns.
+  const myOpenTasks = useMemo(
+    () => tasks.filter((t) => t.assignedTo === currentUserId && t.status !== "completed"),
+    [tasks, currentUserId]
+  );
+  const myOpenCount = myOpenTasks.length;
+  const myOverdueCount = useMemo(
+    () =>
+      myOpenTasks.filter(
+        (t) => t.deadline && isPast(new Date(t.deadline)) && !isToday(new Date(t.deadline))
+      ).length,
+    [myOpenTasks]
+  );
+  const myDueTasks = useMemo(
+    () =>
+      myOpenTasks
+        .slice()
+        .sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime())
+        .slice(0, 5),
+    [myOpenTasks]
+  );
 
   const stats: DashboardStatProps[] = [
     {
@@ -204,6 +231,45 @@ export function DashboardClient({
         {stats.map((s) => (
           <DashboardStat key={s.label} {...s} />
         ))}
+      </section>
+
+      {/* #1/#2 Team pulse — people, time on the clock, and your own workload,
+          each a one-tap shortcut into the relevant page. */}
+      <section aria-label="Team pulse" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <PulseCard
+          href="/time?scope=team"
+          icon={Timer}
+          value={clockedIn.count}
+          label="Clocked in now"
+          live={clockedIn.count > 0}
+          sub={
+            clockedIn.count > 0
+              ? clockedIn.peers
+                  .slice(0, 3)
+                  .map((p) => p.userName.split(" ")[0])
+                  .join(", ") + (clockedIn.count > 3 ? ` +${clockedIn.count - 3} more` : "")
+              : "Nobody on the clock"
+          }
+        />
+        <PulseCard
+          href="/team"
+          icon={Users}
+          value={users.length}
+          label="Team members"
+          sub={
+            founderContributions.length > 0
+              ? `${founderContributions.length} contributing capital`
+              : "Invite your co-founders"
+          }
+        />
+        <PulseCard
+          href="/tasks"
+          icon={ClipboardList}
+          value={myOpenCount}
+          label="Your open tasks"
+          alert={myOverdueCount > 0}
+          sub={myOverdueCount > 0 ? `${myOverdueCount} overdue` : "Nothing overdue"}
+        />
       </section>
 
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -323,9 +389,9 @@ export function DashboardClient({
           <div className="mb-5 flex items-start justify-between gap-4">
             <div>
               <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
-                What&apos;s next
+                Assigned to you
               </p>
-              <h3 className="mt-1 text-lg font-bold tracking-tight">Upcoming tasks</h3>
+              <h3 className="mt-1 text-lg font-bold tracking-tight">Your tasks due</h3>
             </div>
             <Link
               href="/tasks"
@@ -335,42 +401,59 @@ export function DashboardClient({
             </Link>
           </div>
           <div className="space-y-2.5">
-            {upcomingTasks.length === 0 ? (
-              <p className="py-6 text-center text-sm text-fg-muted">No pending tasks</p>
+            {myDueTasks.length === 0 ? (
+              <p className="py-6 text-center text-sm text-fg-muted">You&apos;re all caught up</p>
             ) : (
-              upcomingTasks.map((task) => (
-                <Link
-                  key={task.id}
-                  href="/tasks"
-                  className="group block rounded-xl border border-border p-3 transition-colors hover:border-primary/30 hover:bg-surface-hover"
-                >
-                  <div className="flex items-start gap-3">
-                    <div
-                      className={cn(
-                        "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg",
-                        task.priority === "urgent" && "bg-danger/15 text-danger",
-                        task.priority === "high" && "bg-warning/15 text-warning",
-                        task.priority === "medium" && "bg-info/15 text-info",
-                        task.priority === "low" && "bg-glass/[0.06] text-fg-muted"
-                      )}
-                    >
-                      {task.status === "in_progress" ? (
-                        <CircleDot className="h-3.5 w-3.5" aria-hidden="true" />
-                      ) : (
-                        <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+              myDueTasks.map((task) => {
+                const due = new Date(task.deadline);
+                const overdue = isPast(due) && !isToday(due);
+                const dueToday = isToday(due);
+                return (
+                  <Link
+                    key={task.id}
+                    href="/tasks"
+                    className="group block rounded-xl border border-border p-3 transition-colors hover:border-primary/30 hover:bg-surface-hover"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div
+                        className={cn(
+                          "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg",
+                          task.priority === "urgent" && "bg-danger/15 text-danger-strong",
+                          task.priority === "high" && "bg-warning/15 text-warning-strong",
+                          task.priority === "medium" && "bg-info/15 text-info-strong",
+                          task.priority === "low" && "bg-glass/[0.06] text-fg-muted"
+                        )}
+                      >
+                        {task.status === "in_progress" ? (
+                          <CircleDot className="h-3.5 w-3.5" aria-hidden="true" />
+                        ) : (
+                          <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium transition-colors group-hover:text-primary-strong">
+                          {task.title}
+                        </p>
+                        <p
+                          className={cn(
+                            "mt-0.5 font-mono text-[10px] uppercase tracking-[0.15em]",
+                            overdue ? "text-danger-strong" : "text-fg-muted"
+                          )}
+                        >
+                          {overdue ? "Overdue · " : dueToday ? "Due today · " : "Due "}
+                          {format(due, "MMM dd")}
+                        </p>
+                      </div>
+                      {overdue && (
+                        <AlertTriangle
+                          className="mt-0.5 h-3.5 w-3.5 shrink-0 text-danger-strong"
+                          aria-hidden="true"
+                        />
                       )}
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium transition-colors group-hover:text-primary-strong">
-                        {task.title}
-                      </p>
-                      <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
-                        {task.assignedToName} · Due {format(new Date(task.deadline), "MMM dd")}
-                      </p>
-                    </div>
-                  </div>
-                </Link>
-              ))
+                  </Link>
+                );
+              })
             )}
           </div>
         </div>
@@ -423,6 +506,60 @@ function Legend({ dot, label }: { dot: string; label: string }) {
       />
       <span className="text-fg-muted">{label}</span>
     </div>
+  );
+}
+
+/**
+ * PulseCard — a compact, clickable dashboard shortcut (clocked-in count, team
+ * size, your open tasks). `live` shows a pulsing dot (someone's on the clock);
+ * `alert` recolors the icon chip red (you have overdue work).
+ */
+function PulseCard({
+  href,
+  icon: Icon,
+  value,
+  label,
+  sub,
+  live,
+  alert,
+}: {
+  href: string;
+  icon: LucideIcon;
+  value: number | string;
+  label: string;
+  sub?: string;
+  live?: boolean;
+  alert?: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      className="group flex items-center gap-4 rounded-2xl border border-border bg-surface p-5 transition-colors hover:border-primary/30 hover:bg-surface-hover"
+    >
+      <span
+        className={cn(
+          "relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl",
+          alert ? "bg-danger/15 text-danger-strong" : "bg-primary/10 text-primary-strong"
+        )}
+      >
+        <Icon className="h-5 w-5" aria-hidden="true" />
+        {live && (
+          <span className="absolute -right-0.5 -top-0.5 flex h-3 w-3" aria-hidden="true">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-70" />
+            <span className="relative inline-flex h-3 w-3 rounded-full bg-primary ring-2 ring-surface" />
+          </span>
+        )}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-mono text-2xl font-bold tabular-nums leading-none">{value}</p>
+        <p className="mt-1 text-sm font-semibold text-fg">{label}</p>
+        {sub && <p className="mt-0.5 truncate text-xs text-fg-muted">{sub}</p>}
+      </div>
+      <ArrowRight
+        className="h-4 w-4 shrink-0 text-fg-muted transition-transform group-hover:translate-x-0.5"
+        aria-hidden="true"
+      />
+    </Link>
   );
 }
 

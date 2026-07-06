@@ -57,9 +57,9 @@ const TONE_FILL: Record<ActivityTone, string> = {
   primary: "bg-primary/15 text-primary-strong border-primary/30",
   cyan: "bg-cyan/15 text-cyan-strong border-cyan/30",
   pink: "bg-pink/15 text-pink-strong border-pink/30",
-  danger: "bg-danger/15 text-danger border-danger/30",
-  warning: "bg-warning/15 text-warning border-warning/30",
-  info: "bg-info/15 text-info border-info/30",
+  danger: "bg-danger/15 text-danger-strong border-danger/30",
+  warning: "bg-warning/15 text-warning-strong border-warning/30",
+  info: "bg-info/15 text-info-strong border-info/30",
 };
 
 /** An activity row plus how many identical consecutive events it absorbed.

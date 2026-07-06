@@ -97,7 +97,7 @@ export function VerifyEmailBanner() {
           type="button"
           onClick={handleResend}
           disabled={resending}
-          className="inline-flex items-center gap-1.5 rounded-full border border-warning/40 bg-warning/10 px-3 py-1.5 text-xs font-bold text-warning transition-colors hover:bg-warning/20 disabled:opacity-60"
+          className="inline-flex items-center gap-1.5 rounded-full border border-warning/40 bg-warning/10 px-3 py-1.5 text-xs font-bold text-warning-strong transition-colors hover:bg-warning/20 disabled:opacity-60"
         >
           {resending ? t.auth.verifyResending : t.auth.verifyResend}
         </button>

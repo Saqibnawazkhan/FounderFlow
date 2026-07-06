@@ -98,7 +98,7 @@ export function ConfirmDialogHost() {
     tone === "danger"
       ? "bg-danger text-white hover:bg-danger/90"
       : tone === "warning"
-        ? "bg-warning text-bg hover:bg-warning/90"
+        ? "bg-warning text-primary-fg hover:bg-warning/90"
         : "bg-primary text-primary-fg hover:bg-primary-soft";
 
   return (

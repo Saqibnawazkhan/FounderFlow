@@ -238,7 +238,7 @@ export function ExpensesClient({
             id="expense-category"
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
-            className="w-full min-w-[200px] appearance-none rounded-xl border border-border bg-bg py-2.5 pl-10 pr-10 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
+            className="w-full min-w-[200px] appearance-none rounded-xl border border-border bg-bg py-2.5 pl-10 pr-4 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
           >
             <option value="all">All categories</option>
             {EXPENSE_CATEGORIES.map((c) => (

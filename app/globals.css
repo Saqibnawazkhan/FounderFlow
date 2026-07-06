@@ -26,6 +26,11 @@
   --input: 226 232 240;
   --ring: 132 204 22; /* lime-500 — slightly darker for visibility on white */
 
+  /* Theme native form controls (the <select> option popup, scrollbars, date
+     pickers) for a LIGHT UI so their OS-rendered popups aren't painted with
+     dark-on-light or light-on-light text. */
+  color-scheme: light;
+
   /* Glass — flips inversion per theme.
    * On light: dark tint (rgb of black). Use with alpha utilities like bg-glass/[0.04].
    * On dark: light tint (rgb of white).
@@ -57,8 +62,16 @@
   /* Semantic */
   --success: 16 185 129;
   --warning: 245 158 11;
-  --danger: 239 68 68;
+  --danger: 220 38 38; /* red-600 — white text on solid danger fills clears AA (was red-500 ≈ 4:1) */
   --info: 59 130 246;
+
+  /* Text-safe semantic foregrounds — darker so small labels sitting on /10–/15
+     semantic tints clear WCAG AA on light surfaces. Bright accents above stay
+     for fills/borders; use these only for text-* utilities. */
+  --success-strong: 4 120 87; /* emerald-700 */
+  --warning-strong: 180 83 9; /* amber-700 */
+  --danger-strong: 185 28 28; /* red-700 */
+  --info-strong: 29 78 216; /* blue-700 */
 
   /* Radius (Stitch scale) */
   --radius-sm: 0.5rem;
@@ -93,10 +106,22 @@
   --ambient-opacity: 0.5;
   --glow-shadow-opacity: 0.35;
 
+  /* Dark native controls. Without this the <select> option list renders on a
+     light OS background while inheriting the near-white --fg text = invisible
+     options (the bug in the DUE / status dropdowns). This flips the whole
+     native popup — background AND text — to a legible dark scheme. */
+  color-scheme: dark;
+
   /* On dark surfaces the bright brand hexes already exceed 13:1 — match them. */
   --primary-strong: 182 244 37;
   --cyan-strong: 112 230 237;
   --pink-strong: 255 179 219;
+
+  /* Semantic text-safe foregrounds — bright shades that read clearly on dark. */
+  --success-strong: 52 211 153; /* emerald-400 */
+  --warning-strong: 251 191 36; /* amber-400 */
+  --danger-strong: 248 113 113; /* red-400 */
+  --info-strong: 96 165 250; /* blue-400 */
 }
 
 * {
@@ -113,6 +138,16 @@ body {
   font-family: var(--font-sans), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Native <select> option lists — belt-and-braces backup to color-scheme. Some
+   engines paint <option> from these properties directly; without them a select
+   styled with text-fg leaks near-white text onto a light popup. Theme-aware, so
+   options stay legible in both themes and match the surrounding surface. */
+option,
+optgroup {
+  background-color: rgb(var(--surface));
+  color: rgb(var(--fg));
 }
 
 /* Focus-visible — lime ring, always visible, never hidden */

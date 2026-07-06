@@ -53,9 +53,9 @@ import type { TaskWithCount } from "@/lib/queries/tasks";
 import type { TaskPriority, TaskStatus } from "@/lib/types";
 
 const PRIORITY_STYLES: Record<TaskPriority, string> = {
-  urgent: "border-danger/30 bg-danger/10 text-danger",
-  high: "border-warning/30 bg-warning/10 text-warning",
-  medium: "border-info/30 bg-info/10 text-info",
+  urgent: "border-danger/30 bg-danger/10 text-danger-strong",
+  high: "border-warning/30 bg-warning/10 text-warning-strong",
+  medium: "border-info/30 bg-info/10 text-info-strong",
   low: "border-border bg-bg text-fg-muted",
 };
 

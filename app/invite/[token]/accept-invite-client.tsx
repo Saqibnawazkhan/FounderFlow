@@ -81,7 +81,7 @@ export function AcceptInviteClient({
             aria-describedby={errors.password ? `${pwId}-err` : undefined}
             {...register("password")}
             className={cn(
-              "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:bg-glass/[0.08] focus:outline-none",
+              "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-glass/[0.08] focus:outline-none",
               errors.password
                 ? "border-danger/60 focus:border-danger"
                 : "border-glass/[0.10] focus:border-primary/50"

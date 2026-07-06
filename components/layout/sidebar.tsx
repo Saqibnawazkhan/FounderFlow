@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronsLeft, ChevronsRight, Sparkles, X } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, X } from "lucide-react";
+import { BrandMark } from "@/components/brand-mark";
 import { useStore, useStoreHasHydrated } from "@/lib/store";
 import { listNotificationsAction } from "@/lib/actions/notifications";
 import { useT } from "@/lib/i18n/use-t";
@@ -23,6 +24,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const currentUser = useStore((s) => s.currentUser);
   const companies = useStore((s) => s.companies);
+  const currentCompany = useStore((s) => s.currentCompany);
   const t = useT();
 
   // Auto-close the mobile drawer when the route changes.
@@ -71,7 +73,12 @@ export function Sidebar() {
     };
   }, []);
 
-  const company = companies.find((c) => c.id === currentUser?.companyId);
+  // Prefer the real DB company (hydrated by CompanyHydrator) over the demo
+  // seed array, so an authenticated user sees their actual workspace name
+  // instead of "Your Company". Demo mode still falls back to the seed.
+  const demoCompany = companies.find((c) => c.id === currentUser?.companyId);
+  const companyName = currentCompany?.name ?? demoCompany?.name ?? "Your Company";
+  const companyIndustry = currentCompany?.industry ?? demoCompany?.industry;
 
   // Hide finance-only nav items from members. The middleware enforces the
   // same rule on direct navigation, so this is purely a "don't tease them
@@ -116,7 +123,7 @@ export function Sidebar() {
         // drawer overlay because a 64px thumbstrip on a phone is worse UX
         // than a proper burger menu.
         className={cn(
-          "fixed left-0 top-0 z-modal flex h-screen w-64 flex-col border-r border-border bg-surface transition-[transform,width] duration-300",
+          "fixed left-0 top-0 z-modal flex h-[100dvh] w-64 flex-col border-r border-border bg-surface transition-[transform,width] duration-300",
           mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
           collapsed && "lg:w-16"
         )}
@@ -134,9 +141,7 @@ export function Sidebar() {
             onClick={() => setMobileOpen(false)}
             aria-label="FounderFlow home"
           >
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary shadow-glow">
-              <Sparkles className="h-5 w-5 text-primary-fg" aria-hidden="true" />
-            </div>
+            <BrandMark className="h-9 w-9 shrink-0" />
             {!collapsed && (
               <div>
                 <p className="text-sm font-bold">FounderFlow</p>
@@ -163,11 +168,11 @@ export function Sidebar() {
           <div className="border-b border-border px-5 py-4">
             <div className="flex items-center gap-3 rounded-xl bg-bg p-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary font-bold text-primary-fg">
-                {company?.name?.[0] || "C"}
+                {companyName[0] || "C"}
               </div>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold">{company?.name || "Your Company"}</p>
-                <p className="truncate text-xs text-fg-muted">{company?.industry}</p>
+                <p className="truncate text-sm font-semibold">{companyName}</p>
+                <p className="truncate text-xs text-fg-muted">{companyIndustry}</p>
               </div>
             </div>
           </div>

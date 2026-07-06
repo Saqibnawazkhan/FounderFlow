@@ -137,7 +137,7 @@ export function WeeklyTimesheet({
 
             <div className="flex flex-1 flex-col gap-1.5">
               {rows.length === 0 ? (
-                <p className="py-2 text-center text-[11px] text-fg-muted/50">No entries</p>
+                <p className="py-2 text-center text-[11px] text-fg-muted">No entries</p>
               ) : (
                 rows.map((e) => {
                   const dur = durationMs(

@@ -525,7 +525,7 @@ function WarnModal({
           size="md"
         >
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
-            <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning">
+            <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 text-sm text-warning-strong">
               Auto clock-out in{" "}
               <span className="font-mono font-bold tabular-nums">
                 {formatDuration(remainingMs)}

@@ -63,6 +63,34 @@ function toClient(t: {
   };
 }
 
+export interface ClockedInPeers {
+  count: number;
+  peers: { userId: string; userName: string }[];
+}
+
+/**
+ * Everyone in the company currently on the clock (an open entry — clockOutAt
+ * null). Powers the dashboard "clocked in now" card. Deduped by user (a user
+ * should only ever have one open entry, but we dedupe defensively). Company-
+ * scoped, so it only reveals teammates in the caller's own workspace.
+ */
+export async function getClockedInPeers(): Promise<ClockedInPeers> {
+  const { companyId } = await requireScopedSession();
+  const rows = await db.timeEntry.findMany({
+    where: { companyId, clockOutAt: null },
+    orderBy: { clockInAt: "desc" },
+    select: { userId: true, userName: true },
+  });
+  const seen = new Set<string>();
+  const peers: { userId: string; userName: string }[] = [];
+  for (const r of rows) {
+    if (seen.has(r.userId)) continue;
+    seen.add(r.userId);
+    peers.push({ userId: r.userId, userName: r.userName });
+  }
+  return { count: peers.length, peers };
+}
+
 /** The current user's open entry, if any. Used by the topbar widget. */
 export async function getOpenEntry(): Promise<TimeEntryClient | null> {
   const { userId } = await requireScopedSession();

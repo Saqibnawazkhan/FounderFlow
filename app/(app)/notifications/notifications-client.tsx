@@ -21,10 +21,10 @@ import {
 } from "@/lib/types";
 
 const TYPE_FILL = {
-  success: "bg-success/15 text-success",
-  warning: "bg-warning/15 text-warning",
-  danger: "bg-danger/15 text-danger",
-  info: "bg-info/15 text-info",
+  success: "bg-success/15 text-success-strong",
+  warning: "bg-warning/15 text-warning-strong",
+  danger: "bg-danger/15 text-danger-strong",
+  info: "bg-info/15 text-info-strong",
 } as const;
 
 const CATEGORY_ORDER: NotificationCategory[] = ["task", "finance", "team", "system"];

@@ -4,7 +4,8 @@ import { forwardRef, useId, useState } from "react";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowRight, ChevronDown, Eye, EyeOff, Sparkles, CheckCircle2 } from "lucide-react";
+import { ArrowRight, ChevronDown, Eye, EyeOff, CheckCircle2 } from "lucide-react";
+import { BrandMark } from "@/components/brand-mark";
 import toast from "react-hot-toast";
 import { signupAction } from "@/lib/actions/auth";
 import { SignupSchema, type SignupInput } from "@/lib/schemas/auth";
@@ -134,9 +135,7 @@ export default function SignupPage() {
         </div>
 
         <Link href="/" className="mb-12 inline-flex w-fit items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary">
-            <Sparkles className="h-4 w-4 text-primary-fg" aria-hidden="true" />
-          </div>
+          <BrandMark className="h-9 w-9" />
           <span className="text-base font-bold tracking-tight">FounderFlow</span>
         </Link>
 
@@ -222,7 +221,7 @@ export default function SignupPage() {
                     aria-describedby={errors.password ? `${pwId}-err` : undefined}
                     {...register("password")}
                     className={cn(
-                      "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:bg-glass/[0.08] focus:outline-none",
+                      "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-glass/[0.08] focus:outline-none",
                       errors.password
                         ? "border-danger/60 focus:border-danger"
                         : "border-glass/[0.10] focus:border-primary/50"
@@ -382,7 +381,7 @@ const RegField = forwardRef<HTMLInputElement, RegFieldProps>(function RegField(
         aria-describedby={error ? `${id}-err` : undefined}
         {...rest}
         className={cn(
-          "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted/60 focus:bg-glass/[0.08] focus:outline-none",
+          "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-glass/[0.08] focus:outline-none",
           error
             ? "border-danger/60 focus:border-danger"
             : "border-glass/[0.10] focus:border-primary/50"

@@ -157,11 +157,16 @@ function BudgetCard({
   const isWarning = pct >= 0.8 && pct < 1;
 
   const tone = isOver
-    ? { bar: "bg-danger", text: "text-danger", bg: "bg-danger/10", border: "border-danger/30" }
+    ? {
+        bar: "bg-danger",
+        text: "text-danger-strong",
+        bg: "bg-danger/10",
+        border: "border-danger/30",
+      }
     : isWarning
       ? {
           bar: "bg-warning",
-          text: "text-warning",
+          text: "text-warning-strong",
           bg: "bg-warning/10",
           border: "border-warning/30",
         }

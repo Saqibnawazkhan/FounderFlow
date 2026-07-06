@@ -3,7 +3,8 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowRight, CheckCircle2, Loader2, ShieldAlert, Sparkles } from "lucide-react";
+import { ArrowRight, CheckCircle2, Loader2, ShieldAlert } from "lucide-react";
+import { BrandMark } from "@/components/brand-mark";
 import { verifyEmailAction } from "@/lib/actions/email-verification";
 import { ThemeToggle } from "@/components/landing/theme-toggle";
 import { useT } from "@/lib/i18n/use-t";
@@ -64,9 +65,7 @@ function VerifyEmailInner() {
 
       <div className="w-full max-w-md">
         <Link href="/" className="mb-10 inline-flex items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary">
-            <Sparkles className="h-4 w-4 text-primary-fg" aria-hidden="true" />
-          </div>
+          <BrandMark className="h-9 w-9" />
           <span className="text-base font-bold tracking-tight">FounderFlow</span>
         </Link>
 

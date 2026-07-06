@@ -46,11 +46,24 @@ const config: Config = {
           strong: "rgb(var(--pink-strong) / <alpha-value>)",
         },
 
-        // Semantic
-        success: "rgb(var(--success) / <alpha-value>)",
-        warning: "rgb(var(--warning) / <alpha-value>)",
-        danger: "rgb(var(--danger) / <alpha-value>)",
-        info: "rgb(var(--info) / <alpha-value>)",
+        // Semantic — DEFAULT for fills/borders/tints; `strong` is the text-safe
+        // foreground (darker on light, brighter on dark), mirroring the accents.
+        success: {
+          DEFAULT: "rgb(var(--success) / <alpha-value>)",
+          strong: "rgb(var(--success-strong) / <alpha-value>)",
+        },
+        warning: {
+          DEFAULT: "rgb(var(--warning) / <alpha-value>)",
+          strong: "rgb(var(--warning-strong) / <alpha-value>)",
+        },
+        danger: {
+          DEFAULT: "rgb(var(--danger) / <alpha-value>)",
+          strong: "rgb(var(--danger-strong) / <alpha-value>)",
+        },
+        info: {
+          DEFAULT: "rgb(var(--info) / <alpha-value>)",
+          strong: "rgb(var(--info-strong) / <alpha-value>)",
+        },
 
         // Brand/accent aliases kept temporarily for legacy callers (sidebar, etc.).
         // TODO Phase 3.B: rip these out once legacy components are migrated.

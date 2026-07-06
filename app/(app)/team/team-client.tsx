@@ -466,9 +466,13 @@ function Cell({
         ? "text-pink-strong"
         : "text-primary-strong";
   return (
-    <div>
+    <div className="min-w-0">
       <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">{label}</p>
-      <p className={cn("mt-1 font-mono text-sm font-bold tabular-nums", toneClass)}>{value}</p>
+      <p
+        className={cn("mt-1 min-w-0 truncate font-mono text-sm font-bold tabular-nums", toneClass)}
+      >
+        {value}
+      </p>
     </div>
   );
 }

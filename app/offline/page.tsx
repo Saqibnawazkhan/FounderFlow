@@ -9,7 +9,8 @@
 
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Sparkles, WifiOff } from "lucide-react";
+import { WifiOff } from "lucide-react";
+import { BrandMark } from "@/components/brand-mark";
 
 export const metadata: Metadata = {
   title: "Offline",
@@ -20,9 +21,7 @@ export default function OfflinePage() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-bg px-6 py-12 text-center">
       <Link href="/" className="mb-10 inline-flex items-center gap-2.5">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary">
-          <Sparkles className="h-4 w-4 text-primary-fg" aria-hidden="true" />
-        </div>
+        <BrandMark className="h-9 w-9" />
         <span className="text-base font-bold tracking-tight">FounderFlow</span>
       </Link>
 

@@ -70,7 +70,7 @@ const COLOR_STRIPE: Record<string, string> = {
 
 const STATUS_CLASSES: Record<string, string> = {
   active: "border-primary/30 bg-primary/10 text-primary-strong",
-  on_hold: "border-warning/30 bg-warning/10 text-warning",
+  on_hold: "border-warning/30 bg-warning/10 text-warning-strong",
   completed: "border-cyan/30 bg-cyan/10 text-cyan-strong",
   archived: "border-border bg-bg/40 text-fg-muted",
 };
@@ -367,9 +367,9 @@ export function ProjectDetailClient({
                       task.priority === "urgent"
                         ? "border-danger/30 bg-danger/10 text-danger"
                         : task.priority === "high"
-                          ? "border-warning/30 bg-warning/10 text-warning"
+                          ? "border-warning/30 bg-warning/10 text-warning-strong"
                           : task.priority === "medium"
-                            ? "border-info/30 bg-info/10 text-info"
+                            ? "border-info/30 bg-info/10 text-info-strong"
                             : "border-border bg-bg text-fg-muted"
                     )}
                   >

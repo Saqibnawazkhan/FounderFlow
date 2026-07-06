@@ -23,6 +23,10 @@ interface AppState {
   currentUser: User | null;
   users: User[];
   companies: Company[];
+  /** The signed-in user's REAL company (name + industry), fetched from the DB
+   * on mount by CompanyHydrator. Distinct from the demo `companies` seed array;
+   * this is what the sidebar shows for an authenticated (non-demo) user. */
+  currentCompany: { name: string; industry: string } | null;
   transactions: Transaction[];
   tasks: Task[];
   activities: Activity[];
@@ -47,6 +51,8 @@ interface AppState {
    * demo workspace.
    */
   hydrateUser: (user: User | null) => void;
+  /** Adopt the real company for the sidebar/topbar (set by CompanyHydrator). */
+  hydrateCompany: (company: { name: string; industry: string } | null) => void;
   setTheme: (theme: "light" | "dark") => void;
   toggleTheme: () => void;
 
@@ -164,6 +170,7 @@ export const useStore = create<AppState>()(
       currentUser: null,
       users: [],
       companies: [],
+      currentCompany: null,
       transactions: [],
       tasks: [],
       activities: [],
@@ -208,6 +215,8 @@ export const useStore = create<AppState>()(
         if (sameIdentity) return;
         set({ currentUser: user });
       },
+
+      hydrateCompany: (company) => set({ currentCompany: company }),
 
       setTheme: (theme) => {
         set({ theme });
@@ -276,7 +285,7 @@ export const useStore = create<AppState>()(
       },
 
       logout: () => {
-        set({ currentUser: null });
+        set({ currentUser: null, currentCompany: null });
       },
 
       loginDemo: () => {
@@ -591,6 +600,7 @@ export const useStore = create<AppState>()(
       ),
       partialize: (state) => ({
         currentUser: state.currentUser,
+        currentCompany: state.currentCompany,
         users: state.users,
         companies: state.companies,
         transactions: state.transactions,
