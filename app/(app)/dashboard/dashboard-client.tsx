@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Circle,
   ClipboardList,
+  Coins,
   Flame,
   Rocket,
   Timer,
@@ -214,12 +215,18 @@ export function DashboardClient({
             Here&apos;s how your startup is doing today.
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <Link
             href="/expenses"
             className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-5 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-surface-hover active:scale-95"
           >
             <TrendingDown className="h-4 w-4" aria-hidden="true" /> Log expense
+          </Link>
+          <Link
+            href="/revenue"
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-5 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-surface-hover active:scale-95"
+          >
+            <Coins className="h-4 w-4 text-primary-strong" aria-hidden="true" /> Log revenue
           </Link>
           <Link
             href="/investments"
