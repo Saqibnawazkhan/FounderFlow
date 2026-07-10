@@ -25,6 +25,7 @@ import {
   ChevronDown,
   Clock,
   Pencil,
+  Plus,
   Trash2,
   UserCog,
   Users,
@@ -49,6 +50,8 @@ import type { TaskWithCount } from "@/lib/queries/tasks";
 import type { BudgetWithSpend } from "@/lib/queries/budgets";
 import type { User } from "@/lib/types";
 import { TaskDetailModal } from "@/components/tasks/task-detail-modal";
+import { TaskForm } from "@/components/tasks/task-form";
+import { Modal } from "@/components/ui/modal";
 import { deleteTaskAction, updateTaskStatusAction } from "@/lib/actions/tasks";
 import type { TaskStatus } from "@/lib/types";
 import { EditProjectModal } from "./edit-project-modal";
@@ -102,6 +105,7 @@ export function ProjectDetailClient({
 
   const [editOpen, setEditOpen] = useState(false);
   const [supOpen, setSupOpen] = useState(false);
+  const [newTaskOpen, setNewTaskOpen] = useState(false);
   // Clicking any task row on this page opens the shared TaskDetailModal —
   // same component the /tasks page uses so the "read a task's full body"
   // affordance is identical everywhere.
@@ -361,9 +365,19 @@ export function ProjectDetailClient({
           <h2 className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-fg-muted">
             {t.projects.tasks}
           </h2>
-          <Link href="/tasks" className="text-xs font-medium text-primary-strong hover:underline">
-            All company tasks →
-          </Link>
+          <div className="flex items-center gap-3">
+            {project.status !== "archived" && (
+              <button
+                onClick={() => setNewTaskOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-bold text-primary-fg shadow-[0_0_20px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.03] active:scale-95"
+              >
+                <Plus className="h-3.5 w-3.5" aria-hidden="true" /> New task
+              </button>
+            )}
+            <Link href="/tasks" className="text-xs font-medium text-primary-strong hover:underline">
+              All company tasks →
+            </Link>
+          </div>
         </header>
         {tasks.length === 0 ? (
           <p className="text-sm text-fg-muted">No tasks in this project yet.</p>
@@ -487,6 +501,28 @@ export function ProjectDetailClient({
           }}
         />
       )}
+
+      {/* Create a task pre-scoped to this project — TaskForm locks the project
+          field via forcedProjectId so it can't be filed against another one. */}
+      <Modal
+        open={newTaskOpen}
+        onClose={() => setNewTaskOpen(false)}
+        title="New task"
+        description={`Add a task to ${project.name}`}
+        size="lg"
+      >
+        <TaskForm
+          users={users}
+          projects={[{ id: project.id, name: project.name }]}
+          currentUserId={currentUserId}
+          forcedProjectId={project.id}
+          onClose={() => setNewTaskOpen(false)}
+          onSuccess={() => {
+            setNewTaskOpen(false);
+            refresh();
+          }}
+        />
+      </Modal>
 
       {detailTask && (
         <TaskDetailModal
