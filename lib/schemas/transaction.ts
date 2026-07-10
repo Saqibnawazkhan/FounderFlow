@@ -9,12 +9,16 @@
  */
 
 import { z } from "zod";
-import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES } from "@/lib/types";
+import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES, REVENUE_CATEGORIES } from "@/lib/types";
 
-const allCategories = [...EXPENSE_CATEGORIES, ...INVESTMENT_CATEGORIES] as const;
+const allCategories = [
+  ...EXPENSE_CATEGORIES,
+  ...INVESTMENT_CATEGORIES,
+  ...REVENUE_CATEGORIES,
+] as const;
 
 export const NewTransactionSchema = z.object({
-  type: z.enum(["expense", "investment"]),
+  type: z.enum(["expense", "investment", "income"]),
   amount: z
     .number({ invalid_type_error: "Amount must be a number" })
     .positive("Amount must be greater than 0")
@@ -59,7 +63,7 @@ export const ImportTransactionRowSchema = z.object({
 });
 
 export const ImportTransactionsSchema = z.object({
-  type: z.enum(["expense", "investment"]),
+  type: z.enum(["expense", "investment", "income"]),
   rows: z
     .array(ImportTransactionRowSchema)
     .min(1, "Nothing to import")

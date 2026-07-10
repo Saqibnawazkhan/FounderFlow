@@ -30,6 +30,7 @@ export const MEMBER_BLOCKED_ROUTES: readonly string[] = [
   "/dashboard",
   "/expenses",
   "/investments",
+  "/revenue",
   "/recurring",
   "/budgets",
   "/reports",

@@ -39,7 +39,7 @@ const TOOLTIP_STYLE = {
 export function CashFlowChart({
   data,
 }: {
-  data: Array<{ month: string; investments: number; expenses: number }>;
+  data: Array<{ month: string; investments: number; expenses: number; revenue: number }>;
 }) {
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -52,6 +52,10 @@ export function CashFlowChart({
           <linearGradient id="g-invest" x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor={C_PRIMARY} stopOpacity={0.5} />
             <stop offset="95%" stopColor={C_PRIMARY} stopOpacity={0} />
+          </linearGradient>
+          <linearGradient id="g-revenue" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor={C_CYAN} stopOpacity={0.45} />
+            <stop offset="95%" stopColor={C_CYAN} stopOpacity={0} />
           </linearGradient>
           <linearGradient id="g-expense" x1="0" y1="0" x2="0" y2="1">
             <stop offset="5%" stopColor={C_PINK} stopOpacity={0.4} />
@@ -79,6 +83,13 @@ export function CashFlowChart({
           stroke={C_PRIMARY}
           strokeWidth={2}
           fill="url(#g-invest)"
+        />
+        <Area
+          type="monotone"
+          dataKey="revenue"
+          stroke={C_CYAN}
+          strokeWidth={2}
+          fill="url(#g-revenue)"
         />
         <Area
           type="monotone"

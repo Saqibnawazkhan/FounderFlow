@@ -17,10 +17,10 @@ import toast from "react-hot-toast";
 import { Modal } from "@/components/ui/modal";
 import { bulkImportTransactionsAction } from "@/lib/actions/transactions";
 import { parseCSV, findColumn } from "@/lib/transactions/csv";
-import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES } from "@/lib/types";
+import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES, REVENUE_CATEGORIES } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-type TxnType = "expense" | "investment";
+type TxnType = "expense" | "investment" | "income";
 
 type ParsedRow = {
   amount: number;
@@ -49,7 +49,12 @@ export function ImportTransactionsModal({
   const [busy, setBusy] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
 
-  const categories = type === "expense" ? EXPENSE_CATEGORIES : INVESTMENT_CATEGORIES;
+  const categories =
+    type === "expense"
+      ? EXPENSE_CATEGORIES
+      : type === "income"
+        ? REVENUE_CATEGORIES
+        : INVESTMENT_CATEGORIES;
   // Case-insensitive lookup so "marketing" maps to the canonical "Marketing".
   const canonicalByLower = useMemo(() => {
     const m = new Map<string, string>();

@@ -27,7 +27,13 @@ import { checkBudgetThresholdAfterExpense } from "@/lib/budgets/check";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
 import { captureServerError } from "@/lib/sentry-server";
-import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES, type Transaction } from "@/lib/types";
+import {
+  EXPENSE_CATEGORIES,
+  INVESTMENT_CATEGORIES,
+  REVENUE_CATEGORIES,
+  type Transaction,
+  type TransactionType,
+} from "@/lib/types";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
 
@@ -49,7 +55,7 @@ function toClient(t: {
   return {
     id: t.id,
     companyId: t.companyId,
-    type: t.type as "expense" | "investment",
+    type: t.type as TransactionType,
     amount: t.amount.toNumber(),
     category: t.category,
     description: t.description,
@@ -58,6 +64,18 @@ function toClient(t: {
     addedByName: t.addedByName,
     createdAt: t.createdAt.toISOString(),
   };
+}
+
+/** Human noun + activity type for a transaction kind — shared by add + import. */
+function txnNoun(type: string): string {
+  return type === "expense" ? "expense" : type === "income" ? "revenue" : "investment";
+}
+function txnActivityType(type: string): "expense_added" | "revenue_added" | "investment_added" {
+  return type === "expense"
+    ? "expense_added"
+    : type === "income"
+      ? "revenue_added"
+      : "investment_added";
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -139,13 +157,13 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
       },
     });
 
-    const isExpense = type === "expense";
+    const noun = txnNoun(type);
     await tx.activity.create({
       data: {
         companyId,
         projectId: projectId ?? null,
-        type: isExpense ? "expense_added" : "investment_added",
-        message: `${user.name} added ${isExpense ? "expense" : "investment"} of ${amount.toLocaleString()} PKR for ${category}`,
+        type: txnActivityType(type),
+        message: `${user.name} added ${noun} of ${amount.toLocaleString()} PKR for ${category}`,
         userId,
         userName: user.name,
         metadata: JSON.stringify({ kind: "transaction", amount, category }),
@@ -158,6 +176,13 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
       select: { id: true },
     });
     if (others.length > 0) {
+      const link = projectId
+        ? `/projects/${projectId}`
+        : type === "expense"
+          ? "/expenses"
+          : type === "income"
+            ? "/revenue"
+            : "/investments";
       await tx.notification.createMany({
         data: others.map((o) => ({
           userId: o.id,
@@ -166,11 +191,12 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
           // filter in lib/queries/notifications can strip these for members
           // unless the project is one they're attached to.
           projectId: projectId ?? null,
-          title: isExpense ? "New expense" : "New investment",
-          message: `${user.name} ${isExpense ? "logged" : "added"} ${amount.toLocaleString()} PKR`,
-          type: isExpense ? "warning" : "success",
+          title: `New ${noun}`,
+          message: `${user.name} ${type === "expense" ? "logged" : "recorded"} ${amount.toLocaleString()} PKR`,
+          // Expenses read as a caution (cash out); money-in is a success.
+          type: type === "expense" ? "warning" : "success",
           category: "finance",
-          link: projectId ? `/projects/${projectId}` : isExpense ? "/expenses" : "/investments",
+          link,
         })),
       });
     }
@@ -181,6 +207,7 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
   // Re-render any RSC paths that depend on this data.
   revalidatePath("/expenses");
   revalidatePath("/investments");
+  revalidatePath("/revenue");
   revalidatePath("/dashboard");
   revalidatePath("/reports");
   revalidatePath("/activities");
@@ -230,7 +257,11 @@ export async function bulkImportTransactionsAction(
   // Category is validated server-side against the type's set. Unknown ones
   // are dropped (reported as skipped) rather than trusted from the client.
   const validCats = new Set<string>(
-    type === "expense" ? EXPENSE_CATEGORIES : INVESTMENT_CATEGORIES
+    type === "expense"
+      ? EXPENSE_CATEGORIES
+      : type === "income"
+        ? REVENUE_CATEGORIES
+        : INVESTMENT_CATEGORIES
   );
   const accepted = rows.filter((r) => validCats.has(r.category));
   const skipped = rows.length - accepted.length;
@@ -260,10 +291,10 @@ export async function bulkImportTransactionsAction(
       await tx.activity.create({
         data: {
           companyId,
-          type: type === "expense" ? "expense_added" : "investment_added",
-          message: `${user.name} imported ${created.count} ${
-            type === "expense" ? "expense" : "investment"
-          }${created.count === 1 ? "" : "s"} from CSV`,
+          type: txnActivityType(type),
+          message: `${user.name} imported ${created.count} ${txnNoun(type)} ${
+            created.count === 1 ? "entry" : "entries"
+          } from CSV`,
           userId,
           userName: user.name,
           metadata: JSON.stringify({ kind: "transaction", amount: total, category: "CSV import" }),
@@ -282,6 +313,7 @@ export async function bulkImportTransactionsAction(
 
     revalidatePath("/expenses");
     revalidatePath("/investments");
+    revalidatePath("/revenue");
     revalidatePath("/dashboard");
     revalidatePath("/reports");
     revalidatePath("/activities");
@@ -343,6 +375,7 @@ export async function deleteTransactionAction(id: string): Promise<ActionResult>
 
   revalidatePath("/expenses");
   revalidatePath("/investments");
+  revalidatePath("/revenue");
   revalidatePath("/dashboard");
   revalidatePath("/reports");
   revalidatePath("/activities");

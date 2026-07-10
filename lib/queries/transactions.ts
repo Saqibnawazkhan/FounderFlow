@@ -33,7 +33,7 @@ function toClient(
   return {
     id: t.id,
     companyId: t.companyId,
-    type: t.type as "expense" | "investment",
+    type: t.type as Transaction["type"],
     amount: t.amount.toNumber(),
     category: t.category,
     description: t.description,

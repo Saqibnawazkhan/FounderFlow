@@ -50,6 +50,7 @@ const FoundersHorizontalBar = dynamic(
 );
 
 const C_PRIMARY = "#b6f425";
+const C_CYAN = "#70E6ED";
 const C_PINK = "#FFB3DB";
 
 type Props = {
@@ -124,11 +125,15 @@ export function ReportsClient({ transactions, users, company }: Props) {
       const investments = monthTxns
         .filter((t) => t.type === "investment")
         .reduce((s, t) => s + t.amount, 0);
+      const revenue = monthTxns
+        .filter((t) => t.type === "income")
+        .reduce((s, t) => s + t.amount, 0);
       return {
         month: format(monthStart, "MMM yy"),
         expenses,
         investments,
-        netFlow: investments - expenses,
+        revenue,
+        netFlow: investments + revenue - expenses,
       };
     });
   }, [rangedTxns, rangeStart, rangeEnd]);
@@ -163,6 +168,9 @@ export function ReportsClient({ transactions, users, company }: Props) {
   const totalInvestments = rangedTxns
     .filter((t) => t.type === "investment")
     .reduce((s, t) => s + t.amount, 0);
+  const totalRevenue = rangedTxns
+    .filter((t) => t.type === "income")
+    .reduce((s, t) => s + t.amount, 0);
 
   async function exportPDF() {
     toast.loading("Generating PDF report…", { id: "pdf" });
@@ -190,8 +198,9 @@ export function ReportsClient({ transactions, users, company }: Props) {
         head: [["Metric", "Amount"]],
         body: [
           ["Total Investments", formatCurrency(totalInvestments)],
+          ["Total Revenue", formatCurrency(totalRevenue)],
           ["Total Expenses", formatCurrency(totalExpenses)],
-          ["Net Balance", formatCurrency(totalInvestments - totalExpenses)],
+          ["Net Balance", formatCurrency(totalInvestments + totalRevenue - totalExpenses)],
           [
             "Date range",
             `${format(rangeStart, "MMM d, yyyy")} – ${format(rangeEnd, "MMM d, yyyy")}`,
@@ -268,8 +277,9 @@ export function ReportsClient({ transactions, users, company }: Props) {
         ["Financial Summary"],
         ["Date range", `${format(rangeStart, "yyyy-MM-dd")} to ${format(rangeEnd, "yyyy-MM-dd")}`],
         ["Total Investments", totalInvestments],
+        ["Total Revenue", totalRevenue],
         ["Total Expenses", totalExpenses],
-        ["Net Balance", totalInvestments - totalExpenses],
+        ["Net Balance", totalInvestments + totalRevenue - totalExpenses],
         ["Transactions", rangedTxns.length],
       ];
 
@@ -299,8 +309,8 @@ export function ReportsClient({ transactions, users, company }: Props) {
       ]);
 
       const monthlySheet = XLSX.utils.aoa_to_sheet([
-        ["Month", "Investments", "Expenses", "Net Flow"],
-        ...monthlyData.map((m) => [m.month, m.investments, m.expenses, m.netFlow]),
+        ["Month", "Investments", "Revenue", "Expenses", "Net Flow"],
+        ...monthlyData.map((m) => [m.month, m.investments, m.revenue, m.expenses, m.netFlow]),
       ]);
 
       const wb = XLSX.utils.book_new();
@@ -415,10 +425,11 @@ export function ReportsClient({ transactions, users, company }: Props) {
             <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
               Cash flow
             </p>
-            <h3 className="mt-1 text-lg font-bold tracking-tight">Investments vs expenses</h3>
+            <h3 className="mt-1 text-lg font-bold tracking-tight">Money in vs out</h3>
           </div>
           <div className="flex gap-4 text-xs">
             <Legend dot={C_PRIMARY} label="Investments" />
+            <Legend dot={C_CYAN} label="Revenue" />
             <Legend dot={C_PINK} label="Expenses" />
           </div>
         </div>

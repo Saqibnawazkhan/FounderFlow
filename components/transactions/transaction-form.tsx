@@ -6,7 +6,12 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import toast from "react-hot-toast";
 import { addTransactionAction } from "@/lib/actions/transactions";
 import { NewTransactionSchema, type NewTransactionInput } from "@/lib/schemas/transaction";
-import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES, type TransactionType } from "@/lib/types";
+import {
+  EXPENSE_CATEGORIES,
+  INVESTMENT_CATEGORIES,
+  REVENUE_CATEGORIES,
+  type TransactionType,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -21,7 +26,13 @@ interface Props {
 }
 
 export function TransactionForm({ type, projects = [], onClose, onSuccess }: Props) {
-  const categories = type === "expense" ? EXPENSE_CATEGORIES : INVESTMENT_CATEGORIES;
+  const categories =
+    type === "expense"
+      ? EXPENSE_CATEGORIES
+      : type === "income"
+        ? REVENUE_CATEGORIES
+        : INVESTMENT_CATEGORIES;
+  const noun = type === "expense" ? "Expense" : type === "income" ? "Revenue" : "Investment";
 
   const amountId = useId();
   const projectId = useId();
@@ -64,7 +75,7 @@ export function TransactionForm({ type, projects = [], onClose, onSuccess }: Pro
       toast.error(result.error);
       return;
     }
-    toast.success(`${type === "expense" ? "Expense" : "Investment"} added`);
+    toast.success(`${noun} added`);
     onSuccess?.();
     onClose();
   }
@@ -227,7 +238,9 @@ export function TransactionForm({ type, projects = [], onClose, onSuccess }: Pro
           placeholder={
             type === "expense"
               ? "What is this expense for?"
-              : "What's the source or purpose of this investment?"
+              : type === "income"
+                ? "What was sold, and to whom?"
+                : "What's the source or purpose of this investment?"
           }
         />
         {errors.description && (
@@ -250,7 +263,7 @@ export function TransactionForm({ type, projects = [], onClose, onSuccess }: Pro
           disabled={isSubmitting}
           className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
         >
-          {isSubmitting ? "Adding…" : `Add ${type === "expense" ? "expense" : "investment"}`}
+          {isSubmitting ? "Adding…" : `Add ${noun.toLowerCase()}`}
         </button>
       </div>
     </form>

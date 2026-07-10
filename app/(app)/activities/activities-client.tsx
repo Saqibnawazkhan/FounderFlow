@@ -19,6 +19,7 @@ import {
   UserMinus,
   UserPlus,
   UserCog,
+  Coins,
   Users,
   Zap,
   type LucideIcon,
@@ -37,6 +38,7 @@ const ACTIVITY_META: Record<ActivityType, { icon: LucideIcon; tone: ActivityTone
   {
     expense_added: { icon: TrendingDown, tone: "pink", label: "Expense" },
     investment_added: { icon: TrendingUp, tone: "primary", label: "Investment" },
+    revenue_added: { icon: Coins, tone: "cyan", label: "Revenue" },
     task_created: { icon: CheckSquare, tone: "primary", label: "Task created" },
     task_assigned: { icon: CheckSquare, tone: "cyan", label: "Task assigned" },
     task_completed: { icon: CheckCircle2, tone: "primary", label: "Task completed" },

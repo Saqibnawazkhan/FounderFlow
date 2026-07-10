@@ -46,11 +46,15 @@ const TOOLTIP_STYLE = {
 export function CashFlowBarChart({
   data,
 }: {
-  data: Array<{ month: string; investments: number; expenses: number }>;
+  data: Array<{ month: string; investments: number; expenses: number; revenue: number }>;
 }) {
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <BarChart data={data} role="img" aria-label="Monthly investments versus expenses">
+      <BarChart
+        data={data}
+        role="img"
+        aria-label="Monthly money in (investments, revenue) versus expenses"
+      >
         <CartesianGrid
           strokeDasharray="3 3"
           stroke={C_SLATE}
@@ -67,6 +71,7 @@ export function CashFlowBarChart({
         />
         <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={TOOLTIP_STYLE} />
         <Bar dataKey="investments" fill={C_PRIMARY} radius={[8, 8, 0, 0]} />
+        <Bar dataKey="revenue" fill={C_CYAN} radius={[8, 8, 0, 0]} />
         <Bar dataKey="expenses" fill={C_PINK} radius={[8, 8, 0, 0]} />
       </BarChart>
     </ResponsiveContainer>

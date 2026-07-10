@@ -40,7 +40,7 @@ export interface DeactivatedUser {
   deactivatedAt: string;
 }
 
-export type TransactionType = "expense" | "investment";
+export type TransactionType = "expense" | "investment" | "income";
 
 export interface Transaction {
   id: string;
@@ -83,6 +83,7 @@ export interface Task {
 export type ActivityType =
   | "expense_added"
   | "investment_added"
+  | "revenue_added"
   | "task_assigned"
   | "task_completed"
   | "task_updated"
@@ -158,6 +159,18 @@ export const INVESTMENT_CATEGORIES = [
   "Loan",
   "External Investor",
   "Grant",
+];
+
+// Sales / earned revenue — money the business EARNS, distinct from investment
+// capital. A third transaction `type: "income"` uses these so a real sale is
+// never mis-booked as founder capital (which would inflate the cap table).
+export const REVENUE_CATEGORIES = [
+  "Product Sales",
+  "Service Revenue",
+  "Subscriptions",
+  "Consulting",
+  "Licensing",
+  "Interest & Other",
 ];
 
 export const ROLE_LABELS: Record<UserRole, string> = {

@@ -70,7 +70,11 @@ export function DashboardClient({
   const totalExpenses = transactions
     .filter((t) => t.type === "expense")
     .reduce((sum, t) => sum + t.amount, 0);
-  const balance = totalInvestments - totalExpenses;
+  const totalRevenue = transactions
+    .filter((t) => t.type === "income")
+    .reduce((sum, t) => sum + t.amount, 0);
+  // Cash balance = everything in (founder capital + earned revenue) − spend.
+  const balance = totalInvestments + totalRevenue - totalExpenses;
   const pendingTasks = tasks.filter((t) => t.status !== "completed").length;
   const completedTasks = tasks.filter((t) => t.status === "completed").length;
 
@@ -110,6 +114,7 @@ export function DashboardClient({
           investments: monthTxns
             .filter((t) => t.type === "investment")
             .reduce((s, t) => s + t.amount, 0),
+          revenue: monthTxns.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0),
         };
       }),
     [transactions]
@@ -283,6 +288,7 @@ export function DashboardClient({
             </div>
             <div className="flex gap-4 text-xs">
               <Legend dot={C_PRIMARY} label="Investments" />
+              <Legend dot={C_CYAN} label="Revenue" />
               <Legend dot={C_PINK} label="Expenses" />
             </div>
           </div>
@@ -296,6 +302,7 @@ export function DashboardClient({
               <tr>
                 <th scope="col">Month</th>
                 <th scope="col">Investments</th>
+                <th scope="col">Revenue</th>
                 <th scope="col">Expenses</th>
               </tr>
             </thead>
@@ -304,6 +311,7 @@ export function DashboardClient({
                 <tr key={m.month}>
                   <th scope="row">{m.month}</th>
                   <td>{formatCurrency(m.investments)}</td>
+                  <td>{formatCurrency(m.revenue)}</td>
                   <td>{formatCurrency(m.expenses)}</td>
                 </tr>
               ))}
