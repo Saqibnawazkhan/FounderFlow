@@ -120,7 +120,7 @@ export function EditProjectModal({ open, onClose, project, onSaved }: Props) {
           />
         </Field>
 
-        <Field id={statusId} label={t.projects.statusAll} error={errors.status?.message}>
+        <Field id={statusId} label={t.projects.status} error={errors.status?.message}>
           <select id={statusId} {...register("status")} className={inputClass(!!errors.status)}>
             {PROJECT_STATUSES.map((s) => {
               const key = `status${s.charAt(0).toUpperCase()}${s.slice(1).replace("_", "")}` as

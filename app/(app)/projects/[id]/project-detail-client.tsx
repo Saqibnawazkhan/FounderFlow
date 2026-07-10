@@ -14,13 +14,15 @@
  *                               the project still has tasks/budgets
  */
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
   Archive,
   ArchiveRestore,
   Briefcase,
+  Check,
+  ChevronDown,
   Clock,
   Pencil,
   Trash2,
@@ -28,6 +30,7 @@ import {
   Users,
   Wallet,
 } from "lucide-react";
+import { AnimatePresence, motion } from "framer-motion";
 import { formatDistanceToNow } from "date-fns";
 import toast from "react-hot-toast";
 import Link from "next/link";
@@ -36,6 +39,7 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { deleteProjectAction, updateProjectAction } from "@/lib/actions/projects";
 import { canManageProject, canReassignSupervisor } from "@/lib/auth/project-permissions";
+import type { ProjectStatus, ProjectColor } from "@/lib/schemas/project";
 import type { Role } from "@/lib/auth/role-gates";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/time/thresholds";
@@ -181,6 +185,27 @@ export function ProjectDetailClient({
     refresh();
   }
 
+  // Direct status change from the header dropdown — the discoverable way to
+  // mark a project Completed / On hold / Active without digging into Edit.
+  // Reuses updateProjectAction (same path as archive/unarchive).
+  async function handleStatusChange(status: ProjectStatus) {
+    if (status === project.status) return;
+    const res = await updateProjectAction({
+      projectId: project.id,
+      name: project.name,
+      description: project.description ?? undefined,
+      color: project.color as ProjectColor,
+      status,
+      targetEndDate: project.targetEndDate ?? null,
+    });
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    toast.success(t.projects.projectSavedToast);
+    refresh();
+  }
+
   async function handleDelete() {
     const ok = await confirm({
       title: t.projects.deleteConfirmTitle,
@@ -263,6 +288,7 @@ export function ProjectDetailClient({
           </div>
           {canManage && project.status !== "archived" && (
             <div className="flex flex-wrap items-center gap-2">
+              <StatusMenu current={project.status} onSelect={handleStatusChange} />
               <button
                 onClick={() => setEditOpen(true)}
                 className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg-muted transition hover:bg-surface-hover hover:text-fg"
@@ -510,6 +536,104 @@ function Kpi({
         </div>
       </div>
       <p className="font-mono text-2xl font-bold tabular-nums text-fg">{value}</p>
+    </div>
+  );
+}
+
+/**
+ * Header status dropdown — the discoverable, one-click way to move a project
+ * through its lifecycle (Active → On hold → Completed). Archiving keeps its own
+ * button since it also hides the project; this menu is only the working states.
+ */
+function StatusMenu({
+  current,
+  onSelect,
+}: {
+  current: ProjectStatus;
+  onSelect: (status: ProjectStatus) => void;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const options: { value: ProjectStatus; label: string; dot: string }[] = [
+    { value: "active", label: t.projects.statusActive, dot: "bg-primary" },
+    { value: "on_hold", label: t.projects.statusOnHold, dot: "bg-warning" },
+    { value: "completed", label: t.projects.statusCompleted, dot: "bg-cyan" },
+  ];
+  const currentOpt = options.find((o) => o.value === current);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg-muted transition hover:bg-surface-hover hover:text-fg"
+      >
+        <span
+          className={cn("h-2 w-2 rounded-full", currentOpt?.dot ?? "bg-fg-muted")}
+          aria-hidden="true"
+        />
+        <span className="font-mono text-[10px] uppercase tracking-wider">{t.projects.status}</span>
+        <span className="font-semibold text-fg">
+          {currentOpt?.label ?? t.projects.statusActive}
+        </span>
+        <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            role="menu"
+            initial={{ opacity: 0, y: -6, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.97 }}
+            transition={{ duration: 0.14 }}
+            className="absolute left-0 z-popover mt-2 w-44 overflow-hidden rounded-xl border border-border bg-surface p-1 shadow-card-hover"
+          >
+            {options.map((o) => {
+              const active = o.value === current;
+              return (
+                <button
+                  key={o.value}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setOpen(false);
+                    onSelect(o.value);
+                  }}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-surface-hover",
+                    active ? "text-fg" : "text-fg-muted"
+                  )}
+                >
+                  <span className={cn("h-2 w-2 rounded-full", o.dot)} aria-hidden="true" />
+                  <span className="flex-1">{o.label}</span>
+                  {active && <Check className="h-4 w-4 text-primary-strong" aria-hidden="true" />}
+                </button>
+              );
+            })}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
