@@ -65,7 +65,13 @@ export async function getTasks(opts: { projectId?: string } = {}): Promise<TaskW
     where: {
       companyId,
       deletedAt: null,
-      ...(opts.projectId ? { projectId: opts.projectId } : {}),
+      ...(opts.projectId
+        ? { projectId: opts.projectId }
+        : // GLOBAL board / dashboard / team: hide tasks whose parent project is
+          // completed or archived — a done/shelved project's tasks shouldn't
+          // clutter the active board. They stay visible on the project's own
+          // detail page, which passes opts.projectId (no status filter).
+          { project: { status: { notIn: ["completed", "archived"] } } }),
       // On the GLOBAL board a member only ever sees tasks assigned to THEM —
       // never a teammate's, admin's, or co-founder's work. Enforced here at the
       // data boundary so it can't be unfiltered from the client. Project-scoped
