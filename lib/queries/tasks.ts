@@ -60,9 +60,20 @@ function toClient(
 }
 
 export async function getTasks(opts: { projectId?: string } = {}): Promise<TaskWithCount[]> {
-  const { companyId } = await requireScopedSession();
+  const { companyId, userId, role } = await requireScopedSession();
   const rows = await db.task.findMany({
-    where: { companyId, deletedAt: null, ...(opts.projectId ? { projectId: opts.projectId } : {}) },
+    where: {
+      companyId,
+      deletedAt: null,
+      ...(opts.projectId ? { projectId: opts.projectId } : {}),
+      // On the GLOBAL board a member only ever sees tasks assigned to THEM —
+      // never a teammate's, admin's, or co-founder's work. Enforced here at the
+      // data boundary so it can't be unfiltered from the client. Project-scoped
+      // reads (opts.projectId) are left to the project's own access control so
+      // the per-project supervisor escape-hatch (a member who supervises a
+      // project can see its board) keeps working.
+      ...(role === "member" && !opts.projectId ? { assignedTo: userId } : {}),
+    },
     // Manual sort key first (kanban reorder), createdAt as a stable tiebreak
     // for any rows that still share an order value.
     orderBy: [{ order: "asc" }, { createdAt: "desc" }],

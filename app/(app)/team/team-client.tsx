@@ -43,6 +43,7 @@ import type {
   UserRole,
 } from "@/lib/types";
 import { ROLE_LABELS } from "@/lib/types";
+import { canSeeFinances } from "@/lib/auth/role-gates";
 
 type Props = {
   users: User[];
@@ -71,6 +72,10 @@ export function TeamClient({
   const [pendingInviteId, setPendingInviteId] = useState<string | null>(null);
 
   const isAdmin = currentUserRole === "admin";
+  // Members don't see the per-member finance/task footer (invested, logged,
+  // task tallies) for teammates — the server also withholds the transaction
+  // data, this hides the cells.
+  const showMemberStats = canSeeFinances(currentUserRole);
 
   // RSC refresh hook: server actions already call revalidatePath('/team'), so
   // router.refresh() picks up the new data on this tree without a full nav.
@@ -292,11 +297,13 @@ export function TeamClient({
                 </div>
               </div>
 
-              <div className="mt-6 grid grid-cols-3 gap-2 border-t border-border pt-5">
-                <Cell label="Invested" value={formatCurrency(userInvestments)} tone="primary" />
-                <Cell label="Logged" value={formatCurrency(userExpenses)} tone="pink" />
-                <Cell label="Tasks" value={`${completedTasks}/${userTasks.length}`} tone="cyan" />
-              </div>
+              {showMemberStats && (
+                <div className="mt-6 grid grid-cols-3 gap-2 border-t border-border pt-5">
+                  <Cell label="Invested" value={formatCurrency(userInvestments)} tone="primary" />
+                  <Cell label="Logged" value={formatCurrency(userExpenses)} tone="pink" />
+                  <Cell label="Tasks" value={`${completedTasks}/${userTasks.length}`} tone="cyan" />
+                </div>
+              )}
 
               {isAdmin && user.id !== currentUserId && user.role !== "admin" && (
                 <button

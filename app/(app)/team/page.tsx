@@ -10,6 +10,7 @@ import { getCompanyUsers, getDeactivatedUsers, getPendingInvites } from "@/lib/q
 import { getTransactions } from "@/lib/queries/transactions";
 import { getTasks } from "@/lib/queries/tasks";
 import { requireScopedSession } from "@/lib/queries/session";
+import { canSeeFinances } from "@/lib/auth/role-gates";
 import { TeamClient } from "./team-client";
 
 export const metadata: Metadata = {
@@ -18,16 +19,18 @@ export const metadata: Metadata = {
 };
 
 export default async function TeamPage() {
-  const [session, users, transactions, tasks, pendingInvites, deactivatedUsers] = await Promise.all(
-    [
-      requireScopedSession(),
-      getCompanyUsers(),
-      getTransactions(),
-      getTasks(),
-      getPendingInvites(),
-      getDeactivatedUsers(),
-    ]
-  );
+  const session = await requireScopedSession();
+  // Members must never receive teammates' finance figures — don't even fetch
+  // transactions for them (defense in depth: the client also hides the cells).
+  const canSeeFin = canSeeFinances(session.role);
+
+  const [users, transactions, tasks, pendingInvites, deactivatedUsers] = await Promise.all([
+    getCompanyUsers(),
+    canSeeFin ? getTransactions() : Promise.resolve([]),
+    getTasks(),
+    getPendingInvites(),
+    getDeactivatedUsers(),
+  ]);
 
   return (
     <TeamClient
