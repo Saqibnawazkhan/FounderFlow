@@ -693,7 +693,7 @@ const TIERS = [
   {
     name: "Solo",
     price: "Free",
-    sub: "forever",
+    sub: "to start",
     desc: "Perfect for early days, side projects, and validating the product idea.",
     features: ["1 workspace", "Up to 2 co-founders", "All core features", "Community support"],
     cta: "Start free",
@@ -701,7 +701,7 @@ const TIERS = [
   },
   {
     name: "Team",
-    price: "$12",
+    price: "$10",
     sub: "/mo per workspace",
     desc: "When the team grows and you need investor-ready reports + integrations.",
     features: [
@@ -711,7 +711,7 @@ const TIERS = [
       "PDF & Excel export",
       "Priority support",
     ],
-    cta: "Start free trial",
+    cta: "Get started",
     featured: true,
   },
   {
@@ -844,7 +844,7 @@ function Pricing({ onDemo }: { onDemo: () => void }) {
 const FAQS = [
   {
     q: "Do I need a credit card to start?",
-    a: "No. The Solo plan is free forever — no card required.",
+    a: "No. The Solo plan is free to start — no card required.",
   },
   {
     q: "Can my co-founder and I share one workspace?",
@@ -947,7 +947,7 @@ function CTA({ onDemo }: { onDemo: () => void }) {
             stagger={0.08}
           >
             {[
-              { value: "Free", label: "Forever" },
+              { value: "Free", label: "To start" },
               { value: "< 60s", label: "Setup" },
               { value: "0", label: "Credit card" },
               { value: "100%", label: "Yours to export" },
