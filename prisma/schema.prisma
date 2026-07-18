@@ -101,6 +101,17 @@ model Company {
   // Tier 3 soft-delete sentinel — see User.deletedAt for semantics.
   deletedAt DateTime?
 
+  // --- Subscription billing (LemonSqueezy; see lib/lemonsqueezy, lib/billing) ---
+  // Provider-neutral names so the layer can be swapped. Additive + nullable so
+  // no existing workspace is touched — everyone starts on "free". The
+  // LemonSqueezy webhook is the source of truth: it fills these on subscription
+  // events. `plan` gates paid features.
+  plan                  String    @default("free")
+  billingCustomerId     String?
+  billingSubscriptionId String?
+  subscriptionStatus    String?
+  currentPeriodEnd      DateTime?
+
   owner          User?           @relation("CompanyOwner", fields: [ownerId], references: [id])
   users          User[]
   transactions   Transaction[]

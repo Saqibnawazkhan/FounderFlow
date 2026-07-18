@@ -28,6 +28,7 @@ import { captureServerError } from "@/lib/sentry-server";
 import { sendEmail } from "@/lib/email/send";
 import { renderInviteEmail } from "@/lib/email/templates/invite";
 import type { User } from "@/lib/types";
+import { memberLimitForPlan, PLAN_LABELS } from "@/lib/billing/plan";
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
 
@@ -172,6 +173,24 @@ export async function inviteUserAction(
     if (!actor) return { success: false, error: "User no longer exists" };
     const company = await db.company.findUnique({ where: { id: companyId } });
     if (!company) return { success: false, error: "Company no longer exists" };
+
+    // Free-plan member cap (pricing: "up to 2 co-founders"). Count active
+    // members + still-pending invites so you can't queue past the limit. The
+    // current email's pending invite was just deleted above, so a resend never
+    // counts itself. Team plan is unlimited.
+    const limit = memberLimitForPlan(company.plan);
+    if (Number.isFinite(limit)) {
+      const [activeMembers, pendingInvites] = await Promise.all([
+        db.user.count({ where: { companyId, deletedAt: null } }),
+        db.inviteToken.count({ where: { companyId, usedAt: null } }),
+      ]);
+      if (activeMembers + pendingInvites >= limit) {
+        return {
+          success: false,
+          error: `Your ${PLAN_LABELS.free} plan is limited to ${limit} members. Upgrade to ${PLAN_LABELS.team} in Settings for unlimited co-founders.`,
+        };
+      }
+    }
 
     const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);

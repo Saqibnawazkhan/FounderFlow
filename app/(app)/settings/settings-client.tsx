@@ -12,13 +12,14 @@
  * server action enforces the same rule; this is the visual half.
  */
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   AtSign,
   Building2,
   CalendarDays,
   Clock,
+  CreditCard,
   Crown,
   Database,
   Download,
@@ -53,6 +54,12 @@ import type { Locale } from "@/lib/i18n/strings";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import { formatDuration } from "@/lib/time/thresholds";
 import type { AccountStats } from "@/lib/queries/stats";
+import type { BillingSummary } from "@/lib/queries/billing";
+import {
+  createCheckoutSessionAction,
+  createBillingPortalSessionAction,
+} from "@/lib/actions/billing";
+import { FREE_MEMBER_LIMIT, PLAN_LABELS } from "@/lib/billing/plan";
 import { EditProfileModal } from "./edit-profile-modal";
 import { ChangePasswordModal } from "./change-password-modal";
 import { ChangeEmailModal } from "./change-email-modal";
@@ -64,9 +71,10 @@ type Props = {
   user: UserType;
   company: Company;
   stats: AccountStats;
+  billing: BillingSummary;
 };
 
-export function SettingsClient({ user, company, stats }: Props) {
+export function SettingsClient({ user, company, stats, billing }: Props) {
   const router = useRouter();
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
@@ -107,6 +115,22 @@ export function SettingsClient({ user, company, stats }: Props) {
   function refresh() {
     startTransition(() => router.refresh());
   }
+
+  // Stripe Checkout redirects back to /settings?billing=success|cancelled.
+  // The webhook updates the plan asynchronously, so refresh a beat later.
+  useEffect(() => {
+    const billingParam = new URLSearchParams(window.location.search).get("billing");
+    if (billingParam === "success") {
+      toast.success("Payment received — your plan will update in a moment.");
+      startTransition(() => router.refresh());
+      window.history.replaceState({}, "", "/settings");
+    } else if (billingParam === "cancelled") {
+      toast("Checkout cancelled — no charge made.");
+      window.history.replaceState({}, "", "/settings");
+    }
+    // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleLogout() {
     const ok = await confirm({
@@ -311,6 +335,13 @@ export function SettingsClient({ user, company, stats }: Props) {
         </Section>
       )}
 
+      {/* Billing is the workspace owner's concern — admin only. */}
+      {user.role === "admin" && (
+        <Section icon={CreditCard} label="Plan & billing">
+          <BillingSection billing={billing} />
+        </Section>
+      )}
+
       <Section icon={Palette} label={t.settings.appearance}>
         <p className="mb-4 text-sm text-fg-muted">{t.settings.appearanceNote}</p>
         <div className="grid grid-cols-2 gap-3">
@@ -512,6 +543,81 @@ function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+function BillingSection({ billing }: { billing: BillingSummary }) {
+  const [busy, setBusy] = useState<"checkout" | "portal" | null>(null);
+  const isTeam = billing.plan === "team";
+
+  async function upgrade() {
+    setBusy("checkout");
+    const res = await createCheckoutSessionAction();
+    if (!res.success) {
+      toast.error(res.error);
+      setBusy(null);
+      return;
+    }
+    window.location.href = res.data.url;
+  }
+
+  async function manage() {
+    setBusy("portal");
+    const res = await createBillingPortalSessionAction();
+    if (!res.success) {
+      toast.error(res.error);
+      setBusy(null);
+      return;
+    }
+    window.location.href = res.data.url;
+  }
+
+  return (
+    <div className="flex flex-col items-start gap-3 rounded-xl border border-border bg-bg/40 p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-semibold text-fg">
+            {isTeam ? PLAN_LABELS.team : `${PLAN_LABELS.free} (Free)`}
+          </p>
+          {isTeam && billing.status && (
+            <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-primary-strong">
+              {billing.status.replace("_", " ")}
+            </span>
+          )}
+        </div>
+        <p className="mt-0.5 text-xs text-fg-muted">
+          {isTeam
+            ? billing.currentPeriodEnd
+              ? `Renews ${formatDate(billing.currentPeriodEnd)}`
+              : "Unlimited members + paid features"
+            : `Up to ${FREE_MEMBER_LIMIT} members. Upgrade for unlimited co-founders and investor-ready extras.`}
+        </p>
+      </div>
+
+      {!billing.configured ? (
+        <span className="shrink-0 text-xs text-fg-muted">
+          Billing isn&apos;t set up on this deployment.
+        </span>
+      ) : isTeam ? (
+        <button
+          onClick={manage}
+          disabled={busy !== null}
+          className="inline-flex shrink-0 items-center gap-2 rounded-full border border-border bg-bg px-4 py-2 text-sm font-medium text-fg transition-colors hover:bg-surface-hover disabled:opacity-60"
+        >
+          <CreditCard className="h-4 w-4" aria-hidden="true" />
+          {busy === "portal" ? "Opening…" : "Manage billing"}
+        </button>
+      ) : (
+        <button
+          onClick={upgrade}
+          disabled={busy !== null}
+          className="inline-flex shrink-0 items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+        >
+          <CreditCard className="h-4 w-4" aria-hidden="true" />
+          {busy === "checkout" ? "Starting…" : "Upgrade to Team"}
+        </button>
+      )}
+    </div>
   );
 }
 
