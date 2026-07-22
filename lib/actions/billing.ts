@@ -25,6 +25,26 @@ import {
 
 export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
 
+/**
+ * Turn a LemonSqueezy SDK error (or any thrown value) into a short, readable
+ * string. The SDK returns a JSON:API error whose useful detail lives in
+ * `.cause` (an array of { detail } objects); fall back to `.message`.
+ */
+function describeLsError(err: unknown): string {
+  if (err && typeof err === "object") {
+    const cause = (err as { cause?: unknown }).cause;
+    if (Array.isArray(cause)) {
+      const details = cause
+        .map((c) => (c && typeof c === "object" ? (c as { detail?: string }).detail : null))
+        .filter(Boolean);
+      if (details.length) return details.join("; ");
+    }
+    const message = (err as { message?: unknown }).message;
+    if (typeof message === "string" && message) return message;
+  }
+  return String(err);
+}
+
 export async function createCheckoutSessionAction(): Promise<ActionResult<{ url: string }>> {
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
@@ -61,17 +81,18 @@ export async function createCheckoutSessionAction(): Promise<ActionResult<{ url:
         redirectUrl: `${APP_URL}/settings?billing=success`,
       },
     });
-    const url = data?.data.attributes.url;
+    const url = data?.data?.attributes?.url;
     if (error || !url) {
       captureServerError(error ?? new Error("No checkout URL returned"), {
         action: "createCheckoutSessionAction",
       });
-      return { success: false, error: "Couldn't start checkout. Try again." };
+      const detail = error ? describeLsError(error) : "no checkout URL returned";
+      return { success: false, error: `Couldn't start checkout: ${detail}` };
     }
     return { success: true, data: { url } };
   } catch (e) {
     captureServerError(e, { action: "createCheckoutSessionAction" });
-    return { success: false, error: "Couldn't start checkout right now." };
+    return { success: false, error: `Checkout error: ${describeLsError(e)}` };
   }
 }
 
@@ -97,16 +118,17 @@ export async function createBillingPortalSessionAction(): Promise<ActionResult<{
     }
     // LemonSqueezy exposes a per-subscription self-serve portal URL.
     const { data, error } = await getSubscription(company.billingSubscriptionId);
-    const url = data?.data.attributes.urls?.customer_portal;
+    const url = data?.data?.attributes?.urls?.customer_portal;
     if (error || !url) {
       captureServerError(error ?? new Error("No portal URL returned"), {
         action: "createBillingPortalSessionAction",
       });
-      return { success: false, error: "Couldn't open the billing portal right now." };
+      const detail = error ? describeLsError(error) : "no portal URL returned";
+      return { success: false, error: `Couldn't open the billing portal: ${detail}` };
     }
     return { success: true, data: { url } };
   } catch (e) {
     captureServerError(e, { action: "createBillingPortalSessionAction" });
-    return { success: false, error: "Couldn't open the billing portal right now." };
+    return { success: false, error: `Billing portal error: ${describeLsError(e)}` };
   }
 }
