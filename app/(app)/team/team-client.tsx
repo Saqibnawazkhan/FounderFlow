@@ -85,6 +85,18 @@ export function TeamClient({
 
   async function handleRoleChange(userId: string, role: UserRole) {
     if (!isAdmin) return;
+    // Promoting to admin grants billing + workspace-delete power — confirm it.
+    // The <select> is controlled by the real role, so a cancel just snaps back.
+    if (role === "admin") {
+      const target = users.find((u) => u.id === userId);
+      const ok = await confirm({
+        title: `Make ${target?.name ?? "this member"} an admin?`,
+        description:
+          "Admins can manage billing, invite or remove anyone, change roles, and delete the workspace. You can change their role back later.",
+        confirmLabel: "Make admin",
+      });
+      if (!ok) return;
+    }
     setPendingUserId(userId);
     const res = await updateUserRoleAction({ userId, role });
     setPendingUserId(null);
@@ -258,7 +270,7 @@ export function TeamClient({
                     Joined {formatDate(user.createdAt)}
                   </p>
 
-                  {isAdmin && user.id !== currentUserId && user.role !== "admin" ? (
+                  {isAdmin && user.id !== currentUserId ? (
                     <>
                       <label htmlFor={`role-${user.id}`} className="sr-only">
                         Change role for {user.name}
@@ -270,6 +282,7 @@ export function TeamClient({
                         onChange={(e) => handleRoleChange(user.id, e.target.value as UserRole)}
                         className="mt-3 rounded-full border border-border bg-bg px-3 py-1 text-xs font-medium text-fg focus:border-primary/50 focus:outline-none disabled:opacity-60"
                       >
+                        <option value="admin">Admin</option>
                         <option value="cofounder">Co-Founder</option>
                         <option value="member">Team Member</option>
                       </select>
@@ -305,7 +318,7 @@ export function TeamClient({
                 </div>
               )}
 
-              {isAdmin && user.id !== currentUserId && user.role !== "admin" && (
+              {isAdmin && user.id !== currentUserId && (
                 <button
                   onClick={() => handleRemove(user.id, user.name)}
                   disabled={pendingUserId === user.id}
