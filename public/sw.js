@@ -26,7 +26,7 @@
 // so returning users would have kept reading it and Chrome would never offer
 // install. The version bump forces a fresh install + precache of the new
 // manifest and its icons, and the activate handler purges the v2 caches.
-const CACHE_VERSION = "ff-v3";
+const CACHE_VERSION = "ff-v4";
 const RUNTIME_CACHE = `ff-runtime-${CACHE_VERSION}`;
 const SHELL_CACHE = `ff-shell-${CACHE_VERSION}`;
 
@@ -105,6 +105,53 @@ self.addEventListener("fetch", (event) => {
         })
         .catch(() => cached); // network failed → cached if we have it
       return cached || fetchPromise;
+    })
+  );
+});
+
+/*
+ * Web Push — show the OS notification (the browser plays the system sound) even
+ * when no FounderFlow tab is open. Payload is JSON: { title, body, url, tag }.
+ * Also ping any open clients so a focused tab can chime immediately.
+ */
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { title: "FounderFlow", body: event.data ? event.data.text() : "" };
+  }
+  const title = data.title || "FounderFlow";
+  const options = {
+    body: data.body || "",
+    icon: "/android-chrome-192x192.png",
+    badge: "/android-chrome-192x192.png",
+    tag: data.tag || undefined,
+    data: { url: data.url || "/notifications" },
+  };
+  event.waitUntil(
+    Promise.all([
+      self.registration.showNotification(title, options),
+      self.clients
+        .matchAll({ type: "window", includeUncontrolled: true })
+        .then((clients) => clients.forEach((c) => c.postMessage({ type: "ff-push", data }))),
+    ])
+  );
+});
+
+// Focus (or open) the app at the notification's target URL on click.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || "/notifications";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if ("focus" in client) {
+          client.navigate(target);
+          return client.focus();
+        }
+      }
+      return self.clients.openWindow(target);
     })
   );
 });

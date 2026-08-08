@@ -28,6 +28,7 @@ import {
   LogIn,
   LogOut,
   Moon,
+  Bell,
   Palette,
   Pencil,
   Shield,
@@ -43,6 +44,7 @@ import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { logoutAction } from "@/lib/actions/auth";
 import { updateAppearanceAction } from "@/lib/actions/appearance";
+import { PushToggle } from "@/components/push/push-toggle";
 import { InstallAppButton } from "@/components/pwa/install-button";
 import { Avatar } from "@/components/ui/avatar";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -341,6 +343,10 @@ export function SettingsClient({ user, company, stats, billing }: Props) {
           <BillingSection billing={billing} />
         </Section>
       )}
+
+      <Section icon={Bell} label="Notifications">
+        <PushToggle />
+      </Section>
 
       <Section icon={Palette} label={t.settings.appearance}>
         <p className="mb-4 text-sm text-fg-muted">{t.settings.appearanceNote}</p>

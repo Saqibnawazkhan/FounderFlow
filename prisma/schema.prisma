@@ -88,10 +88,29 @@ model User {
   // after, but the DB never blocks the user delete.
   supervisedProjects Project[]       @relation("ProjectSupervisor")
   createdProjects    Project[]       @relation("ProjectCreator")
+  pushSubscriptions  PushSubscription[]
 
   @@index([companyId])
   @@index([email])
   @@index([deletedAt])
+}
+
+// Web Push subscriptions — one row per device/browser a user opts in from.
+// `endpoint` is the push-service URL (unique); p256dh + auth are the client
+// keys the web-push protocol needs to encrypt the payload. Pruned when the
+// push service reports the subscription gone (404/410).
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Company {

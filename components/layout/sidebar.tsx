@@ -67,9 +67,14 @@ export function Sidebar() {
     }
     fetchCount();
     const id = setInterval(fetchCount, 30_000);
+    // A push arriving while the app is open fires this — refresh the badge now
+    // instead of waiting up to 30s for the next poll.
+    const onPush = () => fetchCount();
+    window.addEventListener("ff-notifications-changed", onPush);
     return () => {
       cancelled = true;
       clearInterval(id);
+      window.removeEventListener("ff-notifications-changed", onPush);
     };
   }, []);
 
