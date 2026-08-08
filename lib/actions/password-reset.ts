@@ -148,7 +148,9 @@ export async function resetPasswordAction(
     const passwordHash = await bcrypt.hash(password, 12);
     await db.user.update({
       where: { id: user.id },
-      data: { passwordHash },
+      // Bump sessionVersion so any other live session (incl. a hijacked one
+      // that prompted the reset) is force-signed-out on its next request.
+      data: { passwordHash, sessionVersion: { increment: 1 } },
     });
     return { success: true, data: { email: user.email } };
   } catch (e) {

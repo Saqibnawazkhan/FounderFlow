@@ -17,6 +17,7 @@ import { z } from "zod";
 import { authConfig } from "@/auth.config";
 import { db } from "@/lib/db";
 import { captureServerError } from "@/lib/sentry-server";
+import { sessionTokenStillValid } from "@/lib/auth/session-version";
 
 const credentialsSchema = z.object({
   email: z.string().email(),
@@ -35,13 +36,62 @@ declare module "next-auth" {
 
 declare module "@auth/core/jwt" {
   interface JWT {
+    id?: string;
     companyId?: string;
     role?: "admin" | "cofounder" | "member";
+    // Snapshot of the user's sessionVersion at sign-in; re-checked per request.
+    sessionVersion?: number;
   }
 }
 
 export const { auth, handlers, signIn, signOut } = NextAuth({
   ...authConfig,
+  callbacks: {
+    // Preserve the Edge-safe session + authorized callbacks; override jwt with
+    // a Node version that re-validates against the DB. This runs on every
+    // auth() call (server components AND actions) — the single choke point
+    // that covers reads and writes — but NOT in middleware, which uses the
+    // Edge config's DB-free jwt callback.
+    ...authConfig.callbacks,
+    async jwt({ token, user }) {
+      // Sign-in: stamp identity + the session-version snapshot, no DB read.
+      if (user) {
+        token.id = (user as { id: string }).id;
+        token.companyId = (user as { companyId?: string }).companyId;
+        token.role = (user as { role?: "admin" | "cofounder" | "member" }).role;
+        token.sessionVersion = (user as { sessionVersion?: number }).sessionVersion ?? 0;
+        return token;
+      }
+
+      // No id to validate against (shouldn't happen post-sign-in) — leave as-is.
+      if (!token.id) return token;
+
+      try {
+        const current = await db.user.findUnique({
+          where: { id: token.id },
+          select: { deletedAt: true, sessionVersion: true, role: true, companyId: true },
+        });
+        // Gone, tombstoned, or version bumped → kill the session now instead
+        // of waiting for the cookie to expire.
+        if (!current || !sessionTokenStillValid(token.sessionVersion, current)) {
+          return null;
+        }
+        // Keep role/company fresh so a role change also takes effect at once.
+        token.role = current.role as "admin" | "cofounder" | "member";
+        token.companyId = current.companyId;
+        return token;
+      } catch (e) {
+        // Fail OPEN on a transient DB error: the token is still
+        // cryptographically valid, and signing every user out on a blip is
+        // worse than the brief window a just-invalidated session lingers.
+        captureServerError(e, {
+          action: "jwtSessionRevalidate",
+          extra: { userId: String(token.id) },
+        });
+        return token;
+      }
+    },
+  },
   providers: [
     Credentials({
       credentials: {
@@ -96,6 +146,8 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
           email: user.email,
           companyId: user.companyId,
           role: user.role as "admin" | "cofounder" | "member",
+          // Snapshot the version so the jwt callback can detect a later bump.
+          sessionVersion: user.sessionVersion,
         };
       },
     }),

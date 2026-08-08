@@ -57,6 +57,12 @@ model User {
   // instead of living only in that browser's localStorage.
   theme           String    @default("dark") // "light" | "dark"
   locale          String    @default("en") // "en" | "ur"
+  // Session-invalidation counter. Baked into the JWT at sign-in; the auth
+  // jwt callback re-checks it against this column on every request and kills
+  // the session if they diverge. Bumping it (password reset, "log out
+  // everywhere") force-signs-out every existing token instead of waiting for
+  // the cookie to expire. Complements the deletedAt check below.
+  sessionVersion  Int       @default(0)
   // Tier 3 soft-delete sentinel. NULL = live row. Any timestamp = soft
   // deleted; the row survives until the nightly purge cron hard-deletes
   // it after 90 days. Auth + queries filter `deletedAt: null` so a
