@@ -14,12 +14,10 @@ import { z } from "zod";
 export const SUPPORTED_CURRENCIES = ["PKR", "USD", "EUR", "GBP", "INR", "AED"] as const;
 export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
 
+// Currency is chosen once at workspace creation (signup) and is not edited
+// afterwards, so it isn't part of the company-info update.
 export const UpdateCompanySchema = z.object({
   name: z.string().trim().min(1, "Company name is required").max(120, "Company name is too long"),
   industry: z.string().trim().min(1, "Industry is required").max(80, "Industry is too long"),
-  // v1: PKR only. A forged non-PKR value is rejected rather than silently
-  // stored (which would mislabel the workspace's money given formatCurrency
-  // ignores it today). The edit form submits it via a hidden field.
-  currency: z.literal("PKR"),
 });
 export type UpdateCompanyInput = z.infer<typeof UpdateCompanySchema>;

@@ -26,14 +26,14 @@ export function CompanyHydrator() {
     if (!currentUserId) return;
     if (seededForRef.current === currentUserId) return;
     seededForRef.current = currentUserId;
-    let cancelled = false;
+    // No `cancelled` guard: hydrateCompany writes to the Zustand store (not
+    // React state), so applying it after an unmount is harmless. The old guard
+    // interacted badly with StrictMode's mount→cleanup→mount double-invoke —
+    // the cleanup cancelled the only in-flight fetch while the seededForRef
+    // guard made the second run skip, so currentCompany never hydrated in dev.
     getMyCompanyAction().then((res) => {
-      if (cancelled || !res.success) return;
-      hydrateCompany(res.data);
+      if (res.success) hydrateCompany(res.data);
     });
-    return () => {
-      cancelled = true;
-    };
   }, [currentUserId, hydrateCompany]);
 
   return null;

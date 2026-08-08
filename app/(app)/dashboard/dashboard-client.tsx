@@ -19,7 +19,8 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Activity, Task, Transaction, User } from "@/lib/types";
-import { formatCurrency, formatRelativeTime, cn } from "@/lib/utils";
+import { formatRelativeTime, cn } from "@/lib/utils";
+import { useMoney } from "@/lib/hooks/useMoney";
 import { endOfMonth, format, isPast, isToday, startOfMonth, subMonths } from "date-fns";
 import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat, type DashboardStatProps } from "@/components/ui/dashboard-stat";
@@ -65,6 +66,7 @@ export function DashboardClient({
   currentUserId,
   currentUserName,
 }: Props) {
+  const money = useMoney();
   const totalInvestments = transactions
     .filter((t) => t.type === "investment")
     .reduce((sum, t) => sum + t.amount, 0);
@@ -166,7 +168,7 @@ export function DashboardClient({
   const stats: DashboardStatProps[] = [
     {
       label: "Balance",
-      value: formatCurrency(balance),
+      value: money(balance),
       icon: Wallet,
       tone: "primary",
       delta: balance >= 0 ? "positive" : "negative",
@@ -175,7 +177,7 @@ export function DashboardClient({
     },
     {
       label: "This month",
-      value: formatCurrency(currentMonthSpend),
+      value: money(currentMonthSpend),
       icon: Flame,
       tone: "cyan",
       delta: "neutral",
@@ -186,7 +188,7 @@ export function DashboardClient({
     },
     {
       label: "Total spend",
-      value: formatCurrency(totalExpenses),
+      value: money(totalExpenses),
       icon: TrendingDown,
       tone: "pink",
       delta: "neutral",
@@ -317,9 +319,9 @@ export function DashboardClient({
               {monthlyData.map((m) => (
                 <tr key={m.month}>
                   <th scope="row">{m.month}</th>
-                  <td>{formatCurrency(m.investments)}</td>
-                  <td>{formatCurrency(m.revenue)}</td>
-                  <td>{formatCurrency(m.expenses)}</td>
+                  <td>{money(m.investments)}</td>
+                  <td>{money(m.revenue)}</td>
+                  <td>{money(m.expenses)}</td>
                 </tr>
               ))}
             </tbody>
@@ -347,7 +349,7 @@ export function DashboardClient({
                       <span className="truncate text-fg-muted">{c.name}</span>
                     </div>
                     <span className="font-mono font-semibold tabular-nums text-fg">
-                      {formatCurrency(c.value)}
+                      {money(c.value)}
                     </span>
                   </li>
                 ))}
@@ -383,9 +385,7 @@ export function DashboardClient({
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{f.name}</p>
                       </div>
-                      <p className="font-mono text-sm font-bold tabular-nums">
-                        {formatCurrency(f.amount)}
-                      </p>
+                      <p className="font-mono text-sm font-bold tabular-nums">{money(f.amount)}</p>
                     </div>
                     <div className="ml-10 h-1.5 overflow-hidden rounded-full bg-glass/[0.06]">
                       <div

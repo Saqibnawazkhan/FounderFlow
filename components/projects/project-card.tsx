@@ -15,12 +15,12 @@ import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { AlertCircle, Briefcase } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
-import { formatCurrency } from "@/lib/utils";
 import { formatDuration } from "@/lib/time/thresholds";
 import type { ProjectListItem } from "@/lib/queries/projects";
 import { canSeeProjectFinances } from "@/lib/auth/project-permissions";
 import type { Role } from "@/lib/auth/role-gates";
 import { useT } from "@/lib/i18n/use-t";
+import { useMoney } from "@/lib/hooks/useMoney";
 
 type Props = {
   project: ProjectListItem;
@@ -48,6 +48,7 @@ const STATUS_CLASSES: Record<string, string> = {
 
 export function ProjectCard({ project, currentUserId, currentUserRole }: Props) {
   const t = useT();
+  const money = useMoney();
   const c = COLOR_CLASSES[project.color] ?? COLOR_CLASSES.primary;
   const statusKey =
     `status${project.status.charAt(0).toUpperCase()}${project.status.slice(1).replace("_", "")}` as
@@ -111,7 +112,7 @@ export function ProjectCard({ project, currentUserId, currentUserRole }: Props) 
         />
         <Stat
           label={t.projects.monthSpend}
-          value={canSeeMoney ? formatCurrency(project.monthToDateSpendPkr) : "—"}
+          value={canSeeMoney ? money(project.monthToDateSpendPkr) : "—"}
         />
         <Stat label={t.projects.hoursTracked} value={formatDuration(project.trackedMs)} />
       </div>

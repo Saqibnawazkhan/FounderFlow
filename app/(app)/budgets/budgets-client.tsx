@@ -13,9 +13,10 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { cn, formatCurrency } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { EXPENSE_CATEGORIES } from "@/lib/types";
 import type { BudgetWithSpend } from "@/lib/queries/budgets";
+import { useMoney } from "@/lib/hooks/useMoney";
 
 type Props = {
   budgets: BudgetWithSpend[];
@@ -150,6 +151,7 @@ function BudgetCard({
   onToggle: () => void;
   onDelete: () => void;
 }) {
+  const money = useMoney();
   const pct = budget.percentUsed;
   const pctLabel = Math.round(pct * 100);
   const barWidth = Math.min(100, Math.max(2, pct * 100));
@@ -225,7 +227,7 @@ function BudgetCard({
       <div className="space-y-2">
         <div
           role="progressbar"
-          aria-label={`${budget.category} budget: ${pctLabel}% of ${formatCurrency(budget.monthlyLimit)} used`}
+          aria-label={`${budget.category} budget: ${pctLabel}% of ${money(budget.monthlyLimit)} used`}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.min(100, pctLabel)}
@@ -245,8 +247,8 @@ function BudgetCard({
           />
         </div>
         <div className="flex items-center justify-between font-mono text-xs">
-          <span className="text-fg-muted">Spent {formatCurrency(budget.monthToDateSpend)}</span>
-          <span className="font-bold text-fg">of {formatCurrency(budget.monthlyLimit)}</span>
+          <span className="text-fg-muted">Spent {money(budget.monthToDateSpend)}</span>
+          <span className="font-bold text-fg">of {money(budget.monthlyLimit)}</span>
         </div>
       </div>
 

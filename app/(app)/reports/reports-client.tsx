@@ -7,7 +7,8 @@ import toast from "react-hot-toast";
 import { Avatar } from "@/components/ui/avatar";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatCurrency, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { useMoney } from "@/lib/hooks/useMoney";
 import type { Company, Transaction, User } from "@/lib/types";
 import {
   eachMonthOfInterval,
@@ -60,6 +61,7 @@ type Props = {
 };
 
 export function ReportsClient({ transactions, users, company }: Props) {
+  const money = useMoney();
   // Date window (F5): presets OR a custom from/to range. The whole report —
   // charts, category mix, per-founder totals — scopes to this window, so the
   // range picker is a single source of truth (previously the presets only
@@ -197,10 +199,10 @@ export function ReportsClient({ transactions, users, company }: Props) {
         startY: 54,
         head: [["Metric", "Amount"]],
         body: [
-          ["Total Investments", formatCurrency(totalInvestments)],
-          ["Total Revenue", formatCurrency(totalRevenue)],
-          ["Total Expenses", formatCurrency(totalExpenses)],
-          ["Net Balance", formatCurrency(totalInvestments + totalRevenue - totalExpenses)],
+          ["Total Investments", money(totalInvestments)],
+          ["Total Revenue", money(totalRevenue)],
+          ["Total Expenses", money(totalExpenses)],
+          ["Net Balance", money(totalInvestments + totalRevenue - totalExpenses)],
           [
             "Date range",
             `${format(rangeStart, "MMM d, yyyy")} – ${format(rangeEnd, "MMM d, yyyy")}`,
@@ -226,7 +228,7 @@ export function ReportsClient({ transactions, users, company }: Props) {
           const exp = rangedTxns
             .filter((t) => t.addedBy === u.id && t.type === "expense")
             .reduce((s, t) => s + t.amount, 0);
-          return [u.name, u.role, formatCurrency(inv), formatCurrency(exp)];
+          return [u.name, u.role, money(inv), money(exp)];
         }),
         theme: "striped",
         headStyles: { fillColor: [77, 124, 15] },
@@ -246,7 +248,7 @@ export function ReportsClient({ transactions, users, company }: Props) {
           t.category,
           t.description.length > 30 ? t.description.slice(0, 30) + "…" : t.description,
           t.addedByName,
-          `${t.type === "expense" ? "-" : "+"} ${formatCurrency(t.amount)}`,
+          `${t.type === "expense" ? "-" : "+"} ${money(t.amount)}`,
         ]),
         theme: "striped",
         headStyles: { fillColor: [77, 124, 15] },
@@ -464,7 +466,7 @@ export function ReportsClient({ transactions, users, company }: Props) {
                       </div>
                       <div className="ml-2 shrink-0 text-right">
                         <p className="font-mono text-xs font-bold tabular-nums text-fg">
-                          {formatCurrency(c.value)}
+                          {money(c.value)}
                         </p>
                         <p className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
                           {pct.toFixed(1)}%
@@ -568,12 +570,12 @@ export function ReportsClient({ transactions, users, company }: Props) {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <span className="font-mono text-sm font-bold tabular-nums text-primary-strong">
-                        {formatCurrency(inv)}
+                        {money(inv)}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
                       <span className="font-mono text-sm font-bold tabular-nums text-pink-strong">
-                        {formatCurrency(exp)}
+                        {money(exp)}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">

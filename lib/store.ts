@@ -26,7 +26,7 @@ interface AppState {
   /** The signed-in user's REAL company (name + industry), fetched from the DB
    * on mount by CompanyHydrator. Distinct from the demo `companies` seed array;
    * this is what the sidebar shows for an authenticated (non-demo) user. */
-  currentCompany: { name: string; industry: string } | null;
+  currentCompany: { name: string; industry: string; currency: string } | null;
   transactions: Transaction[];
   tasks: Task[];
   activities: Activity[];
@@ -52,7 +52,7 @@ interface AppState {
    */
   hydrateUser: (user: User | null) => void;
   /** Adopt the real company for the sidebar/topbar (set by CompanyHydrator). */
-  hydrateCompany: (company: { name: string; industry: string } | null) => void;
+  hydrateCompany: (company: { name: string; industry: string; currency: string } | null) => void;
   setTheme: (theme: "light" | "dark") => void;
   toggleTheme: () => void;
 

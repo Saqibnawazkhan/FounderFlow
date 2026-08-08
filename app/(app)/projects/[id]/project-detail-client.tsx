@@ -42,9 +42,10 @@ import { deleteProjectAction, updateProjectAction } from "@/lib/actions/projects
 import { canManageProject, canReassignSupervisor } from "@/lib/auth/project-permissions";
 import type { ProjectStatus, ProjectColor } from "@/lib/schemas/project";
 import type { Role } from "@/lib/auth/role-gates";
-import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { formatDate, cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/time/thresholds";
 import { useT } from "@/lib/i18n/use-t";
+import { useMoney } from "@/lib/hooks/useMoney";
 import type { ProjectOverview } from "@/lib/queries/projects";
 import type { TaskWithCount } from "@/lib/queries/tasks";
 import type { BudgetWithSpend } from "@/lib/queries/budgets";
@@ -92,6 +93,7 @@ export function ProjectDetailClient({
   currentUserRole,
 }: Props) {
   const t = useT();
+  const money = useMoney();
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
@@ -348,7 +350,7 @@ export function ProjectDetailClient({
         <Kpi
           icon={Wallet}
           label={t.projects.monthSpend}
-          value={canSeeBudgets ? formatCurrency(project.monthToDateSpendPkr) : "—"}
+          value={canSeeBudgets ? money(project.monthToDateSpendPkr) : "—"}
           tone="pink"
         />
         <Kpi
@@ -449,7 +451,7 @@ export function ProjectDetailClient({
                     <div className="mb-1 flex items-center justify-between">
                       <p className="text-sm font-semibold">{b.category}</p>
                       <span className="font-mono text-xs text-fg-muted">
-                        {formatCurrency(b.monthToDateSpend)} / {formatCurrency(b.monthlyLimit)}
+                        {money(b.monthToDateSpend)} / {money(b.monthlyLimit)}
                       </span>
                     </div>
                     <div className="h-1.5 overflow-hidden rounded-full bg-border">

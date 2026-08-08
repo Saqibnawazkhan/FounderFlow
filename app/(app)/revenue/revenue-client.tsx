@@ -23,8 +23,9 @@ import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
 import { REVENUE_CATEGORIES, type Transaction } from "@/lib/types";
+import { useMoney } from "@/lib/hooks/useMoney";
 
 type Props = {
   transactions: Transaction[];
@@ -37,6 +38,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
+  const money = useMoney();
 
   const revenue = useMemo(() => transactions.filter((t) => t.type === "income"), [transactions]);
 
@@ -128,7 +130,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
       <section aria-label="Revenue metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <DashboardStat
           label="Total revenue"
-          value={formatCurrency(totalRevenue)}
+          value={money(totalRevenue)}
           icon={Coins}
           tone="primary"
           delta="positive"
@@ -143,7 +145,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
         />
         <DashboardStat
           label="Avg / entry"
-          value={formatCurrency(revenue.length > 0 ? Math.round(totalRevenue / revenue.length) : 0)}
+          value={money(revenue.length > 0 ? Math.round(totalRevenue / revenue.length) : 0)}
           icon={Calculator}
           tone="pink"
           deltaLabel={`Across ${revenue.length} ${entryWord(revenue.length)}`}
@@ -167,7 +169,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
                     <p className="font-semibold text-fg">{c.name}</p>
                     <div className="text-right">
                       <p className="font-mono text-base font-bold tabular-nums text-fg">
-                        {formatCurrency(c.amount)}
+                        {money(c.amount)}
                       </p>
                       <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.15em] text-primary-strong">
                         {pct.toFixed(1)}%
@@ -318,7 +320,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
                     <td className="px-6 py-4 text-right">
                       <span className="inline-flex items-center gap-1 font-mono text-sm font-bold tabular-nums text-primary-strong">
                         <ArrowUp className="h-3 w-3" aria-hidden="true" />
-                        {formatCurrency(t.amount)}
+                        {money(t.amount)}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
@@ -348,7 +350,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
                   <p className="min-w-0 flex-1 text-sm font-medium text-fg">{t.description}</p>
                   <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm font-bold tabular-nums text-primary-strong">
                     <ArrowUp className="h-3 w-3" aria-hidden="true" />
-                    {formatCurrency(t.amount)}
+                    {money(t.amount)}
                   </span>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">

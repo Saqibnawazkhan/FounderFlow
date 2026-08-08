@@ -6,7 +6,7 @@
  */
 
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { formatCurrency } from "@/lib/utils";
+import { useMoney } from "@/lib/hooks/useMoney";
 
 const C_PINK = "#FFB3DB";
 const C_AMBER = "#f59e0b";
@@ -25,6 +25,7 @@ export function CategoryBreakdownBar({
 }: {
   data: Array<{ category: string; amount: number }>;
 }) {
+  const money = useMoney();
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart
@@ -62,7 +63,7 @@ export function CategoryBreakdownBar({
           axisLine={false}
           tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString())}
         />
-        <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={TOOLTIP_STYLE} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
         <Bar dataKey="amount" fill="url(#expenseGrad)" radius={[8, 8, 0, 0]} />
       </BarChart>
     </ResponsiveContainer>

@@ -24,8 +24,9 @@ import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
 import { INVESTMENT_CATEGORIES, type Transaction, type User } from "@/lib/types";
+import { useMoney } from "@/lib/hooks/useMoney";
 
 const ROLE_LABEL = {
   admin: "Admin Founder",
@@ -51,6 +52,7 @@ export function InvestmentsClient({
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
+  const money = useMoney();
 
   const investments = useMemo(
     () => transactions.filter((t) => t.type === "investment"),
@@ -142,7 +144,7 @@ export function InvestmentsClient({
       <section aria-label="Investment metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <DashboardStat
           label="Total raised"
-          value={formatCurrency(totalInvestments)}
+          value={money(totalInvestments)}
           icon={TrendingUp}
           tone="primary"
           delta="positive"
@@ -157,7 +159,7 @@ export function InvestmentsClient({
         />
         <DashboardStat
           label="Avg / contribution"
-          value={formatCurrency(
+          value={money(
             investments.length > 0 ? Math.round(totalInvestments / investments.length) : 0
           )}
           icon={Calculator}
@@ -190,7 +192,7 @@ export function InvestmentsClient({
                       </div>
                       <div className="text-right">
                         <p className="font-mono text-base font-bold tabular-nums text-fg">
-                          {formatCurrency(f.amount)}
+                          {money(f.amount)}
                         </p>
                         <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.15em] text-primary-strong">
                           {pct.toFixed(1)}%
@@ -344,7 +346,7 @@ export function InvestmentsClient({
                     <td className="px-6 py-4 text-right">
                       <span className="inline-flex items-center gap-1 font-mono text-sm font-bold tabular-nums text-primary-strong">
                         <ArrowUp className="h-3 w-3" aria-hidden="true" />
-                        {formatCurrency(t.amount)}
+                        {money(t.amount)}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
@@ -374,7 +376,7 @@ export function InvestmentsClient({
                   <p className="min-w-0 flex-1 text-sm font-medium text-fg">{t.description}</p>
                   <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm font-bold tabular-nums text-primary-strong">
                     <ArrowUp className="h-3 w-3" aria-hidden="true" />
-                    {formatCurrency(t.amount)}
+                    {money(t.amount)}
                   </span>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">

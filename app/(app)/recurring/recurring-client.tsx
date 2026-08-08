@@ -49,9 +49,10 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { cn, formatCurrency } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES, type TransactionType } from "@/lib/types";
 import type { RecurringRuleClient } from "@/lib/queries/recurring";
+import { useMoney } from "@/lib/hooks/useMoney";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -191,6 +192,7 @@ function RuleCard({
   onToggle: () => void;
   onDelete: () => void;
 }) {
+  const money = useMoney();
   const canManage = rule.addedBy === currentUserId || currentUserRole === "admin";
   const frequencyLabel =
     rule.frequency === "monthly"
@@ -243,7 +245,7 @@ function RuleCard({
             rule.type === "expense" ? "text-pink-strong" : "text-primary-strong"
           )}
         >
-          {formatCurrency(rule.amount)}
+          {money(rule.amount)}
         </p>
       </div>
 

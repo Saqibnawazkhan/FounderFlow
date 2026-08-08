@@ -19,7 +19,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { formatCurrency } from "@/lib/utils";
+import { useMoney } from "@/lib/hooks/useMoney";
 
 const C_PRIMARY = "#b6f425";
 const C_CYAN = "#70E6ED";
@@ -41,6 +41,7 @@ export function CashFlowChart({
 }: {
   data: Array<{ month: string; investments: number; expenses: number; revenue: number }>;
 }) {
+  const money = useMoney();
   return (
     <ResponsiveContainer width="100%" height="100%">
       <AreaChart
@@ -76,7 +77,7 @@ export function CashFlowChart({
           axisLine={false}
           tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString())}
         />
-        <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={TOOLTIP_STYLE} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
         <Area
           type="monotone"
           dataKey="investments"
@@ -104,6 +105,7 @@ export function CashFlowChart({
 }
 
 export function CategoryPieChart({ data }: { data: Array<{ name: string; value: number }> }) {
+  const money = useMoney();
   return (
     <ResponsiveContainer width="100%" height="100%">
       <PieChart>
@@ -119,14 +121,14 @@ export function CategoryPieChart({ data }: { data: Array<{ name: string; value: 
           strokeWidth={2}
           role="img"
           aria-label={`Expense breakdown by category. ${data
-            .map((d) => `${d.name}: ${formatCurrency(d.value)}`)
+            .map((d) => `${d.name}: ${money(d.value)}`)
             .join(", ")}`}
         >
           {data.map((_, i) => (
             <Cell key={i} fill={CATEGORY_PALETTE[i % CATEGORY_PALETTE.length]} />
           ))}
         </Pie>
-        <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={TOOLTIP_STYLE} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
       </PieChart>
     </ResponsiveContainer>
   );

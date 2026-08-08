@@ -44,7 +44,7 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
-  const { name, email, password, companyName, industry } = parsed.data;
+  const { name, email, password, companyName, industry, currency } = parsed.data;
 
   try {
     // Reject duplicate emails up front so the user sees a useful message
@@ -60,7 +60,7 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
     // (Company.ownerId is nullable; we backfill it after the user is created).
     const createdUser = await db.$transaction(async (tx) => {
       const company = await tx.company.create({
-        data: { name: companyName, industry, currency: "PKR" },
+        data: { name: companyName, industry, currency },
       });
       const user = await tx.user.create({
         data: {

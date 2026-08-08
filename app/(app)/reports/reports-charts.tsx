@@ -17,7 +17,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { formatCurrency } from "@/lib/utils";
+import { useMoney } from "@/lib/hooks/useMoney";
 
 const C_PRIMARY = "#b6f425";
 const C_CYAN = "#70E6ED";
@@ -48,6 +48,7 @@ export function CashFlowBarChart({
 }: {
   data: Array<{ month: string; investments: number; expenses: number; revenue: number }>;
 }) {
+  const money = useMoney();
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart
@@ -69,7 +70,7 @@ export function CashFlowBarChart({
           axisLine={false}
           tickFormatter={(v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString())}
         />
-        <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={TOOLTIP_STYLE} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
         <Bar dataKey="investments" fill={C_PRIMARY} radius={[8, 8, 0, 0]} />
         <Bar dataKey="revenue" fill={C_CYAN} radius={[8, 8, 0, 0]} />
         <Bar dataKey="expenses" fill={C_PINK} radius={[8, 8, 0, 0]} />
@@ -79,6 +80,7 @@ export function CashFlowBarChart({
 }
 
 export function CategoriesPieChart({ data }: { data: Array<{ name: string; value: number }> }) {
+  const money = useMoney();
   return (
     <ResponsiveContainer width="100%" height="100%">
       <PieChart>
@@ -99,7 +101,7 @@ export function CategoriesPieChart({ data }: { data: Array<{ name: string; value
             <Cell key={i} fill={PALETTE[i % PALETTE.length]} />
           ))}
         </Pie>
-        <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={TOOLTIP_STYLE} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
       </PieChart>
     </ResponsiveContainer>
   );
@@ -110,6 +112,7 @@ export function FoundersHorizontalBar({
 }: {
   data: Array<{ name: string; investments: number; expenses: number }>;
 }) {
+  const money = useMoney();
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart
@@ -142,7 +145,7 @@ export function FoundersHorizontalBar({
           axisLine={false}
           width={70}
         />
-        <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={TOOLTIP_STYLE} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
         <Bar dataKey="investments" fill={C_PRIMARY} radius={[0, 4, 4, 0]} />
         <Bar dataKey="expenses" fill={C_PINK} radius={[0, 4, 4, 0]} />
       </BarChart>

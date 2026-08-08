@@ -1,7 +1,8 @@
 "use server";
 
 /**
- * Company info mutation — name, industry, currency. Admin + cofounder only.
+ * Company info mutation — name + industry (admin + cofounder). Currency is
+ * chosen once at signup and isn't edited here.
  *
  * Scope: there's exactly one company per session (session.user.companyId)
  * and the caller is always editing their own. We don't accept an arbitrary
@@ -34,12 +35,12 @@ export async function updateCompanyAction(input: unknown): Promise<ActionResult>
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid company info" };
   }
-  const { name, industry, currency } = parsed.data;
+  const { name, industry } = parsed.data;
 
   try {
     await db.company.update({
       where: { id: session.user.companyId },
-      data: { name, industry, currency },
+      data: { name, industry },
     });
     // Revalidate everywhere the company info shows: sidebar header,
     // settings, dashboard banner (if present), reports footer.
@@ -54,17 +55,20 @@ export async function updateCompanyAction(input: unknown): Promise<ActionResult>
 }
 
 /**
- * Read the caller's company name + industry for the sidebar header. Thin
- * wrapper over the getCurrentCompany query so CompanyHydrator (a Client
- * Component) can fetch it. Returns an error result instead of throwing when
- * unauthenticated so the hydrator can quietly no-op.
+ * Read the caller's company name + industry + currency for the sidebar header
+ * and the client-side money formatter. Thin wrapper over getCurrentCompany so
+ * CompanyHydrator (a Client Component) can fetch it. Returns an error result
+ * instead of throwing when unauthenticated so the hydrator can quietly no-op.
  */
 export async function getMyCompanyAction(): Promise<
-  ActionResult<{ name: string; industry: string }>
+  ActionResult<{ name: string; industry: string; currency: string }>
 > {
   try {
     const company = await getCurrentCompany();
-    return { success: true, data: { name: company.name, industry: company.industry } };
+    return {
+      success: true,
+      data: { name: company.name, industry: company.industry, currency: company.currency },
+    };
   } catch {
     return { success: false, error: "Couldn't load company info" };
   }

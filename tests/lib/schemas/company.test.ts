@@ -2,14 +2,10 @@ import { describe, it, expect } from "vitest";
 import { UpdateCompanySchema } from "@/lib/schemas/company";
 
 describe("UpdateCompanySchema", () => {
-  const valid = { name: "Nimbus Labs", industry: "SaaS / B2B Software", currency: "PKR" };
+  const valid = { name: "Nimbus Labs", industry: "SaaS / B2B Software" };
 
   it("accepts valid company info", () => {
     expect(UpdateCompanySchema.safeParse(valid).success).toBe(true);
-  });
-
-  it("locks currency to PKR (rejects a forged non-PKR value)", () => {
-    expect(UpdateCompanySchema.safeParse({ ...valid, currency: "USD" }).success).toBe(false);
   });
 
   it("requires a name", () => {

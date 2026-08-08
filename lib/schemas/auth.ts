@@ -6,6 +6,7 @@
 
 import { z } from "zod";
 import { PasswordSchema } from "@/lib/schemas/password";
+import { SUPPORTED_CURRENCIES } from "@/lib/schemas/company";
 
 export const LoginSchema = z.object({
   email: z.string().trim().toLowerCase().email("Enter a valid email"),
@@ -23,6 +24,9 @@ export const SignupSchema = z.object({
   password: PasswordSchema,
   companyName: z.string().trim().min(1, "Company name is required").max(80),
   industry: z.string().trim().min(1, "Pick an industry").max(80),
+  // Chosen once here, at workspace creation, and used everywhere money renders.
+  // Required — the form always supplies it (defaulting the picker to PKR).
+  currency: z.enum(SUPPORTED_CURRENCIES),
 });
 
 export type SignupInput = z.infer<typeof SignupSchema>;

@@ -27,7 +27,8 @@ import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
-import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { formatDate, cn } from "@/lib/utils";
+import { useMoney } from "@/lib/hooks/useMoney";
 import { EXPENSE_CATEGORIES, type User } from "@/lib/types";
 import type { TransactionWithCount } from "@/lib/queries/transactions";
 
@@ -53,6 +54,7 @@ export function ExpensesClient({
   currentUserId,
   currentUserRole,
 }: Props) {
+  const money = useMoney();
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
@@ -147,14 +149,14 @@ export function ExpensesClient({
       <section aria-label="Expense metrics" className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <DashboardStat
           label="Total spend"
-          value={formatCurrency(totalExpenses)}
+          value={money(totalExpenses)}
           icon={TrendingDown}
           tone="pink"
           deltaLabel={`${expenses.length} transactions`}
         />
         <DashboardStat
           label="This month"
-          value={formatCurrency(thisMonthExpenses)}
+          value={money(thisMonthExpenses)}
           icon={Wallet}
           tone="cyan"
           delta={thisMonthExpenses > 0 ? "neutral" : "positive"}
@@ -166,9 +168,7 @@ export function ExpensesClient({
         />
         <DashboardStat
           label="Avg / transaction"
-          value={formatCurrency(
-            expenses.length > 0 ? Math.round(totalExpenses / expenses.length) : 0
-          )}
+          value={money(expenses.length > 0 ? Math.round(totalExpenses / expenses.length) : 0)}
           icon={Calculator}
           tone="primary"
           deltaLabel={`Across ${expenses.length} entries`}
@@ -198,7 +198,7 @@ export function ExpensesClient({
               {categoryBreakdown.map((c) => (
                 <tr key={c.category}>
                   <th scope="row">{c.category}</th>
-                  <td>{formatCurrency(c.amount)}</td>
+                  <td>{money(c.amount)}</td>
                 </tr>
               ))}
             </tbody>
@@ -339,7 +339,7 @@ export function ExpensesClient({
                     <td className="px-6 py-4 text-right">
                       <span className="inline-flex items-center gap-1 font-mono text-sm font-bold tabular-nums text-pink-strong">
                         <ArrowDown className="h-3 w-3" aria-hidden="true" />
-                        {formatCurrency(t.amount)}
+                        {money(t.amount)}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
@@ -391,7 +391,7 @@ export function ExpensesClient({
                   <p className="min-w-0 flex-1 text-sm font-medium text-fg">{t.description}</p>
                   <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm font-bold tabular-nums text-pink-strong">
                     <ArrowDown className="h-3 w-3" aria-hidden="true" />
-                    {formatCurrency(t.amount)}
+                    {money(t.amount)}
                   </span>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -471,7 +471,7 @@ export function ExpensesClient({
           onClose={() => setCommentingTxn(null)}
           target={{ transactionId: commentingTxn.id }}
           title={`Comments · ${commentingTxn.description}`}
-          description={`${formatCurrency(commentingTxn.amount)} — ${commentingTxn.category}`}
+          description={`${money(commentingTxn.amount)} — ${commentingTxn.category}`}
           currentUserId={currentUserId}
           currentUserRole={currentUserRole}
           companyUsers={mentionUsers}

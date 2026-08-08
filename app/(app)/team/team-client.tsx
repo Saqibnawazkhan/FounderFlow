@@ -33,7 +33,8 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { cn, formatDate, formatCurrency } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
+import { useMoney } from "@/lib/hooks/useMoney";
 import type {
   DeactivatedUser,
   PendingInvite,
@@ -65,6 +66,7 @@ export function TeamClient({
   currentUserRole,
 }: Props) {
   const router = useRouter();
+  const money = useMoney();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -312,8 +314,8 @@ export function TeamClient({
 
               {showMemberStats && (
                 <div className="mt-6 grid grid-cols-3 gap-2 border-t border-border pt-5">
-                  <Cell label="Invested" value={formatCurrency(userInvestments)} tone="primary" />
-                  <Cell label="Logged" value={formatCurrency(userExpenses)} tone="pink" />
+                  <Cell label="Invested" value={money(userInvestments)} tone="primary" />
+                  <Cell label="Logged" value={money(userExpenses)} tone="pink" />
                   <Cell label="Tasks" value={`${completedTasks}/${userTasks.length}`} tone="cyan" />
                 </div>
               )}

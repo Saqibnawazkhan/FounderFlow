@@ -9,6 +9,7 @@ import { BrandMark } from "@/components/brand-mark";
 import toast from "react-hot-toast";
 import { signupAction } from "@/lib/actions/auth";
 import { SignupSchema, type SignupInput } from "@/lib/schemas/auth";
+import { SUPPORTED_CURRENCIES } from "@/lib/schemas/company";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { StatCard } from "@/components/landing/stat-card";
 import { ThemeToggle } from "@/components/landing/theme-toggle";
@@ -28,6 +29,16 @@ const INDUSTRIES = [
   "Other",
 ];
 
+// Friendly labels for the workspace-currency picker (set once at signup).
+const CURRENCY_LABELS: Record<string, string> = {
+  PKR: "PKR — Pakistani Rupee",
+  USD: "USD — US Dollar",
+  EUR: "EUR — Euro",
+  GBP: "GBP — British Pound",
+  INR: "INR — Indian Rupee",
+  AED: "AED — UAE Dirham",
+};
+
 // Field names that live on step 1 — used by RHF.trigger() to gate the
 // "Continue" button without touching the company fields.
 const STEP_1_FIELDS = ["name", "email", "password"] as const;
@@ -39,6 +50,7 @@ export default function SignupPage() {
   const pwId = useId();
   const companyId = useId();
   const industryId = useId();
+  const currencyId = useId();
 
   const [step, setStep] = useState<1 | 2>(1);
   const [showPassword, setShowPassword] = useState(false);
@@ -58,6 +70,7 @@ export default function SignupPage() {
       password: "",
       companyName: "",
       industry: INDUSTRIES[0],
+      currency: "PKR",
     },
   });
 
@@ -289,6 +302,41 @@ export default function SignupPage() {
                 {errors.industry && (
                   <p className="mt-1.5 text-xs text-danger">{errors.industry.message}</p>
                 )}
+              </div>
+
+              <div>
+                <label
+                  htmlFor={currencyId}
+                  className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                >
+                  {t.settings.currency}
+                </label>
+                <div className="relative">
+                  <select
+                    id={currencyId}
+                    aria-invalid={errors.currency ? true : undefined}
+                    {...register("currency")}
+                    className={cn(
+                      "w-full cursor-pointer appearance-none rounded-xl border bg-glass/[0.05] px-4 py-3 pr-11 text-sm text-fg transition-colors focus:bg-glass/[0.08] focus:outline-none",
+                      errors.currency
+                        ? "border-danger/60 focus:border-danger"
+                        : "border-glass/[0.10] focus:border-primary/50"
+                    )}
+                  >
+                    {SUPPORTED_CURRENCIES.map((c) => (
+                      <option key={c} value={c} className="bg-surface text-fg">
+                        {CURRENCY_LABELS[c] ?? c}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown
+                    className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+                    aria-hidden="true"
+                  />
+                </div>
+                <p className="mt-1.5 text-xs text-fg-muted">
+                  Used for all amounts in your workspace. Chosen once, at signup.
+                </p>
               </div>
 
               <div className="flex items-start gap-3 rounded-xl border border-primary/20 bg-primary/[0.06] p-4 text-sm">

@@ -1,9 +1,8 @@
 "use client";
 
 /**
- * Edit company info — name, industry, currency. Server action enforces
- * admin/cofounder; this modal is only rendered when the section is visible,
- * so a member would never reach the trigger.
+ * Edit company info — name + industry (admin/cofounder). Currency is chosen at
+ * signup and shown read-only here; there's no in-app currency switch.
  */
 
 import { useId, useState } from "react";
@@ -22,10 +21,18 @@ type Props = {
   onClose: () => void;
   defaultName: string;
   defaultIndustry: string;
+  defaultCurrency: string;
   onSaved: () => void;
 };
 
-export function EditCompanyModal({ open, onClose, defaultName, defaultIndustry, onSaved }: Props) {
+export function EditCompanyModal({
+  open,
+  onClose,
+  defaultName,
+  defaultIndustry,
+  defaultCurrency,
+  onSaved,
+}: Props) {
   const t = useT();
   const nameId = useId();
   const industryId = useId();
@@ -39,17 +46,11 @@ export function EditCompanyModal({ open, onClose, defaultName, defaultIndustry, 
     reset,
   } = useForm<UpdateCompanyInput>({
     resolver: zodResolver(UpdateCompanySchema),
-    // Currency is locked to PKR for v1 (see UpdateCompanySchema); the schema
-    // default fills it, so it isn't a form field.
-    defaultValues: {
-      name: defaultName,
-      industry: defaultIndustry,
-      currency: "PKR",
-    },
+    defaultValues: { name: defaultName, industry: defaultIndustry },
   });
 
   function onClosed() {
-    reset({ name: defaultName, industry: defaultIndustry, currency: "PKR" });
+    reset({ name: defaultName, industry: defaultIndustry });
     onClose();
   }
 
@@ -74,9 +75,6 @@ export function EditCompanyModal({ open, onClose, defaultName, defaultIndustry, 
       size="md"
     >
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-        {/* Currency is locked to PKR (v1); submitted via a hidden field so the
-            schema's z.literal("PKR") is always satisfied. */}
-        <input type="hidden" {...register("currency")} />
         <Field
           id={nameId}
           label={t.settings.name}
@@ -96,16 +94,14 @@ export function EditCompanyModal({ open, onClose, defaultName, defaultIndustry, 
           >
             {t.settings.currency}
           </label>
-          {/* v1: PKR only. Rendered read-only rather than a picker — a live
-              multi-option control would let a workspace select a currency the
-              formatters ignore (F4), silently mislabelling its money. */}
+          {/* Read-only: currency is set when the workspace is created. */}
           <div
             id={currencyId}
-            className="flex items-center justify-between rounded-xl border border-border bg-bg px-4 py-2.5 text-sm text-fg-muted"
+            className="flex items-center justify-between rounded-xl border border-border bg-bg px-4 py-2.5 text-sm"
           >
-            <span className="font-medium text-fg">PKR — Pakistani Rupee</span>
-            <span className="font-mono text-[10px] uppercase tracking-wider">
-              {t.settings.currencyLockedNote}
+            <span className="font-semibold text-fg">{defaultCurrency}</span>
+            <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
+              set at signup
             </span>
           </div>
         </div>

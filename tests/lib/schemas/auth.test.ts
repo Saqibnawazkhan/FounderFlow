@@ -38,10 +38,27 @@ describe("SignupSchema", () => {
     password: "Secret123",
     companyName: "Nimbus Labs",
     industry: "SaaS / B2B Software",
+    currency: "PKR",
   };
 
   it("accepts a full valid payload", () => {
     expect(SignupSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it("accepts a supported workspace currency", () => {
+    const result = SignupSchema.safeParse({ ...valid, currency: "USD" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.currency).toBe("USD");
+  });
+
+  it("rejects an unsupported currency", () => {
+    expect(SignupSchema.safeParse({ ...valid, currency: "JPY" }).success).toBe(false);
+  });
+
+  it("requires a currency (chosen at signup)", () => {
+    const { currency: _omit, ...noCurrency } = valid;
+    void _omit;
+    expect(SignupSchema.safeParse(noCurrency).success).toBe(false);
   });
 
   it("rejects passwords shorter than 8 characters", () => {
