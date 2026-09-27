@@ -173,6 +173,17 @@ jobs:
             grep '^ERROR:' restore.err | sed 's/".*"/"<redacted>"/g' | sort | uniq -c | sort -rn | head -20
           fi
 
+          # KNOWN AND HARMLESS, recorded so nobody re-investigates it: the dump
+          # carries Supabase-specific statements — `supabase_vault`, the `vault`
+          # schema — that a vanilla Postgres has no extension for. Those surface
+          # in the CONTAINER's server log rather than psql's stderr, so they do
+          # not show in the count above. They matter only if the app reads them,
+          # and it does not: it talks to Postgres through Prisma and uses no
+          # vault secrets. A restore into a real Supabase project would not hit
+          # them at all. Flagged because "ERROR" in a backup log is exactly the
+          # thing that gets mistaken for a broken backup.
+          echo "note: supabase_vault / vault.secrets statements are expected to fail on vanilla Postgres and are not used by this app"
+
       - name: Did the data arrive, or only the schema?
         run: |
           set -euo pipefail
@@ -180,10 +191,30 @@ jobs:
 
           TABLES=$(q "select count(*) from information_schema.tables where table_schema='public'")
           echo "tables in public: $TABLES"
-          if [ "$TABLES" -lt 15 ]; then
-            echo "::error title=Restore incomplete::Only $TABLES tables. The dump did not restore the schema."
+
+          # DO NOT put a count threshold here. The first version of this step
+          # asserted `>= 15` and failed a perfectly good restore, because it had
+          # been calibrated against STAGING (19 tables, fully migrated) while the
+          # dump comes from PRODUCTION, which is six migrations behind and
+          # legitimately has 14. The pending batch creates five tables
+          # (NotificationPreference, Channel, ChannelMember, Message,
+          # MessageReaction), so the counts differ by exactly that.
+          #
+          # A count threshold encodes "how far behind is production right now",
+          # which is the one thing guaranteed to change — and handling a
+          # behind-schema dump is this workflow's entire purpose. So assert the
+          # property instead: the tables the dump MUST carry are present, by
+          # name, and they contain rows.
+          MISSING=""
+          for t in User Company Transaction Project Task Budget TimeEntry Comment Activity Notification _prisma_migrations; do
+            EXISTS=$(q "select count(*) from information_schema.tables where table_schema='public' and table_name='$t'")
+            [ "$EXISTS" = "1" ] || MISSING="$MISSING $t"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error title=Restore incomplete::Core tables absent from the restored dump:$MISSING"
             exit 1
           fi
+          echo "all core tables present"
 
           echo "--- row counts (aggregates only) ---"
           for t in User Company Transaction Project Task Budget TimeEntry Comment Activity Notification; do
