@@ -56,6 +56,22 @@ on:
         required: false
         default: ""
 
+  # TEMPORARY, and here for a specific reason. GitHub only offers the
+  # `workflow_dispatch` button for workflows that exist on the DEFAULT branch,
+  # and putting this file on `main` would trigger a production deployment — 50
+  # days of unreleased code plus six migrations applied to live customer data at
+  # build time. Which is the very thing this workflow exists to de-risk.
+  #
+  # So until this lands on `main` deliberately, it triggers on a push to the
+  # branch it lives on, narrowed to changes to this file so ordinary commits do
+  # not re-run it. DELETE THIS BLOCK once the file reaches `main`; the dispatch
+  # button above is its permanent home.
+  push:
+    branches:
+      - staging-verify
+    paths:
+      - ".github/workflows/verify-backup-restore.yml"
+
 jobs:
   verify:
     runs-on: ubuntu-latest
