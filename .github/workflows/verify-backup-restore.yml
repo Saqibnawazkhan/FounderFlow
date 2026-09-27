@@ -1,0 +1,246 @@
+##
+## Prove the nightly backup is restorable — and that the pending migrations
+## survive contact with real production data.
+##
+## WHY THIS EXISTS. backup.yml has run successfully every night for months, and
+## nobody has ever restored one of its dumps. A backup nobody has restored is a
+## hypothesis, not a backup (audit row prodready-009, which states outright that
+## the restore half "has never been run and as documented it will not work").
+## This is the experiment that settles it.
+##
+## WHY IT IS NOT THE BUTTON backup.yml WARNS ABOUT. That file says, correctly:
+##
+##     "There is deliberately no automated restore workflow — that's the kind
+##      of 'one wrong click nukes a customer's data' button we do not need."
+##
+## The hazard in that sentence is a restore whose TARGET could be a real
+## database. This workflow has no such target and cannot be given one:
+##
+##   • It restores into a `postgres:17` SERVICE CONTAINER that GitHub creates
+##     for this job and destroys when the job ends.
+##   • The target URL is a HARDCODED localhost constant below. It is not an
+##     input, not a secret, and not interpolated from anything. There is no
+##     value anyone can pass to this workflow that makes it write to Supabase.
+##   • It never reads BACKUP_DATABASE_URL or any STAGING_* secret. The only
+##     secrets it touches are the S3 read credentials.
+##
+## So the worst outcome of a wrong click is a wasted runner minute.
+##
+## WHY NOT RESTORE INTO STAGING, which was the obvious first idea: the dump
+## contains real customers' financial records. Staging is reachable from a
+## public preview deployment, and its password has been handled by more than one
+## person. Copying live customer data into a second internet-facing database, to
+## test a migration, is a worse trade than it looks. An ephemeral container gets
+## the same answer and leaves nothing behind.
+##
+## WHAT IT ANSWERS
+##   1. Does the newest dump actually restore? (prodready-009)
+##   2. Does it contain DATA, or only schema? A dump can exit 0 and be empty.
+##   3. Do the migrations that have never touched production apply cleanly to
+##      production's real schema?
+##   4. Does 20260925140000_add_user_handle's BACKFILL work on real rows? On
+##      staging it ran against an empty table, which is a no-op — so the riskiest
+##      statement in the pending batch is currently untested.
+##
+## Logs print counts and aggregates ONLY, never row contents. Repo collaborators
+## can read Actions logs; customer data must not appear in them.
+##
+
+name: Verify backup restore
+
+on:
+  workflow_dispatch:
+    inputs:
+      dump_date:
+        description: "Dump to restore, as YYYY-MM-DD. Blank = newest in the bucket."
+        required: false
+        default: ""
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    # The ONLY database this job can reach. Ephemeral, unreachable from outside
+    # the runner, gone when the job finishes.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+    env:
+      # Hardcoded on purpose. See the header: this constant is what makes the
+      # workflow structurally incapable of writing to a real database.
+      TARGET_URL: postgresql://postgres:postgres@localhost:5432/postgres
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same version dance as backup.yml: Ubuntu ships client 16, Supabase runs
+      # 17, and a 16 client refuses a 17 dump. pg_wrapper on PATH can pick the
+      # wrong one even after 17 is installed, so address the binary directly.
+      - name: Install PostgreSQL client 17
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+          echo "PSQL=/usr/lib/postgresql/17/bin/psql" >> "$GITHUB_ENV"
+          /usr/lib/postgresql/17/bin/psql --version
+
+      - name: Fetch the dump from S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.BACKUP_S3_REGION }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+          DUMP_DATE: ${{ inputs.dump_date }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BACKUP_S3_BUCKET:-}" ]; then
+            echo "::error title=No bucket::BACKUP_S3_BUCKET is not set. This repo's backups cannot be located."
+            exit 1
+          fi
+          ENDPOINT_ARGS=()
+          if [ -n "${BACKUP_S3_ENDPOINT:-}" ]; then
+            ENDPOINT_ARGS=(--endpoint-url "$BACKUP_S3_ENDPOINT")
+          fi
+
+          if [ -n "${DUMP_DATE:-}" ]; then
+            NAME="founderflow-${DUMP_DATE}.sql.gz"
+          else
+            # Newest by key name. The filenames are ISO dates, so lexical order
+            # IS chronological order — no reliance on S3 timestamps, which
+            # differ across providers.
+            NAME=$(aws s3 ls "s3://$BACKUP_S3_BUCKET/nightly/" "${ENDPOINT_ARGS[@]}" \
+              | awk '{print $4}' | grep -E '^founderflow-[0-9]{4}-[0-9]{2}-[0-9]{2}\.sql\.gz$' \
+              | sort | tail -1)
+          fi
+          if [ -z "${NAME:-}" ]; then
+            echo "::error title=No dump found::Nothing matching founderflow-YYYY-MM-DD.sql.gz under nightly/."
+            exit 1
+          fi
+          echo "Restoring: $NAME"
+          aws s3 cp "s3://$BACKUP_S3_BUCKET/nightly/$NAME" ./dump.sql.gz "${ENDPOINT_ARGS[@]}"
+          echo "DUMP_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "compressed bytes: $(stat -c%s ./dump.sql.gz)"
+
+      - name: Restore into the ephemeral database
+        run: |
+          set -uo pipefail
+          gunzip -c ./dump.sql.gz > ./dump.sql
+          echo "uncompressed bytes: $(stat -c%s ./dump.sql)"
+
+          # ON_ERROR_STOP=0 deliberately. A Supabase dump can carry statements a
+          # vanilla Postgres has no opinion about (extensions, roles, publication
+          # DDL). Aborting on the first of those would tell us nothing about
+          # whether OUR data restored. So: continue, then judge on the tables.
+          "$PSQL" "$TARGET_URL" -v ON_ERROR_STOP=0 -q -f ./dump.sql > restore.log 2> restore.err || true
+
+          ERRORS=$(grep -c '^ERROR:' restore.err || true)
+          echo "psql ERROR lines: ${ERRORS:-0}"
+          if [ "${ERRORS:-0}" -gt 0 ]; then
+            echo "--- distinct error kinds (messages only, no data) ---"
+            grep '^ERROR:' restore.err | sed 's/".*"/"<redacted>"/g' | sort | uniq -c | sort -rn | head -20
+          fi
+
+      - name: Did the data arrive, or only the schema?
+        run: |
+          set -euo pipefail
+          q() { "$PSQL" "$TARGET_URL" -At -c "$1"; }
+
+          TABLES=$(q "select count(*) from information_schema.tables where table_schema='public'")
+          echo "tables in public: $TABLES"
+          if [ "$TABLES" -lt 15 ]; then
+            echo "::error title=Restore incomplete::Only $TABLES tables. The dump did not restore the schema."
+            exit 1
+          fi
+
+          echo "--- row counts (aggregates only) ---"
+          for t in User Company Transaction Project Task Budget TimeEntry Comment Activity Notification; do
+            N=$(q "select count(*) from \"$t\"" 2>/dev/null || echo "n/a")
+            printf '  %-14s %s\n' "$t" "$N"
+          done
+
+          USERS=$(q "select count(*) from \"User\"")
+          COMPANIES=$(q "select count(*) from \"Company\"")
+          if [ "$USERS" -eq 0 ] || [ "$COMPANIES" -eq 0 ]; then
+            echo "::error title=Schema-only dump::Tables exist but User/Company are empty. The backup is not a backup."
+            exit 1
+          fi
+
+          APPLIED=$(q "select count(*) from \"_prisma_migrations\" where finished_at is not null")
+          echo "migrations already applied in the dump: $APPLIED"
+          echo "MIGRATIONS_BEFORE=$APPLIED" >> "$GITHUB_ENV"
+          echo "USERS_BEFORE=$USERS" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # THE ACTUAL TEST. These migrations have never run against production's
+      # schema, and add_user_handle's backfill has never run against rows at all.
+      - name: Apply the pending migrations to real production data
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/postgres
+        run: |
+          set -euo pipefail
+          npx prisma migrate status || true
+          npx prisma migrate deploy
+
+      - name: Verify the handle backfill against real rows
+        run: |
+          set -euo pipefail
+          q() { "$PSQL" "$TARGET_URL" -At -c "$1"; }
+
+          AFTER=$(q "select count(*) from \"_prisma_migrations\" where finished_at is not null")
+          echo "migrations applied after deploy: $AFTER (was $MIGRATIONS_BEFORE)"
+
+          FAILED=$(q "select count(*) from \"_prisma_migrations\" where finished_at is null")
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error title=Migration incomplete::$FAILED migration(s) recorded but unfinished."
+            exit 1
+          fi
+
+          # The backfill's contract: every pre-existing user gets a handle, and
+          # handles are unique per company. Postgres treats NULLs as DISTINCT in
+          # a unique index, so a null-handle user does NOT trip @@unique — which
+          # is exactly how the original bug stayed silent.
+          NULLS=$(q "select count(*) from \"User\" where handle is null")
+          DUPES=$(q "select coalesce(sum(c-1),0) from (select count(*) c from \"User\" where handle is not null group by \"companyId\", handle having count(*) > 1) x")
+          TOTAL=$(q "select count(*) from \"User\"")
+
+          echo "users: $TOTAL (was $USERS_BEFORE)   null handles: $NULLS   per-company duplicates: $DUPES"
+
+          if [ "$NULLS" -ne 0 ]; then
+            echo "::error title=Backfill incomplete::$NULLS user(s) still have no handle. They are unmentionable in comments, and nothing will complain."
+            exit 1
+          fi
+          if [ "$DUPES" -ne 0 ]; then
+            echo "::error title=Backfill collided::$DUPES duplicate handle(s) within a company."
+            exit 1
+          fi
+          if [ "$TOTAL" -ne "$USERS_BEFORE" ]; then
+            echo "::error title=Row count changed::A migration added or removed users ($USERS_BEFORE -> $TOTAL)."
+            exit 1
+          fi
+
+          echo "::notice title=Restore verified::$DUMP_NAME restored, $TOTAL users, $AFTER migrations applied, backfill clean."
