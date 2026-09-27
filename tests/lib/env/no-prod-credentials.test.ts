@@ -31,6 +31,7 @@
 
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -162,7 +163,21 @@ describe("no production credentials in any local env file", () => {
     expect(() => envFiles(REPO_ROOT)).not.toThrow();
   });
 
-  it.each(files.length ? files : [["<no env files on disk>"]].flat())(
+  // `.env.staging` is handled separately, below. It is the ONE local env file
+  // that must legitimately name a hosted database, and the reason is the same
+  // reason this whole test exists: the hazard is AUTO-LOADING. Prisma auto-loads
+  // the root `.env`; Next auto-loads `.env.local`. NOTHING auto-loads
+  // `.env.staging` — only scripts/db-staging.mjs reads it, explicitly, after
+  // proving the file declares itself staging. So a hosted URL there cannot be
+  // picked up by a stray `npx prisma`, which is the accident this guards.
+  //
+  // Added 2026-09-28, when staging was finally provisioned and this test went
+  // red for the right rule and the wrong reason. Narrowing it was the fix;
+  // deleting the assertion would not have been.
+  const STAGING = join(REPO_ROOT, ".env.staging");
+  const generalFiles = files.filter((f) => f !== STAGING);
+
+  it.each(generalFiles.length ? generalFiles : [["<no env files on disk>"]].flat())(
     "%s holds no production credential",
     (file) => {
       if (file === "<no env files on disk>") return;
@@ -208,5 +223,85 @@ describe("no production credentials in any local env file", () => {
         `value here is a value a stray "npx prisma" command will connect with. ` +
         `Local values belong in .env.local; production values belong in Vercel.`
     ).toEqual([]);
+  });
+});
+
+/**
+ * `.env.staging` is exempt from the hosted-host rule, so these assertions are
+ * what make the exemption safe. Three conditions, each closing one way the
+ * exemption could become the very leak this file exists to prevent.
+ */
+describe(".env.staging may name a hosted database, but only on these terms", () => {
+  const STAGING_PATH = join(REPO_ROOT, ".env.staging");
+  const exists = (() => {
+    try {
+      return statSync(STAGING_PATH).isFile();
+    } catch {
+      return false;
+    }
+  })();
+
+  /** Hostnames any postgres URL in a file names. */
+  const hostsIn = (text: string): string[] => {
+    const out: string[] = [];
+    const rx = /postgres(?:ql)?:\/\/[^\s:/@]+:[^\s@]+@(\[[^\]\s]+\]|[^\s:/?]+)/gi;
+    let m: RegExpExecArray | null;
+    while ((m = rx.exec(text)) !== null) {
+      const h = (m[1] ?? "").toLowerCase();
+      if (h && out.indexOf(h) === -1) out.push(h);
+    }
+    return out;
+  };
+
+  it("declares FF_ENV=staging, which is what earns it the exemption", () => {
+    if (!exists) return; // not provisioned on this machine; nothing to exempt
+    const text = readFileSync(STAGING_PATH, "utf8");
+    expect(
+      /^[ 	]*FF_ENV[ 	]*=[ 	]*["']?staging["']?[ 	]*$/m.test(text),
+      '.env.staging names a hosted database but does not declare FF_ENV="staging". ' +
+        "That declaration is the only thing separating it from a production env file — " +
+        "staging and production are both *.pooler.supabase.com on the same ports, so " +
+        "nothing about the URL can tell them apart. See scripts/_staging-db.mjs."
+    ).toBe(true);
+  });
+
+  it("names no host that .env or .env.local also names", () => {
+    if (!exists) return;
+    const stagingHosts = hostsIn(readFileSync(STAGING_PATH, "utf8"));
+    for (const sibling of [".env", ".env.local"]) {
+      let text = "";
+      try {
+        text = readFileSync(join(REPO_ROOT, sibling), "utf8");
+      } catch {
+        continue;
+      }
+      const shared = hostsIn(text).filter((h) => stagingHosts.indexOf(h) !== -1);
+      expect(
+        shared,
+        `.env.staging and ${sibling} both name ${shared.join(", ")}. Whatever FF_ENV ` +
+          "says, that is not a separate database — the point of staging is that a " +
+          "migration tried there cannot touch anything real."
+      ).toEqual([]);
+    }
+  });
+
+  it("is gitignored, so the exemption cannot become a committed credential", () => {
+    if (!exists) return;
+    let ignored: boolean;
+    try {
+      execFileSync("git", ["check-ignore", "-q", ".env.staging"], { cwd: REPO_ROOT });
+      ignored = true;
+    } catch (err) {
+      // `git check-ignore -q` exits 1 for "not ignored" and 128 if git is
+      // unavailable. Only the first is a failure of this assertion.
+      const status = (err as { status?: number }).status;
+      if (status === 1) ignored = false;
+      else return; // no git here; this assertion cannot be evaluated
+    }
+    expect(
+      ignored,
+      ".env.staging is NOT gitignored. It holds a live database password, and the " +
+        "hosted-host exemption above assumes the file never leaves this machine."
+    ).toBe(true);
   });
 });
