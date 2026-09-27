@@ -36,9 +36,14 @@ export async function listCommentsForTarget(target: CommentTarget): Promise<Comm
       where,
       orderBy: { createdAt: "asc" },
     }),
+    // `handle` is not optional in practice: without it every mention in this
+    // thread resolves by name slug alone, which is T16 — a teammate whose name
+    // carries no ASCII letters renders as plain `@text` instead of a chip even
+    // though the notification fired. MentionUser.handle is optional in the
+    // TYPE, so leaving it out of this select fails silently rather than loudly.
     db.user.findMany({
       where: { companyId, deletedAt: null },
-      select: { id: true, name: true },
+      select: { id: true, name: true, handle: true },
     }),
   ]);
 

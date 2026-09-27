@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Activity as ActivityIcon,
   Archive,
+  MessageSquare,
   CheckCircle2,
   CheckSquare,
   Edit3,
@@ -30,35 +31,38 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { loadMoreActivitiesAction } from "@/lib/actions/activities";
 import { cn } from "@/lib/utils";
 import type { Activity, ActivityType } from "@/lib/types";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 import { format, isToday, isYesterday, startOfDay } from "date-fns";
 
-type ActivityTone = "primary" | "cyan" | "pink" | "danger" | "warning" | "info";
+type ActivityTone = "primary" | "forest" | "mint" | "danger" | "warning" | "info";
 
 const ACTIVITY_META: Record<ActivityType, { icon: LucideIcon; tone: ActivityTone; label: string }> =
   {
-    expense_added: { icon: TrendingDown, tone: "pink", label: "Expense" },
+    expense_added: { icon: TrendingDown, tone: "mint", label: "Expense" },
     investment_added: { icon: TrendingUp, tone: "primary", label: "Investment" },
-    revenue_added: { icon: Coins, tone: "cyan", label: "Revenue" },
+    revenue_added: { icon: Coins, tone: "forest", label: "Revenue" },
     task_created: { icon: CheckSquare, tone: "primary", label: "Task created" },
-    task_assigned: { icon: CheckSquare, tone: "cyan", label: "Task assigned" },
+    task_assigned: { icon: CheckSquare, tone: "forest", label: "Task assigned" },
     task_completed: { icon: CheckCircle2, tone: "primary", label: "Task completed" },
     task_updated: { icon: CheckSquare, tone: "info", label: "Task updated" },
     task_deleted: { icon: Trash2, tone: "danger", label: "Task deleted" },
     transaction_deleted: { icon: Trash2, tone: "danger", label: "Transaction deleted" },
-    user_joined: { icon: UserPlus, tone: "cyan", label: "Team update" },
+    user_joined: { icon: UserPlus, tone: "forest", label: "Team update" },
     user_removed: { icon: UserMinus, tone: "danger", label: "Member removed" },
     user_role_changed: { icon: ShieldCheck, tone: "warning", label: "Role changed" },
     company_created: { icon: Zap, tone: "primary", label: "Company" },
     project_created: { icon: FolderPlus, tone: "primary", label: "Project created" },
     project_updated: { icon: Edit3, tone: "info", label: "Project updated" },
     project_archived: { icon: Archive, tone: "warning", label: "Project archived" },
-    project_supervisor_changed: { icon: UserCog, tone: "cyan", label: "Supervisor changed" },
+    project_supervisor_changed: { icon: UserCog, tone: "forest", label: "Supervisor changed" },
+    channel_created: { icon: MessageSquare, tone: "forest", label: "Channel created" },
+    channel_archived: { icon: Archive, tone: "warning", label: "Channel archived" },
   };
 
 const TONE_FILL: Record<ActivityTone, string> = {
   primary: "bg-primary/15 text-primary-strong border-primary/30",
-  cyan: "bg-cyan/15 text-cyan-strong border-cyan/30",
-  pink: "bg-pink/15 text-pink-strong border-pink/30",
+  forest: "bg-forest/15 text-forest-strong border-forest/30",
+  mint: "bg-mint/15 text-mint-strong border-mint/30",
   danger: "bg-danger/15 text-danger-strong border-danger/30",
   warning: "bg-warning/15 text-warning-strong border-warning/30",
   info: "bg-info/15 text-info-strong border-info/30",
@@ -110,6 +114,7 @@ type Props = {
 export function ActivitiesClient({ initialActivities, initialCursor, users, activeUserId }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
+  const n = useNumberFormat();
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string>("all");
 
@@ -264,7 +269,7 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
         <div className="space-y-10">
           {grouped.map(([dayKey, dayActivities]) => (
             <div key={dayKey}>
-              <div className="sticky top-20 z-sticky mb-5">
+              <div className="sticky top-0 z-sticky mb-5">
                 <div className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-3 py-1.5 shadow-card">
                   <span className="relative flex h-1.5 w-1.5">
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60" />
@@ -275,7 +280,8 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
                   </p>
                   <span className="text-fg-muted">·</span>
                   <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
-                    {dayActivities.length} {dayActivities.length === 1 ? "event" : "events"}
+                    {n.number(dayActivities.length)}{" "}
+                    {dayActivities.length === 1 ? "event" : "events"}
                   </span>
                 </div>
               </div>
@@ -304,10 +310,10 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
                               {activity.message}
                               {activity.repeatCount > 1 && (
                                 <span
-                                  title={`This event fired ${activity.repeatCount} times within a few minutes`}
+                                  title={`This event fired ${n.number(activity.repeatCount)} times within a few minutes`}
                                   className="ml-2 inline-flex items-center rounded-full border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] font-bold text-fg-muted"
                                 >
-                                  ×{activity.repeatCount}
+                                  ×{n.number(activity.repeatCount)}
                                 </span>
                               )}
                             </p>

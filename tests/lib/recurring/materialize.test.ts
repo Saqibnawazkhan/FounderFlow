@@ -12,7 +12,7 @@ function rule(overrides: Partial<RecurringRule> = {}): RecurringRule {
     id: "rule-1",
     companyId: "co-1",
     type: "expense",
-    // Prisma.Decimal after the Float→Decimal migration (BUGS.md P0-4).
+    // Prisma.Decimal after the Float→Decimal migration (FaultsAudit.md P0-4).
     amount: new Prisma.Decimal(100),
     category: "Office Rent",
     description: "test",

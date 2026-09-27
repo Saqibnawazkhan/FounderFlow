@@ -33,18 +33,18 @@ export const en = {
   common: {
     save: "Save",
     cancel: "Cancel",
-    delete: "Delete",
     confirm: "Confirm",
-    loading: "Loading…",
     search: "Search expenses, tasks, team...",
     noResults: "No results",
     workspace: "Workspace",
     signOut: "Sign out",
-    yes: "Yes",
-    no: "No",
   },
   nav: {
     dashboard: "Dashboard",
+    chat: "Chat",
+    // Sidebar-only: the collapsible group heading over the five money
+    // surfaces. Has no route of its own.
+    finance: "Finance",
     expenses: "Expenses",
     investments: "Investments",
     revenue: "Revenue",
@@ -123,7 +123,7 @@ export const en = {
     signUpStep1Note: "We'll use this to set up your founder profile.",
     signUpStep2Note: "You'll be the Admin Founder and can invite others next.",
     fullName: "Full name",
-    fullNamePlaceholder: "John Doe",
+    fullNamePlaceholder: "Ayesha Raza",
     workEmail: "Work email",
     passwordPlaceholderSignup: "8+ chars, mixed case & a number",
     companyName: "Company name",
@@ -221,17 +221,12 @@ export const en = {
     targetEndDateOverdue: "Overdue",
     name: "Name",
     description: "Description",
-    pickProject: "Pick a project",
     openTasks: "Open tasks",
     monthSpend: "Month-to-date spend",
     hoursTracked: "Hours tracked",
     members: "Members",
-    overview: "Overview",
     tasks: "Tasks",
     budgets: "Budgets",
-    time: "Time",
-    activity: "Activity",
-    edited: "edited",
     projectCreatedToast: "Project created",
     projectSavedToast: "Project updated",
     supervisorChangedToast: "Supervisor changed",
@@ -239,6 +234,36 @@ export const en = {
     projectDeletedToast: "Project deleted",
     unarchiveProject: "Restore",
     projectRestoredToast: "Project restored",
+
+    /* The duplicate flow: the card affordance and its modal.
+     *
+     * `duplicateProject` is the short verb on the card button, matching its
+     * neighbours above (`archiveProject: "Archive"`); `duplicateSubmit` is the
+     * full-sentence confirm inside the modal, where a bare "Duplicate" next to
+     * a Cancel would not say what is about to be duplicated.
+     *
+     * The three hints are the arguments for the three defaults, not decoration
+     * — each one answers the question its checkbox raises, and a reader who
+     * only sees the label would guess wrong on at least `keepAssignees`. */
+    duplicateProject: "Duplicate",
+    duplicateNameLabel: "New project name",
+    /* Seeded into the name field as "<source> (copy)" — the fast path is one
+     * click, and the user renames it if they care. Translated because it is
+     * text they read and edit, not a marker the server looks for. */
+    duplicateNameSuffix: "(copy)",
+    duplicateCopyTasks: "Copy the task list",
+    duplicateCopyTasksHint:
+      "Tasks arrive reset to Pending — a copy is a plan, not a record of work done.",
+    duplicateKeepAssignees: "Keep each task's assignee",
+    duplicateKeepAssigneesHint:
+      "Off by default: duplicating shouldn't hand colleagues work they never agreed to. Off assigns everything to you.",
+    duplicateShiftDeadlines: "Shift deadlines to start today",
+    duplicateShiftDeadlinesHint:
+      "Keeps the gaps between deadlines, just moved forward — otherwise the copy lands entirely overdue.",
+    duplicateNeverCopied: "Budgets, expenses, revenue, time entries and comments are never copied.",
+    duplicateSubmit: "Duplicate project",
+    duplicateSubmitting: "Duplicating…",
+    projectDuplicatedToast: "Project duplicated",
   },
   settings: {
     workspaceBadge: "Workspace",
@@ -278,7 +303,6 @@ export const en = {
     userId: "User ID",
     name: "Name",
     currency: "Currency",
-    currencyLockedNote: "More soon",
     created: "Created",
     adminFounderRole: "Admin Founder",
     cofounderRole: "Co-Founder",
@@ -294,9 +318,7 @@ export const en = {
     // Account stats
     stats: "Activity at a glance",
     totalTracked: "Time tracked",
-    totalTrackedDesc: "Across every clocked session",
     sessionCount: "Sessions",
-    sessionCountDesc: "Total clock-in events",
     lastSignIn: "Last sign-in",
     lastSignInNever: "First sign-in",
     memberSince: "Member since",
@@ -330,6 +352,7 @@ export const en = {
     newPassword: "New password",
     confirmPassword: "Confirm new password",
     passwordChanged: "Password changed",
+    passwordChangedSignOut: "Password changed — sign in again",
     saveChanges: "Save changes",
     cancel: "Cancel",
     saving: "Saving…",
@@ -356,7 +379,6 @@ export const en = {
     workspaceNameConfirm: "Type the workspace name",
     accountDeletedToast: "Account deleted",
     workspaceDeletedToast: "Workspace deleted",
-    deleteFailedToast: "Couldn't delete — try again",
   },
 };
 
@@ -368,18 +390,16 @@ export const ur: typeof en = {
   common: {
     save: "محفوظ کریں",
     cancel: "منسوخ",
-    delete: "حذف کریں",
     confirm: "تصدیق کریں",
-    loading: "لوڈ ہو رہا ہے…",
     search: "اخراجات، کام، ٹیم تلاش کریں...",
     noResults: "کوئی نتیجہ نہیں",
     workspace: "ورک اسپیس",
     signOut: "سائن آؤٹ",
-    yes: "ہاں",
-    no: "نہیں",
   },
   nav: {
     dashboard: "ڈیش بورڈ",
+    chat: "گفتگو",
+    finance: "مالیات",
     expenses: "اخراجات",
     investments: "سرمایہ کاری",
     revenue: "آمدنی",
@@ -454,7 +474,7 @@ export const ur: typeof en = {
     signUpStep1Note: "ہم اسے آپ کا فاؤنڈر پروفائل بنانے کے لیے استعمال کریں گے۔",
     signUpStep2Note: "آپ ایڈمن فاؤنڈر ہوں گے اور دوسروں کو دعوت دے سکیں گے۔",
     fullName: "پورا نام",
-    fullNamePlaceholder: "جان ڈو",
+    fullNamePlaceholder: "عائشہ رضا",
     workEmail: "آفس ای میل",
     passwordPlaceholderSignup: "کم از کم 8 حروف، بڑے/چھوٹے حروف اور ایک ہندسہ",
     companyName: "کمپنی کا نام",
@@ -553,17 +573,12 @@ export const ur: typeof en = {
     targetEndDateOverdue: "تاخیر سے",
     name: "نام",
     description: "تفصیل",
-    pickProject: "منصوبہ منتخب کریں",
     openTasks: "کھلے کام",
     monthSpend: "اس ماہ کا خرچ",
     hoursTracked: "ٹریک کردہ گھنٹے",
     members: "ممبران",
-    overview: "جائزہ",
     tasks: "کام",
     budgets: "بجٹ",
-    time: "وقت",
-    activity: "سرگرمی",
-    edited: "ترمیم شدہ",
     projectCreatedToast: "منصوبہ بنا دیا گیا",
     projectSavedToast: "منصوبہ اپ ڈیٹ ہو گیا",
     supervisorChangedToast: "سپروائزر تبدیل ہو گیا",
@@ -571,6 +586,26 @@ export const ur: typeof en = {
     projectDeletedToast: "منصوبہ حذف ہو گیا",
     unarchiveProject: "بحال کریں",
     projectRestoredToast: "منصوبہ بحال ہو گیا",
+
+    /* Duplicate flow. "نقل" (copy) carries the whole family, the way "منصوبہ"
+     * carries the project family above — so the card button, the confirm and
+     * the toast all read as one action rather than three words for it. */
+    duplicateProject: "نقل بنائیں",
+    duplicateNameLabel: "نئے منصوبے کا نام",
+    duplicateNameSuffix: "(نقل)",
+    duplicateCopyTasks: "کاموں کی فہرست نقل کریں",
+    duplicateCopyTasksHint:
+      "کام «زیر التوا» حالت میں آتے ہیں — نقل آنے والے کام کا خاکہ ہے، ہو چکے کام کا ریکارڈ نہیں۔",
+    duplicateKeepAssignees: "ہر کام کا ذمہ دار برقرار رکھیں",
+    duplicateKeepAssigneesHint:
+      "بطور ڈیفالٹ بند: نقل بنانے سے ساتھیوں کو ایسا کام نہیں ملنا چاہیے جس پر وہ راضی ہی نہیں ہوئے۔ بند رہنے پر سب کچھ آپ کے نام ہو جاتا ہے۔",
+    duplicateShiftDeadlines: "آخری تاریخیں آج سے شروع کریں",
+    duplicateShiftDeadlinesHint:
+      "آخری تاریخوں کے درمیان وقفے وہی رہتے ہیں، بس آگے کھسک جاتے ہیں — ورنہ نقل شروع ہوتے ہی پوری تاخیر سے ہوگی۔",
+    duplicateNeverCopied: "بجٹ، اخراجات، آمدنی، ٹائم اندراجات اور تبصرے کبھی نقل نہیں ہوتے۔",
+    duplicateSubmit: "منصوبے کی نقل بنائیں",
+    duplicateSubmitting: "نقل بن رہی ہے…",
+    projectDuplicatedToast: "منصوبے کی نقل بن گئی",
   },
   settings: {
     workspaceBadge: "ورک اسپیس",
@@ -610,7 +645,6 @@ export const ur: typeof en = {
     userId: "یوزر ID",
     name: "نام",
     currency: "کرنسی",
-    currencyLockedNote: "مزید جلد",
     created: "بنایا گیا",
     adminFounderRole: "ایڈمن فاؤنڈر",
     cofounderRole: "کو فاؤنڈر",
@@ -624,9 +658,7 @@ export const ur: typeof en = {
     signedOutToast: "سائن آؤٹ ہو گیا",
     stats: "ایک نظر میں سرگرمی",
     totalTracked: "ٹریک شدہ وقت",
-    totalTrackedDesc: "ہر کلاک ان شدہ سیشن میں",
     sessionCount: "سیشنز",
-    sessionCountDesc: "کل کلاک ان ایونٹس",
     lastSignIn: "آخری سائن ان",
     lastSignInNever: "پہلی بار سائن ان",
     memberSince: "ممبر بنے",
@@ -660,6 +692,7 @@ export const ur: typeof en = {
     newPassword: "نیا پاس ورڈ",
     confirmPassword: "نئے پاس ورڈ کی تصدیق کریں",
     passwordChanged: "پاس ورڈ تبدیل ہو گیا",
+    passwordChangedSignOut: "پاس ورڈ تبدیل ہو گیا — دوبارہ سائن ان کریں",
     saveChanges: "تبدیلیاں محفوظ کریں",
     cancel: "منسوخ",
     saving: "محفوظ ہو رہا ہے…",
@@ -684,7 +717,6 @@ export const ur: typeof en = {
     workspaceNameConfirm: "ورک اسپیس کا نام ٹائپ کریں",
     accountDeletedToast: "اکاؤنٹ حذف ہو گیا",
     workspaceDeletedToast: "ورک اسپیس حذف ہو گیا",
-    deleteFailedToast: "حذف نہیں ہو سکا — دوبارہ کوشش کریں",
   },
 };
 

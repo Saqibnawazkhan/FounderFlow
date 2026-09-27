@@ -11,5 +11,3 @@ export const PushSubscriptionSchema = z.object({
     auth: z.string().min(1).max(500),
   }),
 });
-
-export type PushSubscriptionInput = z.infer<typeof PushSubscriptionSchema>;

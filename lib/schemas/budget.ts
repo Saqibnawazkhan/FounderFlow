@@ -29,5 +29,3 @@ export const UpdateBudgetSchema = z.object({
     .optional(),
   active: z.boolean().optional(),
 });
-
-export type UpdateBudgetInput = z.infer<typeof UpdateBudgetSchema>;

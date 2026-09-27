@@ -21,7 +21,14 @@ import type { LucideIcon } from "lucide-react";
 import type { Activity, Task, Transaction, User } from "@/lib/types";
 import { formatRelativeTime, cn } from "@/lib/utils";
 import { useMoney } from "@/lib/hooks/useMoney";
-import { endOfMonth, format, isPast, isToday, startOfMonth, subMonths } from "date-fns";
+import { useNumberFormat } from "@/lib/i18n/use-t";
+// Only the deadline predicates come from date-fns now. Month bucketing lives in
+// lib/date-range.ts: every date-fns month helper works in the LOCAL calendar,
+// and `Transaction.date` is a date-only value stored at UTC midnight, so a local
+// boundary filed a row dated the 1st under the previous month for every viewer
+// west of UTC while /budgets counted it in the current one (money-007).
+import { isPast, isToday } from "date-fns";
+import { isInUtcMonth, utcMonthShortLabel, utcMonthWindow, utcMonthsAgo } from "@/lib/date-range";
 import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat, type DashboardStatProps } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
@@ -41,11 +48,11 @@ const CategoryPieChart = dynamic(
   { ssr: false, loading: () => <Skeleton className="h-full w-full rounded-xl" /> }
 );
 
-const C_PRIMARY = "#b6f425";
-const C_CYAN = "#70E6ED";
-const C_PINK = "#FFB3DB";
-const C_AMBER = "#f59e0b";
-const CATEGORY_PALETTE = [C_PRIMARY, C_CYAN, C_PINK, C_AMBER, "#a78bfa", "#34d399"];
+const C_PRIMARY = "#10B981";
+const C_FOREST = "#047857";
+const C_MINT = "#6EE7B7";
+const C_DEEP = "#065F46";
+const CATEGORY_PALETTE = [C_PRIMARY, C_FOREST, C_MINT, C_DEEP, "#34D399", "#64748B"];
 
 type Props = {
   transactions: Transaction[];
@@ -67,6 +74,7 @@ export function DashboardClient({
   currentUserName,
 }: Props) {
   const money = useMoney();
+  const n = useNumberFormat();
   const totalInvestments = transactions
     .filter((t) => t.type === "investment")
     .reduce((sum, t) => sum + t.amount, 0);
@@ -81,8 +89,13 @@ export function DashboardClient({
   const pendingTasks = tasks.filter((t) => t.status !== "completed").length;
   const completedTasks = tasks.filter((t) => t.status === "completed").length;
 
+  // A ROLLING three-month window, not the last three calendar months: a
+  // calendar window would include a partial current month, so early in the
+  // month the /3 understates burn and therefore overstates runway. `utcMonthsAgo`
+  // pins the edge to UTC midnight so the window does not shift with the hour of
+  // day the dashboard happens to be opened.
   const last3MoExpenses = useMemo(() => {
-    const cutoff = subMonths(new Date(), 3);
+    const cutoff = utcMonthsAgo(new Date(), 3);
     return transactions
       .filter((t) => t.type === "expense" && new Date(t.date) >= cutoff)
       .reduce((s, t) => s + t.amount, 0);
@@ -92,36 +105,50 @@ export function DashboardClient({
 
   // This-month spend + how it compares to the 3-month average burn — a far more
   // frequently-checked number than all-time capital raised.
+  //
+  // `isInUtcMonth` is the SAME boundary lib/queries/budgets.ts and
+  // lib/budgets/check.ts use, which is the point: this card and the budget cap
+  // a row consumes now agree about which month that row is in. /expenses reads
+  // the same helper (money-003), so the two "This month" cards agree too.
   const currentMonthSpend = useMemo(() => {
-    const start = startOfMonth(new Date());
+    const now = new Date();
     return transactions
-      .filter((t) => t.type === "expense" && new Date(t.date) >= start)
+      .filter((t) => t.type === "expense" && isInUtcMonth(t.date, now))
       .reduce((s, t) => s + t.amount, 0);
   }, [transactions]);
+  // Kept as a whole-number percent (not a 0–1 ratio) because the sign test
+  // below reads it. `|| 0` normalises -0: a -0.4% drift rounds to -0, which
+  // passes `>= 0` and would take the "+" branch while Intl rendered the value
+  // itself as "-0%", printing "+-0%".
   const burnDeltaPct =
-    monthlyBurn > 0 ? Math.round(((currentMonthSpend - monthlyBurn) / monthlyBurn) * 100) : 0;
+    monthlyBurn > 0 ? Math.round(((currentMonthSpend - monthlyBurn) / monthlyBurn) * 100) || 0 : 0;
 
-  const monthlyData = useMemo(
-    () =>
-      Array.from({ length: 6 }).map((_, i) => {
-        const ref = subMonths(new Date(), 5 - i);
-        const monthStart = startOfMonth(ref);
-        const monthEnd = endOfMonth(ref);
-        const monthTxns = transactions.filter((t) => {
-          const d = new Date(t.date);
-          return d >= monthStart && d <= monthEnd;
-        });
-        return {
-          month: format(monthStart, "MMM"),
-          expenses: monthTxns.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0),
-          investments: monthTxns
-            .filter((t) => t.type === "investment")
-            .reduce((s, t) => s + t.amount, 0),
-          revenue: monthTxns.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0),
-        };
-      }),
-    [transactions]
-  );
+  const monthlyData = useMemo(() => {
+    // One `now` for all six buckets: re-reading the clock per bucket could,
+    // across a month boundary, build a series with a duplicated or missing month.
+    const now = new Date();
+    return Array.from({ length: 6 }).map((_, i) => {
+      // Six half-open UTC windows that abut exactly — [start, endExclusive)
+      // per month, so no row lands in two buckets or in none. i-5 walks
+      // oldest→newest; `utcMonthWindow` normalises the year rollover.
+      const { start: monthStart, endExclusive } = utcMonthWindow(now, i - 5);
+      const monthTxns = transactions.filter((t) => {
+        const d = new Date(t.date);
+        return d >= monthStart && d < endExclusive;
+      });
+      return {
+        // NOT `format(monthStart, "MMM")`: that renders a UTC-midnight Date in
+        // the viewer's zone, so the October bucket would print "Sep" west of
+        // UTC — the same off-by-one, moved from the sum into the axis label.
+        month: utcMonthShortLabel(monthStart),
+        expenses: monthTxns.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0),
+        investments: monthTxns
+          .filter((t) => t.type === "investment")
+          .reduce((s, t) => s + t.amount, 0),
+        revenue: monthTxns.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0),
+      };
+    });
+  }, [transactions]);
 
   const founderContributions = useMemo(
     () =>
@@ -173,34 +200,47 @@ export function DashboardClient({
       tone: "primary",
       delta: balance >= 0 ? "positive" : "negative",
       deltaLabel:
-        runwayMonths === Infinity ? "No burn recorded" : `${runwayMonths.toFixed(1)} mo runway`,
+        runwayMonths === Infinity
+          ? "No burn recorded"
+          : // min == max reproduces `toFixed(1)`: one decimal always, so the
+            // card's width doesn't twitch between "8 mo" and "8.4 mo".
+            `${n.number(runwayMonths, {
+              minimumFractionDigits: 1,
+              maximumFractionDigits: 1,
+            })} mo runway`,
     },
     {
       label: "This month",
       value: money(currentMonthSpend),
       icon: Flame,
-      tone: "cyan",
+      tone: "forest",
       delta: "neutral",
       deltaLabel:
         monthlyBurn > 0
-          ? `${burnDeltaPct >= 0 ? "+" : ""}${burnDeltaPct}% vs avg`
+          ? // Intl signs negatives itself; the explicit "+" is the product's own
+            // gain marker, which `signDisplay` is not exposed to reach.
+            `${burnDeltaPct >= 0 ? "+" : ""}${n.percent(burnDeltaPct / 100, {
+              maximumFractionDigits: 0,
+            })} vs avg`
           : "spent this month",
     },
     {
       label: "Total spend",
       value: money(totalExpenses),
       icon: TrendingDown,
-      tone: "pink",
+      tone: "mint",
       delta: "neutral",
-      deltaLabel: `${transactions.filter((t) => t.type === "expense").length} transactions`,
+      deltaLabel: `${n.number(
+        transactions.filter((t) => t.type === "expense").length
+      )} transactions`,
     },
     {
       label: "Open tasks",
-      value: pendingTasks.toString(),
+      value: n.number(pendingTasks),
       icon: CheckCircle2,
       tone: "primary",
       delta: pendingTasks === 0 ? "positive" : "neutral",
-      deltaLabel: `${completedTasks} shipped · ${tasks.length} total`,
+      deltaLabel: `${n.number(completedTasks)} shipped · ${n.number(tasks.length)} total`,
     },
   ];
 
@@ -232,7 +272,7 @@ export function DashboardClient({
           </Link>
           <Link
             href="/investments"
-            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
           >
             <TrendingUp className="h-4 w-4" aria-hidden="true" /> Add investment
           </Link>
@@ -253,7 +293,7 @@ export function DashboardClient({
         <PulseCard
           href="/time?scope=team"
           icon={Timer}
-          value={clockedIn.count}
+          value={n.number(clockedIn.count)}
           label="Clocked in now"
           live={clockedIn.count > 0}
           sub={
@@ -261,28 +301,29 @@ export function DashboardClient({
               ? clockedIn.peers
                   .slice(0, 3)
                   .map((p) => p.userName.split(" ")[0])
-                  .join(", ") + (clockedIn.count > 3 ? ` +${clockedIn.count - 3} more` : "")
+                  .join(", ") +
+                (clockedIn.count > 3 ? ` +${n.number(clockedIn.count - 3)} more` : "")
               : "Nobody on the clock"
           }
         />
         <PulseCard
           href="/team"
           icon={Users}
-          value={users.length}
+          value={n.number(users.length)}
           label="Team members"
           sub={
             founderContributions.length > 0
-              ? `${founderContributions.length} contributing capital`
+              ? `${n.number(founderContributions.length)} contributing capital`
               : "Invite your co-founders"
           }
         />
         <PulseCard
           href="/tasks"
           icon={ClipboardList}
-          value={myOpenCount}
+          value={n.number(myOpenCount)}
           label="Open tasks"
           alert={myOverdueCount > 0}
-          sub={myOverdueCount > 0 ? `${myOverdueCount} overdue` : "Nothing overdue"}
+          sub={myOverdueCount > 0 ? `${n.number(myOverdueCount)} overdue` : "Nothing overdue"}
         />
       </section>
 
@@ -297,8 +338,8 @@ export function DashboardClient({
             </div>
             <div className="flex gap-4 text-xs">
               <Legend dot={C_PRIMARY} label="Investments" />
-              <Legend dot={C_CYAN} label="Revenue" />
-              <Legend dot={C_PINK} label="Expenses" />
+              <Legend dot={C_FOREST} label="Revenue" />
+              <Legend dot={C_MINT} label="Expenses" />
             </div>
           </div>
           <div className="h-72">
@@ -521,6 +562,10 @@ function GettingStarted({
   tasks: Task[];
   users: User[];
 }) {
+  // Its own hook call rather than a formatted prop from the parent: this
+  // component owns the arithmetic (`steps.length - remaining`), so formatting
+  // upstream would mean passing two pre-rendered strings for one sentence.
+  const n = useNumberFormat();
   const steps = [
     {
       done: transactions.some((t) => t.type === "investment"),
@@ -566,7 +611,8 @@ function GettingStarted({
         <div>
           <h2 className="text-sm font-bold text-fg">Get your workspace rolling</h2>
           <p className="text-xs text-fg-muted">
-            {steps.length - remaining} of {steps.length} done — a couple of minutes each.
+            {n.number(steps.length - remaining)} of {n.number(steps.length)} done — a couple of
+            minutes each.
           </p>
         </div>
       </div>

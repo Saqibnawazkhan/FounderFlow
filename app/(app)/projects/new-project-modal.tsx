@@ -32,11 +32,13 @@ type Props = {
 };
 
 const SWATCH_CLASSES: Record<ProjectColor, string> = {
-  primary: "bg-primary",
-  cyan: "bg-cyan",
-  pink: "bg-pink",
+  // "emerald" reuses the `primary` tokens — emerald IS the brand green, so a
+  // parallel token would be a second source of truth free to drift.
+  emerald: "bg-primary",
+  forest: "bg-forest",
+  mint: "bg-mint",
+  slate: "bg-slate",
   warning: "bg-warning",
-  info: "bg-info",
 };
 
 export function NewProjectModal({ open, onClose, users, currentUserId, onCreated }: Props) {
@@ -60,7 +62,7 @@ export function NewProjectModal({ open, onClose, users, currentUserId, onCreated
       name: "",
       description: "",
       supervisorId: currentUserId, // default to self — fastest path for "I'm running this"
-      color: "primary",
+      color: "emerald",
     },
   });
 
@@ -71,7 +73,7 @@ export function NewProjectModal({ open, onClose, users, currentUserId, onCreated
       name: "",
       description: "",
       supervisorId: currentUserId,
-      color: "primary",
+      color: "emerald",
     });
     onClose();
   }

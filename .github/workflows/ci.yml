@@ -61,3 +61,53 @@ jobs:
         run: npm run build
         env:
           NEXT_PUBLIC_APP_URL: http://localhost:3000
+
+  # Apply migrations to STAGING on every merge to main.
+  #
+  # WHY THIS JOB EXISTS: .env.staging.example has said "CI should run migrations
+  # against staging on every merge to main" since it was written, and nothing
+  # ever did. Staging was designed and never provisioned, so production has been
+  # the first environment every migration ever touched.
+  #
+  # WHY IT IS ALLOWED TO SKIP: staging genuinely does not exist yet. A job that
+  # fails on every merge until someone creates a Supabase project would be
+  # switched off within a week, and then it would not be there on the day
+  # staging does appear. scripts/db-staging.mjs exits 78 (EX_CONFIG) for "not
+  # provisioned", which is distinct from any failure, so the step reports the
+  # skip and passes. The moment both secrets exist, this starts migrating for
+  # real with no further edit.
+  #
+  # Repo secrets to add (Settings -> Secrets and variables -> Actions):
+  #   STAGING_DATABASE_URL  pooler URL, port 6543  (runtime shape)
+  #   STAGING_DIRECT_URL    direct connection, port 5432 (migrations)
+  # They are named STAGING_* on purpose: the wrapper reads those exact names and
+  # never the ambient DATABASE_URL, so this job cannot inherit production.
+  staging-migrate:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Apply migrations to staging (skips cleanly if not provisioned)
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          STAGING_DIRECT_URL: ${{ secrets.STAGING_DIRECT_URL }}
+        run: |
+          set +e
+          npm run db:migrate:staging
+          code=$?
+          set -e
+          if [ "$code" -eq 78 ]; then
+            echo "::notice title=Staging not provisioned::No STAGING_DATABASE_URL / STAGING_DIRECT_URL secret. See .env.staging.example for the runbook. Not a failure."
+            exit 0
+          fi
+          exit "$code"

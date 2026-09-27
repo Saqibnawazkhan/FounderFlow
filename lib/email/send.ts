@@ -68,11 +68,29 @@ export async function sendEmail({
 }: SendEmailInput): Promise<SendEmailResult> {
   const t = getTransporter();
   if (!t) {
-    // Dev / unconfigured prod fallback. Log everything so the admin can
-    // copy the invite link out of the toast or function logs.
+    // Dev / unconfigured-prod fallback. Log the whole message, not just its
+    // envelope: the only reason anyone reads this line is to recover the
+    // thing that did NOT get sent — an invite URL, a password-reset link, a
+    // task's deadline — and none of that lives in `to=` + `subject=`. The
+    // header above has promised "the full HTML + invite URL" since this file
+    // was written; until now it printed neither.
+    //
+    // This is NOT a production log leak, and please don't "harden" the body
+    // back out on that reasoning. getTransporter() returns null on exactly
+    // one condition: GMAIL_USER or GMAIL_APP_PASSWORD is unset, i.e. no mail
+    // is being sent to anyone at all. A configured deployment never reaches
+    // this branch, so the only content ever printed here is content that had
+    // no other way of reaching its recipient.
     // eslint-disable-next-line no-console
     console.info(
-      `[email:dev-stub] would have sent to=${to} subject="${subject}" (set GMAIL_USER + GMAIL_APP_PASSWORD to enable real send)`
+      [
+        "[email:dev-stub] would have sent (set GMAIL_USER + GMAIL_APP_PASSWORD to enable real send)",
+        `  from=${FROM_DISPLAY}`,
+        `  to=${to}`,
+        `  subject="${subject}"`,
+        `  text=${text ?? "(none — html only)"}`,
+        `  html=${html}`,
+      ].join("\n")
     );
     return { delivered: false, devLogged: true };
   }

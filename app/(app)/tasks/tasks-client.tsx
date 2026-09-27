@@ -15,6 +15,7 @@ import {
   GripVertical,
   LayoutGrid,
   LayoutList,
+  CalendarDays,
   MessageSquare,
   Minus,
   Plus,
@@ -57,22 +58,34 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
 import { TaskDetailModal } from "@/components/tasks/task-detail-modal";
+import { TaskCalendar } from "@/components/tasks/task-calendar";
 import { cn } from "@/lib/utils";
 import type { TaskStatus, TaskPriority, User } from "@/lib/types";
 import type { TaskWithCount } from "@/lib/queries/tasks";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
 interface Column {
   status: TaskStatus;
   title: string;
   icon: LucideIcon;
-  tone: "primary" | "cyan" | "pink";
+  tone: "primary" | "forest" | "mint";
 }
 
 const COLUMNS: Column[] = [
-  { status: "pending", title: "Pending", icon: Clock, tone: "pink" },
-  { status: "in_progress", title: "In progress", icon: CircleDot, tone: "cyan" },
+  { status: "pending", title: "Pending", icon: Clock, tone: "mint" },
+  { status: "in_progress", title: "In progress", icon: CircleDot, tone: "forest" },
   { status: "completed", title: "Completed", icon: CheckCircle2, tone: "primary" },
 ];
+
+// The three ways of looking at the same tasks. Views are a primary choice,
+// not a filter, so they render as tabs on their own rule under the title
+// rather than as a pill at the end of the filter row — where Calendar was
+// easy to miss entirely.
+const VIEWS = [
+  { key: "board", label: "Board", icon: LayoutGrid },
+  { key: "list", label: "List", icon: LayoutList },
+  { key: "calendar", label: "Calendar", icon: CalendarDays },
+] as const;
 
 const PRIORITY_STYLES: Record<TaskPriority, string> = {
   urgent: "border-danger/30 bg-danger/10 text-danger-strong",
@@ -110,33 +123,70 @@ export function TasksClient({
   const searchParams = useSearchParams();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
+  const n = useNumberFormat();
 
   // When a task-notification link lands here as `?taskId=...`, scroll the
   // matching card into view and flash a highlight ring on it. The ring is
   // driven by `highlightId`; the effect below clears it after 2.5s and then
   // wipes the query param so a page refresh doesn't re-flash.
+  //
+  // One task id can own SEVERAL nodes at the same time. The calendar renders
+  // its md+ grid and its narrow agenda together and hides one with CSS, so a
+  // plain id -> element map keeps whichever branch registered last — on a
+  // desktop that is the `display:none` one, and scrollIntoView on a hidden
+  // element silently does nothing. Keep every node; pick a laid-out one at
+  // scroll time.
   const highlightIdParam = searchParams.get("taskId");
   const [highlightId, setHighlightId] = useState<string | null>(null);
-  const scrollRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const scrollRefs = useRef<Map<string, Set<HTMLElement>>>(new Map());
+  function registerRef(id: string) {
+    return (el: HTMLElement | null) => {
+      // React passes null when it detaches the PREVIOUS callback, which it
+      // does on every render because this closure is fresh each time — so a
+      // null here says nothing about whether the node is gone. Stale nodes are
+      // pruned at read time against `isConnected` instead.
+      if (!el) return;
+      const nodes = scrollRefs.current.get(id);
+      if (nodes) nodes.add(el);
+      else scrollRefs.current.set(id, new Set([el]));
+    };
+  }
+  /** A node for `id` that is still in the document and actually laid out. */
+  function scrollTargetFor(id: string): HTMLElement | null {
+    const nodes = scrollRefs.current.get(id);
+    if (!nodes) return null;
+    const live: HTMLElement[] = [];
+    nodes.forEach((node) => {
+      if (node.isConnected) live.push(node);
+      else nodes.delete(node);
+    });
+    if (nodes.size === 0) scrollRefs.current.delete(id);
+    // getClientRects() is empty for anything inside a `display:none` subtree,
+    // which is exactly how the calendar hides the layout this viewport isn't
+    // using. jsdom lays nothing out, so tests fall through to live[0].
+    return live.find((n) => n.getClientRects().length > 0) ?? live[0] ?? null;
+  }
   useEffect(() => {
     if (!highlightIdParam) return;
     setHighlightId(highlightIdParam);
-    const el = scrollRefs.current.get(highlightIdParam);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Resolve the target on the next frame rather than in this commit: the
+    // calendar may still have to page itself to the month the task is due in,
+    // and that state update has not rendered yet while this effect runs.
+    const frame = requestAnimationFrame(() => {
+      scrollTargetFor(highlightIdParam)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
     const t = setTimeout(() => {
       setHighlightId(null);
       const url = new URL(window.location.href);
       url.searchParams.delete("taskId");
       window.history.replaceState({}, "", url.toString());
     }, 2500);
-    return () => clearTimeout(t);
-  }, [highlightIdParam]);
-  function registerRef(id: string) {
-    return (el: HTMLElement | null) => {
-      if (el) scrollRefs.current.set(id, el);
-      else scrollRefs.current.delete(id);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(t);
     };
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightIdParam]);
 
   // Optimistic local copy of the task list. Seeded from the RSC prop, then
   // mutated in place for snappy DnD updates. router.refresh() in the parent
@@ -173,7 +223,44 @@ export function TasksClient({
   // View + filter live in localStorage so a user's chosen slice survives a
   // page refresh. Reads happen behind a hydration effect so SSR + first
   // client paint agree; without the effect gate we'd hit a hydration diff.
-  const [view, setView] = useState<"board" | "list">("board");
+  // One timestamp per render pass (matches time-client.tsx) so the calendar's
+  // today marker is stable across SSR and hydration.
+  const renderedAt = useMemo(() => new Date(), []);
+
+  // Persist on change rather than in an effect on [value]. Under StrictMode the
+  // effect version double-invokes: the restore sets "calendar", the writer then
+  // fires with the PREVIOUS render's "board" and clobbers storage, and the
+  // second restore reads "board" back — so the chosen slice silently reset on
+  // every refresh in development. Writing from the handler has no such race,
+  // because nothing writes until the user actually chooses something.
+  function persist(key: string, value: string) {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      // localStorage throws on private-mode Safari — the choice just won't stick.
+    }
+  }
+  function chooseView(next: "board" | "list" | "calendar") {
+    setView(next);
+    persist("ff.tasks.view", next);
+  }
+  function chooseFilter(next: "all" | "mine" | "assigned-by-me") {
+    setFilter(next);
+    persist("ff.tasks.filter", next);
+  }
+  function choosePriority(next: "all" | TaskPriority) {
+    setPriorityFilter(next);
+    persist("ff.tasks.priority", next);
+  }
+  function chooseProject(next: string) {
+    setProjectFilter(next);
+    persist("ff.tasks.project", next);
+  }
+  function chooseDue(next: "all" | "overdue" | "today" | "week" | "none") {
+    setDueFilter(next);
+    persist("ff.tasks.due", next);
+  }
+  const [view, setView] = useState<"board" | "list" | "calendar">("board");
   const [filter, setFilter] = useState<"all" | "mine" | "assigned-by-me">("all");
   // Secondary filters (T4) — stack on top of the relationship filter above.
   const [priorityFilter, setPriorityFilter] = useState<"all" | TaskPriority>("all");
@@ -186,7 +273,9 @@ export function TasksClient({
       const savedPriority = localStorage.getItem("ff.tasks.priority");
       const savedProject = localStorage.getItem("ff.tasks.project");
       const savedDue = localStorage.getItem("ff.tasks.due");
-      if (savedView === "board" || savedView === "list") setView(savedView);
+      if (savedView === "board" || savedView === "list" || savedView === "calendar") {
+        setView(savedView);
+      }
       if (savedFilter === "all" || savedFilter === "mine" || savedFilter === "assigned-by-me") {
         setFilter(savedFilter);
       }
@@ -213,47 +302,26 @@ export function TasksClient({
       // localStorage can throw on private-mode Safari — silently fall back.
     }
   }, []);
-  useEffect(() => {
-    try {
-      localStorage.setItem("ff.tasks.view", view);
-    } catch {}
-  }, [view]);
-  useEffect(() => {
-    try {
-      localStorage.setItem("ff.tasks.filter", filter);
-    } catch {}
-  }, [filter]);
-  useEffect(() => {
-    try {
-      localStorage.setItem("ff.tasks.priority", priorityFilter);
-    } catch {}
-  }, [priorityFilter]);
-  useEffect(() => {
-    try {
-      localStorage.setItem("ff.tasks.project", projectFilter);
-    } catch {}
-  }, [projectFilter]);
-  useEffect(() => {
-    try {
-      localStorage.setItem("ff.tasks.due", dueFilter);
-    } catch {}
-  }, [dueFilter]);
 
   // A project the user still has selected can vanish (archived / deleted).
-  // Fall back to "all" so the list never silently shows nothing.
+  // Fall back to "all" so the list never silently shows nothing. This one is
+  // an effect on purpose — it reacts to the server's project list, not to a
+  // click — and it goes through chooseProject so the dead id is cleared out of
+  // storage too, rather than being restored on the next visit.
   useEffect(() => {
     if (projectFilter !== "all" && !projects.some((p) => p.id === projectFilter)) {
-      setProjectFilter("all");
+      chooseProject("all");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectFilter, projects]);
 
   const secondaryActive =
     priorityFilter !== "all" || projectFilter !== "all" || dueFilter !== "all";
 
   function clearSecondary() {
-    setPriorityFilter("all");
-    setProjectFilter("all");
-    setDueFilter("all");
+    choosePriority("all");
+    chooseProject("all");
+    chooseDue("all");
   }
 
   const filtered = useMemo(() => {
@@ -492,16 +560,34 @@ export function TasksClient({
         </div>
         <button
           onClick={() => setModalOpen(true)}
-          className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+          className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
         >
           <Plus className="h-4 w-4" aria-hidden="true" /> New task
         </button>
       </header>
 
+      <div className="-mt-3 border-b border-border">
+        <div
+          role="group"
+          aria-label="Task view"
+          className="scrollbar-thin flex items-center gap-1 overflow-x-auto"
+        >
+          {VIEWS.map((v) => (
+            <ViewTab
+              key={v.key}
+              icon={v.icon}
+              label={v.label}
+              active={view === v.key}
+              onSelect={() => chooseView(v.key)}
+            />
+          ))}
+        </div>
+      </div>
+
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <SegmentedToggle
           value={filter}
-          onChange={(v) => setFilter(v as typeof filter)}
+          onChange={(v) => chooseFilter(v as typeof filter)}
           options={[
             { key: "all", label: "All", count: tasks.length },
             {
@@ -516,15 +602,6 @@ export function TasksClient({
             },
           ]}
         />
-
-        <SegmentedToggle
-          value={view}
-          onChange={(v) => setView(v as typeof view)}
-          options={[
-            { key: "board", label: "Board", icon: LayoutGrid },
-            { key: "list", label: "List", icon: LayoutList },
-          ]}
-        />
       </div>
 
       {/* Secondary filters (T4): priority · project · due date. Stack on top
@@ -533,7 +610,7 @@ export function TasksClient({
         <FilterSelect
           label="Priority"
           value={priorityFilter}
-          onChange={(v) => setPriorityFilter(v as typeof priorityFilter)}
+          onChange={(v) => choosePriority(v as typeof priorityFilter)}
           options={[
             { value: "all", label: "Any priority" },
             { value: "urgent", label: "Urgent" },
@@ -545,7 +622,7 @@ export function TasksClient({
         <FilterSelect
           label="Project"
           value={projectFilter}
-          onChange={(v) => setProjectFilter(v)}
+          onChange={(v) => chooseProject(v)}
           options={[
             { value: "all", label: "All projects" },
             ...projects.map((p) => ({ value: p.id, label: p.name })),
@@ -554,7 +631,7 @@ export function TasksClient({
         <FilterSelect
           label="Due"
           value={dueFilter}
-          onChange={(v) => setDueFilter(v as typeof dueFilter)}
+          onChange={(v) => chooseDue(v as typeof dueFilter)}
           options={[
             { value: "all", label: "Any time" },
             { value: "overdue", label: "Overdue" },
@@ -572,7 +649,7 @@ export function TasksClient({
           </button>
         )}
         <span className="ml-auto font-mono text-[11px] tabular-nums text-fg-muted">
-          {filtered.length} {filtered.length === 1 ? "task" : "tasks"}
+          {n.number(filtered.length)} {filtered.length === 1 ? "task" : "tasks"}
         </span>
       </div>
 
@@ -589,7 +666,7 @@ export function TasksClient({
             action={
               <button
                 onClick={() => setModalOpen(true)}
-                className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+                className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
               >
                 <Plus className="h-4 w-4" aria-hidden="true" /> Create task
               </button>
@@ -636,6 +713,14 @@ export function TasksClient({
             )}
           </DragOverlay>
         </DndContext>
+      ) : view === "calendar" ? (
+        <TaskCalendar
+          tasks={filtered}
+          now={renderedAt}
+          onOpenDetail={setDetailTask}
+          highlightId={highlightId}
+          registerRef={registerRef}
+        />
       ) : (
         <section className="overflow-hidden rounded-2xl border border-border bg-surface">
           <div className="scrollbar-thin overflow-x-auto">
@@ -799,19 +884,21 @@ export function TasksClient({
                             }}
                             aria-label={
                               task.commentCount > 0
-                                ? `Open comments (${task.commentCount}) for ${task.title}`
+                                ? `Open comments (${n.number(task.commentCount)}) for ${task.title}`
                                 : `Add a comment to ${task.title}`
                             }
                             className={cn(
                               "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors",
                               task.commentCount > 0
-                                ? "text-cyan-strong hover:bg-cyan/10"
+                                ? "text-forest-strong hover:bg-forest/10"
                                 : "text-fg-muted hover:bg-glass/[0.06] hover:text-fg"
                             )}
                           >
                             <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
                             {task.commentCount > 0 && (
-                              <span className="font-mono font-bold">{task.commentCount}</span>
+                              <span className="font-mono font-bold">
+                                {n.number(task.commentCount)}
+                              </span>
                             )}
                           </button>
                           {(currentUserId === task.assignedBy || currentUserRole === "admin") && (
@@ -962,6 +1049,47 @@ interface ToggleOption {
   icon?: LucideIcon;
 }
 
+/**
+ * One view tab. Reads as navigation: bigger hit area than a filter pill, an
+ * emerald rule under the active one, and the label always visible — no icon-
+ * only collapse, which is what made Calendar invisible at a glance.
+ */
+function ViewTab({
+  icon: Icon,
+  label,
+  active,
+  onSelect,
+}: {
+  icon: LucideIcon;
+  label: string;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={active}
+      className={cn(
+        "relative inline-flex shrink-0 items-center gap-2 px-4 py-3 text-sm font-semibold transition-colors",
+        active ? "text-fg" : "text-fg-muted hover:text-fg"
+      )}
+    >
+      <Icon
+        className={cn("h-4 w-4", active ? "text-primary-strong" : "text-fg-muted")}
+        aria-hidden="true"
+      />
+      {label}
+      {active && (
+        <span
+          aria-hidden="true"
+          className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-primary"
+        />
+      )}
+    </button>
+  );
+}
+
 function SegmentedToggle({
   value,
   onChange,
@@ -971,6 +1099,7 @@ function SegmentedToggle({
   onChange: (key: string) => void;
   options: ToggleOption[];
 }) {
+  const n = useNumberFormat();
   return (
     <div className="inline-flex w-fit gap-1 rounded-full border border-border bg-bg p-1">
       {options.map((opt) => {
@@ -989,7 +1118,7 @@ function SegmentedToggle({
             {Icon && <Icon className="h-3.5 w-3.5" aria-hidden="true" />}
             {opt.label}
             {opt.count !== undefined && (
-              <span className="font-mono text-[10px] text-fg-muted">{opt.count}</span>
+              <span className="font-mono text-[10px] text-fg-muted">{n.number(opt.count)}</span>
             )}
           </button>
         );
@@ -1066,16 +1195,21 @@ function DroppableColumn({
   highlightId: string | null;
   registerRef: (id: string) => (el: HTMLElement | null) => void;
 }) {
+  const n = useNumberFormat();
   const { setNodeRef, isOver } = useDroppable({ id: column.status });
 
   const toneText =
-    column.tone === "cyan"
-      ? "text-cyan-strong"
-      : column.tone === "pink"
-        ? "text-pink-strong"
+    column.tone === "forest"
+      ? "text-forest-strong"
+      : column.tone === "mint"
+        ? "text-mint-strong"
         : "text-primary-strong";
   const toneFill =
-    column.tone === "cyan" ? "bg-cyan/10" : column.tone === "pink" ? "bg-pink/10" : "bg-primary/10";
+    column.tone === "forest"
+      ? "bg-forest/10"
+      : column.tone === "mint"
+        ? "bg-mint/10"
+        : "bg-primary/10";
 
   return (
     <section
@@ -1095,7 +1229,7 @@ function DroppableColumn({
           <h3 className="text-sm font-semibold">{column.title}</h3>
         </div>
         <span className="rounded-full bg-bg px-2 py-0.5 font-mono text-[10px] font-bold text-fg-muted">
-          {tasks.length}
+          {n.number(tasks.length)}
         </span>
       </div>
       <div className="min-h-[180px] space-y-2.5">
@@ -1228,6 +1362,7 @@ function TaskCardView({
   dragHandle?: React.ReactNode;
   isOverlay?: boolean;
 }) {
+  const n = useNumberFormat();
   const deadline = new Date(task.deadline);
   const overdue = isPast(deadline) && task.status !== "completed";
   const dueToday = isToday(deadline);
@@ -1265,7 +1400,7 @@ function TaskCardView({
         dragging && !isOverlay && "opacity-30",
         isOverlay && "cursor-grabbing border-primary/40 bg-surface",
         highlighted &&
-          "border-primary/60 shadow-[0_0_30px_rgb(182_244_37_/_0.35)] ring-2 ring-primary/50"
+          "border-primary/60 shadow-[0_0_30px_rgb(var(--primary)_/_0.35)] ring-2 ring-primary/50"
       )}
     >
       <div className="mb-3 flex items-start justify-between gap-2">
@@ -1338,18 +1473,20 @@ function TaskCardView({
               }}
               aria-label={
                 task.commentCount > 0
-                  ? `Open comments (${task.commentCount}) for ${task.title}`
+                  ? `Open comments (${n.number(task.commentCount)}) for ${task.title}`
                   : `Add a comment to ${task.title}`
               }
               className={cn(
                 "inline-flex items-center gap-1 rounded-md border px-1.5 py-1 text-[10px] font-bold transition-colors",
                 task.commentCount > 0
-                  ? "border-cyan/30 bg-cyan/10 text-cyan-strong hover:bg-cyan/15"
+                  ? "border-forest/30 bg-forest/10 text-forest-strong hover:bg-forest/15"
                   : "border-border text-fg-muted hover:bg-glass/[0.06] hover:text-fg"
               )}
             >
               <MessageSquare className="h-3 w-3" aria-hidden="true" />
-              {task.commentCount > 0 && <span className="font-mono">{task.commentCount}</span>}
+              {task.commentCount > 0 && (
+                <span className="font-mono">{n.number(task.commentCount)}</span>
+              )}
             </button>
           )}
           <label htmlFor={`board-status-${task.id}`} className="sr-only">

@@ -10,6 +10,9 @@
  *      dependency order inside a transaction (children before parents), so it
  *      never depends on Postgres's cascade ordering and never trips a Restrict
  *      FK (Task.project → Project, Project.supervisor/createdBy → User).
+ *      "Explicit" is the whole design: every workspace-scoped table is named
+ *      here, including the four chat tables added 2026-09-24. See
+ *      `purgeCompany` for why leaning on cascade instead was a real bug.
  *   2. Individually soft-deleted PROJECTS in still-live workspaces
  *      (deleteProjectAction soft-deletes empty projects). Safe: an empty
  *      project has no children and its inbound refs are SetNull.
@@ -43,10 +46,52 @@ export const maxDuration = 60;
 const RETENTION_DAYS = 90;
 
 /**
+ * Models that carry a `deletedAt` tombstone — or a companyId — but that this
+ * route deliberately does NOT name in `purgeCompany`.
+ *
+ * It is EMPTY, and that is the intended steady state. It exists as a
+ * declared escape hatch so that `tests/lib/db/purge-invariants.test.ts` can
+ * derive the coverage list from prisma/schema.prisma and still fail loudly
+ * rather than being quietly edited to match whatever the route happens to do.
+ * Adding an entry is allowed; adding one WITHOUT a comment here saying why the
+ * rows may outlive their workspace is not. Surfaced in the response body so
+ * the dry-run states what it is knowingly leaving behind.
+ */
+const PURGE_EXCLUDED = new Set<string>([]);
+
+/**
  * Delete one whole workspace in dependency order within a single transaction.
  * Referencing rows go before referenced rows, so every Restrict + Cascade FK
  * is satisfied regardless of Postgres's own cascade ordering. Returns the
  * number of rows removed. Throws on failure (caller records + continues).
+ *
+ * THE BUG THIS LIST ONCE HAD (fixed 2026-09-25). The chat rollout added
+ * Channel, ChannelMember, Message and MessageReaction on 2026-09-24 and this
+ * function did not learn about them. Verified against prisma/schema.prisma:
+ * every chat FK into Company, User, Channel and Message is `onDelete: Cascade`
+ * (Message.parent is SetNull), and the datasource has no `relationMode`
+ * override, so those are real Postgres constraints. The transaction therefore
+ * did NOT jam and the rows DID go away. The harm was narrower, and worth
+ * naming precisely so nobody "fixes" the wrong thing:
+ *
+ *   1. The returned `n` counted none of them, so a live run under-reported
+ *      how much it had destroyed. (The DRY-RUN path never calls this function
+ *      at all — it reports `companiesPurged` only — so the dry run was not the
+ *      victim here; the live run's `workspaceRowsDeleted` was.)
+ *   2. `warnBulkMutation` (lib/safety/bulk-mutation-guard.ts) pages on-call
+ *      above 100 rows. A chat-heavy workspace is mostly Message rows, so the
+ *      under-count could hold a genuinely enormous purge under the threshold —
+ *      the one number the canary exists to watch was the one being wrong.
+ *   3. It contradicted this function's own contract. The doc above promises
+ *      explicit dependency order "regardless of cascade ordering"; four tables
+ *      were silently relying on exactly the cascade ordering it disclaims. The
+ *      day someone flips a chat FK to Restrict — e.g. to stop a user delete
+ *      taking their messages — this transaction starts failing on a table the
+ *      cron has never heard of, and the error names a model that appears
+ *      nowhere in this file.
+ *
+ * `tests/lib/db/purge-invariants.test.ts` derives the required table list from
+ * the schema so the eighth soft-delete table is covered the day it lands.
  */
 async function purgeCompany(companyId: string): Promise<number> {
   return db.$transaction(async (tx) => {
@@ -55,6 +100,14 @@ async function purgeCompany(companyId: string): Promise<number> {
       n += (await p).count;
     };
     const where = { where: { companyId } };
+    // Chat, innermost first: reactions → messages → memberships → channels.
+    // ChannelMember and MessageReaction carry no companyId of their own (see
+    // schema.prisma), so they are scoped through their parent rather than by
+    // column — which is also why they have to be deleted BEFORE that parent.
+    await del(tx.messageReaction.deleteMany({ where: { message: { companyId } } }));
+    await del(tx.message.deleteMany(where));
+    await del(tx.channelMember.deleteMany({ where: { channel: { companyId } } }));
+    await del(tx.channel.deleteMany(where));
     // Leaf rows that reference tasks/transactions/projects first.
     await del(tx.comment.deleteMany(where));
     await del(tx.timeEntry.deleteMany(where));
@@ -161,8 +214,13 @@ export async function GET(request: Request) {
       cutoff: cutoff.toISOString(),
       retentionDays: RETENTION_DAYS,
       // In dry-run these are "would purge" counts; deletion only runs when
-      // PURGE_ENABLED=true.
+      // PURGE_ENABLED=true. Note `workspaceRowsDeleted` is 0 in dry-run by
+      // construction — purgeCompany isn't called — so it is a live-run figure.
       result,
+      // What the sweep deliberately leaves behind. Empty is the healthy
+      // answer; a non-empty array here is the thing to read before trusting
+      // "the workspace is gone".
+      excludedModels: Array.from(PURGE_EXCLUDED),
       failures: failed,
       durationMs: Date.now() - startedAt,
     },

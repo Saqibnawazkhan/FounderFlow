@@ -18,7 +18,13 @@
  */
 
 import { NextResponse } from "next/server";
-import { sweepAutoCloseEntries } from "@/lib/actions/time";
+// Imported from `lib/time/sweep.ts`, a plain server module — NOT from
+// `lib/actions/time.ts`. That file is `"use server"` and sits in the client
+// graph, so every export of it gets a public Server Action id; the sweeper used
+// to live there and was therefore an unauthenticated, cross-workspace POST
+// endpoint (cron-001). This route's CRON_SECRET check below is the sweeper's
+// only gate, which only works while the function has no action id of its own.
+import { sweepAutoCloseEntries } from "@/lib/time/sweep";
 import { captureServerError } from "@/lib/sentry-server";
 import { safeEqual } from "@/lib/safe-compare";
 

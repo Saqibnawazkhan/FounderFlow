@@ -9,6 +9,18 @@
  *
  * Parsing + validation here are for PREVIEW ONLY. The server is the trust
  * boundary; it drops any row whose category isn't real for the chosen type.
+ *
+ * ## Amounts are parsed, not scrubbed (money-009)
+ *
+ * The amount cell used to go through `Number(raw.replace(/[^0-9.-]/g, ""))`,
+ * which kept every digit, dot and minus and trusted the result: "Rs. 1,000"
+ * imported as 0.10 and the row was reported to the user as VALID. Amount
+ * reading now lives in `parseMoneyInput` (lib/format.ts), which refuses
+ * anything it cannot read unambiguously, and this file turns that refusal into
+ * a skipped row naming the offending cell. The preview shows the PARSED amount
+ * formatted in the workspace currency — what will actually be stored — rather
+ * than the raw cell, because a preview of the input tells you nothing about
+ * what the importer understood.
  */
 
 import { useMemo, useRef, useState } from "react";
@@ -17,13 +29,24 @@ import toast from "react-hot-toast";
 import { Modal } from "@/components/ui/modal";
 import { bulkImportTransactionsAction } from "@/lib/actions/transactions";
 import { parseCSV, findColumn } from "@/lib/transactions/csv";
+import { parseMoneyInput, type MoneyParseFailure } from "@/lib/format";
+import { useMoney } from "@/lib/hooks/useMoney";
 import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES, REVENUE_CATEGORIES } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
 type TxnType = "expense" | "investment" | "income";
 
 type ParsedRow = {
-  amount: number;
+  /**
+   * `null` when the cell could not be read. Deliberately nullable rather than
+   * defaulting to 0: a 0 that means "unparseable" is one careless
+   * `?? 0` away from being imported as a real amount, which is the shape of
+   * money-009. Import filters on `amount !== null` with a type guard so the
+   * compiler enforces it.
+   */
+  amount: number | null;
+  rawAmount: string; // echoed back when we refuse the cell
   category: string;
   description: string;
   date: string; // ISO
@@ -31,6 +54,24 @@ type ParsedRow = {
   error?: string;
   raw: string; // for the preview's "original" hint
 };
+
+/**
+ * Why we could not read an amount cell, in the user's words, with the cell
+ * quoted back. "Invalid amount" alone sent people hunting through a 240-row
+ * CSV; the reason tells them what to change.
+ */
+function amountCellError(rawAmount: string, reason: MoneyParseFailure): string {
+  if (reason === "empty") return `Missing amount ("${rawAmount}")`;
+  if (reason === "scale") {
+    return `Amount "${rawAmount}" has more than 2 decimal places — it would be rounded`;
+  }
+  if (reason === "negative") {
+    return `Amount "${rawAmount}" is negative — import positive amounts only`;
+  }
+  // "ambiguous": the separators don't name one number. Name the two forms we
+  // can read instead of guessing, which is what the old parser did.
+  return `Couldn't read amount "${rawAmount}" — write it as 1234.56 or 1,234.56`;
+}
 
 export function ImportTransactionsModal({
   type,
@@ -43,6 +84,8 @@ export function ImportTransactionsModal({
   onClose: () => void;
   onImported: () => void;
 }) {
+  const n = useNumberFormat();
+  const money = useMoney();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [rows, setRows] = useState<ParsedRow[] | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
@@ -105,19 +148,24 @@ export function ImportTransactionsModal({
       const description = descCol >= 0 ? (cols[descCol] ?? "").trim() : "";
       const raw = cols.join(", ");
 
-      // Amount: strip currency symbols, thousands separators, spaces.
-      const amount = Number(rawAmount.replace(/[^0-9.-]/g, ""));
+      // Amount: read deliberately, or refuse. See parseMoneyInput. Named
+      // `cell` rather than `money` so it can't be confused with the `money()`
+      // formatter this component also holds.
+      const cell = parseMoneyInput(rawAmount);
+      const amount = cell.ok ? cell.amount : null;
       const parsedDate = new Date(rawDate);
       const canonical = canonicalByLower.get(rawCat.toLowerCase());
 
       let error: string | undefined;
       if (!rawDate || Number.isNaN(parsedDate.getTime())) error = `Unreadable date "${rawDate}"`;
       else if (parsedDate > new Date()) error = "Date is in the future";
-      else if (!Number.isFinite(amount) || amount <= 0) error = `Invalid amount "${rawAmount}"`;
+      else if (!cell.ok) error = amountCellError(rawAmount, cell.reason);
+      else if (cell.amount <= 0) error = `Amount "${rawAmount}" must be greater than 0`;
       else if (!canonical) error = `Unknown category "${rawCat}"`;
 
       return {
-        amount: Number.isFinite(amount) ? amount : 0,
+        amount,
+        rawAmount,
         category: canonical ?? rawCat,
         description,
         date: Number.isNaN(parsedDate.getTime()) ? "" : parsedDate.toISOString(),
@@ -141,7 +189,12 @@ export function ImportTransactionsModal({
 
   async function handleImport() {
     if (!rows) return;
-    const valid = rows.filter((r) => r.valid);
+    // The type guard is the point: a row whose amount we could not read has
+    // `amount: null` and cannot reach the payload below, so there is no path
+    // that sends an invented number to the server.
+    const valid = rows.filter((r): r is ParsedRow & { amount: number } => {
+      return r.valid && r.amount !== null;
+    });
     if (valid.length === 0) {
       toast.error("No valid rows to import");
       return;
@@ -174,7 +227,7 @@ export function ImportTransactionsModal({
   const templateHref = useMemo(() => {
     const sample =
       type === "expense"
-        ? `date,amount,category,description\n2026-06-01,25000,${EXPENSE_CATEGORIES[0]},June office rent\n2026-06-03,4500,${EXPENSE_CATEGORIES[2]},Ad spend`
+        ? `date,amount,category,description\n2026-06-01,25000.00,${EXPENSE_CATEGORIES[0]},June office rent\n2026-06-03,4500.50,${EXPENSE_CATEGORIES[2]},Ad spend`
         : `date,amount,category,description\n2026-06-01,500000,${INVESTMENT_CATEGORIES[0]},Founder seed\n2026-06-10,150000,${INVESTMENT_CATEGORIES[3]},Bank loan`;
     return `data:text/csv;charset=utf-8,${encodeURIComponent(sample)}`;
   }, [type]);
@@ -192,12 +245,12 @@ export function ImportTransactionsModal({
           <a
             href={templateHref}
             download={`founderflow-${type}-template.csv`}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-cyan-strong hover:underline"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-forest-strong hover:underline"
           >
             <Download className="h-3.5 w-3.5" aria-hidden="true" /> Download template
           </a>
           <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
-            Valid categories: {categories.length}
+            Valid categories: {n.number(categories.length)}
           </span>
         </div>
 
@@ -239,11 +292,11 @@ export function ImportTransactionsModal({
                 {fileName ?? "Pasted data"}
               </span>
               <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-semibold text-primary-strong">
-                {validCount} valid
+                {n.number(validCount)} valid
               </span>
               {skipCount > 0 && (
                 <span className="rounded-full border border-warning/30 bg-warning/10 px-2.5 py-0.5 text-xs font-semibold text-warning">
-                  {skipCount} skipped
+                  {n.number(skipCount)} skipped
                 </span>
               )}
               <button
@@ -262,8 +315,11 @@ export function ImportTransactionsModal({
                     <th className="px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-fg-muted">
                       Date
                     </th>
-                    <th className="px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-fg-muted">
-                      Amount
+                    <th
+                      className="px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-fg-muted"
+                      title="Shown in your workspace currency, exactly as it will be saved"
+                    >
+                      Amount as saved
                     </th>
                     <th className="px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-fg-muted">
                       Category
@@ -287,7 +343,12 @@ export function ImportTransactionsModal({
                         {r.date ? r.date.slice(0, 10) : "—"}
                       </td>
                       <td className="px-3 py-1.5 font-mono tabular-nums text-fg">
-                        {r.amount || "—"}
+                        {r.amount === null ? (
+                          // Echo the cell we refused, so the user can find it.
+                          <span className="text-danger">{r.rawAmount || "—"}</span>
+                        ) : (
+                          money(r.amount)
+                        )}
                       </td>
                       <td className="px-3 py-1.5 text-fg">{r.category || "—"}</td>
                       <td className="px-3 py-1.5 text-fg-muted">
@@ -320,7 +381,7 @@ export function ImportTransactionsModal({
             className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-bold text-primary-fg transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60"
           >
             <FileUp className="h-4 w-4" aria-hidden="true" />
-            {busy ? "Importing…" : validCount > 0 ? `Import ${validCount}` : "Import"}
+            {busy ? "Importing…" : validCount > 0 ? `Import ${n.number(validCount)}` : "Import"}
           </button>
         </div>
       </div>

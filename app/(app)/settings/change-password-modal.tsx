@@ -2,8 +2,10 @@
 
 /**
  * Change password — three fields, server re-verifies the current password
- * with bcrypt before writing. We don't sign the user out on success — JWT
- * sessions stay valid until the cookie expires.
+ * with bcrypt before writing. On success the action bumps `sessionVersion`
+ * and clears the cookie, which kills every session for this user — including
+ * this one — so we drop the local store and hard-redirect to /login rather
+ * than leaving a signed-out tab rendering stale app chrome.
  */
 
 import { useId, useState } from "react";
@@ -13,6 +15,7 @@ import toast from "react-hot-toast";
 import { Eye, EyeOff, Save } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { changePasswordAction } from "@/lib/actions/profile";
+import { useStore } from "@/lib/store";
 import { ChangePasswordSchema, type ChangePasswordInput } from "@/lib/schemas/profile";
 import { useT } from "@/lib/i18n/use-t";
 import { cn } from "@/lib/utils";
@@ -24,6 +27,7 @@ type Props = {
 
 export function ChangePasswordModal({ open, onClose }: Props) {
   const t = useT();
+  const logout = useStore((s) => s.logout);
   const curId = useId();
   const newId = useId();
   const confirmId = useId();
@@ -56,8 +60,13 @@ export function ChangePasswordModal({ open, onClose }: Props) {
       toast.error(res.error);
       return;
     }
-    toast.success(t.settings.passwordChanged);
-    onClosed();
+    // Server already signed us out. Wipe local Zustand state and leave via a
+    // full page load — a client-side push would re-render app routes against
+    // a dead session. Keep the modal mounted so no empty UI flashes first.
+    reset();
+    logout();
+    toast.success(t.settings.passwordChangedSignOut);
+    window.location.href = "/login";
   }
 
   return (

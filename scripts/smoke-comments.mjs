@@ -79,15 +79,17 @@ async function main() {
   );
   ok("comment posted and rendered");
 
-  // Verify the @Ali-Raza token got rendered as a chip (a styled span).
+  // Verify the @Ali-Raza token got rendered as a chip rather than plain text.
+  //
+  // Asserts on the `title` attribute ("Mentioned <name>"), which is the chip's
+  // semantic marker, NOT on a colour class. This check previously asserted
+  // `bg-cyan`/`text-cyan` and silently started failing when the 2026-09 rebrand
+  // retired those tokens for `forest` — a test pinned to a palette breaks on
+  // every re-skin and tells you nothing about whether mentions work.
   const hasChip = await adminPage.$$eval(
-    "article span",
+    "article span[title]",
     (spans, name) =>
-      spans.some(
-        (s) =>
-          s.textContent === `@${name}` &&
-          (s.className.includes("bg-cyan") || s.className.includes("text-cyan"))
-      ),
+      spans.some((s) => s.textContent === `@${name}` && s.title === `Mentioned ${name}`),
     "Ali Raza"
   );
   if (hasChip) ok("@Ali-Raza rendered as mention chip");

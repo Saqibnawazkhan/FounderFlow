@@ -21,6 +21,7 @@ import { canSeeProjectFinances } from "@/lib/auth/project-permissions";
 import type { Role } from "@/lib/auth/role-gates";
 import { useT } from "@/lib/i18n/use-t";
 import { useMoney } from "@/lib/hooks/useMoney";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
 type Props = {
   project: ProjectListItem;
@@ -28,28 +29,36 @@ type Props = {
   currentUserRole: Role;
 };
 
-// Maps the color slug stored on the project to a Tailwind class quartet
-// (stripe / accent text / chip background / chip border). Stored here so
-// adding a palette entry is a one-file change.
-const COLOR_CLASSES: Record<string, { stripe: string; text: string; chipBg: string }> = {
-  primary: { stripe: "bg-primary", text: "text-primary-strong", chipBg: "bg-primary/10" },
-  cyan: { stripe: "bg-cyan", text: "text-cyan-strong", chipBg: "bg-cyan/10" },
-  pink: { stripe: "bg-pink", text: "text-pink-strong", chipBg: "bg-pink/10" },
+// Maps the color slug stored on the project to a Tailwind class trio
+// (stripe / accent text / chip background). Stored here so adding a palette
+// entry is a one-file change. Exported so tests/lib/brand.test.ts can assert
+// every PROJECT_COLORS slug has a swatch — a colour added to the tuple
+// without an entry here would silently render the fallback.
+//
+// "emerald" deliberately reuses the `primary` tokens rather than getting its
+// own Tailwind colour: emerald IS the primary brand green, so a parallel
+// token would be a second source of truth free to drift from --primary.
+// The slug stays "emerald" because that is the palette name users pick.
+export const COLOR_CLASSES: Record<string, { stripe: string; text: string; chipBg: string }> = {
+  emerald: { stripe: "bg-primary", text: "text-primary-strong", chipBg: "bg-primary/10" },
+  forest: { stripe: "bg-forest", text: "text-forest-strong", chipBg: "bg-forest/10" },
+  mint: { stripe: "bg-mint", text: "text-mint-strong", chipBg: "bg-mint/10" },
+  slate: { stripe: "bg-slate", text: "text-slate-strong", chipBg: "bg-slate/10" },
   warning: { stripe: "bg-warning", text: "text-warning", chipBg: "bg-warning/10" },
-  info: { stripe: "bg-info", text: "text-info", chipBg: "bg-info/10" },
 };
 
 const STATUS_CLASSES: Record<string, string> = {
   active: "border-primary/30 bg-primary/10 text-primary-strong",
   on_hold: "border-warning/30 bg-warning/10 text-warning",
-  completed: "border-cyan/30 bg-cyan/10 text-cyan-strong",
+  completed: "border-mint/30 bg-mint/10 text-mint-strong",
   archived: "border-border bg-bg/40 text-fg-muted",
 };
 
 export function ProjectCard({ project, currentUserId, currentUserRole }: Props) {
   const t = useT();
   const money = useMoney();
-  const c = COLOR_CLASSES[project.color] ?? COLOR_CLASSES.primary;
+  const n = useNumberFormat();
+  const c = COLOR_CLASSES[project.color] ?? COLOR_CLASSES.emerald;
   const statusKey =
     `status${project.status.charAt(0).toUpperCase()}${project.status.slice(1).replace("_", "")}` as
       | "statusActive"
@@ -108,7 +117,7 @@ export function ProjectCard({ project, currentUserId, currentUserRole }: Props) 
       <div className="grid grid-cols-3 gap-2 border-t border-border pt-3">
         <Stat
           label={t.projects.openTasks}
-          value={`${project.openTaskCount}/${project.totalTaskCount}`}
+          value={`${n.number(project.openTaskCount)}/${n.number(project.totalTaskCount)}`}
         />
         <Stat
           label={t.projects.monthSpend}

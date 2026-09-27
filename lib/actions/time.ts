@@ -24,11 +24,11 @@ import {
   UpdateTimeEntrySchema,
 } from "@/lib/schemas/time";
 import { limiters } from "@/lib/rate-limit";
-import { canEditEntryTimes, AUTO_CLOSE_MS } from "@/lib/time/thresholds";
+import { canEditEntryTimes } from "@/lib/time/thresholds";
 import { captureServerError } from "@/lib/sentry-server";
 import { getOpenEntry, type TimeEntryClient } from "@/lib/queries/time";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 /**
  * Thin RSC-bypassing wrapper: the topbar widget is a client component and
@@ -388,50 +388,22 @@ export async function updateTimeEntryAction(input: unknown): Promise<ActionResul
   }
 }
 
-export interface SweepResult {
-  attempted: number;
-  closed: string[];
-  failed: { id: string; error: string }[];
-}
-
 /**
- * Cron handler — runs daily (see vercel.json). Closes any open entry that
- * hasn't heartbeat-ed in AUTO_CLOSE_MS.
+ * The daily auto-close sweeper used to live here, as
+ * `export async function sweepAutoCloseEntries()`. It now lives in
+ * `lib/time/sweep.ts` and the cron route imports it from there.
  *
- * Returns a detailed result instead of a count so the cron endpoint can:
- *   • respond 206 Partial Content if some entries fail (Vercel cron monitor
- *     will only alert on 5xx, but 206 still surfaces in dashboards)
- *   • log per-entry failures to Sentry with the entry id so triage isn't
- *     "something failed somewhere"
+ * WHY (audit finding cron-001): this file is `"use server"` and it is in the
+ * client graph — four client components import actions from it. Next.js gives
+ * EVERY export of such a module a callable, publicly-routable Server Action id,
+ * whether or not a component calls it. The sweeper is a cron body: no `auth()`,
+ * no role check, no rate limit, and a global `where` with no `companyId`
+ * filter. Sitting in this file, it was an unauthenticated POST endpoint that
+ * ended every running timer in every customer workspace.
  *
- * Each entry is closed in its own update — NOT a single $transaction —
- * because one stuck row shouldn't block sweeping the other 99.
+ * So: do NOT move it back and bolt an `auth()` call onto it. A cron request has
+ * no user session, so that gate would break the nightly job rather than secure
+ * it. Keeping the function out of this module is the fix. Anything new added to
+ * this file must be a genuinely user-invocable action that authenticates
+ * itself — a helper belongs in a plain server module.
  */
-export async function sweepAutoCloseEntries(): Promise<SweepResult> {
-  const cutoff = new Date(Date.now() - AUTO_CLOSE_MS);
-  const stale = await db.timeEntry.findMany({
-    where: { clockOutAt: null, lastActivityAt: { lt: cutoff } },
-    select: { id: true, lastActivityAt: true, userId: true, companyId: true },
-  });
-  if (stale.length === 0) return { attempted: 0, closed: [], failed: [] };
-
-  const closed: string[] = [];
-  const failed: { id: string; error: string }[] = [];
-  for (const s of stale) {
-    try {
-      await db.timeEntry.update({
-        where: { id: s.id },
-        data: { clockOutAt: s.lastActivityAt, autoClosed: true },
-      });
-      closed.push(s.id);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Unknown sweep error";
-      failed.push({ id: s.id, error: msg });
-      captureServerError(e, {
-        action: "sweepAutoCloseEntries:entry",
-        extra: { entryId: s.id, userId: s.userId, companyId: s.companyId },
-      });
-    }
-  }
-  return { attempted: stale.length, closed, failed };
-}

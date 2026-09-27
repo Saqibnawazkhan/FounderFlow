@@ -14,6 +14,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, formatRelativeTime } from "@/lib/utils";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 import {
   NOTIFICATION_CATEGORY_LABELS,
   type Notification,
@@ -33,6 +34,7 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
+  const fmt = useNumberFormat();
   const unreadCount = notifications.filter((n) => !n.read).length;
 
   // Category + unread filters (X4). Client-side over the loaded list (the
@@ -108,15 +110,17 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
     <div className="mx-auto max-w-3xl space-y-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <PillBadge tone={unreadCount > 0 ? "primary" : "cyan"}>
-            {unreadCount > 0 ? `${unreadCount} unread` : "All caught up"}
+          <PillBadge tone={unreadCount > 0 ? "primary" : "forest"}>
+            {unreadCount > 0 ? `${fmt.number(unreadCount)} unread` : "All caught up"}
           </PillBadge>
           <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">
             Notifications
           </h1>
           <p className="mt-2 text-sm text-fg-muted md:text-base">
             {unreadCount > 0
-              ? `You have ${unreadCount} unread notification${unreadCount !== 1 ? "s" : ""}.`
+              ? `You have ${fmt.number(unreadCount)} unread notification${
+                  unreadCount !== 1 ? "s" : ""
+                }.`
               : "You're all caught up."}
           </p>
         </div>
@@ -248,6 +252,7 @@ function FilterChip({
   label: string;
   count: number;
 }) {
+  const n = useNumberFormat();
   return (
     <button
       type="button"
@@ -267,7 +272,7 @@ function FilterChip({
           active ? "text-primary-strong/70" : "text-fg-muted/70"
         )}
       >
-        {count}
+        {n.number(count)}
       </span>
     </button>
   );

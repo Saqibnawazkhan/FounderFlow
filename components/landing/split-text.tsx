@@ -1,5 +1,3 @@
-"use client";
-
 /**
  * SplitTextReveal — CSS-only per-word stagger.
  *
@@ -7,6 +5,9 @@
  * and animates them up with staggered transition-delay. No SplitType, no GSAP.
  *
  * Respects prefers-reduced-motion globally via the .01ms rule in globals.css.
+ *
+ * Server component — no hooks, no handlers, no browser APIs. Keep it that way:
+ * the landing page renders it to HTML and it never reaches the client bundle.
  */
 
 import { cn } from "@/lib/utils";

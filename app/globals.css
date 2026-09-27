@@ -11,20 +11,24 @@
  * =============================================================================
  */
 
-:root {
+/* `[data-theme="light"]` lets a subtree opt out of the inherited theme. The
+   marketing page uses it to stay light-first even when the app shell is dark —
+   custom properties inherit, so the nearer declaration wins for that subtree. */
+:root,
+[data-theme="light"] {
   /* =========================================================================
-   * LIGHT THEME — warm off-white surfaces, deep ink, dark glass tint
+   * LIGHT THEME — cool near-white surfaces, charcoal ink, dark glass tint
    * =========================================================================
    */
-  --bg: 247 248 245; /* #f7f8f5 warm cream */
-  --surface: 255 255 255; /* pure white cards */
+  --bg: 247 249 250; /* #f7f9fa cool near-white */
+  --surface: 255 255 255; /* #ffffff Clean White cards */
   --surface-hover: 246 246 244;
   --card: 255 255 255;
-  --fg: 17 17 17; /* near-black */
+  --fg: 31 41 51; /* #1f2933 Deep Charcoal — the ink */
   --fg-muted: 100 116 139; /* slate-500 */
   --border: 226 232 240; /* slate-200 */
   --input: 226 232 240;
-  --ring: 132 204 22; /* lime-500 — slightly darker for visibility on white */
+  --ring: 5 150 105; /* #059669 emerald-600 — slightly darker for visibility on white */
 
   /* Theme native form controls (the <select> option popup, scrollbars, date
      pickers) for a LIGHT UI so their OS-rendered popups aren't painted with
@@ -35,7 +39,7 @@
    * On light: dark tint (rgb of black). Use with alpha utilities like bg-glass/[0.04].
    * On dark: light tint (rgb of white).
    */
-  --glass: 17 17 17;
+  --glass: 31 41 51; /* #1f2933 Deep Charcoal — the tint, not a fill */
   --on-glass: 71 85 105;
 
   /* Ambient glow opacities — lighter on light, brighter on dark */
@@ -43,21 +47,24 @@
   --glow-shadow-opacity: 0.18;
 
   /* =========================================================================
-   * ACCENTS — same hexes both themes (brand consistency)
+   * ACCENTS — emerald brand ramp. --primary/--primary-soft are the same hexes
+   * in both themes; --forest/--mint/--slate re-light on charcoal (see .dark).
    * =========================================================================
    */
-  --primary: 182 244 37; /* #b6f425 lime — fills, borders, ring */
-  --primary-fg: 10 10 10; /* black text on top of primary fills */
-  --primary-soft: 202 242 145;
-  --cyan: 112 230 237; /* #70E6ED — fills, borders */
-  --pink: 255 179 219; /* #FFB3DB — fills, borders */
+  --primary: 16 185 129; /* #10b981 emerald — fills, borders, ring */
+  --primary-fg: 31 41 51; /* #1f2933 charcoal text on top of primary fills — ~7.5:1 */
+  --primary-soft: 167 243 208; /* #a7f3d0 */
+  --forest: 4 120 87; /* #047857 — fills, borders */
+  --mint: 110 231 183; /* #6EE7B7 — fills, borders */
+  --slate: 100 116 139; /* #64748B — fills, borders */
 
   /* Text-safe accents: darker on light surfaces so contrast hits AA 4.5:1.
-   * Use these for any `text-*` utility; keep --primary/--cyan/--pink for fills.
+   * Use these for any `text-*` utility; keep the bare tokens above for fills.
    */
-  --primary-strong: 77 124 15; /* lime-700 — ~6.3:1 on #f7f8f5 */
-  --cyan-strong: 14 116 144; /* cyan-700 — ~5.5:1 */
-  --pink-strong: 190 24 93; /* pink-700 — ~5.8:1 */
+  --primary-strong: 4 120 87; /* #047857 emerald-700 — ~4.8:1 on white */
+  --forest-strong: 6 95 70; /* #065F46 — ~7.4:1 on white */
+  --mint-strong: 6 95 70; /* #065F46 — mint itself fails contrast as text */
+  --slate-strong: 51 65 85; /* #334155 slate-700 — ~10:1 on white */
 
   /* Semantic */
   --success: 16 185 129;
@@ -85,20 +92,21 @@
   --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.dark {
+.dark,
+[data-theme="dark"] {
   /* =========================================================================
-   * DARK THEME — Stitch palette
+   * DARK THEME — Deep Charcoal palette
    * =========================================================================
    */
-  --bg: 10 10 10; /* #0a0a0a */
-  --surface: 22 22 22; /* #161616 */
-  --surface-hover: 34 34 34; /* #222222 */
-  --card: 22 22 22;
-  --fg: 247 248 245;
-  --fg-muted: 148 163 184; /* slate-400 */
-  --border: 38 38 50;
-  --input: 38 38 50;
-  --ring: 182 244 37;
+  --bg: 31 41 51; /* #1f2933 Deep Charcoal */
+  --surface: 42 54 66; /* #2a3642 */
+  --surface-hover: 55 69 82; /* #374552 */
+  --card: 42 54 66;
+  --fg: 255 255 255; /* #ffffff Clean White */
+  --fg-muted: 156 175 195; /* #9cafc3 */
+  --border: 62 76 90; /* #3e4c5a */
+  --input: 62 76 90;
+  --ring: 16 185 129; /* #10b981 emerald — matches --primary, as on light */
 
   --glass: 255 255 255;
   --on-glass: 148 163 184;
@@ -112,10 +120,18 @@
      native popup — background AND text — to a legible dark scheme. */
   color-scheme: dark;
 
-  /* On dark surfaces the bright brand hexes already exceed 13:1 — match them. */
-  --primary-strong: 182 244 37;
-  --cyan-strong: 112 230 237;
-  --pink-strong: 255 179 219;
+  /* Fills/borders — the emerald ramp inverts on charcoal: what reads as a deep
+     green on white has to come up brighter here to stay visible. */
+  --forest: 52 211 153; /* #34D399 — fills, borders */
+  --mint: 167 243 208; /* #A7F3D0 — fills, borders */
+  --slate: 148 163 184; /* slate-400 — fills, borders */
+
+  /* Text-safe accents — same TEXT-ONLY rule as on light: these clear AA on
+     charcoal; keep the bare tokens above for fills and borders. */
+  --primary-strong: 52 211 153; /* #34D399 — ~7:1 on #1f2933 */
+  --forest-strong: 110 231 183; /* #6EE7B7 — ~10:1 on #1f2933 */
+  --mint-strong: 167 243 208; /* #A7F3D0 — mint is already text-safe here */
+  --slate-strong: 203 213 225; /* slate-300 */
 
   /* Semantic text-safe foregrounds — bright shades that read clearly on dark. */
   --success-strong: 52 211 153; /* emerald-400 */
@@ -150,11 +166,17 @@ optgroup {
   color: rgb(var(--fg));
 }
 
-/* Focus-visible — lime ring, always visible, never hidden */
+/* Focus-visible — emerald ring, always visible, never hidden.
+ *
+ * No `border-radius` here. It used to set 4px, which did not round the ring —
+ * it reshaped the element itself, so every focused input visibly snapped from
+ * its own radius down to a near-square on focus (most obvious tabbing through
+ * the auth forms, where fields are 16px). Modern browsers already draw the
+ * outline following the element's own border-radius, so the ring is correct
+ * without it. */
 :focus-visible {
   outline: 2px solid rgb(var(--ring));
   outline-offset: 2px;
-  border-radius: 4px;
 }
 
 /* Reduced motion — kills animation for users who request it */
@@ -183,12 +205,14 @@ optgroup {
     @apply rounded-2xl border border-border bg-card shadow-card;
   }
 
+  /* Emerald ramp: deep -> brand -> mint, so the gradient still travels after
+     the lime/cyan pair retired. */
   .gradient-text {
-    @apply bg-gradient-to-r from-primary via-cyan to-primary-soft bg-clip-text text-transparent;
+    @apply bg-gradient-to-r from-forest via-primary to-mint bg-clip-text text-transparent;
   }
 
   .gradient-bg {
-    background: linear-gradient(135deg, rgb(var(--primary)) 0%, rgb(var(--cyan)) 100%);
+    background: linear-gradient(135deg, rgb(var(--primary)) 0%, rgb(var(--mint)) 100%);
   }
 
   /* ---------- Buttons ---------- */
@@ -259,6 +283,11 @@ optgroup {
  */
 
 @layer utilities {
+  /* Deliberately direction-agnostic (audit S20). A scrollbar is painted by the
+     engine on the inline-end edge of its scrollport, which already follows
+     `dir` — so these rules only set thickness and colour and must NOT grow a
+     side. Hardcoding one here is how an RTL layout ends up with the sidebar on
+     the right and its own scrollbar overlapping the content. */
   .scrollbar-thin {
     scrollbar-width: thin;
   }
@@ -304,4 +333,113 @@ optgroup {
   border: 1px solid rgb(var(--border));
   border-radius: 12px;
   box-shadow: 0 10px 30px rgb(0 0 0 / 0.18);
+}
+
+/* =============================================================================
+ * Landing scroll-reveal — CSS-only motion (replaces framer-motion on `/`)
+ * =============================================================================
+ *
+ * The marketing page used to pull framer-motion in purely for fade-in-on-scroll,
+ * stagger, and hover-lift — ~40 kB gzip on the one route that most needs to be
+ * fast. All of it is expressed here instead, driven by a single `data-visible`
+ * attribute that `<InView>` (components/landing/in-view.tsx) sets once when the
+ * container scrolls into view. Transform + opacity only, never layout props.
+ *
+ * Two element roles:
+ *   .reveal       — animates itself; `<InView>` sets data-visible on this node.
+ *   .reveal-item  — animates when ANY ancestor is data-visible, so one observer
+ *                   drives a whole stagger group and the items stay server-
+ *                   rendered (no client boundary per card).
+ *
+ * Per-item delay comes from --reveal-i (the child's index, set inline by the
+ * server component) times --reveal-stagger, plus a group-level --reveal-delay.
+ */
+
+.reveal,
+.reveal-item {
+  opacity: 0;
+  transform: translateY(var(--reveal-y, 18px));
+  transition:
+    opacity 0.6s var(--ease-out-quint),
+    transform 0.6s var(--ease-out-quint);
+  transition-delay: calc(
+    var(--reveal-i, 0) * var(--reveal-stagger, 70ms) + var(--reveal-delay, 0ms)
+  );
+}
+
+.reveal[data-visible],
+[data-visible] .reveal-item {
+  opacity: 1;
+  transform: none;
+}
+
+/* Growing bar (dashboard mock cash-flow chart). Same one-observer contract as
+   .reveal-item, but scales from the baseline instead of rising. */
+.reveal-bar {
+  transform: scaleY(0);
+  transform-origin: bottom;
+  transition: transform 0.5s var(--ease-out-quint);
+  transition-delay: calc(var(--reveal-i, 0) * 45ms + 100ms);
+}
+
+[data-visible] .reveal-bar {
+  transform: scaleY(1);
+}
+
+/* Hover-lift — replaces framer's whileHover spring. --lift-rest lets a card
+   sit permanently raised (the featured pricing tier) and lift from there, so
+   rest and hover never fight over the same transform. */
+.hover-lift {
+  transform: translateY(var(--lift-rest, 0px));
+  transition: transform 0.35s var(--ease-out-quint);
+}
+
+@media (hover: hover) {
+  .hover-lift:hover {
+    transform: translateY(calc(var(--lift-rest, 0px) - var(--lift, 6px)));
+  }
+}
+
+/* Reduced motion: keep the fade (it still signals "this arrived"), drop every
+   translate/scale. The global .01ms rule above already flattens durations, so
+   this only needs to neutralise the transforms. */
+@media (prefers-reduced-motion: reduce) {
+  .reveal,
+  .reveal-item {
+    transform: none;
+  }
+
+  .reveal-bar {
+    transform: scaleY(1);
+  }
+
+  .hover-lift,
+  .hover-lift:hover {
+    transform: none;
+  }
+}
+
+/* =============================================================================
+ * Marketing surface typography
+ * =============================================================================
+ *
+ * Headings on `/` run on the display face (see components/landing/fonts.ts);
+ * body copy stays on the app's text face. Scoped to [data-marketing] so the
+ * product screens are untouched. The negative tracking is what stops a
+ * geometric sans from looking loose at display sizes.
+ */
+
+[data-marketing] h1,
+[data-marketing] h2,
+[data-marketing] h3,
+[data-marketing] .font-display {
+  font-family: var(--font-display), var(--font-sans), system-ui, sans-serif;
+  letter-spacing: -0.028em;
+}
+
+/* Blockquote keeps the editorial serif — a pull-quote is the one place a serif
+   earns its keep on a software site. */
+[data-marketing] blockquote {
+  font-family: var(--font-serif), Georgia, serif;
+  letter-spacing: normal;
 }

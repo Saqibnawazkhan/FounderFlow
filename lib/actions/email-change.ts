@@ -23,7 +23,7 @@ import { sendEmail } from "@/lib/email/send";
 import { signEmailChangeToken, verifyEmailChangeToken } from "@/lib/auth/email-change-token";
 import { RequestEmailChangeSchema, ConfirmEmailChangeSchema } from "@/lib/schemas/email-change";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 function linkBase(): string {
   return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
@@ -67,7 +67,7 @@ export async function requestEmailChangeAction(
         <p>Hi ${me.name},</p>
         <p>A request was made to change your FounderFlow login email to this address. Click below to confirm the change. The link expires in 1 hour.</p>
         <p style="margin:24px 0;">
-          <a href="${url}" style="background:#b6f425;color:#0a0a0a;padding:12px 20px;border-radius:8px;font-weight:700;text-decoration:none;">
+          <a href="${url}" style="background:#10B981;color:#1F2933;padding:12px 20px;border-radius:8px;font-weight:700;text-decoration:none;">
             Confirm new email
           </a>
         </p>

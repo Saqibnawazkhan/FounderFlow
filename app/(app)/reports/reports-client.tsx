@@ -9,6 +9,7 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useMoney } from "@/lib/hooks/useMoney";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 import type { Company, Transaction, User } from "@/lib/types";
 import {
   eachMonthOfInterval,
@@ -24,14 +25,14 @@ import {
 // at top level, that pulls recharts into the initial chunk and defeats the
 // dynamic split below.
 const PALETTE = [
-  "#b6f425",
-  "#70E6ED",
-  "#FFB3DB",
-  "#f59e0b",
-  "#a78bfa",
-  "#34d399",
-  "#fb7185",
-  "#facc15",
+  "#10B981",
+  "#047857",
+  "#6EE7B7",
+  "#065F46",
+  "#34D399",
+  "#64748B",
+  "#334155",
+  "#A7F3D0",
 ];
 
 // Recharts is ~200KB. Lazy-load each chart so /reports' initial bundle stays
@@ -50,9 +51,9 @@ const FoundersHorizontalBar = dynamic(
   { ssr: false, loading: chartLoading }
 );
 
-const C_PRIMARY = "#b6f425";
-const C_CYAN = "#70E6ED";
-const C_PINK = "#FFB3DB";
+const C_PRIMARY = "#10B981";
+const C_FOREST = "#047857";
+const C_MINT = "#6EE7B7";
 
 type Props = {
   transactions: Transaction[];
@@ -62,6 +63,7 @@ type Props = {
 
 export function ReportsClient({ transactions, users, company }: Props) {
   const money = useMoney();
+  const n = useNumberFormat();
   // Date window (F5): presets OR a custom from/to range. The whole report —
   // charts, category mix, per-founder totals — scopes to this window, so the
   // range picker is a single source of truth (previously the presets only
@@ -336,7 +338,7 @@ export function ReportsClient({ transactions, users, company }: Props) {
     <div className="mx-auto max-w-[1600px] space-y-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <PillBadge tone="cyan">Analytics</PillBadge>
+          <PillBadge tone="forest">Analytics</PillBadge>
           <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">
             Reports
           </h1>
@@ -353,7 +355,7 @@ export function ReportsClient({ transactions, users, company }: Props) {
           </button>
           <button
             onClick={exportExcel}
-            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
           >
             <FileSpreadsheet className="h-4 w-4" aria-hidden="true" /> Export Excel
           </button>
@@ -431,8 +433,8 @@ export function ReportsClient({ transactions, users, company }: Props) {
           </div>
           <div className="flex gap-4 text-xs">
             <Legend dot={C_PRIMARY} label="Investments" />
-            <Legend dot={C_CYAN} label="Revenue" />
-            <Legend dot={C_PINK} label="Expenses" />
+            <Legend dot={C_FOREST} label="Revenue" />
+            <Legend dot={C_MINT} label="Expenses" />
           </div>
         </div>
         <div className="h-80">
@@ -453,7 +455,8 @@ export function ReportsClient({ transactions, users, company }: Props) {
               </div>
               <ul className="space-y-2">
                 {categoryData.map((c, i) => {
-                  const pct = (c.value / totalExpenses) * 100;
+                  // 0–1 ratio — the scale `n.percent` takes. See lib/format.ts.
+                  const ratio = c.value / totalExpenses;
                   return (
                     <li key={c.name} className="flex items-center justify-between text-xs">
                       <div className="flex min-w-0 items-center gap-2">
@@ -469,7 +472,7 @@ export function ReportsClient({ transactions, users, company }: Props) {
                           {money(c.value)}
                         </p>
                         <p className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
-                          {pct.toFixed(1)}%
+                          {n.percent(ratio)}
                         </p>
                       </div>
                     </li>
@@ -544,7 +547,8 @@ export function ReportsClient({ transactions, users, company }: Props) {
                 const exp = rangedTxns
                   .filter((t) => t.addedBy === u.id && t.type === "expense")
                   .reduce((s, t) => s + t.amount, 0);
-                const pct = totalInvestments > 0 ? (inv / totalInvestments) * 100 : 0;
+                // 0–1 ratio — the scale `n.percent` takes. See lib/format.ts.
+                const ratio = totalInvestments > 0 ? inv / totalInvestments : 0;
                 return (
                   <tr
                     key={u.id}
@@ -574,13 +578,13 @@ export function ReportsClient({ transactions, users, company }: Props) {
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <span className="font-mono text-sm font-bold tabular-nums text-pink-strong">
+                      <span className="font-mono text-sm font-bold tabular-nums text-mint-strong">
                         {money(exp)}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
                       <span className="font-mono text-sm tabular-nums text-fg">
-                        {pct.toFixed(1)}%
+                        {n.percent(ratio)}
                       </span>
                     </td>
                   </tr>

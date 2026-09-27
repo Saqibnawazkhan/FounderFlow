@@ -5,7 +5,7 @@
  *
  * Three render states:
  *   idle       → "Clock in" button, opens the start modal
- *   running    → "● 1h 23m" lime pill, opens the stop modal
+ *   running    → "● 1h 23m" emerald pill, opens the stop modal
  *   warn       → "Still working?" modal floats above the page; the user
  *                must answer within 30 min or the client auto-clocks out
  *                at lastActivityAt (lib/time/thresholds.ts:AUTO_CLOSE_MS).
@@ -44,6 +44,7 @@ import {
   formatDuration,
 } from "@/lib/time/thresholds";
 import type { TimeEntryClient } from "@/lib/queries/time";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
 /**
  * The widget self-loads — the topbar is a client component, so passing
@@ -53,6 +54,7 @@ import type { TimeEntryClient } from "@/lib/queries/time";
  */
 export function ClockWidget() {
   const router = useRouter();
+  const n = useNumberFormat();
   // startTransition keeps the running UI responsive while the RSC tree
   // re-fetches after a clock-in/out — otherwise the pill renders the
   // pre-mutation state for ~200-400ms and users double-click.
@@ -170,9 +172,14 @@ export function ClockWidget() {
         if (res.success) {
           setWarnOpen(false);
           setEntry(null);
-          toast(`Auto-clocked out — no activity for ${Math.round(AUTO_CLOSE_MS / 3_600_000)}h.`, {
-            icon: "⏱️",
-          });
+          toast(
+            `Auto-clocked out — no activity for ${n.number(
+              Math.round(AUTO_CLOSE_MS / 3_600_000)
+            )}h.`,
+            {
+              icon: "⏱️",
+            }
+          );
           startTransition(() => router.refresh());
           broadcastChange();
         }
@@ -503,6 +510,7 @@ function WarnModal({
   onKeepWorking: () => Promise<void>;
   onClockOut: () => void;
 }) {
+  const n = useNumberFormat();
   // Visible countdown to auto-close — purely informational, the real
   // trigger is the auto-close effect in <ClockWidget> watching `now`.
   const [remainingMs, setRemainingMs] = useState(RESPONSE_WINDOW_MS);
@@ -521,7 +529,11 @@ function WarnModal({
           open={open}
           onClose={onClose}
           title="Still working?"
-          description={`You've been clocked in for ${formatDuration(runningMs)} with no activity for ${Math.round(WARN_AFTER_MS / 3_600_000)}h. Confirm to keep the timer running, or clock out.`}
+          description={`You've been clocked in for ${formatDuration(
+            runningMs
+          )} with no activity for ${n.number(
+            Math.round(WARN_AFTER_MS / 3_600_000)
+          )}h. Confirm to keep the timer running, or clock out.`}
           size="md"
         >
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">

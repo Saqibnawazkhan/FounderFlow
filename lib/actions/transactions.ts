@@ -15,6 +15,9 @@
  *   4. Atomically writes the transaction + activity log + notifications in
  *      one Prisma $transaction so we never leave the activity feed lying
  *   5. revalidatePath(s) so any RSC consumers re-render with fresh data
+ *   6. Deletes write the Tier 3 `deletedAt` tombstone — they do NOT hard-delete.
+ *      See deleteTransactionAction; every read in this file and in
+ *      lib/queries/ filters `deletedAt: null`, which is what makes that safe.
  */
 
 import { Prisma } from "@prisma/client";
@@ -35,10 +38,11 @@ import {
   type TransactionType,
 } from "@/lib/types";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
+import { notifyUsers } from "@/lib/notify/fan-out";
 
 /** Plain serializable shape returned to client components. Amount is
- *  Prisma.Decimal on the way in (BUGS.md P0-4) and needs `.toNumber()` for
+ *  Prisma.Decimal on the way in (FaultsAudit.md P0-4) and needs `.toNumber()` for
  *  JSON transport across the RSC boundary. */
 function toClient(t: {
   id: string;
@@ -90,7 +94,13 @@ export async function listTransactionsAction(): Promise<ActionResult<Transaction
   }
 
   const rows = await db.transaction.findMany({
-    where: { companyId: session.user.companyId },
+    // deletedAt:null is the Tier 3 tombstone filter. It was missing here while
+    // every OTHER Transaction read had it (lib/queries/transactions.ts,
+    // budgets, projects, search, export) — harmless only for as long as
+    // deleteTransactionAction hard-deleted. Now that a delete writes the
+    // sentinel, an unfiltered list is the worst of both worlds: the user
+    // deletes a row, still sees it, and deletes it again.
+    where: { companyId: session.user.companyId, deletedAt: null },
     orderBy: { date: "desc" },
   });
 
@@ -130,15 +140,31 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
   // "company-global" spend path.
   if (projectId) {
     const project = await db.project.findFirst({
-      where: { id: projectId, companyId },
+      // deletedAt:null, or a stale expense modal files spend against a project
+      // that was deleted while the form was open. Transaction.projectId is
+      // SetNull rather than Restrict, so this never jams the purge the way the
+      // Task/Budget equivalent does — but the row lands in a ledger tab nobody
+      // can open, and it is counted by the project spend aggregate for a
+      // project that no longer exists anywhere else in the product.
+      where: { id: projectId, companyId, deletedAt: null },
       select: { id: true },
     });
     if (!project) return { success: false, error: "Project not found" };
   }
 
   // Authoritative user lookup so the denormalized addedByName is never stale.
-  const user = await db.user.findUnique({ where: { id: userId } });
+  // The workspace CURRENCY rides along on the same query: every string this
+  // action persists quotes a figure, and those strings are written once and
+  // read forever, so "PKR" hardcoded into them (money-006) mislabels a USD
+  // workspace's history permanently. Company.currency is the one authority —
+  // read through the actor's company because the session's companyId is what
+  // every other write here is scoped to anyway.
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: { name: true, company: { select: { currency: true } } },
+  });
   if (!user) return { success: false, error: "User no longer exists" };
+  const currency = user.company.currency;
 
   // One Prisma transaction so the txn + activity + notifications either all
   // land or none do — keeps the activity feed consistent with the ledger.
@@ -163,16 +189,23 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
         companyId,
         projectId: projectId ?? null,
         type: txnActivityType(type),
-        message: `${user.name} added ${noun} of ${amount.toLocaleString()} PKR for ${category}`,
+        message: `${user.name} added ${noun} of ${amount.toLocaleString()} ${currency} for ${category}`,
         userId,
         userName: user.name,
         metadata: JSON.stringify({ kind: "transaction", amount, category }),
       },
     });
 
-    // Notify every other member of the company (skip the actor themselves).
+    // Notify every other LIVE member of the company (skip the actor
+    // themselves). deletedAt:null is not cosmetic here: a deactivated
+    // teammate's PushSubscription rows are never pruned and the purge cron has
+    // no individual-user stage, so without this filter their phone keeps
+    // receiving "New expense — 2,500,000" from a workspace they were removed
+    // from (data-integrity-004). lib/push/send.ts now filters the same way, so
+    // this is belt and braces for the in-app rows, which otherwise pile up and
+    // all flood back if the account is ever reactivated.
     const others = await tx.user.findMany({
-      where: { companyId, NOT: { id: userId } },
+      where: { companyId, deletedAt: null, NOT: { id: userId } },
       select: { id: true },
     });
     if (others.length > 0) {
@@ -183,21 +216,24 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
           : type === "income"
             ? "/revenue"
             : "/investments";
-      await tx.notification.createMany({
-        data: others.map((o) => ({
-          userId: o.id,
-          companyId,
-          // Stamp the projectId on each notification so the member-side
-          // filter in lib/queries/notifications can strip these for members
-          // unless the project is one they're attached to.
-          projectId: projectId ?? null,
-          title: `New ${noun}`,
-          message: `${user.name} ${type === "expense" ? "logged" : "recorded"} ${amount.toLocaleString()} PKR`,
-          // Expenses read as a caution (cash out); money-in is a success.
-          type: type === "expense" ? "warning" : "success",
-          category: "finance",
-          link,
-        })),
+      await notifyUsers({
+        event: "transaction_logged",
+        userIds: others.map((o) => o.id),
+        companyId,
+        // Stamp the projectId so the member-side filter in
+        // lib/queries/notifications can strip these for members unless the
+        // project is one they're attached to.
+        projectId: projectId ?? null,
+        title: `New ${noun}`,
+        // This body leaves the app verbatim — email subject line AND lock-screen
+        // push (lib/notify/fan-out.ts), so a wrong currency code here is read
+        // by someone who cannot click through to check.
+        message: `${user.name} ${type === "expense" ? "logged" : "recorded"} ${amount.toLocaleString()} ${currency}`,
+        // Expenses read as a caution (cash out); money-in is a success.
+        tone: type === "expense" ? "warning" : "success",
+        category: "finance",
+        link,
+        tx,
       });
     }
 
@@ -336,7 +372,11 @@ export async function deleteTransactionAction(id: string): Promise<ActionResult>
   }
 
   const txn = await db.transaction.findUnique({ where: { id } });
-  if (!txn) return { success: false, error: "Transaction not found" };
+  // Already tombstoned reads as gone. Re-deleting would move the sentinel
+  // timestamp (the restore runbook in CLAUDE.md reunites a set of rows with a
+  // BETWEEN around it) and write a second "deleted" activity row for one
+  // deletion.
+  if (!txn || txn.deletedAt) return { success: false, error: "Transaction not found" };
 
   // Cross-company access guard. The client UI also hides this button for
   // non-owners, but server is the only place that enforces it.
@@ -348,11 +388,43 @@ export async function deleteTransactionAction(id: string): Promise<ActionResult>
     return { success: false, error: "Not authorized" };
   }
 
-  const me = await db.user.findUnique({ where: { id: session.user.id } });
+  const me = await db.user.findUnique({
+    where: { id: session.user.id },
+    select: { id: true, name: true, company: { select: { currency: true } } },
+  });
   if (!me) return { success: false, error: "User no longer exists" };
 
   await db.$transaction(async (tx) => {
-    await tx.transaction.delete({ where: { id } });
+    // TIER 3 SOFT DELETE, not a hard delete (data-integrity-001).
+    //
+    // This line used to be `tx.transaction.delete`, which made the recovery
+    // window CLAUDE.md, prisma/schema.prisma and the add_soft_delete migration
+    // all advertise ("the row survives until the nightly cron hard-deletes it
+    // 90 days later") true only for whole-workspace deletion. A founder who
+    // mis-clicked the trash icon on a 2,500,000 expense had destroyed a ledger
+    // line, and support would have reached for the published one-UPDATE restore
+    // and found no row. Now:
+    //   • recovery is `UPDATE "Transaction" SET "deletedAt" = NULL WHERE id=…`
+    //   • the row's Comment thread survives too — Comment.transactionId is
+    //     onDelete: Cascade and Comment has no tombstone of its own, so the
+    //     hard delete took the conversation with it
+    //   • every read already filters deletedAt:null (ledger, dashboard, budget
+    //     threshold sums, project spend, search, export), so the row leaves the
+    //     product and the MONEY MATH the instant this lands — verified call site
+    //     by call site, because a tombstone that a SUM still counts would be a
+    //     far worse bug than the one being fixed
+    //
+    // ONE THING THIS DOES NOT YET BUY, stated plainly so nobody reads the
+    // tombstone as a full retention story: /api/cron/purge-soft-deleted has two
+    // scopes only — overdue whole workspaces, and individually deleted EMPTY
+    // projects. There is no stage that hard-deletes an individually tombstoned
+    // Transaction / Task / Budget in a still-LIVE workspace, so these rows are
+    // now recoverable forever rather than for 90 days. That is the safe
+    // direction to be wrong in, and it is a follow-up on the cron (a third
+    // scope, no schema change), not a reason to keep destroying ledger lines.
+    // Workspace erasure still removes them: purgeCompany deletes by companyId
+    // regardless of deletedAt.
+    await tx.transaction.update({ where: { id }, data: { deletedAt: new Date() } });
     await tx.activity.create({
       data: {
         companyId: txn.companyId,
@@ -361,7 +433,7 @@ export async function deleteTransactionAction(id: string): Promise<ActionResult>
         // — those still surface in the global activity feed.
         projectId: txn.projectId,
         type: "transaction_deleted",
-        message: `${me.name} deleted a ${txn.type} of ${txn.amount.toLocaleString()} PKR`,
+        message: `${me.name} deleted a ${txn.type} of ${txn.amount.toLocaleString()} ${me.company.currency}`,
         userId: me.id,
         userName: me.name,
         metadata: JSON.stringify({

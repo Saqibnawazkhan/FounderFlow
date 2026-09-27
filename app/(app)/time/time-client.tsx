@@ -26,6 +26,7 @@ import { WeeklyTimesheet } from "@/components/time/weekly-timesheet";
 import { cn } from "@/lib/utils";
 import type { TimeEntryClient } from "@/lib/queries/time";
 import type { User } from "@/lib/types";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 import { EditEntryModal } from "./edit-entry-modal";
 import { ManualEntryModal } from "./manual-entry-modal";
 
@@ -117,6 +118,7 @@ export function TimeClient({
     [initialEntries, renderedAt]
   );
 
+  const n = useNumberFormat();
   const openCount = initialEntries.filter((e) => !e.clockOutAt).length;
   const autoClosedCount = initialEntries.filter((e) => e.autoClosed).length;
   // Own running entry — the one to surface prominently on this page. Team
@@ -152,7 +154,7 @@ export function TimeClient({
     <div className="mx-auto max-w-[1600px] space-y-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <PillBadge tone="cyan">
+          <PillBadge tone="forest">
             <Clock className="mr-1 inline h-3 w-3" aria-hidden="true" /> Time tracking
           </PillBadge>
           <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">Time</h1>
@@ -196,7 +198,7 @@ export function TimeClient({
           <button
             type="button"
             onClick={() => setManualOpen(true)}
-            className="inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
           >
             <Plus className="h-4 w-4" aria-hidden="true" /> Log time
           </button>
@@ -216,21 +218,23 @@ export function TimeClient({
           label="Total tracked"
           value={formatDuration(totalMs)}
           icon={Clock}
-          tone="cyan"
-          deltaLabel={`${initialEntries.length} session${initialEntries.length === 1 ? "" : "s"}`}
+          tone="forest"
+          deltaLabel={`${n.number(initialEntries.length)} session${
+            initialEntries.length === 1 ? "" : "s"
+          }`}
         />
         <DashboardStat
           label="Currently running"
-          value={openCount.toString()}
+          value={n.number(openCount)}
           icon={Clock}
           tone="primary"
           deltaLabel={openCount === 0 ? "All clocked out" : "Live session(s)"}
         />
         <DashboardStat
           label="Auto-closed"
-          value={autoClosedCount.toString()}
+          value={n.number(autoClosedCount)}
           icon={Clock}
-          tone="pink"
+          tone="mint"
           deltaLabel={autoClosedCount === 0 ? "No idle timeouts" : "Closed after 12.5h idle"}
         />
       </section>
@@ -391,7 +395,7 @@ export function TimeClient({
                               title={`Edited by ${e.editedByName ?? "unknown"} on ${new Date(
                                 e.editedAt
                               ).toLocaleString()}`}
-                              className="ml-1 inline-flex items-center text-cyan-strong"
+                              className="ml-1 inline-flex items-center text-forest-strong"
                             >
                               ✎
                             </span>
@@ -464,7 +468,7 @@ export function TimeClient({
                         </span>
                       )}
                       {initialScope === "team" && <span>· {e.userName}</span>}
-                      {e.editedAt && <span className="text-cyan-strong">· edited</span>}
+                      {e.editedAt && <span className="text-forest-strong">· edited</span>}
                     </div>
                     {(e.note || canEdit || canDeleteRow) && (
                       <div className="mt-2 flex items-center justify-between gap-2">

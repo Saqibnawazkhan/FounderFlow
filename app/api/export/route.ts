@@ -23,6 +23,10 @@
  *   - `InviteToken.token` is stripped. That token is a live join secret —
  *     anyone holding it can accept the invite and enter the workspace. We
  *     keep the invite METADATA (who/when/status) but never the secret.
+ *   - `Notification` is read PER-CALLER, not per-company — the one table here
+ *     that is not workspace-level data. See the block on that query; this used
+ *     to be the quiet compliance hole the chat layer explicitly refused to
+ *     open.
  *   - Everything else in the workspace IS the customer's data and is
  *     theirs to take.
  *
@@ -111,7 +115,34 @@ export async function GET() {
       db.timeEntry.findMany({ where: { companyId }, orderBy: { clockInAt: "asc" } }),
       db.comment.findMany({ where: { companyId }, orderBy: { createdAt: "asc" } }),
       db.activity.findMany({ where: { companyId }, orderBy: { createdAt: "asc" } }),
-      db.notification.findMany({ where: { companyId }, orderBy: { createdAt: "asc" } }),
+      // ── THE ONE PER-PERSON TABLE IN THIS FILE ─────────────────────────────
+      //
+      // `where: { companyId }` alone — every user's rows — was a content leak
+      // wearing a portability label. `Notification.message` is a COPY of
+      // conversation text: chat fan-out stores a 140-character slice of the
+      // message body on the DM ping and on the @mention ping
+      // (lib/actions/chat.ts), so a DM between a co-founder and a member, and
+      // any mention inside a private channel the exporter was never invited to,
+      // landed verbatim in their JSON. lib/auth/channel-permissions.ts:46-54
+      // refuses precisely this in the chat layer — "an admin does NOT get a
+      // back door into a private channel they were not invited to... If the
+      // business ever needs legal/compliance export, that is an explicit,
+      // auditable, logged path" — and the export was that back door, unlogged,
+      // with nothing in the UI saying it had happened. Findings sec-007 /
+      // rep-002.
+      //
+      // Scoped to the caller rather than stripped of its `message` field,
+      // because a notification is addressed to ONE person the way an email is:
+      // the other rows are not the exporter's to take in any form. The reads
+      // above stay company-scoped — transactions, tasks, comments and
+      // activities are the workspace's own records.
+      //
+      // If a genuine compliance export is ever needed, build it as the separate
+      // audited path canSeeChannel describes. Do not widen this one.
+      db.notification.findMany({
+        where: { companyId, userId: session.user.id },
+        orderBy: { createdAt: "asc" },
+      }),
       db.inviteToken.findMany({ where: { companyId }, orderBy: { createdAt: "asc" } }),
     ]);
 
@@ -143,6 +174,9 @@ export async function GET() {
       timeEntries,
       comments,
       activities,
+      // The EXPORTER's notifications only — see the query. `counts.notifications`
+      // below counts the same scoped set, so a consumer comparing it against the
+      // workspace's roster is not misled into thinking rows went missing.
       notifications,
       // Strip the join secret; keep the invite metadata (email/name/role/
       // status) so the user can still see who they invited.

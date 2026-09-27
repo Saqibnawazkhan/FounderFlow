@@ -1,0 +1,4 @@
+Color	Hex
+Deep Charcoal	#1F2933
+Emerald Green	#10B981
+Clean White	#FFFFFF

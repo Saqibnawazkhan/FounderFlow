@@ -22,7 +22,7 @@ import { limiters } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 export async function createRecurringRuleAction(
   input: unknown

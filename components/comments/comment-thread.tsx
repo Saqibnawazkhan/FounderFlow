@@ -17,7 +17,7 @@
  * descriptive title, the "delete" button has a per-comment aria-label.
  */
 
-import { useEffect, useId, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useId, useRef, useState, useTransition } from "react";
 import { formatDistanceToNow } from "date-fns";
 import { MessageSquare, Send, Trash2, AtSign } from "lucide-react";
 import toast from "react-hot-toast";
@@ -26,8 +26,10 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { createCommentAction, deleteCommentAction } from "@/lib/actions/comments";
 import { cn } from "@/lib/utils";
 import type { CommentClient, CommentTarget } from "@/lib/queries/comments";
-import type { ActiveMention, MentionUser } from "@/lib/comments/mentions";
-import { findMentionQuery, slugifyName } from "@/lib/comments/mentions";
+import { useMentionAutocomplete } from "@/components/mentions/use-mention-autocomplete";
+import type { MentionUser } from "@/lib/comments/mentions";
+import { slugifyName } from "@/lib/comments/mentions";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
 type Props = {
   target: CommentTarget;
@@ -51,6 +53,7 @@ export function CommentThread({
   companyUsers,
   onChanged,
 }: Props) {
+  const n = useNumberFormat();
   const [comments, setComments] = useState(initialComments);
   useEffect(() => setComments(initialComments), [initialComments]);
 
@@ -59,73 +62,18 @@ export function CommentThread({
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const textareaId = useId();
-  const listboxId = useId();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // @mention autocomplete (T6): `mention` is the active token span under the
-  // caret (or null); `activeIndex` is the highlighted candidate.
-  const [mention, setMention] = useState<ActiveMention | null>(null);
-  const [activeIndex, setActiveIndex] = useState(0);
-
-  const mentionCandidates = useMemo(() => {
-    if (!mention) return [];
-    const q = mention.query.toLowerCase();
-    return companyUsers
-      .filter((u) => u.id !== currentUserId)
-      .filter((u) => {
-        const slug = slugifyName(u.name);
-        return slug.includes(q) || u.name.toLowerCase().includes(q);
-      })
-      .slice(0, 6);
-  }, [mention, companyUsers, currentUserId]);
-
-  const showMentions = mention !== null && mentionCandidates.length > 0;
-
-  function refreshMention(value: string, caret: number) {
-    setMention(findMentionQuery(value, caret));
-    setActiveIndex(0);
-  }
-
-  function acceptMention(user: MentionUser) {
-    if (!mention) return;
-    const slug = slugifyName(user.name);
-    const before = body.slice(0, mention.from);
-    const after = body.slice(mention.to);
-    const insert = `@${slug} `;
-    const next = before + insert + after;
-    setBody(next);
-    setMention(null);
-    const caret = before.length + insert.length;
-    // Restore focus + caret after the inserted slug on the next frame, once
-    // React has flushed the new value into the textarea.
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (el) {
-        el.focus();
-        el.setSelectionRange(caret, caret);
-      }
-    });
-  }
-
-  function handleTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (!showMentions) return;
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setActiveIndex((i) => (i + 1) % mentionCandidates.length);
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setActiveIndex((i) => (i - 1 + mentionCandidates.length) % mentionCandidates.length);
-    } else if (e.key === "Enter" || e.key === "Tab") {
-      const pick = mentionCandidates[activeIndex];
-      if (pick) {
-        e.preventDefault();
-        acceptMention(pick);
-      }
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      setMention(null);
-    }
-  }
+  // @mention autocomplete (T6). The combobox behaviour — active token,
+  // highlight, Arrow/Enter/Tab/Escape, caret restoration — lives in the shared
+  // hook so comments and chat can never drift apart.
+  const mentions = useMentionAutocomplete({
+    value: body,
+    onChange: setBody,
+    users: companyUsers,
+    excludeUserId: currentUserId,
+    textareaRef,
+  });
 
   // Roster slugs are useful in two places: rendering chip styling on
   // already-sent comments AND showing a tip under the composer for
@@ -147,18 +95,20 @@ export function CommentThread({
       return;
     }
     setBody("");
-    setMention(null);
+    mentions.dismiss();
     // Honest count: notifiedCount comes from the actual createMany result,
     // so if the fan-out threw, we don't overstate. mentionedUserIds is the
     // PARSED list — useful to know "we tried", but the user wants to know
     // who got the ping.
     const { notifiedCount, mentionedUserIds } = result.data;
     if (notifiedCount > 0) {
-      toast.success(`Posted — pinged ${notifiedCount} teammate(s)`);
+      toast.success(`Posted — pinged ${n.number(notifiedCount)} teammate(s)`);
     } else if (mentionedUserIds.length > 0) {
       // Parsed mentions but no notifications landed → fan-out failed.
       toast(
-        `Posted — couldn't send mention pings (${mentionedUserIds.length} attempted). The team has been notified.`,
+        `Posted — couldn't send mention pings (${n.number(
+          mentionedUserIds.length
+        )} attempted). The team has been notified.`,
         { icon: "⚠️" }
       );
     } else {
@@ -242,7 +192,7 @@ export function CommentThread({
                           "inline-flex items-center rounded px-1 font-semibold",
                           seg.userId === currentUserId
                             ? "bg-primary/20 text-primary-strong"
-                            : "bg-cyan/15 text-cyan-strong"
+                            : "bg-forest/15 text-forest-strong"
                         )}
                       >
                         @{seg.name ?? seg.slug}
@@ -268,49 +218,41 @@ export function CommentThread({
             value={body}
             onChange={(e) => {
               setBody(e.target.value);
-              refreshMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
+              mentions.refresh(e.target.value, e.target.selectionStart ?? e.target.value.length);
             }}
-            onKeyDown={handleTextareaKeyDown}
-            onClick={(e) => refreshMention(body, e.currentTarget.selectionStart ?? body.length)}
-            onSelect={(e) => refreshMention(body, e.currentTarget.selectionStart ?? body.length)}
-            onBlur={() => setMention(null)}
+            onKeyDown={(e) => {
+              mentions.handleKeyDown(e);
+            }}
+            onClick={(e) => mentions.refresh(body, e.currentTarget.selectionStart ?? body.length)}
+            onSelect={(e) => mentions.refresh(body, e.currentTarget.selectionStart ?? body.length)}
+            onBlur={mentions.dismiss}
             placeholder={`Write a comment… use ${slugSuggestions[0] ?? "@name"} to mention someone`}
             rows={3}
             maxLength={2000}
             disabled={submitting}
-            role="combobox"
-            aria-expanded={showMentions}
-            aria-controls={showMentions ? listboxId : undefined}
-            aria-autocomplete="list"
-            aria-activedescendant={showMentions ? `${listboxId}-opt-${activeIndex}` : undefined}
+            {...mentions.comboboxProps}
             className="w-full resize-y rounded-lg border border-transparent bg-transparent p-2 text-sm text-fg placeholder:text-fg-muted/60 focus:border-primary/30 focus:bg-glass/[0.04] focus:outline-none"
           />
 
-          {showMentions && (
+          {mentions.open && (
             <ul
-              id={listboxId}
+              id={mentions.listboxId}
               role="listbox"
               aria-label="Mention a teammate"
-              className="absolute left-1 right-1 top-full z-30 mt-1 max-h-56 overflow-auto rounded-xl border border-border bg-surface p-1 shadow-card"
+              // Opens UPWARD. Downward it lands squarely on top of the
+              // "Post comment" button, so a comment ending in a mention could
+              // not be submitted by clicking — the click hit a listbox option
+              // instead. Above the composer is the comment list, which nobody
+              // needs to click mid-compose. The chat composer does the same.
+              className="absolute bottom-full left-1 right-1 z-30 mb-1 max-h-56 overflow-auto rounded-xl border border-border bg-surface p-1 shadow-card"
             >
-              {mentionCandidates.map((u, i) => {
-                const selected = i === activeIndex;
+              {mentions.candidates.map((u, i) => {
+                const selected = i === mentions.activeIndex;
                 return (
-                  <li
-                    key={u.id}
-                    id={`${listboxId}-opt-${i}`}
-                    role="option"
-                    aria-selected={selected}
-                  >
+                  <li key={u.id} {...mentions.getOptionProps(i)}>
                     <button
                       type="button"
-                      // mousedown (not click) so the textarea never blurs first,
-                      // which would null out `mention` before we can read it.
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        acceptMention(u);
-                      }}
-                      onMouseEnter={() => setActiveIndex(i)}
+                      {...mentions.getOptionButtonProps(u, i)}
                       className={cn(
                         "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
                         selected ? "bg-primary/10" : "hover:bg-glass/[0.06]"

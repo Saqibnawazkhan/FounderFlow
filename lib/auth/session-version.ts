@@ -42,6 +42,12 @@ export function sessionTokenStillValid(
  * Force every existing session for a user to sign out on its next request by
  * advancing their session version. Call after a password reset/change or a
  * "log out all devices" request.
+ *
+ * NOTE (audit 2026-09-23): intentionally has no caller — retained, not dead.
+ * Both password paths bump `sessionVersion` inline instead, so the new hash
+ * and the bump land in one atomic UPDATE (`lib/actions/password-reset.ts`,
+ * `lib/actions/profile.ts`). This stays as the primitive for a future "log
+ * out all devices" control, which has no atomicity constraint.
  */
 export async function bumpSessionVersion(userId: string): Promise<void> {
   await db.user.update({

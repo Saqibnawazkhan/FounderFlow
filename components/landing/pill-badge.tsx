@@ -1,10 +1,11 @@
-"use client";
-
 /**
  * PillBadge — Stitch hero badge pattern.
  *
  * Pill with a leading status dot + mono uppercase label. Used above the hero
  * headline ("BUILT FOR CO-FOUNDERS") and as section markers.
+ *
+ * Server component — no hooks, no handlers, no browser APIs. Keep it that way:
+ * the landing page renders it to HTML and it never reaches the client bundle.
  */
 
 import { cn } from "@/lib/utils";
@@ -14,21 +15,21 @@ interface PillBadgeProps {
   /** Show the leading pulsing dot. */
   dot?: boolean;
   /** Color tone. */
-  tone?: "primary" | "cyan" | "pink";
+  tone?: "primary" | "forest" | "mint";
   className?: string;
 }
 
 export function PillBadge({ children, dot = true, tone = "primary", className }: PillBadgeProps) {
   const toneClasses = {
     primary: "border-primary/30 bg-primary/10 text-primary-strong",
-    cyan: "border-cyan/30 bg-cyan/10 text-cyan-strong",
-    pink: "border-pink/30 bg-pink/10 text-pink-strong",
+    forest: "border-forest/30 bg-forest/10 text-forest-strong",
+    mint: "border-mint/30 bg-mint/10 text-mint-strong",
   }[tone];
 
   const dotClass = {
     primary: "bg-primary",
-    cyan: "bg-cyan",
-    pink: "bg-pink",
+    forest: "bg-forest",
+    mint: "bg-mint",
   }[tone];
 
   return (

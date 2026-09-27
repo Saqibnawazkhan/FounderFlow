@@ -27,6 +27,7 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { formatDate } from "@/lib/utils";
 import { INVESTMENT_CATEGORIES, type Transaction, type User } from "@/lib/types";
 import { useMoney } from "@/lib/hooks/useMoney";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
 const ROLE_LABEL = {
   admin: "Admin Founder",
@@ -53,6 +54,7 @@ export function InvestmentsClient({
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
   const money = useMoney();
+  const n = useNumberFormat();
 
   const investments = useMemo(
     () => transactions.filter((t) => t.type === "investment"),
@@ -117,7 +119,7 @@ export function InvestmentsClient({
     <div className="mx-auto max-w-[1600px] space-y-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <PillBadge tone="cyan">Money in</PillBadge>
+          <PillBadge tone="forest">Money in</PillBadge>
           <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">
             Investments
           </h1>
@@ -134,7 +136,7 @@ export function InvestmentsClient({
           </button>
           <button
             onClick={() => setModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
           >
             <Plus className="h-4 w-4" aria-hidden="true" /> Add investment
           </button>
@@ -148,13 +150,13 @@ export function InvestmentsClient({
           icon={TrendingUp}
           tone="primary"
           delta="positive"
-          deltaLabel={`${investments.length} contributions`}
+          deltaLabel={`${n.number(investments.length)} contributions`}
         />
         <DashboardStat
           label="Contributors"
-          value={founderStats.length.toString()}
+          value={n.number(founderStats.length)}
           icon={Users}
-          tone="cyan"
+          tone="forest"
           deltaLabel={founderStats.length === 0 ? "No data yet" : "Active founders"}
         />
         <DashboardStat
@@ -163,8 +165,8 @@ export function InvestmentsClient({
             investments.length > 0 ? Math.round(totalInvestments / investments.length) : 0
           )}
           icon={Calculator}
-          tone="pink"
-          deltaLabel={`Across ${investments.length} entries`}
+          tone="mint"
+          deltaLabel={`Across ${n.number(investments.length)} entries`}
         />
       </section>
 
@@ -178,7 +180,11 @@ export function InvestmentsClient({
           </div>
           <div className="space-y-5">
             {founderStats.map((f) => {
-              const pct = totalInvestments > 0 ? (f.amount / totalInvestments) * 100 : 0;
+              // A 0–1 ratio, the scale `n.percent` takes (lib/format.ts explains
+              // why it matches Intl and not the old 0–100 call sites). The bar below
+              // re-multiplies for its CSS `width`, which is a length, not a number
+              // anyone reads.
+              const ratio = totalInvestments > 0 ? f.amount / totalInvestments : 0;
               return (
                 <div key={f.name} className="space-y-2">
                   <div className="flex items-center gap-3">
@@ -195,7 +201,7 @@ export function InvestmentsClient({
                           {money(f.amount)}
                         </p>
                         <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.15em] text-primary-strong">
-                          {pct.toFixed(1)}%
+                          {n.percent(ratio)}
                         </p>
                       </div>
                     </div>
@@ -203,7 +209,7 @@ export function InvestmentsClient({
                   <div className="ml-14 h-1.5 overflow-hidden rounded-full bg-glass/[0.06]">
                     <div
                       className="h-full rounded-full bg-primary transition-[width] duration-700"
-                      style={{ width: `${pct}%` }}
+                      style={{ width: `${ratio * 100}%` }}
                     />
                   </div>
                 </div>
@@ -273,7 +279,7 @@ export function InvestmentsClient({
               investments.length === 0 && (
                 <button
                   onClick={() => setModalOpen(true)}
-                  className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+                  className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
                 >
                   <Plus className="h-4 w-4" aria-hidden="true" /> Add first investment
                 </button>
@@ -330,7 +336,7 @@ export function InvestmentsClient({
                       <p className="text-sm font-medium text-fg">{t.description}</p>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="inline-flex items-center rounded-full border border-cyan/30 bg-cyan/10 px-2.5 py-0.5 text-xs font-medium text-cyan-strong">
+                      <span className="inline-flex items-center rounded-full border border-forest/30 bg-forest/10 px-2.5 py-0.5 text-xs font-medium text-forest-strong">
                         {t.category}
                       </span>
                     </td>
@@ -380,7 +386,7 @@ export function InvestmentsClient({
                   </span>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center rounded-full border border-cyan/30 bg-cyan/10 px-2.5 py-0.5 text-xs font-medium text-cyan-strong">
+                  <span className="inline-flex items-center rounded-full border border-forest/30 bg-forest/10 px-2.5 py-0.5 text-xs font-medium text-forest-strong">
                     {t.category}
                   </span>
                   <span className="inline-flex items-center gap-1.5 text-xs text-fg-muted">

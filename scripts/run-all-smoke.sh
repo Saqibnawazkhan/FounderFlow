@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full smoke suite runner. Runs every scripts/smoke-*.mjs against ONE dev
+# Full smoke suite runner. Runs the asserting scripts in scripts/ against ONE dev
 # server. Order: `smoke` first (it mkdirs the shared screenshot dir the other
 # scripts write into), then the rest; rate-limit last (it trips the login
 # limiter). Records per-script ok/fail/pageerror counts to a summary.
@@ -20,14 +20,43 @@ SCRIPTS=(
   smoke-settings
   smoke-projects
   smoke-tasks
+  # Added 2026-09-23 with the Calendar view. Sits beside smoke-tasks; it
+  # only reads, so its position is not load-bearing.
+  smoke-tasks-calendar
   smoke-time
   smoke-comments
+  # Added 2026-09-25 with the chat feature. After smoke-comments because it
+  # reuses the same mention autocomplete; before the session-killing scripts.
+  smoke-chat
+  # Added 2026-09-25 with the DM + create-channel feature. Straight after
+  # smoke-chat so a failure here reads as "DMs/creation broke" rather than
+  # "chat broke" — smoke-chat has already proved the basics by this point.
+  # Also before the session-killing scripts: it signs in as three users.
+  smoke-chat-dm
+  # Added 2026-09-25 with cross-content search (Phase H). AFTER the chat
+  # scripts on purpose: it searches for message text, so it needs chat to have
+  # already proved it can store a message. A failure here then means search,
+  # not chat. Its highest-value assertions are the two negative ones -- a
+  # member gets no finance group, and a term that exists only inside a private
+  # channel returns nothing.
+  smoke-search
   smoke-confirm
   smoke-member-roles
   smoke-recurring
   smoke-transactions
   smoke-team
   smoke-invite
+  # Added 2026-09-23: these cover shipped features (per-workspace currency,
+  # multi-admin, web push, JWT session invalidation) but were never wired in
+  # when they landed. session-invalidation runs late because it deliberately
+  # kills live sessions; rate-limit stays last because it trips the limiter.
+  smoke-currency
+  smoke-multi-admin
+  smoke-push
+  smoke-session-invalidation
+  # Not a smoke-*.mjs, but it asserts (no horizontal overflow at <=375px) —
+  # the landing/login/signup regression check.
+  verify-ui
   smoke-rate-limit
 )
 
@@ -36,7 +65,12 @@ for name in "${SCRIPTS[@]}"; do
   [ -f "$file" ] || { echo "SKIP    $name (missing)" | tee -a "$SUMMARY"; continue; }
   log="$OUT/${name}.log"
   if timeout 200 node "$file" > "$log" 2>&1; then rc=0; else rc=$?; fi
-  fails=$(grep -c "❌" "$log" 2>/dev/null | head -1)
+  # Count BOTH failure dialects. The older scripts print a literal ❌; the
+  # newer ones print "  FAIL  " and set process.exitCode instead. Counting only
+  # ❌ meant a Gen-2 assertion failure reported "fail=0" and was classified
+  # EXIT1 -- caught, but reading as a crash rather than as a failed check, which
+  # is exactly the wrong signal when you are triaging twenty scripts.
+  fails=$(grep -cE "❌|^  FAIL " "$log" 2>/dev/null | head -1)
   oks=$(grep -cE "✅|  ok " "$log" 2>/dev/null | head -1)
   pageerr=$(grep -c "PAGEERROR" "$log" 2>/dev/null | head -1)
   if [ "$rc" -eq 124 ]; then

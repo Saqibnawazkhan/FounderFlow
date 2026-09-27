@@ -8,8 +8,11 @@
 //   of truth at the application boundary.
 // - Money (Transaction.amount, RecurringRule.amount, Budget.monthlyLimit) is
 //   Decimal(12,2), not Float — see the P0-4 migration.
-// - The six soft-delete tables (User/Company/Project/Task/Budget/Transaction)
-//   carry a nullable deletedAt sentinel; scoped reads filter deletedAt: null.
+// - The seven soft-delete tables (User/Company/Project/Task/Budget/Transaction
+//   /Message) carry a nullable deletedAt sentinel; scoped reads filter
+//   deletedAt: null. Message joined the set with the chat rollout — a deleted
+//   chat message is tombstoned, never erased, so a thread can't silently
+//   rewrite its own history.
 
 generator client {
   provider      = "prisma-client-js"
@@ -37,6 +40,37 @@ model User {
   id              String    @id @default(cuid())
   name            String
   email           String    @unique
+  // Parser-addressable name: the token after the `@` in a comment or chat
+  // mention (`@ali`). Deliberately NOT `name` — a name is how PEOPLE address
+  // you and may be written in any script; a handle is how the MENTION PARSER
+  // addresses you and has to survive an ASCII token grammar. The gap between
+  // the two was a live bug (FaultsAudit T16): slugifyName() in
+  // lib/comments/mentions.ts ends in `.replace(/[^a-z0-9-]/g, "")`, so a
+  // teammate whose name carries no ASCII letters — ordinary in the Urdu locale
+  // this product ships — slugified to the EMPTY STRING and was unmentionable
+  // inside their own workspace, with nothing in the UI saying why.
+  //
+  // REJECTED ALTERNATIVE — widening the token regex to `\p{L}`. An `@`
+  // followed by Urdu prose has no ASCII word boundary to stop at, so the parser
+  // cannot tell where the mention ends and the sentence resumes; `@ali` becomes
+  // ambiguous with any Urdu text after an `@`. Giving everyone a typable ASCII
+  // address leaves the grammar alone instead of making it guess. Do not
+  // "simplify" this column away by widening the regex.
+  //
+  // PER-COMPANY, not global. Mentions only ever resolve inside a workspace, so
+  // two companies may each hold an `@ali` for the same reason they may each
+  // hold a #general (see Channel.slug). A global unique would make the second
+  // `ali` to sign up anywhere in the product wear a suffix forever.
+  //
+  // NULLABLE, and safe to be: Postgres unique indexes are NULLS DISTINCT by
+  // default, and a multi-column key counts as a duplicate only when EVERY
+  // column matches — a NULL never equals a NULL, so a row with a NULL handle
+  // cannot conflict with anything and unlimited handle-less users coexist in
+  // one company under @@unique([companyId, handle]) below. That is what lets
+  // the column ship without a NOT NULL backfill that must provably succeed for
+  // every historical row, including rows whose local-part sanitises to nothing.
+  // 20260925140000_add_user_handle backfills every row that exists today.
+  handle          String?
   passwordHash    String // bcrypt hash, never the raw password
   role            String // "admin" | "cofounder" | "member"
   avatar          String?
@@ -70,26 +104,36 @@ model User {
   // ops can restore with `UPDATE "User" SET "deletedAt" = NULL`.
   deletedAt       DateTime?
 
-  company            Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  ownedCompany       Company?        @relation("CompanyOwner")
+  company            Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  ownedCompany       Company?                 @relation("CompanyOwner")
   transactions       Transaction[]
-  assignedTasks      Task[]          @relation("TaskAssignee")
-  createdTasks       Task[]          @relation("TaskCreator")
+  assignedTasks      Task[]                   @relation("TaskAssignee")
+  createdTasks       Task[]                   @relation("TaskCreator")
   activities         Activity[]
   notifications      Notification[]
   recurringRules     RecurringRule[]
   budgets            Budget[]
-  comments           Comment[]       @relation("CommentAuthor")
-  timeEntries        TimeEntry[]     @relation("TimeEntryUser")
-  editedEntries      TimeEntry[]     @relation("TimeEntryEditor")
+  comments           Comment[]                @relation("CommentAuthor")
+  timeEntries        TimeEntry[]              @relation("TimeEntryUser")
+  editedEntries      TimeEntry[]              @relation("TimeEntryEditor")
   // Projects this user supervises (1:N — one user can supervise many).
   // SetNull on delete so the project survives the supervisor leaving;
   // the actions layer re-assigns via changeSupervisorAction immediately
   // after, but the DB never blocks the user delete.
-  supervisedProjects Project[]       @relation("ProjectSupervisor")
-  createdProjects    Project[]       @relation("ProjectCreator")
+  supervisedProjects Project[]                @relation("ProjectSupervisor")
+  createdProjects    Project[]                @relation("ProjectCreator")
   pushSubscriptions  PushSubscription[]
+  notifyPrefs        NotificationPreference[]
+  // Chat. Memberships are the rail; createdChannels/messages/reactions exist
+  // so the whole-workspace purge can walk this user's chat rows explicitly.
+  createdChannels    Channel[]                @relation("ChannelCreator")
+  channelMemberships ChannelMember[]
+  messages           Message[]                @relation("MessageAuthor")
+  messageReactions   MessageReaction[]
 
+  // One handle per workspace. Also the lookup index the mention resolver reads
+  // through (companyId + handle), so no separate @@index is needed.
+  @@unique([companyId, handle])
   @@index([companyId])
   @@index([email])
   @@index([deletedAt])
@@ -110,6 +154,36 @@ model PushSubscription {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
+}
+
+// Per-user, per-event delivery preferences. Absent row = the defaults in
+// lib/notify/preferences.ts, so signing up writes nothing and a new event can
+// ship without a backfill.
+//
+// Enforced in ONE place — lib/notify/fan-out.ts. That is the whole reason the
+// fan-out was centralised first (FaultsAudit S9: "a real preferences matrix
+// has to be *enforced*, not decorative"); a structural test fails the build if
+// a notification is ever written around it.
+model NotificationPreference {
+  id     String @id @default(cuid())
+  userId String
+  // A NotifyEvent. String, not a Prisma enum — lib/notify/fan-out.ts owns the
+  // union, matching how the rest of the schema defers to zod at the boundary.
+  event  String
+
+  // The three delivery channels, independently switchable.
+  inApp Boolean @default(true)
+  email Boolean @default(true)
+  push  Boolean @default(true)
+
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // One row per person per event; the fan-out upserts on this.
+  @@unique([userId, event])
+  // The fan-out reads every preference for a set of recipients at once.
   @@index([userId])
 }
 
@@ -149,6 +223,8 @@ model Company {
   comments       Comment[]
   timeEntries    TimeEntry[]
   projects       Project[]
+  channels       Channel[]
+  messages       Message[]
 
   @@index([deletedAt])
 }
@@ -159,7 +235,7 @@ model Transaction {
   type        String // "expense" | "investment"
   // Decimal(12, 2) — up to 10 billion with cent precision. Previously
   // `Float`, which drifts on SUM() past a few million rows and can't
-  // represent 0.10 exactly. See BUGS.md P0-4.
+  // represent 0.10 exactly. See FaultsAudit.md P0-4.
   amount      Decimal   @db.Decimal(12, 2)
   category    String
   description String
@@ -378,7 +454,7 @@ model Budget {
   projectId        String
   category         String // single expense category, e.g. "Office Rent"
   // Decimal(12, 2) matches Transaction.amount so any (limit − sum) math
-  // stays on the same numeric domain. See BUGS.md P0-4.
+  // stays on the same numeric domain. See FaultsAudit.md P0-4.
   monthlyLimit     Decimal   @db.Decimal(12, 2)
   createdBy        String
   createdByName    String
@@ -532,10 +608,13 @@ model Project {
   // default filter on /projects (archived hidden by default) and shifts
   // the card's visual tone.
   status        String    @default("active")
-  // Color tag drawn from a fixed palette (primary | cyan | pink | warning
-  // | info). Stored as a string slug, NOT a hex — keeps swatches in lock
-  // step with the design tokens defined in app/globals.css.
-  color         String    @default("primary")
+  // Color tag drawn from a fixed palette (emerald | forest | mint | slate
+  // | warning). Stored as a string slug, NOT a hex — keeps swatches in lock
+  // step with the design tokens defined in app/globals.css. The retired
+  // primary/cyan/pink/info slugs were remapped by the rebrand migration
+  // 20260923000000_rebrand_project_colors; lib/schemas/project.ts is the
+  // authoritative list.
+  color         String    @default("emerald")
   // Optional planned end. When set + status="active" + past today, the
   // project card renders an overdue chip.
   targetEndDate DateTime?
@@ -558,4 +637,189 @@ model Project {
   @@index([companyId, status])
   @@index([supervisorId])
   @@index([deletedAt])
+}
+
+// ─── Chat ────────────────────────────────────────────────────────────────
+//
+// Channels + messages for the in-app chat surface. Same conventions as the
+// rest of the schema: unions live in zod (lib/schemas/chat.ts), author fields
+// are denormalized exactly like Comment, and visibility is decided by the pure
+// predicates in lib/auth/channel-permissions.ts — never inline in an action.
+
+model Channel {
+  id            String    @id @default(cuid())
+  companyId     String
+  // "public" | "private" | "dm". String, not a Prisma enum — CHANNEL_KINDS in
+  // lib/schemas/chat.ts owns the union at the app boundary. Drives visibility:
+  // canSeeChannel() in lib/auth/channel-permissions.ts.
+  kind          String
+  // URL segment (/chat/<slug>). For a DM this holds the dmKey, so a DM is
+  // addressable by the same route shape as a named channel and needs no
+  // second lookup table.
+  slug          String
+  name          String
+  topic         String?
+  // Sorted "userIdA:userIdB", produced by dmKeyFor() in
+  // lib/auth/channel-permissions.ts. NULL for non-DMs. Sorting is what stops
+  // the same pair forking into two parallel conversations; the
+  // @@unique([companyId, dmKey]) below is the hard guarantee.
+  dmKey         String?
+  createdBy     String
+  createdAt     DateTime  @default(now())
+  // Archive is a soft close, NOT a delete: history stays readable, posting
+  // stops. canPostInChannel() rejects on this.
+  archivedAt    DateTime?
+  // Denormalized timestamp of the newest message, so the channel rail can
+  // ORDER BY recency without an aggregate over Message on every page load.
+  // Written by the send path in lib/actions/chat.ts.
+  lastMessageAt DateTime?
+
+  company  Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  // Cascade, not Restrict: the ONLY path that hard-deletes a User is
+  // whole-workspace erasure (the purge cron has no individual-user stage by
+  // design), where the channel is going away regardless. Restrict here would
+  // jam that transaction on a table the cron doesn't know about.
+  creator  User            @relation("ChannelCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+  members  ChannelMember[]
+  messages Message[]
+
+  // Slugs are per-workspace, not global — two companies may both have #general.
+  @@unique([companyId, slug])
+  // One DM per ordered pair per workspace. The anti-fork guarantee.
+  @@unique([companyId, dmKey])
+  @@index([companyId, kind])
+  @@index([companyId, lastMessageAt])
+}
+
+model ChannelMember {
+  id                String    @id @default(cuid())
+  channelId         String
+  userId            String
+  // "owner" | "member" — CHANNEL_ROLES in lib/schemas/chat.ts. The channel
+  // owner gets rename/archive rights without being a company admin; see
+  // canManageChannel() in lib/auth/channel-permissions.ts.
+  role              String    @default("member")
+  joinedAt          DateTime  @default(now())
+  // Read watermark. Unread = messages newer than this that I did not author.
+  // Defaults to now() (and the migration backfills now()) so joining a channel
+  // never greets you with a fabricated unread badge for history you never saw.
+  lastReadAt        DateTime  @default(now())
+  // Last message the user actually read. Deliberately NOT a foreign key: it is
+  // a watermark, and an FK would either jam a message purge or null itself out
+  // from under the badge maths. lastReadAt is the authoritative comparison.
+  lastReadMessageId String?
+  // Muted = still a member, still sees the channel, just no notification
+  // fan-out. NULL = unmuted.
+  mutedAt           DateTime?
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // One membership row per person per channel; join/leave toggles the row.
+  @@unique([channelId, userId])
+  // Backs "every channel I'm in" — the channel rail's primary query.
+  @@index([userId])
+}
+
+model Message {
+  id           String    @id @default(cuid())
+  // Denormalized company scope. Every read path is already company-scoped, and
+  // carrying it here means the workspace-wide sweeps (purge, export) don't have
+  // to join through Channel.
+  companyId    String
+  channelId    String
+  authorId     String
+  authorName   String // denormalized — survives a rename, exactly like Comment
+  authorAvatar String? // denormalized
+  // "text" | "card" — MESSAGE_KINDS in lib/schemas/chat.ts.
+  kind         String    @default("text")
+  body         String
+  // JSON, versioned — the structured payload for kind "card" (e.g. a Runway
+  // snapshot). NULL for plain text. String, not Json, so the column stays
+  // portable and the version tag inside it owns migration of the shape.
+  payload      String?
+  // Thread root. NULL = the message IS a root. SetNull on delete so purging a
+  // root promotes its replies to roots instead of cascading them away.
+  parentId     String?
+  // Denormalized count of direct replies, so a root row renders "5 replies"
+  // without an aggregate per row. Maintained by the send/delete paths in
+  // lib/actions/chat.ts.
+  replyCount   Int       @default(0)
+  // JSON array of resolved userIds — `["cuid1","cuid2"]`. Same shape and same
+  // reasoning as Comment.mentions.
+  mentions     String    @default("[]")
+  createdAt    DateTime  @default(now())
+  editedAt     DateTime?
+  // Tombstone — see User.deletedAt for semantics. Message is the SEVENTH
+  // soft-delete table. A deleted message must not silently rewrite history:
+  // the row survives so replies keep their parent and the thread still reads
+  // in order; the UI renders "message deleted" in its place.
+  deletedAt    DateTime?
+  // Full-text search vector over `body`, added by the Phase H cross-content
+  // search rollout (migration 20260925120000_add_message_search). Postgres
+  // owns it end to end — the real column is
+  //   tsvector GENERATED ALWAYS AS (to_tsvector('english', coalesce("body", ''))) STORED
+  // so it is recomputed on every INSERT/UPDATE of `body` and physically cannot
+  // drift out of step with the text it indexes. No application code writes it.
+  //
+  // `Unsupported` means the Prisma client can neither select nor write this
+  // field, and that is the intent, not a limitation we are working around:
+  // search reads it through `$queryRaw` (lib/queries/), never through the
+  // client. It is declared here for one reason only — without the declaration
+  // `prisma migrate dev` sees a column the schema does not know about, calls
+  // it drift, and cheerfully generates a migration that DROPs the column and
+  // its index. Declaring it keeps the diff quiet.
+  //
+  // WARNING to the next person running `migrate dev`: the diff can see the
+  // column's NAME and TYPE but NOT the `GENERATED ALWAYS ... STORED`
+  // expression behind it, because Prisma has no schema syntax for a generated
+  // column. So a future `migrate dev` may offer to "fix" this column by
+  // recreating it as a plain, empty tsvector. The answer is NO — accepting it
+  // silently turns every chat search result into zero rows, with no error
+  // anywhere. Delete that step out of any generated migration.
+  //
+  // Reminder for query authors: the vector is computed from `body` alone and
+  // knows nothing about tombstones, so a soft-deleted message still matches.
+  // Every search query MUST add `"deletedAt" IS NULL` itself.
+  searchVector Unsupported("tsvector")?
+
+  company   Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  channel   Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author    User              @relation("MessageAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  parent    Message?          @relation("MessageThread", fields: [parentId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  replies   Message[]         @relation("MessageThread")
+  reactions MessageReaction[]
+
+  // The channel timeline.
+  @@index([channelId, createdAt])
+  // One thread's replies, and the "roots only" timeline (parentId IS NULL).
+  @@index([channelId, parentId, createdAt])
+  // Workspace-wide sweeps: search, export, purge.
+  @@index([companyId, createdAt])
+  @@index([authorId])
+  @@index([deletedAt])
+  // The GIN index over searchVector — "Message_searchVector_idx" — is NOT
+  // listed here and cannot be: Prisma has no syntax for a GIN index, nor for
+  // any index on an Unsupported column. It lives in SQL only, created by
+  // 20260925120000_add_message_search. Its absence from this block is not an
+  // oversight, and `prisma migrate` will not propose to drop it (it ignores
+  // indexes on columns it cannot model). Anything that changes it is a
+  // hand-written migration.
+}
+
+model MessageReaction {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  // One of REACTION_EMOJI in lib/schemas/chat.ts — a fixed allow-list, not a
+  // free-text column, so the rail renders a known set of chips.
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // One of each emoji per person; toggling off is a delete, not a counter.
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
 }

@@ -1,6 +1,5 @@
 import { v4 as uuid } from "uuid";
 import type { User, Company, Transaction, Task, Activity, Notification } from "./types";
-import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES } from "./types";
 
 export function seedData() {
   const companyId = uuid();

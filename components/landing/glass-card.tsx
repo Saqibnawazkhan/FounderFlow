@@ -1,11 +1,12 @@
-"use client";
-
 /**
  * GlassCard — Stitch glass-morphism container.
  *
  * Uses the theme-aware `glass` token (inverts on light vs dark): on dark the
  * surface picks up a white tint, on light it picks up a dark tint, so the
  * card looks "carved out" of the background in either mode.
+ *
+ * Server component — no hooks, no handlers, no browser APIs. Keep it that way:
+ * the landing page renders it to HTML and it never reaches the client bundle.
  */
 
 import { cn } from "@/lib/utils";

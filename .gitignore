@@ -79,3 +79,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local QA audit baseline (scripts/_qa-guard.mjs) — machine-specific, never committed
+.qa-baseline.json

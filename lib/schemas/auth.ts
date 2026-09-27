@@ -30,11 +30,3 @@ export const SignupSchema = z.object({
 });
 
 export type SignupInput = z.infer<typeof SignupSchema>;
-
-// Step 1 of the signup wizard validates a subset client-side so we can advance
-// without touching the company fields. Server still runs full SignupSchema.
-export const SignupStep1Schema = SignupSchema.pick({
-  name: true,
-  email: true,
-  password: true,
-});

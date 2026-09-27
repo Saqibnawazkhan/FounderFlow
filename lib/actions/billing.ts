@@ -6,14 +6,32 @@
  * workspace owner manages billing). Both no-op gracefully with a clear error
  * when LemonSqueezy isn't configured, so the app never hard-depends on billing.
  *
- * The webhook (app/api/webhooks/lemonsqueezy) — not these actions — is the
- * source of truth for plan state. Checkout just kicks off the hosted flow, and
- * carries the workspace id in custom data so the webhook can resolve it.
+ * The webhook (app/api/webhooks/lemonsqueezy) — not these actions — is the only
+ * WRITER of plan state. Checkout just kicks off the hosted flow, and carries the
+ * workspace id in custom data so the webhook can resolve it.
+ *
+ * It is not, however, the last word on ENTITLEMENT. Because the webhook is the
+ * only writer, a delivery that never arrives leaves the column permanently
+ * wrong, so whether a workspace is really on Team is answered by
+ * `effectivePlan` in lib/billing/plan.ts — the column plus the subscription
+ * status plus the paid-through date. Read the comment on the gate below before
+ * comparing `company.plan` to a string anywhere in here.
+ *
+ * That custom data is a HINT, not proof of ownership (bug bill-001). This is
+ * the only place that sets it honestly — from the authenticated admin's own
+ * session — but a stranger can open a hosted buy link directly and put any
+ * workspace id in it (`?checkout[custom][company_id]=...`), and LemonSqueezy
+ * signs whatever it's given. So the webhook re-derives identity from the
+ * provider-assigned subscription id and only honours a claim for a workspace
+ * that is unbound or already bound to that subscription; see
+ * lib/billing/webhook-identity.ts. Don't add a second writer of plan state
+ * here on the assumption that custom data is trustworthy.
  */
 
 import { createCheckout, getSubscription } from "@lemonsqueezy/lemonsqueezy.js";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { effectivePlan } from "@/lib/billing/plan";
 import { limiters } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
 import {
@@ -23,7 +41,7 @@ import {
   APP_URL,
 } from "@/lib/lemonsqueezy/config";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 /**
  * Turn a LemonSqueezy SDK error (or any thrown value) into a short, readable
@@ -62,10 +80,28 @@ export async function createCheckoutSessionAction(): Promise<ActionResult<{ url:
   try {
     const company = await db.company.findFirst({
       where: { id: session.user.companyId, deletedAt: null },
-      select: { id: true, name: true, plan: true },
+      select: {
+        id: true,
+        name: true,
+        plan: true,
+        // Needed by effectivePlan below. Selecting only `plan` would leave both
+        // of these `undefined`, which effectivePlan reads as "no date to bound
+        // this with" — i.e. the check would compile, run, and always say "team".
+        subscriptionStatus: true,
+        currentPeriodEnd: true,
+      },
     });
     if (!company) return { success: false, error: "Workspace not found" };
-    if (company.plan === "team") {
+    // Ask the ENTITLEMENT, not the raw column (bill-004). This used to be
+    // `company.plan === "team"`, and once entitlement became time-aware that
+    // was a trap with real money in it: a workspace whose paid period has
+    // lapsed — a lost `subscription_expired`, a permanently failed card, an
+    // event that could not be placed (bill-008) — still has `plan = "team"`
+    // stored, so it would be capped at the free member limit, be told
+    // "Subscription ended … upgrade to restore Team features" on the billing
+    // screen, and then be refused at the checkout for already being on Team.
+    // `plan` has no in-app writer, so there would be no way out but SQL.
+    if (effectivePlan(company) === "team") {
       return { success: false, error: "You're already on the Team plan." };
     }
 

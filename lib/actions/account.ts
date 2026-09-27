@@ -15,7 +15,7 @@
  * Soft-delete cascade:
  *   Instead of `db.company.delete()` we UPDATE a nullable `deletedAt`
  *   sentinel on Company + its child rows that carry the same column
- *   (Users, Projects, Tasks, Budgets, Transactions). Reads all filter
+ *   (Users, Projects, Tasks, Budgets, Transactions, Messages). Reads all filter
  *   `deletedAt: null`, so tombstoned rows disappear from the UI, the
  *   team list, mention pickers, and auth — but the physical rows stay
  *   for 90 days. `/api/cron/purge-soft-deleted` hard-deletes them after
@@ -39,7 +39,7 @@ import { captureServerError } from "@/lib/sentry-server";
 import { DeleteAccountSchema, DeleteWorkspaceSchema } from "@/lib/schemas/account";
 import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 /**
  * Delete the caller's User row.
@@ -98,6 +98,10 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
         action: "deleteAccountAction.soleUser",
         userId: me.id,
         companyId,
+        // Carried into the Sentry event so whoever reads the canary can see
+        // what the sweep knowingly left untombstoned, without opening this
+        // file. Empty today.
+        extra: { softDeleteExcluded: SOFT_DELETE_EXCLUDED },
       });
       await signOut({ redirect: false });
       return { success: true, data: undefined };
@@ -136,19 +140,50 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
 }
 
 /**
- * Tombstone a company + every child row that carries a `deletedAt` sentinel
- * (Users, Projects, Tasks, Budgets, Transactions). Runs inside a single
- * Prisma $transaction so a partial failure never leaves half the workspace
- * tombstoned. Returns the total row count touched (for the bulk-mutation
- * canary).
+ * Models that DO carry a `deletedAt` column but that this sweep deliberately
+ * leaves live. Empty, and meant to stay that way.
  *
- * Skipped tables: Activity, Notification, Comment, TimeEntry, InviteToken,
- * RecurringRule. They don't carry `deletedAt` (yet) — the nightly purge
- * still catches their orphans when the parent Company is hard-purged, via
- * the existing `onDelete: Cascade` chain.
+ * It is declared rather than implied so `tests/lib/db/purge-invariants.test.ts`
+ * can derive the soft-deletable list from prisma/schema.prisma and check it
+ * against this function. An entry here is a promise that the rows are
+ * unreachable by some other means; write that reasoning next to it.
+ */
+const SOFT_DELETE_EXCLUDED: readonly string[] = [];
+
+/**
+ * Tombstone a company + every child row that carries a `deletedAt` sentinel
+ * (Users, Projects, Tasks, Budgets, Transactions, Messages). Runs inside a
+ * single Prisma $transaction so a partial failure never leaves half the
+ * workspace tombstoned. Returns the total row count touched (for the
+ * bulk-mutation canary).
+ *
+ * Message joined the soft-delete set on 2026-09-24 with the chat rollout and
+ * this function did not follow it until 2026-09-25 — deleting a workspace left
+ * every chat row live, with `deletedAt: null`, for the full 90-day retention
+ * window. Nothing could read them (see below), so it was not an exposure; it
+ * was a lie in the data. Anything that trusts the tombstone rather than the
+ * session — an export, a support query, a future admin tool, the eventual GDPR
+ * anonymization pass — would have walked straight past a "deleted" workspace's
+ * messages.
+ *
+ * Channel, ChannelMember and MessageReaction are NOT tombstoned, and cannot be:
+ * they have no `deletedAt` column at all. Channel's `archivedAt` is not a
+ * substitute — it means "closed to new posts, history still readable", a
+ * different thing, and writing it here would corrupt recovery (restoring the
+ * workspace could not tell a channel archived by the sweep from one a human
+ * archived last month). Leaving them live is safe for the same reason the
+ * pre-existing skips below are: every chat read goes through
+ * `requireScopedSession()`, and auth filters `deletedAt: null` on User, so a
+ * tombstoned workspace has no session that can reach them. They die for real
+ * when /api/cron/purge-soft-deleted hard-purges the Company.
+ *
+ * Skipped tables (no `deletedAt` column): Activity, Notification, Comment,
+ * TimeEntry, InviteToken, RecurringRule, Channel, ChannelMember,
+ * MessageReaction. The nightly purge deletes each of them by name when the
+ * parent Company is hard-purged.
  */
 async function softDeleteWorkspace(companyId: string, now: Date): Promise<number> {
-  const [txn, budget, task, project, user, company] = await db.$transaction([
+  const [txn, budget, task, project, message, user, company] = await db.$transaction([
     db.transaction.updateMany({
       where: { companyId, deletedAt: null },
       data: { deletedAt: now },
@@ -165,6 +200,14 @@ async function softDeleteWorkspace(companyId: string, now: Date): Promise<number
       where: { companyId, deletedAt: null },
       data: { deletedAt: now },
     }),
+    // `deletedAt: null` is doing real work here, not just skipping no-ops: a
+    // message a user deleted last week must keep ITS timestamp, so restoring
+    // the workspace by the sweep's timestamp brings the thread back without
+    // resurrecting the one message its author took down.
+    db.message.updateMany({
+      where: { companyId, deletedAt: null },
+      data: { deletedAt: now },
+    }),
     db.user.updateMany({
       where: { companyId, deletedAt: null },
       data: { deletedAt: now },
@@ -174,7 +217,15 @@ async function softDeleteWorkspace(companyId: string, now: Date): Promise<number
       data: { deletedAt: now },
     }),
   ]);
-  return txn.count + budget.count + task.count + project.count + user.count + (company ? 1 : 0);
+  return (
+    txn.count +
+    budget.count +
+    task.count +
+    project.count +
+    message.count +
+    user.count +
+    (company ? 1 : 0)
+  );
 }
 
 /**
@@ -187,8 +238,9 @@ async function softDeleteWorkspace(companyId: string, now: Date): Promise<number
  *
  *   UPDATE "Company" SET "deletedAt" = NULL WHERE id = '<id>';
  *   UPDATE "User" SET "deletedAt" = NULL WHERE "companyId" = '<id>';
- *   -- (repeat for Transaction/Task/Budget/Project — they share the
- *   -- same tombstone timestamp so a range filter reunites them)
+ *   -- (repeat for Transaction/Task/Budget/Project/Message — they share the
+ *   -- same tombstone timestamp so a range filter reunites them, and a
+ *   -- range filter is what keeps individually-deleted messages deleted)
  *
  * The nightly cron at /api/cron/purge-soft-deleted hard-deletes rows past
  * the 90-day window; nothing is recoverable after that.
@@ -241,7 +293,7 @@ export async function deleteWorkspaceAction(input: unknown): Promise<ActionResul
       action: "deleteWorkspaceAction",
       userId: me.id,
       companyId: me.companyId,
-      extra: { workspaceName: company.name },
+      extra: { workspaceName: company.name, softDeleteExcluded: SOFT_DELETE_EXCLUDED },
     });
     await signOut({ redirect: false });
     return { success: true, data: undefined };

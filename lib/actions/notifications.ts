@@ -11,36 +11,11 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { toClientNotification } from "@/lib/queries/notifications";
 import { canSeeFinances, isMemberBlockedRoute, type Role } from "@/lib/auth/role-gates";
 import type { Notification } from "@/lib/types";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
-
-function toClient(n: {
-  id: string;
-  userId: string;
-  companyId: string;
-  title: string;
-  message: string;
-  type: string;
-  category: string;
-  read: boolean;
-  link: string | null;
-  createdAt: Date;
-}): Notification {
-  return {
-    id: n.id,
-    userId: n.userId,
-    companyId: n.companyId,
-    title: n.title,
-    message: n.message,
-    type: n.type as Notification["type"],
-    category: n.category as Notification["category"],
-    read: n.read,
-    link: n.link ?? undefined,
-    createdAt: n.createdAt.toISOString(),
-  };
-}
+import type { ActionResult } from "@/lib/actions/types";
 
 export async function listNotificationsAction(): Promise<ActionResult<Notification[]>> {
   const session = await auth();
@@ -65,7 +40,7 @@ export async function listNotificationsAction(): Promise<ActionResult<Notificati
         return !isMemberBlockedRoute(path);
       });
 
-  return { success: true, data: visible.map(toClient) };
+  return { success: true, data: visible.map(toClientNotification) };
 }
 
 export async function markNotificationReadAction(id: string): Promise<ActionResult> {

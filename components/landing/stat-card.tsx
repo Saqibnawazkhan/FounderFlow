@@ -1,10 +1,11 @@
-"use client";
-
 /**
  * StatCard — Stitch metric card pattern.
  *
  * Layout: optional top icon, large mono number bottom-left, uppercase label
  * underneath the number. Hover lifts a subtle border highlight.
+ *
+ * Server component — no hooks, no handlers, no browser APIs. Keep it that way:
+ * the landing page renders it to HTML and it never reaches the client bundle.
  */
 
 import type { LucideIcon } from "lucide-react";
@@ -15,7 +16,7 @@ interface StatCardProps {
   label: string;
   icon?: LucideIcon;
   /** Optional accent for the label color. */
-  tone?: "primary" | "cyan" | "pink" | "muted";
+  tone?: "primary" | "forest" | "mint" | "muted";
   children?: React.ReactNode;
   className?: string;
 }
@@ -29,10 +30,10 @@ export function StatCard({
   className,
 }: StatCardProps) {
   const toneClass =
-    tone === "cyan"
-      ? "text-cyan-strong"
-      : tone === "pink"
-        ? "text-pink-strong"
+    tone === "forest"
+      ? "text-forest-strong"
+      : tone === "mint"
+        ? "text-mint-strong"
         : tone === "muted"
           ? "text-fg-muted"
           : "text-primary-strong";

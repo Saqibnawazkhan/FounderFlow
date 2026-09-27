@@ -4,15 +4,16 @@
  * Settings client. Sections, in order:
  *   1. Header + 3 stat cards (time tracked, last sign-in, member since)
  *   2. Profile — read-only summary + "Edit profile" + "Change password" buttons
- *   3. Company — read-only summary + "Edit company" button (admin/cofounder ONLY)
- *   4. Appearance, Language, Data & storage, Sign out
+ *   3. Handle — the @mention address, edited in place (see HandleSection)
+ *   4. Company — read-only summary + "Edit company" button (admin/cofounder ONLY)
+ *   5. Appearance, Language, Data & storage, Sign out
  *
  * Members never see the Company section — they can't see finances and the
  * company card includes currency, which is finance-adjacent context. The
  * server action enforces the same rule; this is the visual half.
  */
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useId, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   AtSign,
@@ -31,6 +32,7 @@ import {
   Bell,
   Palette,
   Pencil,
+  Save,
   Shield,
   Skull,
   Smartphone,
@@ -44,7 +46,11 @@ import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { logoutAction } from "@/lib/actions/auth";
 import { updateAppearanceAction } from "@/lib/actions/appearance";
+import { getMyHandleAction, updateHandleAction } from "@/lib/actions/profile";
+import { HandleSchema } from "@/lib/schemas/profile";
 import { PushToggle } from "@/components/push/push-toggle";
+import { NotificationMatrix } from "@/components/settings/notification-matrix";
+import type { NotificationMatrixRow } from "@/lib/queries/notification-preferences";
 import { InstallAppButton } from "@/components/pwa/install-button";
 import { Avatar } from "@/components/ui/avatar";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -62,6 +68,7 @@ import {
   createBillingPortalSessionAction,
 } from "@/lib/actions/billing";
 import { FREE_MEMBER_LIMIT, PLAN_LABELS } from "@/lib/billing/plan";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 import { EditProfileModal } from "./edit-profile-modal";
 import { ChangePasswordModal } from "./change-password-modal";
 import { ChangeEmailModal } from "./change-email-modal";
@@ -74,9 +81,10 @@ type Props = {
   company: Company;
   stats: AccountStats;
   billing: BillingSummary;
+  notifyMatrix: NotificationMatrixRow[];
 };
 
-export function SettingsClient({ user, company, stats, billing }: Props) {
+export function SettingsClient({ user, company, stats, billing, notifyMatrix }: Props) {
   const router = useRouter();
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
@@ -85,6 +93,7 @@ export function SettingsClient({ user, company, stats, billing }: Props) {
   const logout = useStore((s) => s.logout);
   const confirm = useConfirm();
   const t = useT();
+  const n = useNumberFormat();
   const [, startTransition] = useTransition();
 
   const canEditCompany = canSeeFinances(user.role as Role);
@@ -197,7 +206,7 @@ export function SettingsClient({ user, company, stats, billing }: Props) {
   return (
     <div className="mx-auto max-w-3xl space-y-8">
       <header>
-        <PillBadge tone="cyan">{t.settings.workspaceBadge}</PillBadge>
+        <PillBadge tone="forest">{t.settings.workspaceBadge}</PillBadge>
         <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">
           {t.settings.title}
         </h1>
@@ -210,7 +219,7 @@ export function SettingsClient({ user, company, stats, billing }: Props) {
           icon={Clock}
           label={t.settings.totalTracked}
           value={formatDuration(stats.totalTrackedMs)}
-          desc={`${stats.sessionCount} ${t.settings.sessionCount.toLowerCase()}`}
+          desc={`${n.number(stats.sessionCount)} ${t.settings.sessionCount.toLowerCase()}`}
           tone="primary"
         />
         <StatCard
@@ -226,14 +235,14 @@ export function SettingsClient({ user, company, stats, billing }: Props) {
               ? new Date(stats.lastSignInAt).toLocaleString()
               : t.settings.lastSignInNever
           }
-          tone="cyan"
+          tone="forest"
         />
         <StatCard
           icon={CalendarDays}
           label={t.settings.memberSince}
           value={formatDate(stats.memberSince)}
           desc={formatDistanceToNow(new Date(stats.memberSince), { addSuffix: true })}
-          tone="pink"
+          tone="mint"
         />
       </section>
 
@@ -283,10 +292,10 @@ export function SettingsClient({ user, company, stats, billing }: Props) {
                 <Crown className="h-4 w-4 text-primary-strong" aria-hidden="true" />
               )}
               {user.role === "cofounder" && (
-                <Shield className="h-4 w-4 text-cyan-strong" aria-hidden="true" />
+                <Shield className="h-4 w-4 text-forest-strong" aria-hidden="true" />
               )}
               {user.role === "member" && (
-                <User className="h-4 w-4 text-pink-strong" aria-hidden="true" />
+                <User className="h-4 w-4 text-mint-strong" aria-hidden="true" />
               )}
               <p className="text-sm font-semibold text-fg">
                 {user.role === "admin"
@@ -301,6 +310,12 @@ export function SettingsClient({ user, company, stats, billing }: Props) {
             <p className="font-mono text-xs text-fg-muted">{user.id.slice(0, 12)}…</p>
           </DataCell>
         </div>
+      </Section>
+
+      {/* Sits under Profile because it IS profile — the half of your identity
+          that the mention parser reads rather than the half people read. */}
+      <Section icon={AtSign} label="Handle">
+        <HandleSection name={user.name} />
       </Section>
 
       {/* Members can't see / edit company info — see lib/auth/role-gates. */}
@@ -346,6 +361,9 @@ export function SettingsClient({ user, company, stats, billing }: Props) {
 
       <Section icon={Bell} label="Notifications">
         <PushToggle />
+        <div className="mt-6 border-t border-border pt-6">
+          <NotificationMatrix initial={notifyMatrix} />
+        </div>
       </Section>
 
       <Section icon={Palette} label={t.settings.appearance}>
@@ -553,6 +571,171 @@ function Section({
   );
 }
 
+/**
+ * The @mention handle, edited in place.
+ *
+ * WHY IN PLACE AND NOT IN A MODAL, unlike name/email/company. Those are things
+ * you already know about yourself; a handle is a concept this product has to
+ * TEACH. Most people arrive with a machine-assigned one they have never seen
+ * (the migration derived it from their email) and no idea that it is what
+ * teammates type to reach them. Hidden behind an "Edit" button, it stays a
+ * database column. On the page, with a live preview of the mention it
+ * produces, it explains itself.
+ *
+ * WHY IT FETCHES ITS OWN VALUE. /settings receives `user` from
+ * `getCurrentUser()`, and neither that query nor the client `User` type
+ * carries `handle` yet (both are another agent's files this wave), so the
+ * value comes from `getMyHandleAction` on mount. That costs a round trip and a
+ * brief skeleton; when `User` grows the field, take it as a prop and delete
+ * the effect.
+ *
+ * Save/error shape is the one the rest of settings uses: toast on the outcome,
+ * inline text under the field for the reason (matching the modals' Field), and
+ * the same zod schema the server re-parses, so the client cannot be the only
+ * thing that says no.
+ */
+function HandleSection({ name }: { name: string }) {
+  const inputId = useId();
+  const [current, setCurrent] = useState<string | null>(null);
+  const [value, setValue] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // `cancelled` rather than an AbortController: a server action isn't a
+    // fetch we can abort, and the only hazard is setting state after unmount.
+    let cancelled = false;
+    void (async () => {
+      const res = await getMyHandleAction();
+      if (cancelled) return;
+      if (!res.success) {
+        setError(res.error);
+      } else {
+        setCurrent(res.data.handle);
+        setValue(res.data.handle ?? "");
+      }
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Normalise the two things people do to a handle field without meaning to:
+  // paste it with its leading @, and type it the way they'd type a name. The
+  // schema REJECTS both rather than rewriting them (see lib/schemas/profile),
+  // so fixing them here is what keeps that strictness off the happy path —
+  // what the preview shows is exactly what gets stored.
+  function onChange(raw: string) {
+    setValue(raw.replace(/@/g, "").toLowerCase());
+    setError(null);
+  }
+
+  const dirty = value !== (current ?? "");
+  // The live preview follows what's in the field, so the consequence of an
+  // edit is visible before it's saved.
+  const preview = value.trim() || current || "your-handle";
+
+  async function save() {
+    // Same schema the action re-parses — this only saves a round trip, it is
+    // never the thing that decides.
+    const parsed = HandleSchema.safeParse(value);
+    if (!parsed.success) {
+      setError(parsed.error.issues[0]?.message ?? "Invalid handle");
+      return;
+    }
+    setSaving(true);
+    const res = await updateHandleAction({ handle: parsed.data });
+    setSaving(false);
+    if (!res.success) {
+      // Inline as well as a toast: "that handle is taken" is a thing you fix
+      // in the field you're looking at, not a thing you acknowledge.
+      setError(res.error);
+      toast.error(res.error);
+      return;
+    }
+    setCurrent(res.data.handle);
+    setValue(res.data.handle);
+    setError(null);
+    toast.success("Handle updated");
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-bg/40 p-4">
+      <label
+        htmlFor={inputId}
+        className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+      >
+        Your handle
+      </label>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative flex-1">
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-mono text-sm text-fg-muted"
+          >
+            @
+          </span>
+          <input
+            id={inputId}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            disabled={loading || saving}
+            // A handle is a token, not prose: every one of these stops a
+            // mobile keyboard from "helpfully" capitalising or correcting it
+            // into something the mention parser can't read.
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            placeholder={loading ? "Loading…" : "ali-khan"}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? `${inputId}-help ${inputId}-err` : `${inputId}-help`}
+            className={cn(
+              "w-full rounded-xl border bg-bg py-2.5 pl-8 pr-4 font-mono text-sm text-fg focus:bg-surface focus:outline-none disabled:opacity-60",
+              error
+                ? "border-danger/60 focus:border-danger"
+                : "border-border focus:border-primary/50"
+            )}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={save}
+          // Disabled while unchanged, which also keeps the one legacy edge
+          // case out of reach: the backfill applied no length rule, so a
+          // handle shorter or longer than the schema's bounds can exist and
+          // keeps working — its owner is simply never asked to re-submit it
+          // untouched.
+          disabled={!dirty || saving || loading}
+          className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full bg-primary px-4 py-2.5 text-sm font-bold text-primary-fg transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+        >
+          <Save className="h-4 w-4" aria-hidden="true" />
+          {saving ? "Saving…" : "Save handle"}
+        </button>
+      </div>
+
+      {/* The one line that explains why this field exists at all. Someone
+          whose name is written in Urdu can't guess it from the label. */}
+      <p id={`${inputId}-help`} className="mt-2 text-xs text-fg-muted">
+        Your handle is the name teammates type to tag you — separate from your display name, so a
+        name written in any script still has an address anyone can type.
+      </p>
+      {error && (
+        <p id={`${inputId}-err`} className="mt-1.5 text-xs text-danger">
+          {error}
+        </p>
+      )}
+
+      <p className="mt-3 border-t border-border pt-3 text-xs text-fg-muted">
+        In a comment or a chat message, {name} is{" "}
+        <span className="font-mono text-sm font-bold text-primary-strong">@{preview}</span>
+      </p>
+    </div>
+  );
+}
+
 function BillingSection({ billing }: { billing: BillingSummary }) {
   const [busy, setBusy] = useState<"checkout" | "portal" | null>(null);
   const isTeam = billing.plan === "team";
@@ -618,7 +801,7 @@ function BillingSection({ billing }: { billing: BillingSummary }) {
         <button
           onClick={upgrade}
           disabled={busy !== null}
-          className="inline-flex shrink-0 items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+          className="inline-flex shrink-0 items-center gap-2 rounded-full bg-primary px-4 py-2 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
         >
           <CreditCard className="h-4 w-4" aria-hidden="true" />
           {busy === "checkout" ? "Starting…" : "Upgrade to Team"}
@@ -648,16 +831,16 @@ function StatCard({
   label: string;
   value: string;
   desc: string;
-  tone: "primary" | "cyan" | "pink";
+  tone: "primary" | "forest" | "mint";
 }) {
   const toneText =
-    tone === "cyan"
-      ? "text-cyan-strong"
-      : tone === "pink"
-        ? "text-pink-strong"
+    tone === "forest"
+      ? "text-forest-strong"
+      : tone === "mint"
+        ? "text-mint-strong"
         : "text-primary-strong";
   const toneFill =
-    tone === "cyan" ? "bg-cyan/10" : tone === "pink" ? "bg-pink/10" : "bg-primary/10";
+    tone === "forest" ? "bg-forest/10" : tone === "mint" ? "bg-mint/10" : "bg-primary/10";
   return (
     <div className="rounded-2xl border border-border bg-surface p-5">
       <div className="mb-3 flex items-center justify-between">

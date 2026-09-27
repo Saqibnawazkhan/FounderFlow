@@ -32,10 +32,29 @@ export const metadata: Metadata = {
   keywords: ["startup", "co-founder", "management", "expense tracker", "task management"],
   manifest: "/manifest.json",
   applicationName: "FounderFlow",
-  // Explicit icon set. `app/icon.svg` covers Next.js's file-based metadata,
-  // but bare `/favicon.ico` and legacy Safari need the URL spelled out. The
-  // duplicate `public/icon.svg` (identical to `app/icon.svg`) exists so the
-  // manifest + service-worker precache resolve at the literal URL.
+  // Explicit icon set, and deliberately NO `app/icon.svg`.
+  //
+  // In the App Router a file at `app/icon.svg` IS the route `/icon.svg`, and
+  // `public/icon.svg` claims that same URL. Next resolved the collision by
+  // serving an error page, so `/icon.svg` 500'd on every page load. That was
+  // not cosmetic: `public/sw.js` precaches `/icon.svg` via `cache.addAll`,
+  // which rejects atomically on any non-2xx, so the install handler never
+  // settled and the entire offline / PWA layer silently never came up.
+  //
+  // The `public/` copy is the one that survives, because deleting the `app/`
+  // one costs nothing: Next only falls back to the file-based icon convention
+  // when this `icons` block is absent (next/dist/lib/metadata/resolve-metadata
+  // -> `hasIconsProperty`). With `icon` spelled out below, `app/icon.svg` was
+  // already emitting zero <link> tags — it was pure collision. Meanwhile every
+  // literal reference wants a plain static file at that URL: `manifest.json`,
+  // the SW precache, and the auth allowlists in `auth.config.ts` +
+  // `middleware.ts`.
+  //
+  // Recorded here because manifest.json cannot carry a comment: both SVG
+  // entries there declare `"sizes": "512x512"`, not `"any"`. These files are
+  // base64 PNGs inside an <svg> wrapper, not traced vectors, so `"any"` would
+  // promise resolution independence the asset does not have and invite Chrome
+  // to upscale a raster into the install splash screen.
   icons: {
     icon: [
       { url: "/icon.svg", type: "image/svg+xml" },
@@ -72,7 +91,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   // Match the manifest background so the iOS status bar / Android nav-bar
   // blend seamlessly with the app shell in installed PWA mode.
-  themeColor: "#0a0a0a",
+  themeColor: "#1F2933",
   width: "device-width",
   initialScale: 1,
   // Disable user-zoom only on installed PWA — feels app-like, not webby.
@@ -81,34 +100,60 @@ export const viewport: Viewport = {
 };
 
 /**
- * Sync theme bootstrap — runs in <head> before first paint so we don't flash
- * the wrong theme. Reads the persisted Zustand snapshot from localStorage and
- * applies the `dark` class to <html> immediately. Falls back to dark (the
- * store's initial state) when storage is empty or unavailable.
+ * Sync shell bootstrap — runs in <head> before first paint so we don't flash
+ * the wrong theme OR the wrong text direction. Reads the persisted Zustand
+ * snapshot from localStorage and applies the `dark` class, `lang` and `dir` to
+ * <html> immediately. Falls back to dark + en/ltr (the store's initial state)
+ * when storage is empty or unavailable.
+ *
+ * Why `dir` belongs here and not only in Providers (audit S20): locale lives in
+ * the client store, so the server cannot know it and renders `dir="ltr"`. The
+ * Providers effect that syncs `dir` runs AFTER hydration, which meant an Urdu
+ * user got a full left-to-right first paint on every single page load and then
+ * watched the entire shell jump to the other side once React woke up. Mirroring
+ * the sidebar (below) would have made that flash far more violent, not less.
+ * Setting it pre-paint is the same trick the theme already relied on.
+ *
+ * `RTL_LOCALES` is duplicated from SUPPORTED_LOCALES in lib/i18n/strings.ts
+ * because an inline <head> script cannot import. tests/lib/layout/rtl.test.ts
+ * parses this literal out of the source and fails if the two ever disagree, so
+ * adding a third locale can't silently leave it out.
  */
-const themeBootstrap = `
+const shellBootstrap = `
 (function () {
   try {
     var raw = localStorage.getItem('founderflow-storage');
     var theme = 'dark';
+    var locale = 'en';
     if (raw) {
       var parsed = JSON.parse(raw);
-      if (parsed && parsed.state && parsed.state.theme) theme = parsed.state.theme;
+      if (parsed && parsed.state) {
+        if (parsed.state.theme) theme = parsed.state.theme;
+        if (parsed.state.locale) locale = parsed.state.locale;
+      }
     }
     if (theme === 'dark') document.documentElement.classList.add('dark');
+    var RTL_LOCALES = ['ur'];
+    document.documentElement.lang = locale;
+    document.documentElement.dir = RTL_LOCALES.indexOf(locale) !== -1 ? 'rtl' : 'ltr';
   } catch (e) {}
 })();
 `;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
+    /* `dir` is explicit so the server HTML is never direction-ambiguous. Both
+       it and `lang` are rewritten pre-paint by shellBootstrap when the stored
+       locale is RTL; `suppressHydrationWarning` — already here for the theme
+       class — covers the resulting attribute mismatch on this element. */
     <html
       lang="en"
+      dir="ltr"
       suppressHydrationWarning
       className={`${inter.variable} ${mono.variable} ${serif.variable}`}
     >
       <head>
-        <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
+        <script dangerouslySetInnerHTML={{ __html: shellBootstrap }} />
       </head>
       <body className="min-h-screen bg-bg font-sans text-fg antialiased">
         {/* Skip-to-content: hidden until keyboard-focused, then jumps past
@@ -116,7 +161,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             by the app-shell layout so this lands somewhere useful. */}
         <a
           href="#main"
-          className="sr-only rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-fg focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-modal"
+          className="sr-only rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-fg focus:not-sr-only focus:fixed focus:start-4 focus:top-4 focus:z-modal"
         >
           Skip to main content
         </a>

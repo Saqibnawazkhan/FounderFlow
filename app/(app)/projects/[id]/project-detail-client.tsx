@@ -44,7 +44,7 @@ import type { ProjectStatus, ProjectColor } from "@/lib/schemas/project";
 import type { Role } from "@/lib/auth/role-gates";
 import { formatDate, cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/time/thresholds";
-import { useT } from "@/lib/i18n/use-t";
+import { useT, useNumberFormat } from "@/lib/i18n/use-t";
 import { useMoney } from "@/lib/hooks/useMoney";
 import type { ProjectOverview } from "@/lib/queries/projects";
 import type { TaskWithCount } from "@/lib/queries/tasks";
@@ -70,8 +70,8 @@ type Props = {
 
 const COLOR_STRIPE: Record<string, string> = {
   primary: "bg-primary",
-  cyan: "bg-cyan",
-  pink: "bg-pink",
+  forest: "bg-forest",
+  mint: "bg-mint",
   warning: "bg-warning",
   info: "bg-info",
 };
@@ -79,7 +79,7 @@ const COLOR_STRIPE: Record<string, string> = {
 const STATUS_CLASSES: Record<string, string> = {
   active: "border-primary/30 bg-primary/10 text-primary-strong",
   on_hold: "border-warning/30 bg-warning/10 text-warning-strong",
-  completed: "border-cyan/30 bg-cyan/10 text-cyan-strong",
+  completed: "border-forest/30 bg-forest/10 text-forest-strong",
   archived: "border-border bg-bg/40 text-fg-muted",
 };
 
@@ -94,6 +94,7 @@ export function ProjectDetailClient({
 }: Props) {
   const t = useT();
   const money = useMoney();
+  const n = useNumberFormat();
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
@@ -248,7 +249,7 @@ export function ProjectDetailClient({
         <div className="flex flex-col gap-4 p-6 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <PillBadge tone="cyan">
+              <PillBadge tone="forest">
                 <Briefcase className="mr-1 inline h-3 w-3" aria-hidden="true" />
                 {t.projects.title}
               </PillBadge>
@@ -344,20 +345,20 @@ export function ProjectDetailClient({
         <Kpi
           icon={Briefcase}
           label={t.projects.openTasks}
-          value={`${project.openTaskCount}/${project.totalTaskCount}`}
+          value={`${n.number(project.openTaskCount)}/${n.number(project.totalTaskCount)}`}
           tone="primary"
         />
         <Kpi
           icon={Wallet}
           label={t.projects.monthSpend}
           value={canSeeBudgets ? money(project.monthToDateSpendPkr) : "—"}
-          tone="pink"
+          tone="mint"
         />
         <Kpi
           icon={Clock}
           label={t.projects.hoursTracked}
           value={formatDuration(project.trackedMs)}
-          tone="cyan"
+          tone="forest"
         />
       </section>
 
@@ -371,7 +372,7 @@ export function ProjectDetailClient({
             {project.status !== "archived" && (
               <button
                 onClick={() => setNewTaskOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-bold text-primary-fg shadow-[0_0_20px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.03] active:scale-95"
+                className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-bold text-primary-fg shadow-[0_0_20px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.03] active:scale-95"
               >
                 <Plus className="h-3.5 w-3.5" aria-hidden="true" /> New task
               </button>
@@ -443,6 +444,8 @@ export function ProjectDetailClient({
           ) : (
             <ul className="space-y-3">
               {budgets.map((b) => {
+                // Feeds the CSS `width` below and nothing else — a length, not a
+                // number any reader sees, so it stays unformatted on purpose.
                 const pct = Math.min(1, b.percentUsed) * 100;
                 const over = b.percentUsed >= 1;
                 const warn = b.percentUsed >= 0.8 && !over;
@@ -475,7 +478,7 @@ export function ProjectDetailClient({
       <section className="flex items-center gap-2 text-sm text-fg-muted">
         <Users className="h-4 w-4" aria-hidden="true" />
         <span>
-          {project.memberCount} {t.projects.members.toLowerCase()} · created{" "}
+          {n.number(project.memberCount)} {t.projects.members.toLowerCase()} · created{" "}
           {formatDistanceToNow(new Date(project.createdAt), { addSuffix: true })}
         </span>
       </section>
@@ -553,16 +556,16 @@ function Kpi({
   icon: typeof Briefcase;
   label: string;
   value: string;
-  tone: "primary" | "cyan" | "pink";
+  tone: "primary" | "forest" | "mint";
 }) {
   const toneText =
-    tone === "cyan"
-      ? "text-cyan-strong"
-      : tone === "pink"
-        ? "text-pink-strong"
+    tone === "forest"
+      ? "text-forest-strong"
+      : tone === "mint"
+        ? "text-mint-strong"
         : "text-primary-strong";
   const toneFill =
-    tone === "cyan" ? "bg-cyan/10" : tone === "pink" ? "bg-pink/10" : "bg-primary/10";
+    tone === "forest" ? "bg-forest/10" : tone === "mint" ? "bg-mint/10" : "bg-primary/10";
   return (
     <div className="rounded-2xl border border-border bg-surface p-5">
       <div className="mb-3 flex items-center justify-between">
@@ -613,7 +616,7 @@ function StatusMenu({
   const options: { value: ProjectStatus; label: string; dot: string }[] = [
     { value: "active", label: t.projects.statusActive, dot: "bg-primary" },
     { value: "on_hold", label: t.projects.statusOnHold, dot: "bg-warning" },
-    { value: "completed", label: t.projects.statusCompleted, dot: "bg-cyan" },
+    { value: "completed", label: t.projects.statusCompleted, dot: "bg-forest" },
   ];
   const currentOpt = options.find((o) => o.value === current);
 

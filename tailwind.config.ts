@@ -1,7 +1,12 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
-  darkMode: "class",
+  // `.dark` is the app shell's switch (set on <html> by Providers). The
+  // marketing page is theme-scoped instead — it carries data-theme on its own
+  // root so it can stay light while the app is dark — so `dark:` utilities have
+  // to respond to both, or shadows inside the landing never get their dark
+  // treatment when a visitor flips the toggle.
+  darkMode: ["variant", [".dark &", '[data-theme="dark"] &']],
   content: [
     "./pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
@@ -37,13 +42,20 @@ const config: Config = {
           // Use for any `text-*` utility; keep DEFAULT for fills/borders.
           strong: "rgb(var(--primary-strong) / <alpha-value>)",
         },
-        cyan: {
-          DEFAULT: "rgb(var(--cyan) / <alpha-value>)",
-          strong: "rgb(var(--cyan-strong) / <alpha-value>)",
+        // Emerald ramp + neutral, replacing the retired cyan/pink accents.
+        // Same split as `primary`: DEFAULT for fills/borders/tints, `strong`
+        // is the TEXT-ONLY variant that clears WCAG AA on its surface.
+        forest: {
+          DEFAULT: "rgb(var(--forest) / <alpha-value>)",
+          strong: "rgb(var(--forest-strong) / <alpha-value>)",
         },
-        pink: {
-          DEFAULT: "rgb(var(--pink) / <alpha-value>)",
-          strong: "rgb(var(--pink-strong) / <alpha-value>)",
+        mint: {
+          DEFAULT: "rgb(var(--mint) / <alpha-value>)",
+          strong: "rgb(var(--mint-strong) / <alpha-value>)",
+        },
+        slate: {
+          DEFAULT: "rgb(var(--slate) / <alpha-value>)",
+          strong: "rgb(var(--slate-strong) / <alpha-value>)",
         },
 
         // Semantic — DEFAULT for fills/borders/tints; `strong` is the text-safe
@@ -63,34 +75,6 @@ const config: Config = {
         info: {
           DEFAULT: "rgb(var(--info) / <alpha-value>)",
           strong: "rgb(var(--info-strong) / <alpha-value>)",
-        },
-
-        // Brand/accent aliases kept temporarily for legacy callers (sidebar, etc.).
-        // TODO Phase 3.B: rip these out once legacy components are migrated.
-        brand: {
-          50: "rgb(var(--primary) / 0.05)",
-          100: "rgb(var(--primary) / 0.1)",
-          200: "rgb(var(--primary) / 0.2)",
-          300: "rgb(var(--primary) / 0.3)",
-          400: "rgb(var(--primary) / 0.5)",
-          500: "rgb(var(--primary))",
-          600: "rgb(var(--primary-soft))",
-          700: "rgb(var(--primary-soft))",
-          800: "rgb(var(--primary-soft))",
-          900: "rgb(var(--primary-soft))",
-          950: "rgb(var(--primary-soft))",
-        },
-        accent: {
-          50: "rgb(var(--cyan) / 0.05)",
-          100: "rgb(var(--cyan) / 0.1)",
-          200: "rgb(var(--cyan) / 0.2)",
-          300: "rgb(var(--cyan) / 0.3)",
-          400: "rgb(var(--cyan) / 0.5)",
-          500: "rgb(var(--cyan))",
-          600: "rgb(var(--cyan))",
-          700: "rgb(var(--cyan))",
-          800: "rgb(var(--cyan))",
-          900: "rgb(var(--cyan))",
         },
       },
       borderRadius: {
@@ -168,7 +152,7 @@ const config: Config = {
         "gradient-radial": "radial-gradient(var(--tw-gradient-stops))",
         "gradient-conic": "conic-gradient(from 180deg at 50% 50%, var(--tw-gradient-stops))",
         "gradient-mesh":
-          "radial-gradient(at 27% 37%, rgb(var(--primary) / 0.15) 0px, transparent 50%), radial-gradient(at 97% 21%, rgb(var(--cyan) / 0.15) 0px, transparent 50%), radial-gradient(at 52% 99%, rgb(var(--pink) / 0.1) 0px, transparent 50%)",
+          "radial-gradient(at 27% 37%, rgb(var(--primary) / 0.15) 0px, transparent 50%), radial-gradient(at 97% 21%, rgb(var(--forest) / 0.15) 0px, transparent 50%), radial-gradient(at 52% 99%, rgb(var(--mint) / 0.1) 0px, transparent 50%)",
         "lamp-glow":
           "radial-gradient(circle at center, rgb(var(--primary) / 0.18) 0%, rgb(var(--primary) / 0) 70%)",
       },

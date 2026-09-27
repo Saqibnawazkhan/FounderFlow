@@ -62,16 +62,3 @@ export function decideThreshold(
   }
   return null;
 }
-
-/**
- * Apply a fired decision back to the budget's "last fired" fields so the
- * caller can persist them. We mutate-by-return to keep the function pure
- * (caller decides whether to update DB).
- */
-export function applyDecision<T extends BudgetForCheck>(budget: T, decision: ThresholdDecision): T {
-  const mk = monthKey(new Date()); // caller passes `now`; we use a fresh key
-  if (decision.kind === "alert") {
-    return { ...budget, lastAlertedMonth: mk, lastWarnedMonth: mk };
-  }
-  return { ...budget, lastWarnedMonth: mk };
-}

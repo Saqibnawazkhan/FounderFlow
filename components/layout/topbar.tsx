@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Bell,
@@ -34,7 +33,6 @@ import { homeRouteForRole, type Role } from "@/lib/auth/role-gates";
 import { CommandPalette } from "@/components/layout/command-palette";
 
 export function Topbar() {
-  const router = useRouter();
   const currentUser = useStore((s) => s.currentUser);
   const theme = useStore((s) => s.theme);
   const toggleTheme = useStore((s) => s.toggleTheme);
@@ -179,10 +177,10 @@ export function Topbar() {
             type="button"
             onClick={() => setPaletteOpen(true)}
             aria-label={t.common.search}
-            className="flex w-full items-center gap-3 rounded-xl border border-transparent bg-bg py-2 pl-3 pr-3 text-sm text-fg-muted transition-all hover:border-primary/20 hover:bg-surface focus:border-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/20"
+            className="flex w-full items-center gap-3 rounded-xl border border-transparent bg-bg px-3 py-2 text-sm text-fg-muted transition-all hover:border-primary/20 hover:bg-surface focus:border-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/20"
           >
             <Search className="h-4 w-4 shrink-0" aria-hidden="true" />
-            <span className="flex-1 text-left">{t.common.search}</span>
+            <span className="flex-1 text-start">{t.common.search}</span>
             <kbd className="hidden items-center gap-1 rounded-md border border-border bg-surface px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider md:inline-flex">
               ⌘K
             </kbd>
@@ -254,13 +252,17 @@ export function Topbar() {
                 // its count; the two now visually agree instead of racing.
                 <span
                   aria-hidden="true"
-                  className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[9px] font-bold leading-none text-white ring-2 ring-surface"
+                  className="absolute -end-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[9px] font-bold leading-none text-white ring-2 ring-surface"
                 >
                   {unreadCount > 9 ? "9+" : unreadCount}
                 </span>
               )}
             </button>
 
+            {/* Anchored with `end-0`, not `right-0`: these panels are wider
+                than the 36px button they hang from, so in RTL a physical
+                right-anchor would push them off the trailing edge of the
+                viewport instead of opening inward. */}
             <AnimatePresence>
               {notifOpen && (
                 <motion.div
@@ -269,7 +271,7 @@ export function Topbar() {
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -8, scale: 0.95 }}
                   transition={{ duration: 0.15 }}
-                  className="absolute right-0 top-12 z-popover w-80 overflow-hidden rounded-2xl border border-border bg-surface shadow-card-hover md:w-96"
+                  className="absolute end-0 top-12 z-popover w-80 overflow-hidden rounded-2xl border border-border bg-surface shadow-card-hover md:w-96"
                 >
                   <div className="flex items-center justify-between border-b border-border p-4">
                     <h3 className="font-semibold">{t.topbar.notificationsLabel}</h3>
@@ -347,7 +349,7 @@ export function Topbar() {
               aria-haspopup="menu"
               className="flex items-center gap-2 rounded-xl px-2 py-1.5 transition hover:bg-surface-hover"
             >
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-cyan text-xs font-semibold text-primary-fg">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-forest text-xs font-semibold text-primary-fg">
                 {currentUser?.name?.[0] || "U"}
               </div>
               <ChevronDown
@@ -364,7 +366,7 @@ export function Topbar() {
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -8, scale: 0.95 }}
                   transition={{ duration: 0.15 }}
-                  className="absolute right-0 top-12 z-popover w-64 overflow-hidden rounded-2xl border border-border bg-surface shadow-card-hover"
+                  className="absolute end-0 top-12 z-popover w-64 overflow-hidden rounded-2xl border border-border bg-surface shadow-card-hover"
                 >
                   <div className="border-b border-border p-4">
                     <p className="text-sm font-semibold">{currentUser?.name}</p>

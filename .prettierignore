@@ -4,3 +4,10 @@ out
 package-lock.json
 *.md
 public
+
+# Vendored agent skills (npx skills add). Third-party markdown + a generated
+# lock file: `npm run format:check` is a gate on OUR code, and it should not go
+# red because an upstream skill author formats differently or the CLI rewrites
+# the lock. `*.md` above already covers the SKILL.md files; this covers the rest.
+.agents
+skills-lock.json

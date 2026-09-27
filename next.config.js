@@ -42,11 +42,30 @@ const nextConfig = {
   experimental: {
     instrumentationHook: true,
   },
+  // WHY THE OPTIMIZER IS OFF (2026-09-26, security):
+  //
+  // `/_next/image` is a live, UNAUTHENTICATED endpoint — middleware.ts's
+  // matcher excludes `_next/image` by design, so it never reaches the auth
+  // gate. Next 14.2.35 still carries a CRITICAL advisory there
+  // ("Unauthenticated RCE in the Image Optimization API when AVIF files are
+  // used", fixed only in >=15.5.24), and the `remotePatterns` below carried no
+  // `pathname` constraint, so any URL on an allow-listed host — including one
+  // serving attacker-chosen AVIF bytes — was a valid input to the optimizer.
+  //
+  // This costs us NOTHING, which is why it is the right interim fix rather
+  // than a rushed major upgrade: `next/image` is imported in ZERO files.
+  // components/brand-mark.tsx:32 explains it was deliberately skipped, and the
+  // two hosts below appear nowhere except this config — no component ever
+  // referenced either. The config was vestigial; the endpoint it opened was
+  // not.
+  //
+  // `unoptimized: true` makes the optimizer inert, so the route stops
+  // transforming untrusted bytes. Restore the block below (WITH a `pathname`
+  // constraint per host) only after the Next 15.5.24+ upgrade, and only if
+  // something actually needs `next/image`.
   images: {
-    remotePatterns: [
-      { protocol: "https", hostname: "ui-avatars.com" },
-      { protocol: "https", hostname: "images.unsplash.com" },
-    ],
+    unoptimized: true,
+    remotePatterns: [],
   },
   async headers() {
     return [

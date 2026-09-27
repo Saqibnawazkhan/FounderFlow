@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { EXPENSE_CATEGORIES } from "@/lib/types";
 import type { BudgetWithSpend } from "@/lib/queries/budgets";
 import { useMoney } from "@/lib/hooks/useMoney";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
 type Props = {
   budgets: BudgetWithSpend[];
@@ -84,7 +85,7 @@ export function BudgetsClient({ budgets, projects }: Props) {
         </div>
         <button
           onClick={() => setModalOpen(true)}
-          className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+          className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
         >
           <Plus className="h-4 w-4" aria-hidden="true" /> New budget
         </button>
@@ -99,7 +100,7 @@ export function BudgetsClient({ budgets, projects }: Props) {
             action={
               <button
                 onClick={() => setModalOpen(true)}
-                className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+                className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
               >
                 <Plus className="h-4 w-4" aria-hidden="true" /> Add first budget
               </button>
@@ -152,8 +153,15 @@ function BudgetCard({
   onDelete: () => void;
 }) {
   const money = useMoney();
+  const n = useNumberFormat();
   const pct = budget.percentUsed;
+  // Stays a raw integer: `aria-valuenow` below is machine-read by assistive
+  // tech and is specified as a plain number, so it must NOT be localised —
+  // grouping separators or non-Latin digits would make it unparseable. The
+  // human-readable label is formatted from this same integer so the two can
+  // never disagree.
   const pctLabel = Math.round(pct * 100);
+  const pctText = n.percent(pctLabel / 100, { maximumFractionDigits: 0 });
   const barWidth = Math.min(100, Math.max(2, pct * 100));
   const isOver = pct >= 1;
   const isWarning = pct >= 0.8 && pct < 1;
@@ -220,14 +228,14 @@ function BudgetCard({
           <h3 className="truncate text-lg font-bold text-fg">{budget.category}</h3>
         </div>
         <p className={cn("shrink-0 font-mono text-2xl font-bold tabular-nums", tone.text)}>
-          {pctLabel}%
+          {pctText}
         </p>
       </div>
 
       <div className="space-y-2">
         <div
           role="progressbar"
-          aria-label={`${budget.category} budget: ${pctLabel}% of ${money(budget.monthlyLimit)} used`}
+          aria-label={`${budget.category} budget: ${pctText} of ${money(budget.monthlyLimit)} used`}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.min(100, pctLabel)}
@@ -421,7 +429,7 @@ function NewBudgetForm({
         <button
           type="submit"
           disabled={isSubmitting}
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+          className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
         >
           {isSubmitting ? "Saving…" : "Create budget"}
         </button>

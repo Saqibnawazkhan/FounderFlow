@@ -28,7 +28,9 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
 import { formatDate, cn } from "@/lib/utils";
+import { isInUtcMonth } from "@/lib/date-range";
 import { useMoney } from "@/lib/hooks/useMoney";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 import { EXPENSE_CATEGORIES, type User } from "@/lib/types";
 import type { TransactionWithCount } from "@/lib/queries/transactions";
 
@@ -55,6 +57,7 @@ export function ExpensesClient({
   currentUserRole,
 }: Props) {
   const money = useMoney();
+  const n = useNumberFormat();
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
@@ -89,9 +92,19 @@ export function ExpensesClient({
   );
 
   const totalExpenses = expenses.reduce((s, t) => s + t.amount, 0);
-  const thisMonthExpenses = expenses
-    .filter((t) => new Date(t.date).getMonth() === new Date().getMonth())
-    .reduce((s, t) => s + t.amount, 0);
+  // money-003 / rep-003: this compared `getMonth() === getMonth()` — the month
+  // INDEX, with no year — so "This month" also counted the same calendar month
+  // of every previous year and grew further from /dashboard's identically
+  // labelled card every year the workspace stayed alive. It was the only
+  // month-index comparison in the app, which is how it survived.
+  //
+  // `isInUtcMonth` is the shared boundary (lib/date-range.ts) the dashboard card
+  // and the server-side budget queries use, so all three now bucket a row dated
+  // the 1st of the month identically — see money-007 for why UTC and not local.
+  const thisMonthExpenses = useMemo(() => {
+    const now = new Date();
+    return expenses.filter((t) => isInUtcMonth(t.date, now)).reduce((s, t) => s + t.amount, 0);
+  }, [expenses]);
 
   const categoryBreakdown = useMemo(() => {
     const map = new Map<string, number>();
@@ -122,7 +135,7 @@ export function ExpensesClient({
     <div className="mx-auto max-w-[1600px] space-y-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <PillBadge tone="pink">Money out</PillBadge>
+          <PillBadge tone="mint">Money out</PillBadge>
           <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">
             Expenses
           </h1>
@@ -139,7 +152,7 @@ export function ExpensesClient({
           </button>
           <button
             onClick={() => setModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
           >
             <Plus className="h-4 w-4" aria-hidden="true" /> Log expense
           </button>
@@ -151,18 +164,23 @@ export function ExpensesClient({
           label="Total spend"
           value={money(totalExpenses)}
           icon={TrendingDown}
-          tone="pink"
-          deltaLabel={`${expenses.length} transactions`}
+          tone="mint"
+          deltaLabel={`${n.number(expenses.length)} transactions`}
         />
         <DashboardStat
           label="This month"
           value={money(thisMonthExpenses)}
           icon={Wallet}
-          tone="cyan"
+          tone="forest"
           delta={thisMonthExpenses > 0 ? "neutral" : "positive"}
           deltaLabel={
             thisMonthExpenses > 0
-              ? `${((thisMonthExpenses / Math.max(totalExpenses, 1)) * 100).toFixed(0)}% of all-time`
+              ? // `n.percent` takes a 0–1 ratio, so the `* 100` the old `.toFixed(0)}%`
+                // needed is gone rather than moved. `maximumFractionDigits: 0` keeps
+                // the whole-number look the stat line was designed around.
+                `${n.percent(thisMonthExpenses / Math.max(totalExpenses, 1), {
+                  maximumFractionDigits: 0,
+                })} of all-time`
               : "Nothing logged yet"
           }
         />
@@ -171,7 +189,7 @@ export function ExpensesClient({
           value={money(expenses.length > 0 ? Math.round(totalExpenses / expenses.length) : 0)}
           icon={Calculator}
           tone="primary"
-          deltaLabel={`Across ${expenses.length} entries`}
+          deltaLabel={`Across ${n.number(expenses.length)} entries`}
         />
       </section>
 
@@ -266,7 +284,7 @@ export function ExpensesClient({
               expenses.length === 0 && (
                 <button
                   onClick={() => setModalOpen(true)}
-                  className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+                  className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
                 >
                   <Plus className="h-4 w-4" aria-hidden="true" /> Log first expense
                 </button>
@@ -337,7 +355,7 @@ export function ExpensesClient({
                       {formatDate(t.date)}
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <span className="inline-flex items-center gap-1 font-mono text-sm font-bold tabular-nums text-pink-strong">
+                      <span className="inline-flex items-center gap-1 font-mono text-sm font-bold tabular-nums text-mint-strong">
                         <ArrowDown className="h-3 w-3" aria-hidden="true" />
                         {money(t.amount)}
                       </span>
@@ -348,19 +366,19 @@ export function ExpensesClient({
                           onClick={() => setCommentingTxn(t)}
                           aria-label={
                             t.commentCount > 0
-                              ? `Open comments (${t.commentCount}) for ${t.description}`
+                              ? `Open comments (${n.number(t.commentCount)}) for ${t.description}`
                               : `Add a comment to ${t.description}`
                           }
                           className={cn(
                             "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors",
                             t.commentCount > 0
-                              ? "text-cyan-strong hover:bg-cyan/10"
+                              ? "text-forest-strong hover:bg-forest/10"
                               : "text-fg-muted hover:bg-glass/[0.06] hover:text-fg"
                           )}
                         >
                           <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
                           {t.commentCount > 0 && (
-                            <span className="font-mono font-bold">{t.commentCount}</span>
+                            <span className="font-mono font-bold">{n.number(t.commentCount)}</span>
                           )}
                         </button>
                         {(currentUserId === t.addedBy || currentUserRole === "admin") && (
@@ -389,7 +407,7 @@ export function ExpensesClient({
               <li key={t.id} className="p-4">
                 <div className="flex items-start justify-between gap-3">
                   <p className="min-w-0 flex-1 text-sm font-medium text-fg">{t.description}</p>
-                  <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm font-bold tabular-nums text-pink-strong">
+                  <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm font-bold tabular-nums text-mint-strong">
                     <ArrowDown className="h-3 w-3" aria-hidden="true" />
                     {money(t.amount)}
                   </span>
@@ -409,19 +427,19 @@ export function ExpensesClient({
                       onClick={() => setCommentingTxn(t)}
                       aria-label={
                         t.commentCount > 0
-                          ? `Open comments (${t.commentCount}) for ${t.description}`
+                          ? `Open comments (${n.number(t.commentCount)}) for ${t.description}`
                           : `Add a comment to ${t.description}`
                       }
                       className={cn(
                         "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors",
                         t.commentCount > 0
-                          ? "text-cyan-strong hover:bg-cyan/10"
+                          ? "text-forest-strong hover:bg-forest/10"
                           : "text-fg-muted hover:bg-glass/[0.06] hover:text-fg"
                       )}
                     >
                       <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
                       {t.commentCount > 0 && (
-                        <span className="font-mono font-bold">{t.commentCount}</span>
+                        <span className="font-mono font-bold">{n.number(t.commentCount)}</span>
                       )}
                     </button>
                     {(currentUserId === t.addedBy || currentUserRole === "admin") && (

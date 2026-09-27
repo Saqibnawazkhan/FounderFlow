@@ -51,6 +51,7 @@ import type { CommentClient } from "@/lib/queries/comments";
 import type { MentionUser } from "@/lib/comments/mentions";
 import type { TaskWithCount } from "@/lib/queries/tasks";
 import type { TaskPriority, TaskStatus } from "@/lib/types";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
 const PRIORITY_STYLES: Record<TaskPriority, string> = {
   urgent: "border-danger/30 bg-danger/10 text-danger-strong",
@@ -67,8 +68,8 @@ const PRIORITY_ICONS: Record<TaskPriority, LucideIcon> = {
 };
 
 const STATUS_STYLES: Record<TaskStatus, string> = {
-  pending: "border-pink/30 bg-pink/10 text-pink-strong",
-  in_progress: "border-cyan/30 bg-cyan/10 text-cyan-strong",
+  pending: "border-mint/30 bg-mint/10 text-mint-strong",
+  in_progress: "border-forest/30 bg-forest/10 text-forest-strong",
   completed: "border-primary/30 bg-primary/10 text-primary-strong",
 };
 
@@ -105,6 +106,7 @@ export function TaskDetailModal({
   onDelete,
   onCommentsChanged,
 }: Props) {
+  const n = useNumberFormat();
   const [comments, setComments] = useState<CommentClient[] | null>(null);
   const [commentsError, setCommentsError] = useState<string | null>(null);
 
@@ -260,7 +262,7 @@ export function TaskDetailModal({
             modal, embedded so a task's full context lives in one place. */}
         <section aria-label="Comments">
           <h3 className="mb-3 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted">
-            Comments {task.commentCount > 0 && `(${task.commentCount})`}
+            Comments {task.commentCount > 0 && `(${n.number(task.commentCount)})`}
           </h3>
           {commentsError ? (
             <div className="rounded-xl border border-danger/30 bg-danger/10 p-4 text-sm text-danger">

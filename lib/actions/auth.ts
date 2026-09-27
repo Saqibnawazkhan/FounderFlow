@@ -24,12 +24,11 @@ import { limiters } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendVerificationEmail } from "@/lib/email/verification";
+import { ensureGeneralChannel } from "@/lib/chat/bootstrap";
+import { deriveHandle } from "@/lib/user/handle";
 
 // Discriminated union so TS narrows `error` to `string` after `if (!success)`.
-// The previous shape `{ success: boolean; error?: string }` left error
-// typed `string | undefined` everywhere, forcing callers into `error ??
-// "fallback"` boilerplate (or worse, dropping the message entirely).
-export type ActionResult = { success: true } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 export async function signupAction(input: unknown): Promise<ActionResult> {
   // Brute-force / signup-spam guard. 5/min/IP — covers a tab-spam attacker
@@ -66,6 +65,33 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
         data: {
           name,
           email,
+          // The founder's @mention address, written at birth because nothing
+          // else in the product ever would. `20260925140000_add_user_handle`
+          // backfilled the users who existed when it ran and, being a
+          // migration, is a statement about the past only — a row that commits
+          // without a handle stays NULL forever, and NULLS DISTINCT means the
+          // unique index never complains about it. The founder would simply be
+          // unmentionable in their own workspace with nothing saying why:
+          // FaultsAudit T16, reintroduced for every account created after the
+          // migration landed. Same lesson as `ensureGeneralChannel` below, so
+          // it is in the same transaction for the same reason.
+          //
+          // NO DE-DUPLICATION AND NO P2002 RETRY HERE, unlike
+          // `acceptInviteAction`, and the asymmetry is the point: `company` was
+          // created one statement ago inside this transaction, so it holds no
+          // other user and `@@unique([companyId, handle])` is scoped to that
+          // brand-new companyId. The handle namespace is provably empty.
+          // Loading a taken-set that can only come back empty, and retrying a
+          // race that has no second party, would be code no test could ever
+          // exercise. `uniqueHandle` is the invite path's job.
+          //
+          // So a P2002 out of THIS create is the email index, not this one —
+          // the duplicate-email pre-check above and the catch-all below own
+          // that case. And if a future change ever adds a second user to this
+          // transaction, the index fails the signup loudly instead of writing a
+          // NULL, which is the right failure and the cue to give this path the
+          // invite path's de-duplication.
+          handle: deriveHandle(email),
           passwordHash,
           role: "admin",
           companyId: company.id,
@@ -84,6 +110,25 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
           userName: name,
         },
       });
+      // Chat's #general, with the founder as its owner.
+      //
+      // IN the transaction, not after it, and that is the whole fix. Chat
+      // shipped on 2026-09-24 with a migration that backfilled one #general
+      // per EXISTING workspace and nothing that created one afterwards, so
+      // every account opened since then has landed on an empty chat. A
+      // workspace that commits without its channel is that bug, and there is
+      // nothing to lose by refusing to commit one: the account does not exist
+      // yet, so a rollback costs this person a retryable error page rather
+      // than any data. Contrast the verification email below, which is
+      // deliberately fire-and-forget OUTSIDE the transaction because a slow
+      // SMTP host must never cost someone their signup — the email is
+      // resendable from the in-app banner; a missing channel is not
+      // re-creatable by anything in the product.
+      //
+      // No Activity row for it: `ActivityType` is a closed union whose
+      // ACTIVITY_META record is indexed without a fallback, so an unknown type
+      // throws in the /activities UI. See the header of lib/actions/chat.ts.
+      await ensureGeneralChannel(tx, company.id, user.id);
       return user;
     });
 
@@ -110,7 +155,7 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
       throw e;
     }
 
-    return { success: true };
+    return { success: true, data: undefined };
   } catch (e) {
     // Catch-all so the client never sees an unhandled rejection (which would
     // hang the loading spinner). Prisma connection failures, missing env vars,
@@ -140,7 +185,7 @@ export async function loginAction(input: unknown): Promise<ActionResult> {
 
   try {
     await signIn("credentials", { email, password, redirect: false });
-    return { success: true };
+    return { success: true, data: undefined };
   } catch (e) {
     if (e instanceof AuthError) {
       return { success: false, error: "Invalid email or password" };
@@ -153,7 +198,7 @@ export async function loginAction(input: unknown): Promise<ActionResult> {
 export async function logoutAction(): Promise<ActionResult> {
   try {
     await signOut({ redirect: false });
-    return { success: true };
+    return { success: true, data: undefined };
   } catch (e) {
     // signOut throws on session-cookie-write failure (e.g., Auth.js DB
     // adapter issue). The CLIENT used to clear local Zustand regardless,

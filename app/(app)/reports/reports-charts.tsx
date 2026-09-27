@@ -18,21 +18,22 @@ import {
   YAxis,
 } from "recharts";
 import { useMoney } from "@/lib/hooks/useMoney";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
-const C_PRIMARY = "#b6f425";
-const C_CYAN = "#70E6ED";
-const C_PINK = "#FFB3DB";
-const C_AMBER = "#f59e0b";
+const C_PRIMARY = "#10B981";
+const C_FOREST = "#047857";
+const C_MINT = "#6EE7B7";
+const C_DEEP = "#065F46";
 const C_SLATE = "#94a3b8";
 export const PALETTE = [
   C_PRIMARY,
-  C_CYAN,
-  C_PINK,
-  C_AMBER,
-  "#a78bfa",
-  "#34d399",
-  "#fb7185",
-  "#facc15",
+  C_FOREST,
+  C_MINT,
+  C_DEEP,
+  "#34D399",
+  "#64748B",
+  "#334155",
+  "#A7F3D0",
 ];
 
 const TOOLTIP_STYLE = {
@@ -49,6 +50,7 @@ export function CashFlowBarChart({
   data: Array<{ month: string; investments: number; expenses: number; revenue: number }>;
 }) {
   const money = useMoney();
+  const n = useNumberFormat();
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart
@@ -68,12 +70,18 @@ export function CashFlowBarChart({
           fontSize={11}
           tickLine={false}
           axisLine={false}
-          tickFormatter={(v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString())}
+          // The `Math.abs` guard the old formatter needed is gone: ICU's compact
+          // notation signs the number itself, so -1,234,567 comes back "-1.2M"
+          // rather than the "-1235K" the hand-rolled divide produced.
+          tickFormatter={(v: number) => n.compact(v)}
+          // Room for Urdu's word suffixes (ہزار / لاکھ), which overrun recharts'
+          // 60px default gutter. See lib/format.ts's adopter caveat.
+          width={76}
         />
         <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
         <Bar dataKey="investments" fill={C_PRIMARY} radius={[8, 8, 0, 0]} />
-        <Bar dataKey="revenue" fill={C_CYAN} radius={[8, 8, 0, 0]} />
-        <Bar dataKey="expenses" fill={C_PINK} radius={[8, 8, 0, 0]} />
+        <Bar dataKey="revenue" fill={C_FOREST} radius={[8, 8, 0, 0]} />
+        <Bar dataKey="expenses" fill={C_MINT} radius={[8, 8, 0, 0]} />
       </BarChart>
     </ResponsiveContainer>
   );
@@ -113,6 +121,7 @@ export function FoundersHorizontalBar({
   data: Array<{ name: string; investments: number; expenses: number }>;
 }) {
   const money = useMoney();
+  const n = useNumberFormat();
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart
@@ -134,7 +143,11 @@ export function FoundersHorizontalBar({
           fontSize={11}
           tickLine={false}
           axisLine={false}
-          tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString())}
+          // Same swap as the cash-flow chart above. This axis is horizontal, so
+          // the Urdu word suffix costs plot width rather than gutter — recharts
+          // sizes a horizontal number axis from the container, so no `width`
+          // override is needed or wanted here.
+          tickFormatter={(v: number) => n.compact(v)}
         />
         <YAxis
           type="category"
@@ -147,7 +160,7 @@ export function FoundersHorizontalBar({
         />
         <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
         <Bar dataKey="investments" fill={C_PRIMARY} radius={[0, 4, 4, 0]} />
-        <Bar dataKey="expenses" fill={C_PINK} radius={[0, 4, 4, 0]} />
+        <Bar dataKey="expenses" fill={C_MINT} radius={[0, 4, 4, 0]} />
       </BarChart>
     </ResponsiveContainer>
   );

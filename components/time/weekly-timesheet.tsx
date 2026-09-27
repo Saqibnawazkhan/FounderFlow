@@ -155,7 +155,7 @@ export function WeeklyTimesheet({
                         <span className="truncate text-[11px] font-medium text-fg">
                           {e.taskTitle ?? "Untagged"}
                         </span>
-                        <span className="shrink-0 font-mono text-[10px] font-bold tabular-nums text-cyan-strong">
+                        <span className="shrink-0 font-mono text-[10px] font-bold tabular-nums text-forest-strong">
                           {formatDuration(dur)}
                         </span>
                       </div>

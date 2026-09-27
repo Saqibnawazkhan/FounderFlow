@@ -15,7 +15,7 @@ export interface DashboardStatProps {
   label: string;
   value: string;
   icon: LucideIcon;
-  tone?: "primary" | "cyan" | "pink";
+  tone?: "primary" | "forest" | "mint";
   delta?: "positive" | "negative" | "neutral";
   deltaLabel?: string;
   className?: string;
@@ -34,13 +34,13 @@ export function DashboardStat({
   valueClassName = "text-3xl",
 }: DashboardStatProps) {
   const toneText =
-    tone === "cyan"
-      ? "text-cyan-strong"
-      : tone === "pink"
-        ? "text-pink-strong"
+    tone === "forest"
+      ? "text-forest-strong"
+      : tone === "mint"
+        ? "text-mint-strong"
         : "text-primary-strong";
   const toneFill =
-    tone === "cyan" ? "bg-cyan/10" : tone === "pink" ? "bg-pink/10" : "bg-primary/10";
+    tone === "forest" ? "bg-forest/10" : tone === "mint" ? "bg-mint/10" : "bg-primary/10";
 
   const DeltaIcon =
     delta === "positive" ? ArrowUpRight : delta === "negative" ? ArrowDownRight : ArrowRight;

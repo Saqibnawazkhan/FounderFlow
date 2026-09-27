@@ -43,7 +43,7 @@ export default function OfflinePage() {
       {/* Plain anchor (not Link) so it doesn't try to prefetch through the SW. */}
       <a
         href="/dashboard"
-        className="mt-8 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-transform hover:scale-[1.02] active:scale-95"
+        className="mt-8 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_0.25)] transition-transform hover:scale-[1.02] active:scale-95"
       >
         Try again
       </a>

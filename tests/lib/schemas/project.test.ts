@@ -1,15 +1,38 @@
 import { describe, expect, it } from "vitest";
 import {
   ChangeSupervisorSchema,
+  DuplicateProjectSchema,
+  MAX_DUPLICATED_TASKS,
   NewProjectSchema,
   PROJECT_COLORS,
   PROJECT_STATUSES,
   UpdateProjectSchema,
 } from "@/lib/schemas/project";
 
+// The form always supplies a color (default "emerald"), so the schema omits
+// a schema-level default and requires it at the field level. Every valid
+// payload therefore includes a color.
+const MINIMAL_PROJECT = {
+  name: "Launch v2",
+  supervisorId: "u_supervisor",
+  color: "emerald" as const,
+};
+
 describe("PROJECT_COLORS", () => {
   it("exposes the expected fixed palette", () => {
-    expect(PROJECT_COLORS).toEqual(["primary", "cyan", "pink", "warning", "info"]);
+    expect(PROJECT_COLORS).toEqual(["emerald", "forest", "mint", "slate", "warning"]);
+  });
+
+  // The old decorative accents are persisted slugs, not just CSS. If one
+  // reappears here the rebrand migration's mapping is incomplete and rows
+  // written after it would carry a colour nothing can render.
+  it("rejects a retired colour slug", () => {
+    for (const retired of ["cyan", "pink", "primary", "info"]) {
+      expect(PROJECT_COLORS).not.toContain(retired);
+      expect(
+        NewProjectSchema.safeParse({ ...MINIMAL_PROJECT, color: retired as never }).success
+      ).toBe(false);
+    }
   });
 });
 
@@ -20,14 +43,7 @@ describe("PROJECT_STATUSES", () => {
 });
 
 describe("NewProjectSchema", () => {
-  // The form always supplies a color (default "primary"), so we omit the
-  // schema-level default and require it at the field level. Every valid
-  // payload includes a color.
-  const minimal = {
-    name: "Launch v2",
-    supervisorId: "u_supervisor",
-    color: "primary" as const,
-  };
+  const minimal = MINIMAL_PROJECT;
 
   it("accepts the minimal valid payload", () => {
     const r = NewProjectSchema.safeParse(minimal);
@@ -80,7 +96,7 @@ describe("UpdateProjectSchema", () => {
   const base = {
     projectId: "p1",
     name: "Launch v2",
-    color: "cyan" as const,
+    color: "forest" as const,
     status: "active" as const,
   };
 
@@ -112,5 +128,121 @@ describe("ChangeSupervisorSchema", () => {
     expect(ChangeSupervisorSchema.safeParse({ projectId: "p1", supervisorId: "" }).success).toBe(
       false
     );
+  });
+});
+
+describe("DuplicateProjectSchema (what a project copy is allowed to carry)", () => {
+  // The two fields a caller MUST supply. Everything else is a flag with a
+  // default, which is the point of most of the assertions below.
+  const MINIMAL_DUPLICATE = { sourceProjectId: "p_source", name: "Launch v3" };
+
+  it("rejects a payload with no source project", () => {
+    const { sourceProjectId: _omit, ...withoutSource } = MINIMAL_DUPLICATE;
+    expect(DuplicateProjectSchema.safeParse(withoutSource).success).toBe(false);
+    expect(
+      DuplicateProjectSchema.safeParse({ ...MINIMAL_DUPLICATE, sourceProjectId: "" }).success
+    ).toBe(false);
+  });
+
+  it("requires a name and bounds it at the same length as every other project name", () => {
+    expect(DuplicateProjectSchema.safeParse({ ...MINIMAL_DUPLICATE, name: "   " }).success).toBe(
+      false
+    );
+    expect(
+      DuplicateProjectSchema.safeParse({ ...MINIMAL_DUPLICATE, name: "x".repeat(120) }).success
+    ).toBe(true);
+    expect(
+      DuplicateProjectSchema.safeParse({ ...MINIMAL_DUPLICATE, name: "x".repeat(121) }).success
+    ).toBe(false);
+  });
+
+  it("copies the task list but not its assignees, and moves the deadlines, when told nothing", () => {
+    const r = DuplicateProjectSchema.safeParse(MINIMAL_DUPLICATE);
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    // These three are the product decision, argued on the schema itself.
+    // Changing one here without changing the argument there is the bug this
+    // test is watching for.
+    expect(r.data.copyTasks).toBe(true);
+    expect(r.data.keepAssignees).toBe(false);
+    expect(r.data.shiftDeadlines).toBe(true);
+  });
+
+  // Iterates the schema's own shape rather than naming three flags, so a
+  // fourth copy option added later is covered the day it lands.
+  it("gives every copy flag a default, so an older client can't fail on one", () => {
+    const flagKeys = Object.keys(DuplicateProjectSchema.shape).filter(
+      (k) => k !== "sourceProjectId" && k !== "name"
+    );
+    expect(flagKeys.length).toBeGreaterThan(0);
+
+    for (const key of flagKeys) {
+      const omitted: Record<string, unknown> = {
+        ...MINIMAL_DUPLICATE,
+        copyTasks: true,
+        keepAssignees: true,
+        shiftDeadlines: true,
+      };
+      delete omitted[key];
+      const r = DuplicateProjectSchema.safeParse(omitted);
+      expect(r.success, `omitting "${key}" should still parse`).toBe(true);
+      if (r.success) {
+        expect(typeof (r.data as Record<string, unknown>)[key], `"${key}" should default`).toBe(
+          "boolean"
+        );
+      }
+    }
+  });
+
+  /**
+   * THE CORRECTNESS BOUNDARY, not a preference.
+   *
+   * A duplicate copies a project's shape. It must never copy a record of
+   * something that HAPPENED: a Transaction claims money moved, a TimeEntry
+   * claims a person worked those hours, a Comment claims someone said a
+   * thing. Copying any of them fabricates history — and in the money case,
+   * the fabrication lands in the same sums /reports and the dashboard read.
+   *
+   * This test exists so that "just add a copyTransactions flag" cannot be a
+   * quiet one-line change. Whoever adds one has to delete a red test and
+   * argue with the comment on DuplicateProjectSchema first.
+   */
+  it("never offers to copy money, time or history", () => {
+    const forbidden = ["transaction", "budget", "expense", "revenue", "comment", "time", "invoice"];
+    const keys = Object.keys(DuplicateProjectSchema.shape);
+
+    for (const word of forbidden) {
+      for (const key of keys) {
+        expect(
+          key.toLowerCase().includes(word),
+          `"${key}" looks like it copies ${word}s — see the correctness boundary on DuplicateProjectSchema`
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("drops a copy flag it does not know about instead of honouring it", () => {
+    // Zod strips unknown keys, so even a hand-rolled client posting
+    // `copyTransactions: true` gets nothing — the action only ever sees the
+    // parsed output. This pins that the action reads `parsed.data`, never the
+    // raw input, as its shape of truth.
+    const r = DuplicateProjectSchema.safeParse({
+      ...MINIMAL_DUPLICATE,
+      copyTransactions: true,
+      copyTimeEntries: true,
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(Object.keys(r.data)).not.toContain("copyTransactions");
+      expect(Object.keys(r.data)).not.toContain("copyTimeEntries");
+    }
+  });
+
+  it("caps a single duplicate below the point where one transaction would time out", () => {
+    // The action reads `take: MAX + 1` and refuses above the ceiling rather
+    // than letting a 12,000-task copy roll back on Prisma's 5s interactive
+    // transaction clock. An integer is load-bearing — `take` is a row count.
+    expect(Number.isInteger(MAX_DUPLICATED_TASKS)).toBe(true);
+    expect(MAX_DUPLICATED_TASKS).toBeGreaterThan(0);
   });
 });

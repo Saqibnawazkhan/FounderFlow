@@ -11,17 +11,23 @@ import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { loginAction } from "@/lib/actions/auth";
 import { LoginSchema, type LoginInput } from "@/lib/schemas/auth";
-import { PillBadge } from "@/components/landing/pill-badge";
+import { SectionLabel } from "@/components/landing/section-label";
+import { display } from "@/components/landing/fonts";
 import { StatCard } from "@/components/landing/stat-card";
 import { MetricRing } from "@/components/landing/metric-ring";
-import { ThemeToggle } from "@/components/landing/theme-toggle";
+import { MarketingThemeToggle } from "@/components/landing/marketing-theme-toggle";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/use-t";
+import { useHydrated } from "@/lib/hooks/use-hydrated";
 
 export default function LoginPage() {
   const router = useRouter();
   const loginDemo = useStore((s) => s.loginDemo);
   const t = useT();
+  // FaultsAudit A14: holds the submit button inert until React is actually
+  // here, so a click that beats hydration cannot fire a native GET with a
+  // password in it. Full argument: lib/hooks/use-hydrated.ts.
+  const hydrated = useHydrated();
 
   const emailId = useId();
   const pwId = useId();
@@ -62,7 +68,14 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-bg text-fg lg:grid lg:grid-cols-[1fr_1.05fr]">
+    <div
+      data-marketing
+      data-theme="light"
+      className={cn(
+        display.variable,
+        "min-h-screen bg-bg text-fg lg:grid lg:grid-cols-[1fr_1.05fr]"
+      )}
+    >
       {/* Left: form */}
       <div className="relative flex flex-col justify-center px-6 py-12 sm:px-10 lg:px-16">
         <div
@@ -72,7 +85,7 @@ export default function LoginPage() {
 
         {/* Floating theme toggle — top-right of the form pane */}
         <div className="absolute right-6 top-6 sm:right-10 lg:right-12">
-          <ThemeToggle size="sm" />
+          <MarketingThemeToggle size="sm" />
         </div>
 
         <Link href="/" className="mb-12 inline-flex w-fit items-center gap-2.5">
@@ -81,7 +94,7 @@ export default function LoginPage() {
         </Link>
 
         <div className="w-full max-w-sm">
-          <PillBadge>{t.auth.welcomeBack}</PillBadge>
+          <SectionLabel>{t.auth.welcomeBack}</SectionLabel>
 
           <h1 className="mt-5 text-4xl font-bold tracking-tight md:text-5xl">
             {t.auth.signInHeadingPre}
@@ -91,12 +104,17 @@ export default function LoginPage() {
 
           <p className="mt-3 text-sm text-fg-muted">{t.auth.signInTagline}</p>
 
-          <form onSubmit={handleSubmit(onSubmit)} className="mt-10 space-y-5" noValidate>
+          {/* method="post" is load-bearing, not decoration: it is what keeps a
+              pre-hydration native submit out of the query string. See
+              lib/hooks/use-hydrated.ts. */}
+          <form
+            method="post"
+            onSubmit={handleSubmit(onSubmit)}
+            className="mt-10 space-y-5"
+            noValidate
+          >
             <div>
-              <label
-                htmlFor={emailId}
-                className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-              >
+              <label htmlFor={emailId} className="mb-2 block text-sm font-medium text-fg">
                 {t.auth.email}
               </label>
               <input
@@ -112,10 +130,10 @@ export default function LoginPage() {
                 aria-describedby={errors.email ? `${emailId}-err` : undefined}
                 {...register("email")}
                 className={cn(
-                  "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-glass/[0.08] focus:outline-none",
+                  "w-full rounded-2xl border bg-surface px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-surface focus:outline-none",
                   errors.email
                     ? "border-danger/60 focus:border-danger"
-                    : "border-glass/[0.10] focus:border-primary/50"
+                    : "border-border focus:border-primary/60"
                 )}
               />
               {errors.email && (
@@ -126,10 +144,7 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label
-                htmlFor={pwId}
-                className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-              >
+              <label htmlFor={pwId} className="mb-2 block text-sm font-medium text-fg">
                 {t.auth.password}
               </label>
               <div className="relative">
@@ -143,17 +158,17 @@ export default function LoginPage() {
                   aria-describedby={errors.password ? `${pwId}-err` : undefined}
                   {...register("password")}
                   className={cn(
-                    "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-glass/[0.08] focus:outline-none",
+                    "w-full rounded-2xl border bg-surface px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-surface focus:outline-none",
                     errors.password
                       ? "border-danger/60 focus:border-danger"
-                      : "border-glass/[0.10] focus:border-primary/50"
+                      : "border-border focus:border-primary/60"
                   )}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   aria-label={showPassword ? t.auth.hidePassword : t.auth.showPassword}
-                  className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                  className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                 >
                   {showPassword ? (
                     <EyeOff className="h-4 w-4" aria-hidden="true" />
@@ -177,10 +192,20 @@ export default function LoginPage() {
               </div>
             </div>
 
+            {/* Inert until hydrated. `disabled` is the only lever that works
+                here — an onClick guard needs the JS that has not arrived yet.
+                The button keeps its normal appearance in that window: the
+                `disabled:` classes apply only once hydrated, because a control
+                that looks dead for the first few frames of every cold load is
+                worse than one that looks alive and ignores a click nobody could
+                have aimed yet. */}
             <button
               type="submit"
-              disabled={isSubmitting}
-              className="group inline-flex w-full items-center justify-center gap-2 rounded-full bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-all hover:scale-[1.01] hover:shadow-[0_0_45px_rgb(182_244_37_/_0.4)] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+              disabled={!hydrated || isSubmitting}
+              className={cn(
+                "group inline-flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_6px_24px_rgb(var(--primary)_/_0.26)] transition-all hover:scale-[1.01] hover:shadow-[0_8px_30px_rgb(var(--primary)_/_0.34)] active:scale-[0.98]",
+                hydrated && "disabled:opacity-60 disabled:hover:scale-100"
+              )}
             >
               {isSubmitting ? t.auth.signInLoading : t.auth.signIn}
               <ArrowRight
@@ -191,18 +216,18 @@ export default function LoginPage() {
           </form>
 
           <div className="my-6 flex items-center gap-3">
-            <div className="h-px flex-1 bg-glass/[0.05]" />
-            <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-fg-muted">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-fg-muted">
               {t.auth.or}
             </span>
-            <div className="h-px flex-1 bg-glass/[0.05]" />
+            <div className="h-px flex-1 bg-border" />
           </div>
 
           <button
             onClick={handleDemo}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-full border border-glass/[0.10] bg-glass/[0.05] px-5 py-3.5 text-sm font-medium text-fg backdrop-blur-sm transition-colors hover:bg-glass/[0.10]"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-5 py-3.5 text-sm font-medium text-fg backdrop-blur-sm transition-colors hover:bg-surface-hover"
           >
-            <Zap className="h-4 w-4 text-cyan-strong" aria-hidden="true" />
+            <Zap className="h-4 w-4 text-forest-strong" aria-hidden="true" />
             {t.auth.tryDemo}
           </button>
 
@@ -216,7 +241,7 @@ export default function LoginPage() {
       </div>
 
       {/* Right: showcase panel — Stitch hero mini */}
-      <aside className="relative hidden overflow-hidden border-l border-glass/[0.06] bg-bg/40 lg:flex lg:flex-col lg:justify-center lg:px-16 xl:px-24">
+      <aside className="relative hidden overflow-hidden border-l border-border bg-surface lg:flex lg:flex-col lg:justify-center lg:px-16 xl:px-24">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 bg-gradient-mesh opacity-40"
@@ -227,11 +252,11 @@ export default function LoginPage() {
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -bottom-40 left-0 h-96 w-96 rounded-full bg-cyan/20 blur-3xl"
+          className="pointer-events-none absolute -bottom-40 left-0 h-96 w-96 rounded-full bg-forest/20 blur-3xl"
         />
 
         <div className="relative max-w-md">
-          <PillBadge tone="cyan">{t.auth.loginShowcaseBadge}</PillBadge>
+          <SectionLabel tone="forest">{t.auth.loginShowcaseBadge}</SectionLabel>
           <h2 className="mt-6 text-balance text-4xl font-bold leading-tight tracking-tight xl:text-5xl">
             {t.auth.loginShowcaseHeadingPre}
             <span className="text-primary-strong">{t.auth.loginShowcaseHeadingEm}</span>
@@ -243,8 +268,8 @@ export default function LoginPage() {
 
           <div className="mt-10 grid grid-cols-2 gap-3">
             <StatCard value="PKR 1.5M" label={t.auth.trackedLabel} tone="primary" />
-            <StatCard value="84%" label={t.auth.runwayLabel} tone="cyan">
-              <MetricRing value={0.84} tone="cyan" label="84" className="ml-auto h-14 w-14" />
+            <StatCard value="84%" label={t.auth.runwayLabel} tone="forest">
+              <MetricRing value={0.84} tone="forest" label="84" className="ml-auto h-14 w-14" />
             </StatCard>
           </div>
 

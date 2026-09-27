@@ -26,6 +26,7 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { formatDate } from "@/lib/utils";
 import { REVENUE_CATEGORIES, type Transaction } from "@/lib/types";
 import { useMoney } from "@/lib/hooks/useMoney";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
 type Props = {
   transactions: Transaction[];
@@ -39,6 +40,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
   const money = useMoney();
+  const n = useNumberFormat();
 
   const revenue = useMemo(() => transactions.filter((t) => t.type === "income"), [transactions]);
 
@@ -97,7 +99,10 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
     refresh();
   }
 
-  const entryWord = (n: number) => (n === 1 ? "entry" : "entries");
+  // Takes the raw count, not the formatted string: pluralisation is a numeric
+  // decision and `n.number()` may have inserted a grouping separator by the
+  // time the digits reach the label.
+  const entryWord = (count: number) => (count === 1 ? "entry" : "entries");
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-8">
@@ -120,7 +125,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
           </button>
           <button
             onClick={() => setModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
           >
             <Plus className="h-4 w-4" aria-hidden="true" /> Add revenue
           </button>
@@ -134,21 +139,21 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
           icon={Coins}
           tone="primary"
           delta="positive"
-          deltaLabel={`${revenue.length} ${entryWord(revenue.length)}`}
+          deltaLabel={`${n.number(revenue.length)} ${entryWord(revenue.length)}`}
         />
         <DashboardStat
           label="Categories"
-          value={byCategory.length.toString()}
+          value={n.number(byCategory.length)}
           icon={Tag}
-          tone="cyan"
+          tone="forest"
           deltaLabel={byCategory.length === 0 ? "No revenue yet" : "Earning categories"}
         />
         <DashboardStat
           label="Avg / entry"
           value={money(revenue.length > 0 ? Math.round(totalRevenue / revenue.length) : 0)}
           icon={Calculator}
-          tone="pink"
-          deltaLabel={`Across ${revenue.length} ${entryWord(revenue.length)}`}
+          tone="mint"
+          deltaLabel={`Across ${n.number(revenue.length)} ${entryWord(revenue.length)}`}
         />
       </section>
 
@@ -162,7 +167,11 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
           </div>
           <div className="space-y-5">
             {byCategory.map((c) => {
-              const pct = totalRevenue > 0 ? (c.amount / totalRevenue) * 100 : 0;
+              // Held as a 0–1 ratio because that is what `n.percent` takes (see
+              // lib/format.ts on why it matches Intl rather than the old 0–100
+              // call sites). The CSS bar below re-multiplies for its `width`,
+              // which is a length, not a rendered number.
+              const ratio = totalRevenue > 0 ? c.amount / totalRevenue : 0;
               return (
                 <div key={c.name} className="space-y-2">
                   <div className="flex items-center justify-between gap-3">
@@ -172,14 +181,14 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
                         {money(c.amount)}
                       </p>
                       <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.15em] text-primary-strong">
-                        {pct.toFixed(1)}%
+                        {n.percent(ratio)}
                       </p>
                     </div>
                   </div>
                   <div className="h-1.5 overflow-hidden rounded-full bg-glass/[0.06]">
                     <div
                       className="h-full rounded-full bg-primary transition-[width] duration-700"
-                      style={{ width: `${pct}%` }}
+                      style={{ width: `${ratio * 100}%` }}
                     />
                   </div>
                 </div>
@@ -247,7 +256,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
               revenue.length === 0 && (
                 <button
                   onClick={() => setModalOpen(true)}
-                  className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+                  className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
                 >
                   <Plus className="h-4 w-4" aria-hidden="true" /> Add first revenue
                 </button>

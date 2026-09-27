@@ -12,7 +12,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { captureServerError } from "@/lib/sentry-server";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 const ThemeEnum = z.enum(["light", "dark"]);
 const LocaleEnum = z.enum(["en", "ur"]);

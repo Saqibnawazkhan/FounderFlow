@@ -4,14 +4,14 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronsLeft, ChevronsRight, X } from "lucide-react";
+import { ChevronDown, ChevronsLeft, ChevronsRight, X } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
 import { useStore, useStoreHasHydrated } from "@/lib/store";
 import { listNotificationsAction } from "@/lib/actions/notifications";
 import { useT } from "@/lib/i18n/use-t";
 import { cn } from "@/lib/utils";
 import { homeRouteForRole, isMemberBlockedRoute, type Role } from "@/lib/auth/role-gates";
-import { NAV_ITEMS } from "@/lib/nav";
+import { FINANCE_GROUP, NAV_TREE, isNavGroup, type NavItem, type NavNode } from "@/lib/nav";
 
 export function Sidebar() {
   // Mobile open/close lives in Zustand so the topbar burger can drive it
@@ -22,6 +22,8 @@ export function Sidebar() {
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const toggleCollapsed = useStore((s) => s.toggleSidebarCollapsed);
   const pathname = usePathname();
+  const financeOpen = useStore((s) => s.financeNavOpen);
+  const setFinanceOpen = useStore((s) => s.setFinanceNavOpen);
   const currentUser = useStore((s) => s.currentUser);
   const companies = useStore((s) => s.companies);
   const currentCompany = useStore((s) => s.currentCompany);
@@ -31,6 +33,20 @@ export function Sidebar() {
   useEffect(() => {
     setMobileOpen(false);
   }, [pathname, setMobileOpen]);
+
+  // Is the current route one of the five surfaces inside the Finance group?
+  // Prefix-matched so a future /expenses/123 still counts.
+  const onFinanceRoute = FINANCE_GROUP.children.some(
+    (c) => pathname === c.href || pathname.startsWith(c.href + "/")
+  );
+
+  // Force the group open on arrival at a finance route, so the active row is
+  // never hidden inside a folded group. Keyed on the boolean, not the
+  // pathname, so collapsing it by hand while already on /expenses sticks —
+  // the effect won't re-fire until you leave the group and come back.
+  useEffect(() => {
+    if (onFinanceRoute) setFinanceOpen(true);
+  }, [onFinanceRoute, setFinanceOpen]);
 
   // Lock body scroll while the drawer is open (mobile only).
   useEffect(() => {
@@ -97,10 +113,17 @@ export function Sidebar() {
   // member who clicks a finance link mid-hydration just gets bounced.
   const hasHydrated = useStoreHasHydrated();
   const role: Role = (currentUser?.role as Role | undefined) ?? "member";
-  const visibleNavItems =
+  // A group whose children are ALL blocked drops out entirely rather than
+  // rendering an empty "Finance" row — which is every finance child, for a
+  // member. Pinned by a test in tests/lib/nav.test.ts.
+  const visibleNodes: NavNode[] =
     hasHydrated && role === "member"
-      ? NAV_ITEMS.filter((item) => !isMemberBlockedRoute(item.href))
-      : NAV_ITEMS;
+      ? NAV_TREE.flatMap((node) => {
+          if (!isNavGroup(node)) return isMemberBlockedRoute(node.href) ? [] : [node];
+          const children = node.children.filter((c) => !isMemberBlockedRoute(c.href));
+          return children.length > 0 ? [{ ...node, children }] : [];
+        })
+      : NAV_TREE;
   // Brand logo also routes to the role-appropriate home so members don't
   // hit a /dashboard bounce when they click the logo.
   const brandHref = homeRouteForRole(role);
@@ -128,8 +151,23 @@ export function Sidebar() {
         // drawer overlay because a 64px thumbstrip on a phone is worse UX
         // than a proper burger menu.
         className={cn(
-          "fixed left-0 top-0 z-modal flex h-[100dvh] w-64 flex-col border-r border-border bg-surface transition-[transform,width] duration-300",
-          mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0",
+          // `start-0` + `border-e` pin the rail to the reading-start edge, so
+          // Urdu gets the sidebar on the right with its divider facing the
+          // content — the physical `left-0`/`border-r` this replaces left the
+          // whole shell unmirrored (audit S20).
+          "fixed start-0 top-0 z-modal flex h-[100dvh] w-64 flex-col border-e border-border bg-surface transition-[transform,width] duration-300",
+          // Tailwind has no logical translate, so the drawer's off-screen
+          // parking spot has to be flipped by hand: past the right edge in
+          // RTL, not the left.
+          //
+          // Both are scoped `max-lg:` rather than paired with a `lg:` reset,
+          // because the reset does NOT win. Tailwind emits `rtl:` AFTER the
+          // breakpoint variants and `:where()` adds no specificity, so
+          // `rtl:translate-x-full` would override `lg:translate-x-0` at every
+          // width — sliding the DESKTOP sidebar off-screen in Urdu, where it
+          // is supposed to be permanent. Confining both to below-lg means no
+          // transform exists at desktop at all, so there is nothing to lose.
+          mobileOpen ? "translate-x-0" : "max-lg:-translate-x-full max-lg:rtl:translate-x-full",
           collapsed && "lg:w-16"
         )}
       >
@@ -189,50 +227,87 @@ export function Sidebar() {
           className={cn("scrollbar-thin flex-1 overflow-y-auto py-4", collapsed ? "px-2" : "px-3")}
         >
           <div className="space-y-1">
-            {visibleNavItems.map((item) => {
-              const active = pathname === item.href;
-              const isNotifs = item.href === "/notifications";
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  aria-current={active ? "page" : undefined}
-                  onClick={() => setMobileOpen(false)}
-                  title={collapsed ? t.nav[item.labelKey] : undefined}
-                  className={cn(
-                    "relative flex items-center gap-3 rounded-xl text-sm font-medium transition-all",
-                    collapsed ? "justify-center px-2 py-2.5" : "px-3 py-2.5",
-                    active
-                      ? "border border-primary/50 bg-primary/[0.14] text-fg shadow-[inset_2px_0_0_0_rgb(var(--primary))]"
-                      : "text-fg-muted hover:bg-surface-hover hover:text-fg"
-                  )}
-                >
-                  <item.icon
-                    className={cn("h-4 w-4 shrink-0", active && "text-primary-strong")}
-                    aria-hidden="true"
+            {visibleNodes.map((node) =>
+              isNavGroup(node) ? (
+                collapsed ? (
+                  // Icon rail: no room for a submenu, so the group row is a
+                  // plain link to its primary destination. It reads as active
+                  // for any route inside the group.
+                  <NavRow
+                    key={node.id}
+                    href={node.href}
+                    icon={node.icon}
+                    label={t.nav[node.labelKey]}
+                    active={onFinanceRoute}
+                    collapsed
+                    onNavigate={() => setMobileOpen(false)}
                   />
-                  {!collapsed && (
-                    <>
-                      <span className="flex-1">{t.nav[item.labelKey]}</span>
-                      {isNotifs && unreadCount > 0 && (
-                        <span
-                          aria-label={`${unreadCount} unread notifications`}
-                          className="flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-[10px] font-bold text-white"
-                        >
-                          {unreadCount}
-                        </span>
+                ) : (
+                  <div key={node.id}>
+                    <button
+                      type="button"
+                      onClick={() => setFinanceOpen(!financeOpen)}
+                      aria-expanded={financeOpen}
+                      aria-controls={`nav-group-${node.id}`}
+                      className={cn(
+                        "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all",
+                        // Only claim the active styling when the children are
+                        // folded away — otherwise the real active child below
+                        // would be competing with its own parent row.
+                        onFinanceRoute && !financeOpen
+                          ? "border border-primary/50 bg-primary/[0.14] text-fg shadow-[inset_2px_0_0_0_rgb(var(--primary))] rtl:shadow-[inset_-2px_0_0_0_rgb(var(--primary))]"
+                          : "text-fg-muted hover:bg-surface-hover hover:text-fg"
                       )}
-                    </>
-                  )}
-                  {collapsed && isNotifs && unreadCount > 0 && (
-                    <span
-                      aria-label={`${unreadCount} unread notifications`}
-                      className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-danger ring-2 ring-surface"
-                    />
-                  )}
-                </Link>
-              );
-            })}
+                    >
+                      <node.icon
+                        className={cn(
+                          "h-4 w-4 shrink-0",
+                          onFinanceRoute && !financeOpen && "text-primary-strong"
+                        )}
+                        aria-hidden="true"
+                      />
+                      <span className="flex-1 text-start">{t.nav[node.labelKey]}</span>
+                      <ChevronDown
+                        className={cn(
+                          "h-3.5 w-3.5 shrink-0 transition-transform duration-200",
+                          financeOpen && "rotate-180"
+                        )}
+                        aria-hidden="true"
+                      />
+                    </button>
+                    {/* Rendered only when open: a height-animated collapse
+                        would leave the links tabbable while visually hidden,
+                        and `hidden` kills the animation anyway. */}
+                    {financeOpen && (
+                      <div id={`nav-group-${node.id}`} className="mt-1 space-y-1">
+                        {node.children.map((child) => (
+                          <NavRow
+                            key={child.href}
+                            href={child.href}
+                            icon={child.icon}
+                            label={t.nav[child.labelKey]}
+                            active={pathname === child.href}
+                            nested
+                            onNavigate={() => setMobileOpen(false)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              ) : (
+                <NavRow
+                  key={node.href}
+                  href={node.href}
+                  icon={node.icon}
+                  label={t.nav[node.labelKey]}
+                  active={pathname === node.href}
+                  collapsed={collapsed}
+                  badge={node.href === "/notifications" ? unreadCount : 0}
+                  onNavigate={() => setMobileOpen(false)}
+                />
+              )
+            )}
           </div>
         </nav>
 
@@ -247,11 +322,17 @@ export function Sidebar() {
             collapsed && "justify-center"
           )}
         >
+          {/* These two are direction-of-travel icons, not decoration: the
+              rail collapses toward its own edge, which is the right-hand side
+              in RTL. `rtl:rotate-180` mirrors them so "collapse" never points
+              at the content. The BrandMark above deliberately does NOT get
+              this — a logo is an image, and mirroring it just renders it
+              backwards. */}
           {collapsed ? (
-            <ChevronsRight className="h-4 w-4" aria-hidden="true" />
+            <ChevronsRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
           ) : (
             <>
-              <ChevronsLeft className="h-4 w-4" aria-hidden="true" />
+              <ChevronsLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
               <span className="font-mono uppercase tracking-wider">Collapse</span>
             </>
           )}
@@ -267,7 +348,7 @@ export function Sidebar() {
             )}
             title={collapsed ? currentUser?.name : undefined}
           >
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan text-sm font-semibold text-primary-fg">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-forest text-sm font-semibold text-primary-fg">
               {currentUser?.name?.[0] || "U"}
             </div>
             {!collapsed && (
@@ -286,5 +367,73 @@ export function Sidebar() {
         </div>
       </aside>
     </>
+  );
+}
+
+/**
+ * One nav destination. Shared by top-level rows, the folded Finance group's
+ * rail link, and the group's children (`nested` indents them under the
+ * parent row).
+ */
+function NavRow({
+  href,
+  icon: Icon,
+  label,
+  active,
+  collapsed = false,
+  nested = false,
+  badge = 0,
+  onNavigate,
+}: {
+  href: string;
+  icon: NavItem["icon"];
+  label: string;
+  active: boolean;
+  collapsed?: boolean;
+  nested?: boolean;
+  badge?: number;
+  onNavigate: () => void;
+}) {
+  return (
+    <Link
+      href={href}
+      aria-current={active ? "page" : undefined}
+      onClick={onNavigate}
+      title={collapsed ? label : undefined}
+      className={cn(
+        "relative flex items-center gap-3 rounded-xl text-sm font-medium transition-all",
+        collapsed ? "justify-center px-2 py-2.5" : "px-3 py-2.5",
+        // Indent + slightly quieter type so children read as subordinate to
+        // the group row rather than as peers of the top-level destinations.
+        nested && "py-2 ps-9 text-[13px]",
+        active
+          ? "border border-primary/50 bg-primary/[0.14] text-fg shadow-[inset_2px_0_0_0_rgb(var(--primary))] rtl:shadow-[inset_-2px_0_0_0_rgb(var(--primary))]"
+          : "text-fg-muted hover:bg-surface-hover hover:text-fg"
+      )}
+    >
+      <Icon
+        className={cn("h-4 w-4 shrink-0", active && "text-primary-strong")}
+        aria-hidden="true"
+      />
+      {!collapsed && (
+        <>
+          <span className="flex-1">{label}</span>
+          {badge > 0 && (
+            <span
+              aria-label={`${badge} unread notifications`}
+              className="flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-[10px] font-bold text-white"
+            >
+              {badge}
+            </span>
+          )}
+        </>
+      )}
+      {collapsed && badge > 0 && (
+        <span
+          aria-label={`${badge} unread notifications`}
+          className="absolute -end-0.5 -top-0.5 h-2 w-2 rounded-full bg-danger ring-2 ring-surface"
+        />
+      )}
+    </Link>
   );
 }

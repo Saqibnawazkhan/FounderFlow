@@ -12,7 +12,7 @@ import {
   toggleRecurringRuleAction,
 } from "@/lib/actions/recurring";
 import { z } from "zod";
-import { NewRecurringRuleSchema, type NewRecurringRuleInput } from "@/lib/schemas/recurring";
+import type { NewRecurringRuleInput } from "@/lib/schemas/recurring";
 
 /**
  * Form-level schema: a flat object that always has BOTH day fields, with
@@ -50,9 +50,10 @@ import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn } from "@/lib/utils";
-import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES, type TransactionType } from "@/lib/types";
+import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES } from "@/lib/types";
 import type { RecurringRuleClient } from "@/lib/queries/recurring";
 import { useMoney } from "@/lib/hooks/useMoney";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -109,7 +110,7 @@ export function RecurringClient({ rules, currentUserId, currentUserRole }: Props
     <div className="mx-auto max-w-[1200px] space-y-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <PillBadge tone="cyan">On schedule</PillBadge>
+          <PillBadge tone="forest">On schedule</PillBadge>
           <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">
             Recurring
           </h1>
@@ -120,7 +121,7 @@ export function RecurringClient({ rules, currentUserId, currentUserRole }: Props
         </div>
         <button
           onClick={() => setModalOpen(true)}
-          className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+          className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
         >
           <Plus className="h-4 w-4" aria-hidden="true" /> New rule
         </button>
@@ -135,7 +136,7 @@ export function RecurringClient({ rules, currentUserId, currentUserRole }: Props
             action={
               <button
                 onClick={() => setModalOpen(true)}
-                className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+                className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
               >
                 <Plus className="h-4 w-4" aria-hidden="true" /> Add first rule
               </button>
@@ -193,6 +194,7 @@ function RuleCard({
   onDelete: () => void;
 }) {
   const money = useMoney();
+  const n = useNumberFormat();
   const canManage = rule.addedBy === currentUserId || currentUserRole === "admin";
   const frequencyLabel =
     rule.frequency === "monthly"
@@ -214,7 +216,7 @@ function RuleCard({
               className={cn(
                 "inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider",
                 rule.type === "expense"
-                  ? "border-pink/30 bg-pink/10 text-pink-strong"
+                  ? "border-mint/30 bg-mint/10 text-mint-strong"
                   : "border-primary/30 bg-primary/10 text-primary-strong"
               )}
             >
@@ -225,7 +227,7 @@ function RuleCard({
               )}
               {rule.type}
             </span>
-            <span className="inline-flex items-center gap-1 rounded-full border border-cyan/30 bg-cyan/10 px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-cyan-strong">
+            <span className="inline-flex items-center gap-1 rounded-full border border-forest/30 bg-forest/10 px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-forest-strong">
               <Repeat className="h-3 w-3" aria-hidden="true" /> {rule.frequency}
             </span>
             {!rule.active && (
@@ -242,7 +244,7 @@ function RuleCard({
         <p
           className={cn(
             "shrink-0 font-mono text-lg font-bold tabular-nums",
-            rule.type === "expense" ? "text-pink-strong" : "text-primary-strong"
+            rule.type === "expense" ? "text-mint-strong" : "text-primary-strong"
           )}
         >
           {money(rule.amount)}
@@ -267,7 +269,7 @@ function RuleCard({
         <div>
           <p className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">Generated</p>
           <p className="mt-1 font-medium text-fg">
-            {rule.materializedCount} txn{rule.materializedCount === 1 ? "" : "s"}
+            {n.number(rule.materializedCount)} txn{rule.materializedCount === 1 ? "" : "s"}
           </p>
         </div>
       </div>
@@ -580,7 +582,7 @@ function NewRuleForm({ onClose, onCreated }: { onClose: () => void; onCreated: (
         <button
           type="submit"
           disabled={isSubmitting}
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+          className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
         >
           {isSubmitting ? "Creating…" : "Create rule"}
         </button>

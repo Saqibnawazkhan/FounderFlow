@@ -13,9 +13,14 @@
  *   - updateTaskStatusAction: the assignee, the creator, or an admin
  *     can change status. Anyone else gets "Not authorized".
  *   - deleteTaskAction: only the creator or an admin.
+ *
+ * Deletes (single and bulk) write the Tier 3 `deletedAt` tombstone rather than
+ * hard-deleting, so a mis-click keeps the documented 90-day recovery window and
+ * does not cascade the task's comment thread away. See deleteTaskAction.
  */
 
 import { revalidatePath } from "next/cache";
+import { format } from "date-fns";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import {
@@ -30,9 +35,55 @@ import { canManageProject } from "@/lib/auth/project-permissions";
 import { captureServerError } from "@/lib/sentry-server";
 import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
 import type { Role } from "@/lib/auth/role-gates";
-import type { Task, TaskStatus } from "@/lib/types";
+import type { Task, TaskPriority, TaskStatus } from "@/lib/types";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
+import { notifyUsers } from "@/lib/notify/fan-out";
+
+/**
+ * Display labels for the priority union.
+ *
+ * A keyed map rather than a `.toUpperCase()` or a raw interpolation so that
+ * adding a value to the zod union in lib/schemas/task.ts is a compile error
+ * here, instead of quietly shipping a raw slug like "blocker_p0" into
+ * somebody's inbox.
+ */
+const PRIORITY_LABEL: Record<TaskPriority, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  urgent: "Urgent",
+};
+
+/**
+ * Render a task deadline for a notification body / assignment email.
+ *
+ * Two decisions worth defending:
+ *
+ *   • Rebuilt from UTC parts. `Task.deadline` originates in an
+ *     `<input type="date">`, which components/tasks/task-form.tsx sends as
+ *     UTC midnight — it is a calendar DAY, not an instant. Formatting that
+ *     instant in whatever zone the host happens to run in walks the day
+ *     backwards on any host west of Greenwich, so the assignee would read a
+ *     due date one off from the one the assigner picked. Reading the UTC
+ *     parts back prints the day that was chosen, on every host. (This is the
+ *     mirror image of lib/tasks/calendar.ts, which buckets by the *viewer's*
+ *     local day — correct there, because there is a viewer; there is no
+ *     viewer timezone inside a server action composing one string for
+ *     several recipients.)
+ *
+ *   • date-fns with an explicit mask, not `toLocaleDateString`. The mask
+ *     matches `formatDate` in lib/utils.ts, so the email and the task card
+ *     read identically; a locale-sensitive formatter would instead follow
+ *     the server's ICU default, which is nobody's workspace setting.
+ *     (`User.locale` is per person, and this message is composed once for
+ *     the whole recipient list — per-recipient localisation needs the copy
+ *     to move into lib/notify/email.ts first.)
+ */
+function formatDeadline(deadline: Date): string {
+  const utcDay = new Date(deadline.getUTCFullYear(), deadline.getUTCMonth(), deadline.getUTCDate());
+  return format(utcDay, "MMM dd, yyyy");
+}
 
 function toClient(t: {
   id: string;
@@ -74,17 +125,6 @@ function toClient(t: {
 /* Reads                                                                       */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-export async function listTasksAction(): Promise<ActionResult<Task[]>> {
-  const session = await auth();
-  if (!session?.user?.companyId) return { success: false, error: "Not authenticated" };
-
-  const rows = await db.task.findMany({
-    where: { companyId: session.user.companyId },
-    orderBy: { createdAt: "desc" },
-  });
-  return { success: true, data: rows.map(toClient) };
-}
-
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Writes                                                                      */
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -109,7 +149,16 @@ export async function addTaskAction(input: unknown): Promise<ActionResult<Task>>
   // (admin / cofounder always; supervisor of this project too). Stops a
   // member from filing a task in a project they shouldn't see.
   const project = await db.project.findFirst({
-    where: { id: projectId, companyId },
+    // deletedAt:null matters as much as companyId here (data-integrity-002).
+    // deleteProjectAction soft-deletes and leaves Project.status alone, so
+    // without this filter a New-task modal that was open when the project was
+    // deleted — or any known id — still resolves, and the task lands in a
+    // project that exists on no surface. It then shows on the global board
+    // forever (lib/queries/tasks.ts filters project.status, not
+    // project.deletedAt), is absent from search and from /projects/<id>, and —
+    // because Task.project is onDelete: Restrict — pins the project row open so
+    // the purge cron's orphan-project stage cannot delete it.
+    where: { id: projectId, companyId, deletedAt: null },
     select: { id: true, name: true, supervisorId: true, status: true },
   });
   if (!project) return { success: false, error: "Project not found" };
@@ -125,7 +174,13 @@ export async function addTaskAction(input: unknown): Promise<ActionResult<Task>>
     db.user.findUnique({ where: { id: assignedTo } }),
   ]);
   if (!actor) return { success: false, error: "User no longer exists" };
-  if (!assignee) return { success: false, error: "Assignee not found" };
+  // A tombstoned assignee is not an assignee. The picker is built from
+  // lib/queries/users.ts, which filters `deletedAt: null`, but this lookup
+  // checked only the company — so a form left open across a deactivation (or a
+  // hand-crafted request) could file work onto someone who has lost access.
+  // They cannot open it, the task carries their denormalized name forever, and
+  // the assignment fans a notification + email out to them (data-integrity-004).
+  if (!assignee || assignee.deletedAt) return { success: false, error: "Assignee not found" };
   // Prevent cross-company assignment even if a malicious client picks an ID
   // from another workspace.
   if (assignee.companyId !== companyId) {
@@ -178,19 +233,26 @@ export async function addTaskAction(input: unknown): Promise<ActionResult<Task>>
           metadata: JSON.stringify({ kind: "task", taskId: task.id, title }),
         },
       });
-      await tx.notification.create({
-        data: {
-          userId: assignee.id,
-          companyId,
-          projectId,
-          title: "New task assigned",
-          message: `${actor.name} assigned you "${title}" in ${project.name}`,
-          type: "info",
-          category: "task",
-          // Deep-link into the tasks page and scroll/flash the specific card.
-          // The tasks-client reads ?taskId= on mount and highlights the row.
-          link: `/tasks?taskId=${task.id}`,
-        },
+      await notifyUsers({
+        event: "task_assigned",
+        userIds: [assignee.id],
+        companyId,
+        projectId,
+        title: "New task assigned",
+        // Deadline + priority belong IN the body, not just behind the link.
+        // The acceptance criterion is "assignment emails carry deadline and
+        // priority", and an email that only says who assigned what forces
+        // the recipient to open the app to learn whether it is due tomorrow
+        // — which is exactly the trip the email exists to save. Both values
+        // are already in hand from the row we just wrote.
+        message:
+          `${actor.name} assigned you "${title}" in ${project.name} — ` +
+          `${PRIORITY_LABEL[priority]} priority, due ${formatDeadline(task.deadline)}.`,
+        category: "task",
+        // Deep-link into the tasks page and scroll/flash the specific card.
+        // The tasks-client reads ?taskId= on mount and highlights the row.
+        link: `/tasks?taskId=${task.id}`,
+        tx,
       });
     }
 
@@ -219,7 +281,11 @@ export async function updateTaskStatusAction(input: unknown): Promise<ActionResu
   const { id, status } = parsed.data;
 
   const task = await db.task.findUnique({ where: { id } });
-  if (!task) return { success: false, error: "Task not found" };
+  // A tombstoned task is gone as far as every caller is concerned — the same
+  // rule reorderTaskAction already applies. Without it, a stale board in
+  // another tab could move a deleted task between columns and write an
+  // activity row for work that is no longer in the product.
+  if (!task || task.deletedAt) return { success: false, error: "Task not found" };
   if (task.companyId !== session.user.companyId) {
     return { success: false, error: "Not authorized" };
   }
@@ -259,16 +325,16 @@ export async function updateTaskStatusAction(input: unknown): Promise<ActionResu
     // Tell the creator when the assignee finishes a task (and they're not
     // the same person).
     if (status === "completed" && task.assignedBy !== me.id) {
-      await tx.notification.create({
-        data: {
-          userId: task.assignedBy,
-          companyId: task.companyId,
-          title: "Task completed",
-          message: `${me.name} completed "${task.title}"`,
-          type: "success",
-          category: "task",
-          link: `/tasks?taskId=${task.id}`,
-        },
+      await notifyUsers({
+        event: "task_completed",
+        userIds: [task.assignedBy],
+        companyId: task.companyId,
+        title: "Task completed",
+        message: `${me.name} completed "${task.title}"`,
+        tone: "success",
+        category: "task",
+        link: `/tasks?taskId=${task.id}`,
+        tx,
       });
     }
 
@@ -337,7 +403,9 @@ export async function deleteTaskAction(id: string): Promise<ActionResult> {
   }
 
   const task = await db.task.findUnique({ where: { id } });
-  if (!task) return { success: false, error: "Task not found" };
+  // Already tombstoned reads as gone: a second delete would move the sentinel
+  // timestamp and write a second "deleted task" activity row for one deletion.
+  if (!task || task.deletedAt) return { success: false, error: "Task not found" };
   if (task.companyId !== session.user.companyId) {
     return { success: false, error: "Not authorized" };
   }
@@ -349,11 +417,39 @@ export async function deleteTaskAction(id: string): Promise<ActionResult> {
   if (!me) return { success: false, error: "User no longer exists" };
 
   await db.$transaction(async (tx) => {
-    await tx.task.delete({ where: { id } });
+    // TIER 3 SOFT DELETE, not a hard delete (tasks-and-comments-005).
+    //
+    // This was `tx.task.delete`, and the damage was wider than one row:
+    // `Comment.task` is `onDelete: Cascade` (schema.prisma) and Comment carries
+    // no `deletedAt` of its own, so a mis-clicked trash icon — one confirm
+    // dialog away on every card and every list row — destroyed the task AND its
+    // entire comment conversation, with Activity keeping only the one-line
+    // "X deleted task Y". CLAUDE.md's Tier 3 section names Task as one of the
+    // seven soft-delete tables and publishes a one-UPDATE restore; nothing in
+    // this path had ever written the column.
+    //
+    // Stamping the sentinel fixes both halves at once: the row is recoverable
+    // with `UPDATE "Task" SET "deletedAt" = NULL WHERE id = …`, and the cascade
+    // simply never fires, so the thread is still attached when it comes back.
+    // Safe because every Task read filters deletedAt:null — getTasks, the
+    // project KPI counts, search, the export, bulkTaskScope, reorderTaskAction.
+    //
+    // Two limits worth knowing (both follow-ups, neither a reason to go back to
+    // hard-deleting): the purge cron has no stage for an individually
+    // tombstoned row in a live workspace, so these survive past 90 days (see
+    // deleteTransactionAction for the full note); and a tombstoned task still
+    // pins its project's Restrict FK, so deleteProjectAction's
+    // "is it empty?" count — which looks at live children only — can tombstone
+    // a project that the purge's orphan-project stage then cannot delete.
+    await tx.task.update({ where: { id }, data: { deletedAt: new Date() } });
     // Sweep any outstanding notifications that deep-link at this specific
     // task (`/tasks?taskId=<id>`). Otherwise clicking a "New task assigned"
     // notification for a since-deleted task lands on /tasks with nothing to
-    // highlight — audit row X10.
+    // highlight — audit row X10. Still a HARD delete on purpose: a
+    // notification is a transient ping, not a record, and nothing promises to
+    // restore one. (So a restored task comes back without its original
+    // assignment ping — the task, its description and its comments are what the
+    // recovery window is about.)
     await tx.notification.deleteMany({
       where: { companyId: task.companyId, link: { contains: `taskId=${task.id}` } },
     });
@@ -518,7 +614,14 @@ export async function bulkDeleteTasksAction(
       const deletableIds = deletable.map((t) => t.id);
       if (deletableIds.length === 0) return 0;
 
-      await tx.task.deleteMany({ where: { id: { in: deletableIds } } });
+      // Tombstone, not deleteMany — same reasoning as deleteTaskAction, and
+      // the stakes are 200x higher: this is the floating action bar, so one
+      // drag-select plus Delete used to destroy up to 200 tasks and every
+      // comment on them in one statement. All of them share one timestamp, so
+      // an ops restore can reunite exactly this batch with a BETWEEN filter
+      // (the pattern CLAUDE.md's runbook already uses for a workspace).
+      const deletedAt = new Date();
+      await tx.task.updateMany({ where: { id: { in: deletableIds } }, data: { deletedAt } });
       // Sweep task-deep-link notifications for every deleted task (audit X10).
       await tx.notification.deleteMany({
         where: {

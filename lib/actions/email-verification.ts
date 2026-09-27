@@ -25,7 +25,7 @@ import { sendVerificationEmail } from "@/lib/email/verification";
 import { verifyEmailVerificationToken } from "@/lib/auth/email-verification-token";
 import { VerifyEmailSchema } from "@/lib/schemas/email-verification";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 export async function getEmailVerificationStatusAction(): Promise<
   ActionResult<{ verified: boolean; email: string }>

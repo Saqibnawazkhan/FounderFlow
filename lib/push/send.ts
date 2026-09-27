@@ -6,6 +6,10 @@
  * 410). It never throws — push is best-effort telemetry-grade delivery layered
  * on top of the durable Notification rows, so a failed send must never break
  * the action that created the notification.
+ *
+ * It is also the chokepoint that enforces "a deactivated teammate receives
+ * nothing": the subscription query joins on `user: { deletedAt: null }`. See the
+ * comment on that filter — it is a security boundary, not a tidiness filter.
  */
 
 import { db } from "@/lib/db";
@@ -25,7 +29,28 @@ export async function sendPushToUsers(userIds: string[], payload: PushPayload): 
   if (!isPushConfigured() || userIds.length === 0) return;
   try {
     const subs = await db.pushSubscription.findMany({
-      where: { userId: { in: Array.from(new Set(userIds)) } },
+      where: {
+        userId: { in: Array.from(new Set(userIds)) },
+        // TOMBSTONE FILTER — the last line of defence for data-integrity-004.
+        //
+        // Three things compose into a leak without it. (1) Nothing prunes
+        // PushSubscription when a teammate is deactivated: removeUserAction
+        // writes only User.deletedAt, and PushSubscription has no tombstone of
+        // its own. (2) The purge cron deliberately has NO individual-user stage
+        // (see its header), so those device rows live forever in a live
+        // workspace. (3) Recipient lists upstream have historically forgotten
+        // the filter — lib/notify/fan-out.ts applies it on the EMAIL branch
+        // only.
+        //
+        // So a removed employee's phone kept buzzing with "New expense — 2,500,000"
+        // from a workspace they had lost access to: confidential finance data
+        // leaving the tenant after revocation, and the exact question a customer
+        // asks ("does removing someone actually remove them?"). Filtering HERE
+        // closes it wherever the recipient id originates, including callers
+        // added later that forget — which is the whole reason it belongs at the
+        // delivery boundary and not only at each call site.
+        user: { deletedAt: null },
+      },
     });
     if (subs.length === 0) return;
 

@@ -27,32 +27,12 @@ import { limiters } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendEmail } from "@/lib/email/send";
 import { renderInviteEmail } from "@/lib/email/templates/invite";
-import type { User } from "@/lib/types";
 import { memberLimitForPlan, PLAN_LABELS } from "@/lib/billing/plan";
+import { joinDefaultChannels } from "@/lib/chat/bootstrap";
+import { deriveHandle, isHandleConflict, uniqueHandle } from "@/lib/user/handle";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
-
-/** Strip the passwordHash before returning to the client. */
-function toClient(u: {
-  id: string;
-  name: string;
-  email: string;
-  role: string;
-  avatar: string | null;
-  companyId: string;
-  createdAt: Date;
-}): User {
-  return {
-    id: u.id,
-    name: u.name,
-    email: u.email,
-    password: "", // legacy field; never populated server-side
-    role: u.role as User["role"],
-    avatar: u.avatar ?? undefined,
-    companyId: u.companyId,
-    createdAt: u.createdAt.toISOString(),
-  };
-}
+import type { ActionResult } from "@/lib/actions/types";
+import { notifyUsers } from "@/lib/notify/fan-out";
 
 function roleLabel(role: string): string {
   return role === "cofounder" ? "Co-Founder" : "Team Member";
@@ -94,18 +74,6 @@ async function deliverInviteEmail(params: {
 /* Reads                                                                       */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-export async function listCompanyUsersAction(): Promise<ActionResult<User[]>> {
-  const session = await auth();
-  if (!session?.user?.companyId) return { success: false, error: "Not authenticated" };
-
-  const rows = await db.user.findMany({
-    // Tier 3: soft-deleted teammates disappear from the team list.
-    where: { companyId: session.user.companyId, deletedAt: null },
-    orderBy: [{ role: "asc" }, { name: "asc" }],
-  });
-  return { success: true, data: rows.map(toClient) };
-}
-
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Writes — every one requires admin role                                     */
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -132,7 +100,7 @@ async function requireAdmin() {
  * would block re-inviting and leave orphaned accounts when invites lapse.
  *
  * Returns `{ inviteUrl }` so the UI can show / copy the link directly,
- * useful in dev where Resend isn't configured (the server logs it too).
+ * useful in dev where SMTP isn't configured (the server logs it too).
  */
 export async function inviteUserAction(
   input: unknown
@@ -213,7 +181,7 @@ export async function inviteUserAction(
 
     // Render + send the email. A delivery failure is non-fatal — the invite
     // row exists, so the admin can copy the URL from the response and
-    // share it manually if Resend rejects.
+    // share it manually if the SMTP send is rejected.
     const { emailSent, inviteUrl } = await deliverInviteEmail({
       email,
       inviteeName: name,
@@ -358,7 +326,31 @@ export async function updateUserRoleAction(input: unknown): Promise<ActionResult
     if (!actor) return { success: false, error: "User no longer exists" };
 
     await db.$transaction(async (tx) => {
-      await tx.user.update({ where: { id: userId }, data: { role } });
+      // sessionVersion BUMPED IN THE SAME UPDATE AS THE ROLE, for the reason
+      // lib/actions/password-reset.ts:153 gives for bumping inline with the new
+      // hash: the two cannot be allowed to land apart.
+      //
+      // Without it, changing a role changed nothing the target could feel.
+      // Middleware decides finance access from `auth.user?.role`, and the Edge
+      // jwt callback (auth.config.ts) does no database read — that claim is
+      // whatever was baked into the signed cookie at sign-in. The Node callback
+      // refreshes `token.role` per request, but an RSC cannot write the cookie
+      // back, so the cookie only moves when something re-mints it. A demoted
+      // co-founder therefore kept loading /expenses and /dashboard — the full
+      // company ledger — for the token's lifetime (30 days by default), and
+      // could hold the stale claim indefinitely by blocking the one
+      // /api/auth/session request that would have refreshed it. A promoted
+      // teammate had the mirror-image problem: still locked out, with no
+      // in-product way to fix it. Findings sec-002 / auth-003.
+      //
+      // The bump makes the version in their token stale, so lib/auth.ts's jwt
+      // callback returns null on their very next request and they re-auth into
+      // a token carrying the new role. A privilege change forcing a clean
+      // re-auth is the correct posture anyway.
+      await tx.user.update({
+        where: { id: userId },
+        data: { role, sessionVersion: { increment: 1 } },
+      });
       await tx.activity.create({
         data: {
           companyId,
@@ -374,20 +366,17 @@ export async function updateUserRoleAction(input: unknown): Promise<ActionResult
           }),
         },
       });
-      // Tell the target unless they're the actor.
-      if (target.id !== actorId) {
-        await tx.notification.create({
-          data: {
-            userId: target.id,
-            companyId,
-            title: "Your role changed",
-            message: `${actor.name} updated your role to ${role}`,
-            type: "info",
-            category: "team",
-            link: "/team",
-          },
-        });
-      }
+      await notifyUsers({
+        event: "team_change",
+        userIds: [target.id],
+        exclude: actorId, // don't tell someone they changed their own role
+        companyId,
+        title: "Your role changed",
+        message: `${actor.name} updated your role to ${role}`,
+        category: "team",
+        link: "/team",
+        tx,
+      });
     });
 
     revalidatePath("/team");
@@ -443,7 +432,20 @@ export async function removeUserAction(userId: string): Promise<ActionResult> {
     // them with reactivateUserAction until the 90-day purge cron fires.
     const deletedAt = new Date();
     await db.$transaction(async (tx) => {
-      await tx.user.update({ where: { id: userId }, data: { deletedAt } });
+      // The tombstone AND a version bump. lib/auth.ts's jwt callback already
+      // kills a session whose user row carries a deletedAt, so this is the
+      // second, independent reason that token stops working — cheap insurance
+      // against a future refactor that relaxes one of the two checks.
+      //
+      // reactivateUserAction deliberately does NOT bump. The cookies minted
+      // before this deactivation are already behind by one version, so leaving
+      // the counter where it is keeps them dead while a restored account signs
+      // in cleanly; bumping again on the way back in would only revoke tokens
+      // that no longer exist.
+      await tx.user.update({
+        where: { id: userId },
+        data: { deletedAt, sessionVersion: { increment: 1 } },
+      });
       // Re-point company ownership away from the deactivated owner so a
       // tombstoned row never remains the workspace owner.
       const company = await tx.company.findUnique({ where: { id: companyId } });
@@ -525,16 +527,15 @@ export async function reactivateUserAction(userId: string): Promise<ActionResult
           }),
         },
       });
-      await tx.notification.create({
-        data: {
-          userId: target.id,
-          companyId,
-          title: "Your access was restored",
-          message: `${actor.name} reactivated your account. Welcome back.`,
-          type: "info",
-          category: "team",
-          link: "/dashboard",
-        },
+      await notifyUsers({
+        event: "team_change",
+        userIds: [target.id],
+        companyId,
+        title: "Your access was restored",
+        message: `${actor.name} reactivated your account. Welcome back.`,
+        category: "team",
+        link: "/dashboard",
+        tx,
       });
     });
 
@@ -554,15 +555,31 @@ export async function reactivateUserAction(userId: string): Promise<ActionResult
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 /**
+ * How many times the acceptance is attempted when the handle unique index
+ * rejects it. Three, not thirty: the only way to lose twice is for two people
+ * to accept invites into the same workspace in the same instant with addresses
+ * that derive the same base, and past that the honest answer is a retryable
+ * error rather than a loop holding a transaction open. The index, not this
+ * number, is the guarantee — see `uniqueHandle` in lib/user/handle.ts.
+ */
+const HANDLE_WRITE_ATTEMPTS = 3;
+
+/**
  * The /invite/[token] flow: the recipient submits the form, this action
  * re-validates the token (existence + not expired + not used), creates the
- * real User with their chosen password, marks the token used, fan-outs the
- * welcome notification + activity, and auto-signs them in.
+ * real User with their chosen password and their @mention handle, marks the
+ * token used, fan-outs the welcome notification + activity, and auto-signs
+ * them in.
  *
  * Race condition: between two browser tabs both submitting at the same
  * moment, only the first wins because we wrap the user-create + token-mark
  * in a single `$transaction` and bail if `findUnique({ where: { email } })`
  * already returns a row from the prior tab.
+ *
+ * The OTHER race is between two different invitees whose emails derive the
+ * same handle. That one is not a "bail" — both acceptances are legitimate and
+ * both must succeed — so it is a bounded retry around the transaction instead;
+ * the loop below argues the shape.
  */
 export async function acceptInviteAction(input: unknown): Promise<ActionResult> {
   const parsed = AcceptInviteSchema.safeParse(input);
@@ -575,7 +592,13 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
   const { token, password } = parsed.data;
 
   try {
-    const invite = await db.inviteToken.findUnique({ where: { token } });
+    // The workspace's tombstone is read THROUGH THE RELATION, in the same round
+    // trip as the token — not as a follow-up query somebody can forget to add
+    // to the next code path that claims an invite.
+    const invite = await db.inviteToken.findUnique({
+      where: { token },
+      include: { company: { select: { deletedAt: true } } },
+    });
     if (!invite) {
       return { success: false, error: "This invite link is invalid" };
     }
@@ -586,6 +609,27 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
       return {
         success: false,
         error: "This invite has expired. Ask your admin to send a new one.",
+      };
+    }
+    // AN INVITE OUTLIVES THE WORKSPACE IT WAS SENT FOR. softDeleteWorkspace
+    // (lib/actions/account.ts) tombstones Transaction, Budget, Task, Project,
+    // Message, User and Company and never touches InviteToken — although
+    // removeUserAction three functions up deletes a removed user's pending
+    // invites for exactly this reason. Invites live 7 days, so the window is
+    // wide. Accepting one used to mint a LIVE User inside a dead company:
+    // getCurrentCompany throws "Company not found" on some pages while others
+    // render, so the product looks broken in a way nobody can explain — and
+    // every row they then create is live data inside a company the purge cron
+    // hard-deletes after the retention window, so their work vanishes with no
+    // tombstone of its own. Finding data-integrity-003.
+    //
+    // Refused here rather than only at the source, because this is the check
+    // that cannot be bypassed by a delete path that forgets to clean up: the
+    // tokens should ALSO be burnt inside softDeleteWorkspace's transaction.
+    if (invite.company.deletedAt) {
+      return {
+        success: false,
+        error: "This workspace is no longer active. Ask whoever invited you for a new invite.",
       };
     }
 
@@ -603,46 +647,157 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
     const inviter = await db.user.findUnique({ where: { id: invite.invitedBy } });
     const inviterName = inviter?.name ?? "An admin";
 
-    await db.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          name: invite.name,
-          email: invite.email,
-          passwordHash,
-          role: invite.role,
-          companyId: invite.companyId,
-        },
-      });
-      await tx.inviteToken.update({
-        where: { id: invite.id },
-        data: { usedAt: new Date() },
-      });
-      await tx.activity.create({
-        data: {
-          companyId: invite.companyId,
-          type: "user_joined",
-          message: `${invite.name} accepted ${inviterName}'s invite`,
-          userId: user.id,
-          userName: invite.name,
-          metadata: JSON.stringify({
-            kind: "user",
-            invitedUser: invite.name,
-            role: invite.role,
-          }),
-        },
-      });
-      await tx.notification.create({
-        data: {
-          userId: user.id,
-          companyId: invite.companyId,
-          title: "Welcome to FounderFlow",
-          message: `${inviterName} invited you to the workspace. Get started by exploring the dashboard.`,
-          type: "info",
-          category: "team",
-          link: "/dashboard",
-        },
-      });
-    });
+    // The invitee's @mention address, derived from the same email local-part
+    // the backfill used. Written here because nothing else ever would: the
+    // add_user_handle migration healed the rows that existed when it ran and a
+    // row that commits without a handle stays NULL forever — and NULLS
+    // DISTINCT means the unique index never complains, so the new teammate is
+    // simply unmentionable in their own workspace with nothing saying why.
+    // That is FaultsAudit T16 reintroduced for every invitee from now on.
+    const handleBase = deriveHandle(invite.email);
+
+    // Candidates this request has already watched the index reject. Fed back
+    // into `uniqueHandle` on the next attempt, because the taken-set re-read
+    // alone is not enough to make progress: the winner of the race may still
+    // be uncommitted when we look, so the same candidate would come back and
+    // we would lose the same way three times.
+    const lostRaces: string[] = [];
+
+    // WHY THE RETRY WRAPS THE WHOLE TRANSACTION, not just the insert. Under
+    // Postgres a failed statement ABORTS its transaction, so catching P2002
+    // inside the `$transaction` callback and trying the next candidate there
+    // raises 25P02 instead — the aftershock, not the collision.
+    // `lib/chat/bootstrap.ts` documents the same trap for its post-race
+    // re-read. So the unit of retry is the attempt, and everything the
+    // acceptance writes rolls back with it: no half-burnt token, no duplicate
+    // activity row, no second #general membership.
+    //
+    // BOUNDED, and small. Each extra attempt buys a vanishing slice of
+    // probability — it takes two people accepting invites into the same
+    // workspace in the same instant with email local-parts that clean to the
+    // same base — and the honest answer past that is to fail and let them
+    // retry, not to sit in a loop holding a transaction open.
+    //
+    // The bcrypt hash is computed ABOVE the loop on purpose: it is the
+    // expensive part of this action and it does not change between attempts.
+    for (let attempt = 1; attempt <= HANDLE_WRITE_ATTEMPTS; attempt++) {
+      // Reassigned inside the transaction so the catch below knows which
+      // candidate lost; the initial value only matters if the transaction dies
+      // before it is picked, in which case the error is not a handle conflict
+      // and the value goes unread.
+      let attempted = handleBase;
+
+      try {
+        await db.$transaction(async (tx) => {
+          // INSIDE the transaction, so the roster we de-duplicate against and
+          // the row we write share one snapshot.
+          //
+          // DELIBERATELY NOT FILTERED BY `deletedAt: null`, which is the one
+          // place this query departs from the house rule that every scoped
+          // read filters it. A tombstoned teammate still occupies their slot
+          // in `@@unique([companyId, handle])` — the backfill says so in as
+          // many words, and it backfilled soft-deleted rows for this reason.
+          // Handing their handle to a live invitee would collide the moment
+          // ops ran the soft-delete restore documented in CLAUDE.md, and would
+          // quietly re-point every historical @mention of that person at
+          // somebody else in the meantime.
+          const roster = await tx.user.findMany({
+            where: { companyId: invite.companyId, handle: { not: null } },
+            select: { handle: true },
+          });
+          const taken: string[] = [...lostRaces];
+          // `for...of` over the array, and `if (row.handle)` rather than a
+          // non-null assertion: `handle` is nullable in the client type even
+          // though the `not: null` filter means it cannot be null here.
+          for (const row of roster) {
+            if (row.handle) taken.push(row.handle);
+          }
+          attempted = uniqueHandle(handleBase, taken);
+
+          const user = await tx.user.create({
+            data: {
+              name: invite.name,
+              email: invite.email,
+              handle: attempted,
+              passwordHash,
+              role: invite.role,
+              companyId: invite.companyId,
+            },
+          });
+          await tx.inviteToken.update({
+            where: { id: invite.id },
+            data: { usedAt: new Date() },
+          });
+          // Put them in the workspace's default channels (#general, and only
+          // #general — lib/chat/bootstrap.ts argues the restraint).
+          //
+          // This was missing entirely: `createChannelAction` is the ONLY other
+          // place in the codebase that writes a ChannelMember, and
+          // `markChannelReadAction` refuses to auto-join on open by design, so an
+          // invitee had no runtime path into any channel, ever. A public channel
+          // is still readable and postable without membership — the visible
+          // symptom is subtler than an empty chat: no unread badges (only a
+          // membership row carries the `lastReadAt` watermark the rail counts
+          // against) and an absence from #general's member list and count.
+          //
+          // IN the transaction. The question worth asking is whether a chat row
+          // should be allowed to void an acceptance that burns a single-use
+          // token, and the answer is that it cannot: `usedAt` is set by THIS
+          // transaction, so a rollback un-burns it and the invitee's link still
+          // works on retry. Beyond that, `joinDefaultChannels` returns 0 rather
+          // than throwing for every ordinary "nothing to do" — no channel yet,
+          // already a member — which leaves the database being unreachable as the
+          // only realistic failure, and `user.create` above has already taken the
+          // transaction down in that case.
+          await joinDefaultChannels(tx, invite.companyId, user.id);
+          await tx.activity.create({
+            data: {
+              companyId: invite.companyId,
+              type: "user_joined",
+              message: `${invite.name} accepted ${inviterName}'s invite`,
+              userId: user.id,
+              userName: invite.name,
+              metadata: JSON.stringify({
+                kind: "user",
+                invitedUser: invite.name,
+                role: invite.role,
+              }),
+            },
+          });
+          // The one thing a retried attempt does not fully undo: `notifyUsers`
+          // writes its Notification row through `tx` (rolled back with
+          // everything else) but fires push OUTSIDE it, deliberately
+          // fire-and-forget. Harmless here — the account being created by this
+          // very transaction owns no PushSubscription row yet, so there is no
+          // device for a duplicate welcome to reach.
+          await notifyUsers({
+            event: "team_change",
+            userIds: [user.id],
+            companyId: invite.companyId,
+            title: "Welcome to FounderFlow",
+            message: `${inviterName} invited you to the workspace. Get started by exploring the dashboard.`,
+            category: "team",
+            link: "/dashboard",
+            tx,
+          });
+        });
+
+        // Committed. The only other way out of this loop is a throw, so
+        // nothing below can run on an acceptance that never landed.
+        break;
+      } catch (e) {
+        // `isHandleConflict`, never a bare P2002 check: `User.email` is unique
+        // too, and the duplicate-email race — someone completing /signup with
+        // this address between the pre-check above and this insert — must keep
+        // reaching the catch-all's message rather than being retried three
+        // times under different handles to the same end.
+        if (isHandleConflict(e) && attempt < HANDLE_WRITE_ATTEMPTS) {
+          lostRaces.push(attempted);
+          continue;
+        }
+        throw e;
+      }
+    }
 
     // Auto-sign-in with the password they just set. Same redirect:false
     // dance as signupAction so the client controls the navigation.
@@ -666,6 +821,10 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
 
     revalidatePath("/team");
     revalidatePath("/activities");
+    // The rail renders a per-channel member COUNT, and #general just gained
+    // one. Cheap, and it keeps the teammates already looking at /chat from
+    // showing a stale roster until something else happens to invalidate it.
+    revalidatePath("/chat");
 
     return { success: true, data: undefined };
   } catch (e) {

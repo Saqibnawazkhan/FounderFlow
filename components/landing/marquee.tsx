@@ -1,5 +1,3 @@
-"use client";
-
 /**
  * Marquee — infinite horizontal scroll, pure CSS.
  *
@@ -8,6 +6,9 @@
  *
  * Mobile: animation continues but at the same speed (cheap). Disable via
  * `pauseOnMobile` if you want.
+ *
+ * Server component — no hooks, no handlers, no browser APIs. Keep it that way:
+ * the landing page renders it to HTML and it never reaches the client bundle.
  */
 
 import { cn } from "@/lib/utils";

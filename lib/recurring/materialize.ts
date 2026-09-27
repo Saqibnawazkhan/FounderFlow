@@ -90,7 +90,7 @@ export function materialize(rules: RecurringRule[], when: Date): MaterializedTra
       ruleId: rule.id,
       companyId: rule.companyId,
       type: rule.type as "expense" | "investment",
-      // BUGS.md P0-4: RecurringRule.amount is Prisma.Decimal after Float→Decimal.
+      // FaultsAudit.md P0-4: RecurringRule.amount is Prisma.Decimal after Float→Decimal.
       // The MaterializedTransaction shape stays `number` so downstream JSON
       // paths and tests don't have to know about Decimal.
       amount: rule.amount.toNumber(),

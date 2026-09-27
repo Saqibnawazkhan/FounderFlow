@@ -31,7 +31,7 @@ import {
 } from "@/lib/auth/password-reset-token";
 import { RequestPasswordResetSchema, ResetPasswordSchema } from "@/lib/schemas/password-reset";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 function resetLinkBase(): string {
   return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
@@ -74,7 +74,7 @@ export async function requestPasswordResetAction(
         <p>Hi ${user.name},</p>
         <p>We received a request to reset the password for the account associated with this email address. Click the button below to choose a new password. The link expires in 15 minutes.</p>
         <p style="margin:24px 0;">
-          <a href="${url}" style="background:#b6f425;color:#0a0a0a;padding:12px 20px;border-radius:8px;font-weight:700;text-decoration:none;">
+          <a href="${url}" style="background:#10B981;color:#1F2933;padding:12px 20px;border-radius:8px;font-weight:700;text-decoration:none;">
             Reset password
           </a>
         </p>

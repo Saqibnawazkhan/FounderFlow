@@ -1,0 +1,155 @@
+-- add_message_search migration
+--
+-- Strategy: give "Message" a Postgres-computed full-text column plus the GIN
+-- index that makes it searchable, so Phase H's cross-content search can ask
+-- "which messages mention this phrase?" with an index scan instead of an
+-- ILIKE '%term%' sequential scan over every message in the database. Order of
+-- operations:
+--
+--   1. ADD COLUMN "searchVector" as a GENERATED ALWAYS ... STORED tsvector
+--      over "body". Postgres computes it for every existing row during the
+--      ALTER and recomputes it on every later INSERT/UPDATE of "body".
+--   2. CREATE INDEX ... USING GIN over that column, after the column exists
+--      and is already populated — same reasoning as add_chat's section 4:
+--      building the index once over a finished column beats maintaining it
+--      row by row while the column backfills.
+--
+-- Prisma applies each migration inside its own transaction, so a failure
+-- rolls the whole file back and leaves "Message" exactly as it was.
+--
+--
+-- WHY A GENERATED COLUMN AND NOT A TRIGGER
+--
+-- The two usual shapes are a BEFORE INSERT/UPDATE trigger that writes a
+-- plain tsvector column, or a generated column. A trigger can be dropped,
+-- can be skipped by a COPY that disables triggers, and has to be paired with
+-- a one-off backfill UPDATE for existing rows — three ways for the vector to
+-- fall out of step with the text it claims to index, each of which shows up
+-- as "search silently misses recent messages", the least debuggable failure
+-- in this whole feature. GENERATED ALWAYS ... STORED cannot desynchronise:
+-- Postgres owns the value, refuses application writes to it outright, and
+-- backfills every existing row as part of this ALTER. No separate backfill
+-- step appears below because there is nothing left to backfill.
+--
+--
+-- WHY coalesce("body", '')
+--
+-- to_tsvector('english', NULL) is NULL, not an empty vector, and a NULL
+-- tsvector matches NOTHING — not even a query that should trivially miss it.
+-- A row with a NULL body would therefore be permanently unfindable rather
+-- than merely empty, and (worse) would stay unfindable after someone edited
+-- a real body into it if the expression were ever changed to a non-generated
+-- one. "Message"."body" is NOT NULL today, so coalesce is defensive rather
+-- than load-bearing — but the column definition outlives today's
+-- constraints, and the day "body" becomes nullable (a card-only message, an
+-- attachment with no text) is not the day anyone wants to rediscover this.
+-- The cost is zero.
+--
+--
+-- KNOWN LIMITATION: THE 'english' DICTIONARY AND THE URDU LOCALE
+--
+-- This is a real trade, made deliberately, not an oversight.
+--
+-- The text search configuration is fixed at 'english' because a generated
+-- column must use an IMMUTABLE expression — it cannot consult a per-row or
+-- per-workspace locale column, and it cannot use the two-argument
+-- to_tsvector(regconfig, text) with a non-constant regconfig. One dictionary
+-- for the whole table is the only shape available here.
+--
+-- FounderFlow ships a complete Urdu locale (lib/i18n/strings.ts: `ur`, RTL),
+-- and people write chat messages in Urdu. The English snowball stemmer does
+-- not stem Urdu: it will not fold Urdu inflections onto a common root, and
+-- Urdu stop words are not recognised as stop words. The practical effect is
+-- that Urdu messages ARE still indexed and ARE still findable — token-level
+-- matching works, because unknown tokens fall through to the simple
+-- normaliser — but only by an exact token match. A search for an inflected
+-- form will not find the base form, and vice versa. English messages get
+-- full stemming.
+--
+-- The alternative is 'simple', which stems nothing at all and treats every
+-- language identically. That would make Urdu and English equally literal —
+-- and it would cost English its stemming, so "budgets"/"budgeting" would
+-- stop finding "budget" for the majority of the current user base, who write
+-- in English. Trading a working feature for consistency is the worse deal
+-- today, so: 'english' now, with this limitation written down rather than
+-- pretended away.
+--
+-- The honest fix, when the Urdu user base justifies it, is a second
+-- generated column ("searchVectorSimple") indexed the same way, with the
+-- query OR-ing the two — NOT flipping this one, which would silently degrade
+-- English search for everybody. Whoever does that should revisit this header.
+--
+--
+-- NOTE TO WHOEVER WRITES THE QUERY — THE TOMBSTONE LEAK
+--
+-- This column is computed from "body" and knows nothing about soft deletes.
+-- A soft-deleted message keeps its body (that is the point of the tombstone:
+-- replies keep their parent and the thread still reads in order), so its
+-- searchVector still matches, and an unguarded `WHERE "searchVector" @@ ...`
+-- will happily resurface messages the UI renders as "message deleted". That
+-- cannot be expressed in the index — a partial index on "deletedAt" IS NULL
+-- was considered and rejected, because it would silently mask the missing
+-- filter here while leaving every OTHER search path (tasks, projects,
+-- transactions) still needing the manual guard, which is the repo convention:
+-- every scoped read filters deletedAt: null, manually, every time.
+--
+-- So the query MUST carry, itself:
+--   * "deletedAt" IS NULL on "Message"  (tombstoned messages stay invisible)
+--   * "companyId" = <the caller's company>  (no cross-tenant results)
+--   * a join through visibleChannelWhere()'s SQL equivalent in
+--     lib/auth/channel-permissions.ts, so a term that appears only in a
+--     private channel the caller is not a member of returns nothing.
+-- The index makes the search fast; it enforces none of those three.
+--
+-- Also worth knowing for the query: this index serves `@@` against
+-- to_tsquery/plainto_tsquery/websearch_to_tsquery, including prefix matching
+-- (`to_tsquery('english', 'budg:*')`), which is what makes type-ahead work.
+-- It does NOT serve `ILIKE '%term%'` — that falls back to a sequential scan
+-- and quietly undoes the entire point of this migration.
+--
+--
+-- RE-RUN SAFETY
+--
+-- Plain ADD COLUMN / CREATE INDEX, with no IF NOT EXISTS — matching add_chat,
+-- which likewise uses bare CREATE TABLE / CREATE INDEX. The once-only
+-- guarantee is Prisma's `_prisma_migrations` ledger, not defensive DDL, and
+-- that is deliberate: if this file ever DOES run against a database that
+-- already has the column, that means the ledger and the database disagree,
+-- and the loud duplicate-column error is the correct outcome. IF NOT EXISTS
+-- would swallow exactly that signal, and would in particular accept a
+-- "searchVector" that exists as a plain, never-populated tsvector — a
+-- database where search returns zero rows forever and nothing errors.
+-- add_chat makes only its DATA backfill idempotent (deterministic ids, so a
+-- replay collides on the primary key); there is no data backfill here to
+-- make idempotent, because the generated column backfills itself.
+--
+-- Additive and non-destructive: nothing is dropped, no existing column or row
+-- is rewritten in meaning. Note for operations, though, that adding a STORED
+-- generated column rewrites the table and holds an ACCESS EXCLUSIVE lock for
+-- the duration — chat shipped 2026-09-24, so "Message" is small and this is
+-- effectively instantaneous today. It will not be forever; a future column of
+-- this shape on a large table wants a different plan.
+
+-- ─────────────────────────────────────────────────────────────────────
+-- 1. The generated full-text column
+-- ─────────────────────────────────────────────────────────────────────
+
+ALTER TABLE "Message"
+  ADD COLUMN "searchVector" tsvector
+  GENERATED ALWAYS AS (to_tsvector('english', coalesce("body", ''))) STORED;
+
+-- ─────────────────────────────────────────────────────────────────────
+-- 2. The GIN index
+-- ─────────────────────────────────────────────────────────────────────
+--
+-- GIN, not GiST: GIN is slower to build and update but substantially faster
+-- to search, and chat is read-heavy — a message is written once and searched
+-- forever. Created after the column so the ALTER above is not maintaining an
+-- index row by row while it populates every existing message.
+--
+-- This index cannot be declared in prisma/schema.prisma: Prisma has no syntax
+-- for a GIN index, nor for any index on an Unsupported() column. It exists in
+-- SQL only. The Message model's @@index block says so, so that its absence
+-- there reads as intentional instead of as something missing.
+
+CREATE INDEX "Message_searchVector_idx" ON "Message" USING GIN ("searchVector");

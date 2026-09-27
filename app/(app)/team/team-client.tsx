@@ -45,6 +45,7 @@ import type {
 } from "@/lib/types";
 import { ROLE_LABELS } from "@/lib/types";
 import { canSeeFinances } from "@/lib/auth/role-gates";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
 type Props = {
   users: User[];
@@ -67,6 +68,7 @@ export function TeamClient({
 }: Props) {
   const router = useRouter();
   const money = useMoney();
+  const n = useNumberFormat();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -188,7 +190,7 @@ export function TeamClient({
     <div className="mx-auto max-w-[1200px] space-y-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <PillBadge tone="cyan">Roster</PillBadge>
+          <PillBadge tone="forest">Roster</PillBadge>
           <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">Team</h1>
           <p className="mt-2 text-sm text-fg-muted md:text-base">
             Manage co-founders and team members.
@@ -197,7 +199,7 @@ export function TeamClient({
         {isAdmin && (
           <button
             onClick={() => setInviteOpen(true)}
-            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
           >
             <UserPlus className="h-4 w-4" aria-hidden="true" /> Invite member
           </button>
@@ -218,14 +220,14 @@ export function TeamClient({
             .filter((u) => u.role === "admin" || u.role === "cofounder")
             .length.toString()}
           icon={Crown}
-          tone="cyan"
+          tone="forest"
           deltaLabel="Founder access"
         />
         <DashboardStat
           label="Team members"
           value={users.filter((u) => u.role === "member").length.toString()}
           icon={UserIcon}
-          tone="pink"
+          tone="mint"
           deltaLabel="Limited access"
         />
       </section>
@@ -295,8 +297,9 @@ export function TeamClient({
                         "mt-3 inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-medium",
                         user.role === "admin" &&
                           "border-primary/30 bg-primary/10 text-primary-strong",
-                        user.role === "cofounder" && "border-cyan/30 bg-cyan/10 text-cyan-strong",
-                        user.role === "member" && "border-pink/30 bg-pink/10 text-pink-strong"
+                        user.role === "cofounder" &&
+                          "border-forest/30 bg-forest/10 text-forest-strong",
+                        user.role === "member" && "border-mint/30 bg-mint/10 text-mint-strong"
                       )}
                     >
                       {user.role === "admin" && <Crown className="h-3 w-3" aria-hidden="true" />}
@@ -315,8 +318,12 @@ export function TeamClient({
               {showMemberStats && (
                 <div className="mt-6 grid grid-cols-3 gap-2 border-t border-border pt-5">
                   <Cell label="Invested" value={money(userInvestments)} tone="primary" />
-                  <Cell label="Logged" value={money(userExpenses)} tone="pink" />
-                  <Cell label="Tasks" value={`${completedTasks}/${userTasks.length}`} tone="cyan" />
+                  <Cell label="Logged" value={money(userExpenses)} tone="mint" />
+                  <Cell
+                    label="Tasks"
+                    value={`${n.number(completedTasks)}/${n.number(userTasks.length)}`}
+                    tone="forest"
+                  />
                 </div>
               )}
 
@@ -339,10 +346,10 @@ export function TeamClient({
       {isAdmin && pendingInvites.length > 0 && (
         <section aria-label="Pending invites" className="space-y-4">
           <div className="flex items-center gap-2">
-            <Send className="h-4 w-4 text-cyan-strong" aria-hidden="true" />
+            <Send className="h-4 w-4 text-forest-strong" aria-hidden="true" />
             <h2 className="text-lg font-bold tracking-tight">Pending invites</h2>
             <span className="rounded-full bg-glass/[0.06] px-2 py-0.5 font-mono text-[10px] font-bold text-fg-muted">
-              {pendingInvites.length}
+              {n.number(pendingInvites.length)}
             </span>
           </div>
           <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
@@ -364,7 +371,7 @@ export function TeamClient({
                           <MailWarning className="h-3 w-3" aria-hidden="true" /> Expired
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-cyan/30 bg-cyan/10 px-2 py-0.5 text-[10px] font-medium text-cyan-strong">
+                        <span className="inline-flex items-center gap-1 rounded-full border border-forest/30 bg-forest/10 px-2 py-0.5 text-[10px] font-medium text-forest-strong">
                           <Clock className="h-3 w-3" aria-hidden="true" /> Awaiting
                         </span>
                       )}
@@ -408,7 +415,7 @@ export function TeamClient({
             <UserIcon className="h-4 w-4 text-fg-muted" aria-hidden="true" />
             <h2 className="text-lg font-bold tracking-tight">Deactivated</h2>
             <span className="rounded-full bg-glass/[0.06] px-2 py-0.5 font-mono text-[10px] font-bold text-fg-muted">
-              {deactivatedUsers.length}
+              {n.number(deactivatedUsers.length)}
             </span>
           </div>
           <p className="-mt-2 text-sm text-fg-muted">
@@ -479,13 +486,13 @@ function Cell({
 }: {
   label: string;
   value: string;
-  tone: "primary" | "cyan" | "pink";
+  tone: "primary" | "forest" | "mint";
 }) {
   const toneClass =
-    tone === "cyan"
-      ? "text-cyan-strong"
-      : tone === "pink"
-        ? "text-pink-strong"
+    tone === "forest"
+      ? "text-forest-strong"
+      : tone === "mint"
+        ? "text-mint-strong"
         : "text-primary-strong";
   return (
     <div className="min-w-0">
@@ -525,10 +532,10 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
     const res = await inviteUserAction(data);
     if (res.success) {
       // Two failure modes funnel into emailSent=false:
-      //   1. RESEND_API_KEY not set (dev or misconfigured prod) → console
-      //      log includes "[email:dev-stub]"
-      //   2. Resend rejected the send (rate limit, bad sender domain, etc.)
-      //      → console log includes the Resend error message
+      //   1. GMAIL_USER / GMAIL_APP_PASSWORD not set (dev or misconfigured
+      //      prod) → console log includes "[email:dev-stub]"
+      //   2. The SMTP send was rejected (auth failure, rate limit, bad
+      //      sender) → console log includes the nodemailer error message
       // Either way we show the URL so the admin can share it out-of-band.
       if (res.data.emailSent) {
         toast.success(`Invite emailed to ${res.data.email}`);
@@ -627,7 +634,7 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
         <button
           type="submit"
           disabled={isSubmitting}
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+          className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
         >
           {isSubmitting
             ? "Adding…"

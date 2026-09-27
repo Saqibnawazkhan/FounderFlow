@@ -42,5 +42,3 @@ export const UpdateRoleSchema = z.object({
   userId: z.string().min(1),
   role: Role,
 });
-
-export type UpdateRoleInput = z.infer<typeof UpdateRoleSchema>;

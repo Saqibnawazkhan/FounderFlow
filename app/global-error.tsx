@@ -34,7 +34,7 @@ export default function GlobalError({
       <body
         style={{
           fontFamily: "system-ui, -apple-system, sans-serif",
-          background: "#0a0a0a",
+          background: "#1F2933",
           color: "#f7f8f5",
           minHeight: "100vh",
           display: "flex",
@@ -85,8 +85,8 @@ export default function GlobalError({
               onClick={reset}
               style={{
                 borderRadius: "9999px",
-                background: "#b6f425",
-                color: "#0a0a0a",
+                background: "#10B981",
+                color: "#1F2933",
                 padding: "0.625rem 1.5rem",
                 fontSize: "0.875rem",
                 fontWeight: 700,

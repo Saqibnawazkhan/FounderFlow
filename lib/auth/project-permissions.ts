@@ -58,12 +58,31 @@ export function canSeeProjectFinances({ userId, role, project }: ProjectGuardInp
 }
 
 /**
+ * Company-wide project visibility: this role sees EVERY project, without
+ * needing to supervise it or hold a task in it.
+ *
+ * Deliberately separate from `canSeeFinances`, which it currently duplicates.
+ * The three visibility gates in `lib/queries/projects.ts` used to call the
+ * finance predicate directly, so widening `canSeeFinances` for a future
+ * finance-capable role (accountant, read-only auditor) would have silently
+ * handed that role every project in the company — through an edit that looked
+ * like it was only about budgets. Asking the project question here keeps the
+ * two free to diverge. See CODEBASE-AUDIT.md §4.3.
+ */
+export function canSeeAllProjects(role: Role): boolean {
+  return role === "admin" || role === "cofounder";
+}
+
+/**
  * True when the caller can VIEW the project at all (overview page + tasks
  * tab). Admin + cofounder see everything; the supervisor sees their own;
  * members see only projects where they have at least one task.
  *
- * Use this at the entry to `/projects/[id]/page.tsx` to 404 (or redirect)
- * non-members away.
+ * Wired in at `getProjectForUser` (`lib/queries/projects.ts`), which backs
+ * `/projects/[id]` and 404s rather than leaking the project's existence.
+ * Callers may probe with `hasTaskInProject: false` first and only pay for the
+ * task lookup when that returns false — the result is monotone in that flag,
+ * so a false-then-true probe can never wrongly deny access.
  */
 export function canSeeProject({
   userId,
@@ -71,7 +90,7 @@ export function canSeeProject({
   project,
   hasTaskInProject,
 }: ProjectGuardInput & { hasTaskInProject: boolean }): boolean {
-  if (role === "admin" || role === "cofounder") return true;
+  if (canSeeAllProjects(role)) return true;
   if (project.supervisorId === userId) return true;
   return hasTaskInProject;
 }

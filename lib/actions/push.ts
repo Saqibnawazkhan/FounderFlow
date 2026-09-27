@@ -12,7 +12,7 @@ import { db } from "@/lib/db";
 import { PushSubscriptionSchema } from "@/lib/schemas/push";
 import { captureServerError } from "@/lib/sentry-server";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 export async function savePushSubscriptionAction(input: unknown): Promise<ActionResult> {
   const session = await auth();

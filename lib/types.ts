@@ -97,7 +97,12 @@ export type ActivityType =
   | "project_created"
   | "project_updated"
   | "project_archived"
-  | "project_supervisor_changed";
+  | "project_supervisor_changed"
+  // Channel lifecycle only. There is deliberately NO activity per message —
+  // one row per message would drown /activities, which members cannot see
+  // anyway. See lib/actions/chat.ts.
+  | "channel_created"
+  | "channel_archived";
 
 export type ActivityMetadata =
   | { kind: "transaction"; amount: number; category: string }
@@ -177,10 +182,4 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   admin: "Admin Founder",
   cofounder: "Co-Founder",
   member: "Team Member",
-};
-
-export const ROLE_COLORS: Record<UserRole, string> = {
-  admin: "bg-gradient-to-r from-amber-500 to-orange-500",
-  cofounder: "bg-gradient-to-r from-brand-500 to-accent-500",
-  member: "bg-gradient-to-r from-emerald-500 to-teal-500",
 };

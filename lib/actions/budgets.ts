@@ -9,6 +9,12 @@
  * Permissions: any company member can manage budgets (mirrors the
  * "anyone can create transactions" model). Tighten later if budgets
  * become an admin-only concept.
+ *
+ * Delete writes the Tier 3 `deletedAt` tombstone rather than hard-deleting, so
+ * the documented 90-day recovery window is real for a single budget too. Every
+ * budget lookup in this file therefore has to carry `deletedAt: null` — the
+ * duplicate-category guard in particular, or a deleted budget blocks its own
+ * replacement forever.
  */
 
 import { revalidatePath } from "next/cache";
@@ -20,7 +26,7 @@ import { captureServerError } from "@/lib/sentry-server";
 import type { Role } from "@/lib/auth/role-gates";
 import { canManageProject } from "@/lib/auth/project-permissions";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 export async function createBudgetAction(input: unknown): Promise<ActionResult<{ id: string }>> {
   const session = await auth();
@@ -41,7 +47,11 @@ export async function createBudgetAction(input: unknown): Promise<ActionResult<{
     // Project must live in this company. Supervisor of THIS project can
     // create budgets even as a member-tier user; otherwise admin/cofounder.
     const project = await db.project.findFirst({
-      where: { id: projectId, companyId },
+      // deletedAt:null — see addTaskAction for the full argument
+      // (data-integrity-002). Budget.project is onDelete: Restrict too, so a
+      // budget filed into a soft-deleted project pins that project row open and
+      // the purge cron's orphan-project stage cannot ever clear it.
+      where: { id: projectId, companyId, deletedAt: null },
       select: { id: true, supervisorId: true, status: true },
     });
     if (!project) return { success: false, error: "Project not found" };
@@ -54,8 +64,15 @@ export async function createBudgetAction(input: unknown): Promise<ActionResult<{
 
     // Soft uniqueness: refuse a second ACTIVE budget for the same category
     // within the SAME project. Different projects can share a category.
+    //
+    // deletedAt:null is load-bearing now that deleteBudgetAction tombstones
+    // instead of hard-deleting. A tombstoned row deliberately KEEPS
+    // `active: true` (so a restore comes back in the state it left), so an
+    // unfiltered check would read a deleted budget as the live one and lock
+    // that category out of the project permanently — a regression the soft
+    // delete itself would have introduced.
     const existing = await db.budget.findFirst({
-      where: { projectId, category, active: true },
+      where: { projectId, category, active: true, deletedAt: null },
     });
     if (existing) {
       return {
@@ -102,7 +119,9 @@ export async function updateBudgetAction(input: unknown): Promise<ActionResult> 
       where: { id: budgetId },
       include: { project: { select: { id: true, supervisorId: true } } },
     });
-    if (!budget) return { success: false, error: "Budget not found" };
+    // A tombstoned budget is gone: editing its limit would silently resurrect
+    // figures into a restore nobody asked for, and /budgets cannot show it.
+    if (!budget || budget.deletedAt) return { success: false, error: "Budget not found" };
     if (budget.companyId !== session.user.companyId) {
       return { success: false, error: "Not authorized" };
     }
@@ -148,7 +167,9 @@ export async function deleteBudgetAction(budgetId: string): Promise<ActionResult
       where: { id: budgetId },
       include: { project: { select: { id: true, supervisorId: true } } },
     });
-    if (!budget) return { success: false, error: "Budget not found" };
+    // Already tombstoned reads as gone — don't move the sentinel timestamp a
+    // restore may be keyed off.
+    if (!budget || budget.deletedAt) return { success: false, error: "Budget not found" };
     if (budget.companyId !== session.user.companyId) {
       return { success: false, error: "Not authorized" };
     }
@@ -161,7 +182,14 @@ export async function deleteBudgetAction(budgetId: string): Promise<ActionResult
     ) {
       return { success: false, error: "Not authorized" };
     }
-    await db.budget.delete({ where: { id: budgetId } });
+    // TIER 3 SOFT DELETE, not a hard delete (data-integrity-001). Budget is one
+    // of the seven tables CLAUDE.md promises a 90-day window for, and
+    // `Budget.deletedAt` was written by nothing but the whole-workspace sweep —
+    // so deleting a cap someone spent a planning session setting was final.
+    // Every Budget read filters deletedAt:null (lib/queries/budgets.ts, the
+    // threshold check in lib/budgets/check.ts, search, the export, and the
+    // duplicate-category guard above), so the row leaves the product at once.
+    await db.budget.update({ where: { id: budgetId }, data: { deletedAt: new Date() } });
     revalidatePath("/budgets");
     revalidatePath(`/projects/${budget.projectId}`);
     return { success: true, data: undefined };

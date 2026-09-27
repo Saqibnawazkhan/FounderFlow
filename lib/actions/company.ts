@@ -18,7 +18,7 @@ import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import { captureServerError } from "@/lib/sentry-server";
 import { getCurrentCompany } from "@/lib/queries/company";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
 
 export async function updateCompanyAction(input: unknown): Promise<ActionResult> {
   const session = await auth();

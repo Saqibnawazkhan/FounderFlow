@@ -1,5 +1,3 @@
-"use client";
-
 /**
  * Lamp — port of 21st.dev / Aceternity Lamp section header.
  *
@@ -8,6 +6,9 @@
  * (no framer) so it respects the Bigfolio rule for non-Radix UI.
  *
  * Pass the children that should sit inside the glow (heading + subtitle).
+ *
+ * Server component — no hooks, no handlers, no browser APIs. Keep it that way:
+ * the landing page renders it to HTML and it never reaches the client bundle.
  */
 
 import { cn } from "@/lib/utils";
@@ -33,7 +34,7 @@ export function Lamp({ children, className }: LampProps) {
           className="relative h-72 w-full max-w-3xl"
           style={{
             background:
-              "conic-gradient(from 210deg at 50% 0%, transparent 0deg, rgb(var(--primary) / 0.25) 60deg, transparent 120deg, transparent 240deg, rgb(var(--cyan) / 0.25) 300deg, transparent 360deg)",
+              "conic-gradient(from 210deg at 50% 0%, transparent 0deg, rgb(var(--primary) / 0.25) 60deg, transparent 120deg, transparent 240deg, rgb(var(--forest) / 0.25) 300deg, transparent 360deg)",
             filter: "blur(60px)",
           }}
         />

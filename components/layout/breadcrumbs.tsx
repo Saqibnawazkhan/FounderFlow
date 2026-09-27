@@ -3,7 +3,9 @@
 /**
  * Path-driven breadcrumbs (N2). Derives the trail from the current pathname
  * so it works on every app route without per-page wiring. Known segments map
- * to their localized nav label; a dynamic id under /projects renders a
+ * to their localized nav label (the segment→label map lives in
+ * lib/layout/breadcrumb-labels.ts so a test can iterate it against
+ * NAV_ITEMS); a dynamic id under /projects renders a
  * generic "Project" crumb (the page's own H1 carries the actual name). The
  * leading Home link routes to the role's home so members don't land on a
  * finance page they can't see.
@@ -15,6 +17,7 @@ import { ChevronRight, Home } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { homeRouteForRole, type Role } from "@/lib/auth/role-gates";
 import { useT } from "@/lib/i18n/use-t";
+import { breadcrumbLabels } from "@/lib/layout/breadcrumb-labels";
 
 export function Breadcrumbs() {
   const pathname = usePathname();
@@ -26,21 +29,7 @@ export function Breadcrumbs() {
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length === 0) return null;
 
-  const navLabels: Record<string, string> = {
-    dashboard: t.nav.dashboard,
-    expenses: t.nav.expenses,
-    investments: t.nav.investments,
-    recurring: t.nav.recurring,
-    budgets: t.nav.budgets,
-    projects: t.nav.projects,
-    tasks: t.nav.tasks,
-    time: t.nav.time,
-    activities: t.nav.activity,
-    team: t.nav.team,
-    reports: t.nav.reports,
-    notifications: t.nav.notifications,
-    settings: t.nav.settings,
-  };
+  const navLabels = breadcrumbLabels(t);
 
   const crumbs = segments.map((seg, i) => {
     const href = "/" + segments.slice(0, i + 1).join("/");
@@ -70,7 +59,14 @@ export function Breadcrumbs() {
         </li>
         {crumbs.map((c) => (
           <li key={c.href} className="flex items-center gap-1.5">
-            <ChevronRight className="h-3 w-3 shrink-0 text-fg-muted/50" aria-hidden="true" />
+            {/* The separator points along the trail, so it is a
+                direction-of-travel glyph and has to mirror — an unrotated
+                ChevronRight in Urdu points back the way you came. The Home
+                icon above is a destination, not a direction, and stays put. */}
+            <ChevronRight
+              className="h-3 w-3 shrink-0 text-fg-muted/50 rtl:rotate-180"
+              aria-hidden="true"
+            />
             {c.isLast ? (
               <span aria-current="page" className="font-semibold text-fg">
                 {c.label}

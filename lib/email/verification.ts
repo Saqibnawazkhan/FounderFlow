@@ -31,7 +31,7 @@ export async function sendVerificationEmail(input: {
       <p>Hi ${input.name},</p>
       <p>Welcome to FounderFlow! Confirm this email address so you can recover your account and receive important workspace notifications. The link expires in 7 days.</p>
       <p style="margin:24px 0;">
-        <a href="${url}" style="background:#b6f425;color:#0a0a0a;padding:12px 20px;border-radius:8px;font-weight:700;text-decoration:none;">
+        <a href="${url}" style="background:#10B981;color:#1F2933;padding:12px 20px;border-radius:8px;font-weight:700;text-decoration:none;">
           Confirm email
         </a>
       </p>

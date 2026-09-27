@@ -23,10 +23,6 @@ export const NewCommentSchema = z
     path: ["taskId"],
   });
 
-export type NewCommentInput = z.infer<typeof NewCommentSchema>;
-
 export const DeleteCommentSchema = z.object({
   commentId: z.string().min(1),
 });
-
-export type DeleteCommentInput = z.infer<typeof DeleteCommentSchema>;

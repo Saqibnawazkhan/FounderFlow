@@ -8,7 +8,7 @@
 // "next day arrived", then call /api/cron/materialize-recurring.
 
 import puppeteer from "puppeteer-core";
-import { PrismaClient } from "@prisma/client";
+import { localDb } from "./_local-db.mjs";
 
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const BASE = process.env.BASE ?? "http://localhost:3009";
@@ -19,7 +19,11 @@ if (!CRON_SECRET) {
   process.exit(1);
 }
 
-const db = new PrismaClient();
+// Pinned to the local docker Postgres. A bare `new PrismaClient()` here
+// auto-loads the ROOT .env, which points at production Supabase — see
+// scripts/_local-db.mjs. This script mutates data; it must never be able
+// to reach a hosted database.
+const db = localDb();
 
 const browser = await puppeteer.launch({
   executablePath: CHROME,

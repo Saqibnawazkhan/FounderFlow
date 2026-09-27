@@ -6,13 +6,11 @@
 
 import { z } from "zod";
 
-// Currencies the app INTENDS to support. Kept for the future multi-currency
-// rollout (F4), but NOT offered in the UI yet: `formatCurrency()` still
-// renders PKR at every call site, so letting a workspace pick USD/EUR would
-// display the wrong currency everywhere. Until F4 threads the company currency
-// through all formatters, currency is locked to PKR (see below).
+// Currencies a workspace can pick from. Live since the F4 multi-currency
+// rollout: the choice is made at signup (`lib/schemas/auth.ts`), stored on
+// `Company.currency`, and threaded to every formatter through the
+// `useMoney`/`useCurrency` hooks in `lib/hooks/useMoney.ts`.
 export const SUPPORTED_CURRENCIES = ["PKR", "USD", "EUR", "GBP", "INR", "AED"] as const;
-export type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number];
 
 // Currency is chosen once at workspace creation (signup) and is not edited
 // afterwards, so it isn't part of the company-info update.

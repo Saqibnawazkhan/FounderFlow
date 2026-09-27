@@ -39,7 +39,7 @@ export async function getRecurringRules(): Promise<RecurringRuleClient[]> {
     id: r.id,
     companyId: r.companyId,
     type: r.type as "expense" | "investment",
-    // BUGS.md P0-4: RecurringRule.amount is Prisma.Decimal.
+    // FaultsAudit.md P0-4: RecurringRule.amount is Prisma.Decimal.
     amount: r.amount.toNumber(),
     category: r.category,
     description: r.description,

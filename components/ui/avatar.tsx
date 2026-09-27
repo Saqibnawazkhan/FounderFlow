@@ -34,39 +34,3 @@ export function Avatar({ name, size = "md", className }: AvatarProps) {
     </div>
   );
 }
-
-export function AvatarGroup({
-  names,
-  max = 4,
-  size = "sm",
-}: {
-  names: string[];
-  max?: number;
-  size?: AvatarProps["size"];
-}) {
-  const visible = names.slice(0, max);
-  const remaining = names.length - max;
-
-  return (
-    <div className="flex -space-x-2">
-      {visible.map((name, i) => (
-        <Avatar
-          key={`${name}-${i}`}
-          name={name}
-          size={size}
-          className="ring-2 ring-white dark:ring-slate-900"
-        />
-      ))}
-      {remaining > 0 && (
-        <div
-          className={cn(
-            "flex items-center justify-center rounded-full bg-slate-200 font-semibold text-slate-700 ring-2 ring-white dark:bg-slate-700 dark:text-slate-200 dark:ring-slate-900",
-            sizeMap[size!]
-          )}
-        >
-          +{remaining}
-        </div>
-      )}
-    </div>
-  );
-}

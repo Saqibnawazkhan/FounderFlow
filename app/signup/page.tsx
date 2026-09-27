@@ -10,11 +10,13 @@ import toast from "react-hot-toast";
 import { signupAction } from "@/lib/actions/auth";
 import { SignupSchema, type SignupInput } from "@/lib/schemas/auth";
 import { SUPPORTED_CURRENCIES } from "@/lib/schemas/company";
-import { PillBadge } from "@/components/landing/pill-badge";
+import { SectionLabel } from "@/components/landing/section-label";
+import { display } from "@/components/landing/fonts";
 import { StatCard } from "@/components/landing/stat-card";
-import { ThemeToggle } from "@/components/landing/theme-toggle";
+import { MarketingThemeToggle } from "@/components/landing/marketing-theme-toggle";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/use-t";
+import { useHydrated } from "@/lib/hooks/use-hydrated";
 
 const INDUSTRIES = [
   "SaaS / B2B Software",
@@ -45,6 +47,19 @@ const STEP_1_FIELDS = ["name", "email", "password"] as const;
 
 export default function SignupPage() {
   const t = useT();
+  /**
+   * FaultsAudit A14. Full argument: lib/hooks/use-hydrated.ts.
+   *
+   * Signup is the least exposed of the auth forms and still gets the gate. Its
+   * submit button only exists at step 2, which is only reachable by clicking a
+   * `type="button"` Continue that does nothing without JS — so today the
+   * dangerous window cannot be entered here. That is an accident of the
+   * two-step layout, not a property anyone wrote down, and the day someone
+   * collapses the steps into one page this form would start shipping a live
+   * submit button in the server HTML with a password field next to it. The
+   * gate costs one import and removes the dependency on that accident.
+   */
+  const hydrated = useHydrated();
   const nameId = useId();
   const emailId = useId();
   const pwId = useId();
@@ -99,16 +114,23 @@ export default function SignupPage() {
   }
 
   return (
-    <div className="min-h-screen bg-bg text-fg lg:grid lg:grid-cols-[1.05fr_1fr]">
+    <div
+      data-marketing
+      data-theme="light"
+      className={cn(
+        display.variable,
+        "min-h-screen bg-bg text-fg lg:grid lg:grid-cols-[1.05fr_1fr]"
+      )}
+    >
       {/* Left: showcase */}
-      <aside className="relative hidden overflow-hidden bg-bg/40 lg:flex lg:flex-col lg:justify-center lg:px-16 xl:px-24">
+      <aside className="relative hidden overflow-hidden bg-surface lg:flex lg:flex-col lg:justify-center lg:px-16 xl:px-24">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 bg-gradient-mesh opacity-40"
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -top-40 left-0 h-96 w-96 rounded-full bg-cyan/20 blur-3xl"
+          className="pointer-events-none absolute -top-40 left-0 h-96 w-96 rounded-full bg-forest/20 blur-3xl"
         />
         <div
           aria-hidden="true"
@@ -116,7 +138,7 @@ export default function SignupPage() {
         />
 
         <div className="relative max-w-md">
-          <PillBadge tone="cyan">{t.auth.signUpShowcaseBadge}</PillBadge>
+          <SectionLabel tone="forest">{t.auth.signUpShowcaseBadge}</SectionLabel>
           <h2 className="mt-6 text-balance text-4xl font-bold leading-tight tracking-tight xl:text-5xl">
             {t.auth.signUpShowcaseHeadingPre}
             <span className="text-primary-strong">{t.auth.signUpShowcaseHeadingEm}</span>
@@ -128,8 +150,8 @@ export default function SignupPage() {
 
           <div className="mt-10 grid grid-cols-2 gap-3">
             <StatCard value="2,500+" label={t.auth.startupsLabel} tone="primary" />
-            <StatCard value="PKR 1.2B" label={t.auth.trackedLabel} tone="cyan" />
-            <StatCard value="50K+" label={t.auth.tasksDoneLabel} tone="pink" />
+            <StatCard value="PKR 1.2B" label={t.auth.trackedLabel} tone="forest" />
+            <StatCard value="50K+" label={t.auth.tasksDoneLabel} tone="mint" />
             <StatCard value="5K+" label={t.auth.cofounderDuosLabel} tone="primary" />
           </div>
         </div>
@@ -144,7 +166,7 @@ export default function SignupPage() {
 
         {/* Floating theme toggle — top-right of the form pane */}
         <div className="absolute right-6 top-6 sm:right-10 lg:right-12">
-          <ThemeToggle size="sm" />
+          <MarketingThemeToggle size="sm" />
         </div>
 
         <Link href="/" className="mb-12 inline-flex w-fit items-center gap-2.5">
@@ -154,21 +176,21 @@ export default function SignupPage() {
 
         <div className="w-full max-w-sm">
           {/* Step indicator */}
-          <div className="mb-8 flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.2em]">
+          <div className="mb-8 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-[0.1em]">
             <span className={cn("text-primary-strong", step === 1 && "font-bold")}>
               {t.auth.stepYou}
             </span>
-            <span className="h-px flex-1 bg-glass/[0.10]" />
+            <span className="h-px flex-1 bg-border" />
             <span className={cn(step === 2 ? "font-bold text-primary-strong" : "text-fg-muted")}>
               {t.auth.stepCompany}
             </span>
           </div>
 
-          <PillBadge tone={step === 1 ? "primary" : "cyan"}>
+          <SectionLabel tone={step === 1 ? "primary" : "forest"}>
             {t.auth.stepBadgePre}
             {step}
             {t.auth.stepBadgePost}
-          </PillBadge>
+          </SectionLabel>
 
           <h1 className="mt-5 text-4xl font-bold tracking-tight md:text-5xl">
             {step === 1 ? (
@@ -190,7 +212,15 @@ export default function SignupPage() {
             {step === 1 ? t.auth.signUpStep1Note : t.auth.signUpStep2Note}
           </p>
 
-          <form onSubmit={handleSubmit(onSubmit)} className="mt-10 space-y-5" noValidate>
+          {/* method="post" is load-bearing: a native submit that beats
+              hydration must put the password in a body, never a query string.
+              See lib/hooks/use-hydrated.ts. */}
+          <form
+            method="post"
+            onSubmit={handleSubmit(onSubmit)}
+            className="mt-10 space-y-5"
+            noValidate
+          >
             {/* Render BOTH steps so RHF's registered inputs stay in the DOM
                 and keep their values when the user clicks Back/Continue. */}
             <div className={cn(step === 1 ? "space-y-5" : "hidden")}>
@@ -217,10 +247,7 @@ export default function SignupPage() {
                 {...register("email")}
               />
               <div>
-                <label
-                  htmlFor={pwId}
-                  className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-                >
+                <label htmlFor={pwId} className="mb-2 block text-sm font-medium text-fg">
                   {t.auth.password}
                 </label>
                 <div className="relative">
@@ -234,17 +261,17 @@ export default function SignupPage() {
                     aria-describedby={errors.password ? `${pwId}-err` : undefined}
                     {...register("password")}
                     className={cn(
-                      "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-glass/[0.08] focus:outline-none",
+                      "w-full rounded-2xl border bg-surface px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-surface focus:outline-none",
                       errors.password
                         ? "border-danger/60 focus:border-danger"
-                        : "border-glass/[0.10] focus:border-primary/50"
+                        : "border-border focus:border-primary/60"
                     )}
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     aria-label={showPassword ? t.auth.hidePassword : t.auth.showPassword}
-                    className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                    className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                   >
                     {showPassword ? (
                       <EyeOff className="h-4 w-4" aria-hidden="true" />
@@ -270,10 +297,7 @@ export default function SignupPage() {
                 {...register("companyName")}
               />
               <div>
-                <label
-                  htmlFor={industryId}
-                  className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-                >
+                <label htmlFor={industryId} className="mb-2 block text-sm font-medium text-fg">
                   {t.auth.industry}
                 </label>
                 <div className="relative">
@@ -282,10 +306,10 @@ export default function SignupPage() {
                     aria-invalid={errors.industry ? true : undefined}
                     {...register("industry")}
                     className={cn(
-                      "w-full cursor-pointer appearance-none rounded-xl border bg-glass/[0.05] px-4 py-3 pr-11 text-sm text-fg transition-colors focus:bg-glass/[0.08] focus:outline-none",
+                      "w-full cursor-pointer appearance-none rounded-2xl border bg-surface px-4 py-3 pr-11 text-sm text-fg transition-colors focus:bg-surface focus:outline-none",
                       errors.industry
                         ? "border-danger/60 focus:border-danger"
-                        : "border-glass/[0.10] focus:border-primary/50"
+                        : "border-border focus:border-primary/60"
                     )}
                   >
                     {INDUSTRIES.map((i) => (
@@ -305,10 +329,7 @@ export default function SignupPage() {
               </div>
 
               <div>
-                <label
-                  htmlFor={currencyId}
-                  className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-                >
+                <label htmlFor={currencyId} className="mb-2 block text-sm font-medium text-fg">
                   {t.settings.currency}
                 </label>
                 <div className="relative">
@@ -317,10 +338,10 @@ export default function SignupPage() {
                     aria-invalid={errors.currency ? true : undefined}
                     {...register("currency")}
                     className={cn(
-                      "w-full cursor-pointer appearance-none rounded-xl border bg-glass/[0.05] px-4 py-3 pr-11 text-sm text-fg transition-colors focus:bg-glass/[0.08] focus:outline-none",
+                      "w-full cursor-pointer appearance-none rounded-2xl border bg-surface px-4 py-3 pr-11 text-sm text-fg transition-colors focus:bg-surface focus:outline-none",
                       errors.currency
                         ? "border-danger/60 focus:border-danger"
-                        : "border-glass/[0.10] focus:border-primary/50"
+                        : "border-border focus:border-primary/60"
                     )}
                   >
                     {SUPPORTED_CURRENCIES.map((c) => (
@@ -356,7 +377,7 @@ export default function SignupPage() {
                 <button
                   type="button"
                   onClick={() => setStep(1)}
-                  className="flex-1 rounded-full border border-glass/[0.10] bg-glass/[0.05] px-5 py-3.5 text-sm font-medium text-fg transition-colors hover:bg-glass/[0.10]"
+                  className="flex-1 rounded-xl border border-border bg-surface px-5 py-3.5 text-sm font-medium text-fg transition-colors hover:bg-surface-hover"
                 >
                   {t.auth.back}
                 </button>
@@ -365,7 +386,7 @@ export default function SignupPage() {
                 <button
                   type="button"
                   onClick={handleContinue}
-                  className="group inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-all hover:scale-[1.01] hover:shadow-[0_0_45px_rgb(182_244_37_/_0.4)] active:scale-95"
+                  className="group inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_6px_24px_rgb(var(--primary)_/_0.26)] transition-all hover:scale-[1.01] hover:shadow-[0_8px_30px_rgb(var(--primary)_/_0.34)] active:scale-[0.98]"
                 >
                   {t.auth.continue}
                   <ArrowRight
@@ -376,8 +397,13 @@ export default function SignupPage() {
               ) : (
                 <button
                   type="submit"
-                  disabled={isSubmitting}
-                  className="group inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-all hover:scale-[1.01] hover:shadow-[0_0_45px_rgb(182_244_37_/_0.4)] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
+                  disabled={!hydrated || isSubmitting}
+                  className={cn(
+                    "group inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3.5 text-sm font-bold text-primary-fg shadow-[0_6px_24px_rgb(var(--primary)_/_0.26)] transition-all hover:scale-[1.01] hover:shadow-[0_8px_30px_rgb(var(--primary)_/_0.34)] active:scale-[0.98]",
+                    // Dim for the in-flight state only — never for the
+                    // hydration window. See the button in app/login/page.tsx.
+                    hydrated && "disabled:opacity-60 disabled:hover:scale-100"
+                  )}
                 >
                   {isSubmitting ? t.auth.creatingLoading : t.auth.createWorkspaceCta}
                   <ArrowRight
@@ -415,10 +441,7 @@ const RegField = forwardRef<HTMLInputElement, RegFieldProps>(function RegField(
 ) {
   return (
     <div>
-      <label
-        htmlFor={id}
-        className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-      >
+      <label htmlFor={id} className="mb-2 block text-sm font-medium text-fg">
         {label}
       </label>
       <input
@@ -429,10 +452,8 @@ const RegField = forwardRef<HTMLInputElement, RegFieldProps>(function RegField(
         aria-describedby={error ? `${id}-err` : undefined}
         {...rest}
         className={cn(
-          "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-glass/[0.08] focus:outline-none",
-          error
-            ? "border-danger/60 focus:border-danger"
-            : "border-glass/[0.10] focus:border-primary/50"
+          "w-full rounded-2xl border bg-surface px-4 py-3 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-surface focus:outline-none",
+          error ? "border-danger/60 focus:border-danger" : "border-border focus:border-primary/60"
         )}
       />
       {error && (

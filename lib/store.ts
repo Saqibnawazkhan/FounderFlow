@@ -40,10 +40,15 @@ interface AppState {
   /** Desktop sidebar collapsed vs expanded. Persisted so the choice survives
    * a page reload. Mobile always uses the drawer overlay regardless. */
   sidebarCollapsed: boolean;
+  /** Sidebar "Finance" group expanded vs folded. Persisted so the choice
+   * survives a reload; the sidebar force-opens it while you're on one of
+   * the finance routes so the active row is never hidden. */
+  financeNavOpen: boolean;
 
   init: () => void;
   setMobileNavOpen: (open: boolean) => void;
   toggleSidebarCollapsed: () => void;
+  setFinanceNavOpen: (open: boolean) => void;
   setLocale: (locale: Locale) => void;
   /**
    * Adopt a user identity that came from Auth.js (via getSession on mount).
@@ -179,6 +184,7 @@ export const useStore = create<AppState>()(
       locale: "en" as Locale,
       mobileNavOpen: false,
       sidebarCollapsed: false,
+      financeNavOpen: false,
 
       init: () => {
         const state = get();
@@ -199,6 +205,8 @@ export const useStore = create<AppState>()(
       setMobileNavOpen: (open) => set({ mobileNavOpen: open }),
 
       toggleSidebarCollapsed: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+
+      setFinanceNavOpen: (open) => set({ financeNavOpen: open }),
 
       setLocale: (locale) => set({ locale }),
 
@@ -610,6 +618,7 @@ export const useStore = create<AppState>()(
         theme: state.theme,
         locale: state.locale,
         sidebarCollapsed: state.sidebarCollapsed,
+        financeNavOpen: state.financeNavOpen,
         initialized: state.initialized,
       }),
     }

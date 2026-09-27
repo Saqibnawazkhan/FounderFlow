@@ -120,7 +120,7 @@ function InviteEmpty({
           {cta ? (
             <Link
               href={cta.href}
-              className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_0.25)] transition-transform hover:scale-[1.02] active:scale-95"
+              className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_0.25)] transition-transform hover:scale-[1.02] active:scale-95"
             >
               <CheckCircle2 className="h-4 w-4" aria-hidden="true" /> {cta.label}
             </Link>

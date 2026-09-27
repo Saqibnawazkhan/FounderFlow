@@ -30,7 +30,8 @@ import {
   type CommentTarget,
 } from "@/lib/queries/comments";
 
-export type ActionResult<T = void> = { success: true; data: T } | { success: false; error: string };
+import type { ActionResult } from "@/lib/actions/types";
+import { notifyUsers } from "@/lib/notify/fan-out";
 
 export async function createCommentAction(input: unknown): Promise<
   ActionResult<{
@@ -122,18 +123,16 @@ export async function createCommentAction(input: unknown): Promise<
       const category = taskId ? "task" : "finance";
       const truncated = body.length > 140 ? body.slice(0, 137) + "…" : body;
       try {
-        const { count } = await db.notification.createMany({
-          data: mentionedUserIds.map((toUserId) => ({
-            userId: toUserId,
-            companyId,
-            title: `${author.name} mentioned you`,
-            message: truncated,
-            type: "info",
-            category,
-            link,
-          })),
+        const { notified } = await notifyUsers({
+          event: "mention",
+          userIds: mentionedUserIds,
+          companyId,
+          title: `${author.name} mentioned you`,
+          message: truncated,
+          category,
+          link,
         });
-        notifiedCount = count;
+        notifiedCount = notified;
       } catch (notifyErr) {
         captureServerError(notifyErr, {
           action: "createCommentAction.fanout",

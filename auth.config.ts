@@ -11,7 +11,26 @@
 
 import type { NextAuthConfig } from "next-auth";
 import { NextResponse } from "next/server";
-import { homeRouteForRole, isMemberBlockedRoute, type Role } from "@/lib/auth/role-gates";
+import {
+  canSeeFinances,
+  homeRouteForRole,
+  isMemberBlockedRoute,
+  type Role,
+} from "@/lib/auth/role-gates";
+
+/**
+ * The three roles, as an allow-list. Anything else — a claim from a token
+ * minted by a future deploy, a role that was renamed, a hand-edited cookie —
+ * resolves to the LEAST privileged role rather than sliding past a
+ * `role === "member"` comparison. See `authorized()` for why that matters.
+ */
+const KNOWN_ROLES: readonly Role[] = ["admin", "cofounder", "member"];
+
+function roleFromToken(claim: unknown): Role {
+  return typeof claim === "string" && KNOWN_ROLES.indexOf(claim as Role) !== -1
+    ? (claim as Role)
+    : "member";
+}
 
 export const authConfig = {
   trustHost: true,
@@ -59,19 +78,52 @@ export const authConfig = {
         pathname === "/manifest.json" ||
         pathname === "/sw.js";
       if (isPublic) return true;
-      if (!auth) return false;
+
+      // ── FAIL CLOSED, and do not settle for an existence check ─────────────
+      //
+      // `if (!auth) return false` was this line, and it is precisely the shape
+      // of the CRITICAL next-auth advisory "Configuration errors can cause
+      // existence-based auth checks to fail open": a session OBJECT existing is
+      // not the same as it identifying somebody. A token that decodes to
+      // `{ user: {} }` — a misconfigured secret, a half-written claim set, a
+      // legacy cookie from before `companyId` was minted — passed that test and
+      // was allowed onto every non-finance route, where `requireScopedSession`
+      // would then throw and surface as a 500 on a page the user should simply
+      // have been bounced off.
+      //
+      // So the gate asks for the two claims every downstream query actually
+      // needs. Returning false sends them through the /login flow, which
+      // re-mints a whole token instead of patching a broken one.
+      const claims = auth?.user;
+      if (!claims?.id || !claims.companyId) return false;
 
       // Members can't see finance surfaces. Bounce them to their home
       // (/tasks) instead of throwing a 403 — the route is intentionally
-      // invisible to them, so a silent redirect is the right UX. The
-      // server-action layer enforces the same rule on writes, so a forged
-      // request can't bypass this.
+      // invisible to them, so a silent redirect is the right UX.
+      //
+      // ASKED AS AN ALLOW-LIST (`!canSeeFinances`), NOT AS `role === "member"`.
+      // The old comparison was the second fail-open in this function: any role
+      // string that is not literally "member" fell through to `return true`, so
+      // a token claiming `role: "accountant"` — a role somebody adds to
+      // lib/auth/role-gates.ts next quarter, or one a tampered cookie invents —
+      // reached the full company ledger. `roleFromToken` collapses anything
+      // unrecognised to "member" and `canSeeFinances` is then the same
+      // predicate /reports, the export route and the sidebar use, so widening
+      // finance access stays a single edit in one file.
+      //
+      // WHAT THIS LAYER IS NOT. The Edge jwt callback below does no database
+      // read, so `role` here is whatever was baked into the signed cookie at
+      // sign-in — stale after a demotion until something re-mints the token
+      // (which is why `updateUserRoleAction` now bumps `sessionVersion`). This
+      // gate is therefore a UX redirect and a defence in depth, never the last
+      // word: the page that READS money must re-check server-side, the way
+      // app/(app)/reports/page.tsx does. Findings sec-002 / auth-003.
       //
       // Preserve the original querystring so an email link like
       // `/expenses?ref=newsletter` keeps `?ref=newsletter` when it lands
       // on /tasks. Drops nothing the user typed.
-      const role = (auth.user?.role as Role | undefined) ?? "member";
-      if (role === "member" && isMemberBlockedRoute(pathname)) {
+      const role = roleFromToken(claims.role);
+      if (!canSeeFinances(role) && isMemberBlockedRoute(pathname)) {
         const dest = new URL(homeRouteForRole(role), request.nextUrl);
         dest.search = request.nextUrl.search;
         return NextResponse.redirect(dest);

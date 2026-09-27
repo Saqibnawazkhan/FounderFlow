@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   cn,
   formatCurrency,
-  formatNumber,
   formatDate,
   formatRelativeTime,
   generateAvatar,
@@ -28,48 +27,41 @@ describe("cn", () => {
   });
 });
 
+// THESE ASSERTIONS USED TO ENCODE THE BUG. Until 2026-09-26 they required
+// "PKR 12,345" — no decimals — because formatCurrency passed
+// `maximumFractionDigits: 0`. That is not a formatting preference, it is a
+// correctness fault: every row in a ledger was rounded independently, so the
+// rows a customer reads add up to a different number than the total printed
+// above them (audit money-001 / rep-001). A test that demands the rounding is
+// a test that defends the fault, which is why these four were red after the
+// fix rather than the fix being wrong.
+//
+// The contract now lives in lib/format.ts's currencyMinorUnits(): two decimals
+// for PKR and the other supported currencies, 0 for JPY, 3 for KWD. The
+// rows-sum-to-the-total invariant is asserted directly in
+// tests/lib/format/currency.test.ts; what these keep covering is that
+// lib/utils.ts's re-export still resolves to that implementation.
 describe("formatCurrency", () => {
-  it("formats PKR with no decimals and the PKR prefix", () => {
-    expect(formatCurrency(12345)).toBe("PKR 12,345");
+  it("formats PKR with two decimals and the PKR prefix", () => {
+    expect(formatCurrency(12345)).toBe("PKR 12,345.00");
   });
 
-  it("rounds large PKR amounts without decimals", () => {
-    expect(formatCurrency(1_500_000)).toBe("PKR 1,500,000");
+  it("groups large PKR amounts and keeps the minor units", () => {
+    expect(formatCurrency(1_500_000)).toBe("PKR 1,500,000.00");
   });
 
   it("handles zero", () => {
-    expect(formatCurrency(0)).toBe("PKR 0");
+    expect(formatCurrency(0)).toBe("PKR 0.00");
   });
 
   it("handles negative balances", () => {
-    expect(formatCurrency(-2500)).toBe("PKR -2,500");
+    expect(formatCurrency(-2500)).toBe("PKR -2,500.00");
   });
 
   it("falls through to Intl for non-PKR currencies", () => {
     const result = formatCurrency(1000, "USD");
     // en-US locale renders USD as "$1,000"
     expect(result).toMatch(/\$1,000/);
-  });
-});
-
-describe("formatNumber", () => {
-  it("uses M suffix above one million", () => {
-    expect(formatNumber(1_500_000)).toBe("1.5M");
-  });
-
-  it("uses K suffix between 1k and 1M", () => {
-    expect(formatNumber(15_000)).toBe("15.0K");
-    expect(formatNumber(999)).toBe("999");
-  });
-
-  it("returns raw string under 1000", () => {
-    expect(formatNumber(500)).toBe("500");
-    expect(formatNumber(0)).toBe("0");
-  });
-
-  it("handles negatives by magnitude", () => {
-    expect(formatNumber(-2_500_000)).toBe("-2.5M");
-    expect(formatNumber(-3_500)).toBe("-3.5K");
   });
 });
 

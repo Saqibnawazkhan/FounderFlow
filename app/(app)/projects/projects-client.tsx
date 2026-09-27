@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * /projects client. Renders the filterable grid + the "New project" CTA.
+ * /projects client. Renders the filterable grid, the "New project" CTA, and
+ * the per-card Duplicate affordance.
  *
  * Filter chips stay client-side — the RSC fetched every visible project
  * once; chips just toggle which subset gets rendered. Cheap, snappy, and
@@ -9,14 +10,17 @@
  * detail page.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Briefcase, Plus } from "lucide-react";
+import toast from "react-hot-toast";
+import { Briefcase, Copy, Plus } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Modal } from "@/components/ui/modal";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { ProjectCard } from "@/components/projects/project-card";
 import { NewProjectModal } from "./new-project-modal";
 import { canCreateProject } from "@/lib/auth/project-permissions";
+import { duplicateProjectAction } from "@/lib/actions/projects";
 import { useT } from "@/lib/i18n/use-t";
 import { cn } from "@/lib/utils";
 import type { ProjectListItem } from "@/lib/queries/projects";
@@ -39,6 +43,11 @@ export function ProjectsClient({ projects, users, currentUserId, currentUserRole
 
   const [filter, setFilter] = useState<StatusFilter>("active");
   const [newOpen, setNewOpen] = useState(false);
+  // The project the duplicate modal is pointed at. Null = closed. Held as the
+  // whole row rather than an id so the modal can pre-fill the name without a
+  // second lookup, and so it still renders its source's name during the
+  // dialog's close animation.
+  const [duplicating, setDuplicating] = useState<ProjectListItem | null>(null);
 
   const filtered = useMemo(() => {
     if (filter === "all") return projects;
@@ -75,7 +84,7 @@ export function ProjectsClient({ projects, users, currentUserId, currentUserRole
         {canCreate && (
           <button
             onClick={() => setNewOpen(true)}
-            className="inline-flex items-center gap-2 self-start rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95 md:self-auto"
+            className="inline-flex items-center gap-2 self-start rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95 md:self-auto"
           >
             <Plus className="h-4 w-4" aria-hidden="true" />
             {t.projects.newProject}
@@ -125,7 +134,7 @@ export function ProjectsClient({ projects, users, currentUserId, currentUserRole
               canCreate ? (
                 <button
                   onClick={() => setNewOpen(true)}
-                  className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(182_244_37_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+                  className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
                 >
                   <Plus className="h-4 w-4" aria-hidden="true" />
                   {t.projects.newProject}
@@ -137,12 +146,30 @@ export function ProjectsClient({ projects, users, currentUserId, currentUserRole
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((p) => (
-            <ProjectCard
-              key={p.id}
-              project={p}
-              currentUserId={currentUserId}
-              currentUserRole={currentUserRole}
-            />
+            // The card is one big <Link>; a <button> nested inside an <a> is
+            // invalid HTML and swallows the click. So the Duplicate control is
+            // an absolutely-positioned SIBLING overlaying the card's top-right
+            // padding, which also keeps components/projects/project-card.tsx
+            // untouched. Deliberately always visible rather than revealed on
+            // hover — a hover-only affordance is invisible on touch.
+            <div key={p.id} className="relative">
+              <ProjectCard
+                project={p}
+                currentUserId={currentUserId}
+                currentUserRole={currentUserRole}
+              />
+              {canCreate && (
+                <button
+                  type="button"
+                  onClick={() => setDuplicating(p)}
+                  title={t.projects.duplicateProject}
+                  aria-label={`${t.projects.duplicateProject}: ${p.name}`}
+                  className="absolute right-3 top-3 z-10 rounded-full border border-border bg-surface/90 p-1.5 text-fg-muted backdrop-blur transition-colors hover:border-primary/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                >
+                  <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -159,6 +186,205 @@ export function ProjectsClient({ projects, users, currentUserId, currentUserRole
           }}
         />
       )}
+
+      {canCreate && (
+        <DuplicateProjectModal
+          project={duplicating}
+          onClose={() => setDuplicating(null)}
+          onDuplicated={(projectId) => {
+            setDuplicating(null);
+            router.push(`/projects/${projectId}`);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Duplicate modal. Mirrors <NewProjectModal>'s shape — same <Modal>, same
+ * field/inputClass styling, same "toast on failure, navigate on success"
+ * ending — so Duplicate doesn't feel like a different product from New.
+ *
+ * Two deliberate departures from its neighbour:
+ *
+ *  - No react-hook-form. One text field and three checkboxes don't need a
+ *    resolver, and `DuplicateProjectSchema` uses `.default()` on the flags,
+ *    which splits its input and output types — exactly the mismatch the
+ *    comment on NewProjectSchema warns breaks `useForm<T>`. Plain controlled
+ *    state sidesteps it and always sends all three booleans explicitly.
+ *
+ *  - Stays mounted while closed (`project` goes null) instead of being
+ *    conditionally rendered, so Radix can play its exit animation. State
+ *    resets off the incoming project rather than on close for the same
+ *    reason — unmounting to reset would cut the animation short.
+ */
+function DuplicateProjectModal({
+  project,
+  onClose,
+  onDuplicated,
+}: {
+  project: ProjectListItem | null;
+  onClose: () => void;
+  onDuplicated: (projectId: string) => void;
+}) {
+  const t = useT();
+  const nameId = useId();
+  const [name, setName] = useState("");
+  const [copyTasks, setCopyTasks] = useState(true);
+  const [keepAssignees, setKeepAssignees] = useState(false);
+  const [shiftDeadlines, setShiftDeadlines] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+
+  // Re-seed whenever a DIFFERENT project is picked. Keyed on the id alone,
+  // deliberately: `sourceName` is read-only seed data, and listing it as a
+  // dependency would re-run this — discarding whatever the user had typed —
+  // if the project list revalidated a rename underneath the open dialog.
+  const sourceId = project?.id ?? null;
+  const sourceName = project?.name ?? "";
+  useEffect(() => {
+    if (sourceId === null) return;
+    // The suffix is translated too. It is text the user reads (and then edits)
+    // inside an otherwise fully translated dialog, so leaving "(copy)" in
+    // English would make the one word the modal *seeds* the odd one out. `t`
+    // is deliberately NOT a dependency: re-seeding on a locale switch would
+    // throw away a name the user had already typed.
+    setName(`${sourceName} ${t.projects.duplicateNameSuffix}`);
+    setCopyTasks(true);
+    setKeepAssignees(false);
+    setShiftDeadlines(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceId]);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!project || submitting) return;
+    setSubmitting(true);
+    const res = await duplicateProjectAction({
+      sourceProjectId: project.id,
+      name,
+      copyTasks,
+      keepAssignees,
+      shiftDeadlines,
+    });
+    setSubmitting(false);
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    toast.success(t.projects.projectDuplicatedToast);
+    onDuplicated(res.data.projectId);
+  }
+
+  return (
+    <Modal
+      open={project !== null}
+      onClose={onClose}
+      title={
+        sourceName ? `${t.projects.duplicateProject} "${sourceName}"` : t.projects.duplicateProject
+      }
+      size="md"
+    >
+      <form onSubmit={onSubmit} className="space-y-4" noValidate>
+        <div>
+          <label
+            htmlFor={nameId}
+            className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+          >
+            {t.projects.duplicateNameLabel}
+          </label>
+          <input
+            id={nameId}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={120}
+            className="w-full appearance-none rounded-xl border border-border bg-bg px-4 py-2.5 text-sm text-fg focus:border-primary/50 focus:bg-surface focus:outline-none"
+          />
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-border bg-bg/40 p-4">
+          <CopyFlag
+            label={t.projects.duplicateCopyTasks}
+            hint={t.projects.duplicateCopyTasksHint}
+            checked={copyTasks}
+            onChange={setCopyTasks}
+          />
+          <CopyFlag
+            label={t.projects.duplicateKeepAssignees}
+            hint={t.projects.duplicateKeepAssigneesHint}
+            checked={keepAssignees}
+            onChange={setKeepAssignees}
+            // Assignees and deadlines belong to tasks. With the task list
+            // switched off they have nothing to act on, so they're disabled
+            // rather than left looking live and doing nothing.
+            disabled={!copyTasks}
+          />
+          <CopyFlag
+            label={t.projects.duplicateShiftDeadlines}
+            hint={t.projects.duplicateShiftDeadlinesHint}
+            checked={shiftDeadlines}
+            onChange={setShiftDeadlines}
+            disabled={!copyTasks}
+          />
+        </div>
+
+        {/* Says out loud what the server refuses to do, so nobody duplicates a
+            project expecting last quarter's budget to come with it. */}
+        <p className="text-xs text-fg-muted">{t.projects.duplicateNeverCopied}</p>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full border border-border px-4 py-2 text-sm font-medium text-fg-muted transition hover:bg-surface-hover hover:text-fg"
+          >
+            {t.settings.cancel}
+          </button>
+          <button
+            type="submit"
+            disabled={submitting || name.trim().length === 0}
+            className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm font-bold text-primary-fg transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60"
+          >
+            <Copy className="h-4 w-4" aria-hidden="true" />
+            {submitting ? t.projects.duplicateSubmitting : t.projects.duplicateSubmit}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/** One labelled checkbox + the sentence arguing for its default. */
+function CopyFlag({
+  label,
+  hint,
+  checked,
+  onChange,
+  disabled = false,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+}) {
+  const id = useId();
+  return (
+    <div className={cn("flex gap-3", disabled && "opacity-50")}>
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-primary disabled:cursor-not-allowed"
+      />
+      <div className="min-w-0">
+        <label htmlFor={id} className="block text-sm font-medium text-fg">
+          {label}
+        </label>
+        <p className="mt-0.5 text-xs text-fg-muted">{hint}</p>
+      </div>
     </div>
   );
 }

@@ -7,8 +7,9 @@
 
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useMoney } from "@/lib/hooks/useMoney";
+import { useNumberFormat } from "@/lib/i18n/use-t";
 
-const C_PINK = "#FFB3DB";
+const C_MINT = "#6EE7B7";
 const C_AMBER = "#f59e0b";
 const C_SLATE = "#94a3b8";
 
@@ -26,6 +27,7 @@ export function CategoryBreakdownBar({
   data: Array<{ category: string; amount: number }>;
 }) {
   const money = useMoney();
+  const n = useNumberFormat();
   return (
     <ResponsiveContainer width="100%" height="100%">
       <BarChart
@@ -36,7 +38,7 @@ export function CategoryBreakdownBar({
       >
         <defs>
           <linearGradient id="expenseGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={C_PINK} />
+            <stop offset="0%" stopColor={C_MINT} />
             <stop offset="100%" stopColor={C_AMBER} stopOpacity={0.6} />
           </linearGradient>
         </defs>
@@ -61,7 +63,12 @@ export function CategoryBreakdownBar({
           fontSize={11}
           tickLine={false}
           axisLine={false}
-          tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}K` : v.toString())}
+          // Same swap as dashboard-charts: the old `(v / 1000).toFixed(0) + "K"`
+          // printed "1235K" for a 1.23M spend even in English, and had no way to
+          // reach Urdu's ہزار / لاکھ scale. `width` buys the word-suffixed Urdu
+          // tick room recharts' 60px default does not give it.
+          tickFormatter={(v: number) => n.compact(v)}
+          width={76}
         />
         <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
         <Bar dataKey="amount" fill="url(#expenseGrad)" radius={[8, 8, 0, 0]} />

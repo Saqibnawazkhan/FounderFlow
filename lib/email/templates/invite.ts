@@ -23,21 +23,21 @@ export function renderInviteEmail(v: InviteEmailVars): { html: string; text: str
 
   const html = `<!doctype html>
 <html lang="en">
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Inter,sans-serif;color:#f7f8f5;">
-  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#0a0a0a;padding:48px 16px;">
+<body style="margin:0;padding:0;background:#1F2933;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Inter,sans-serif;color:#FFFFFF;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#1F2933;padding:48px 16px;">
     <tr>
       <td align="center">
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="560" style="max-width:560px;background:#161616;border:1px solid rgba(255,255,255,0.06);border-radius:16px;padding:40px 32px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="560" style="max-width:560px;background:#2A3642;border:1px solid rgba(255,255,255,0.06);border-radius:16px;padding:40px 32px;">
           <tr>
             <td>
               <p style="margin:0 0 8px;font-family:ui-monospace,'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.2em;text-transform:uppercase;color:#94a3b8;">FounderFlow</p>
-              <h1 style="margin:0 0 16px;font-size:24px;font-weight:700;color:#f7f8f5;line-height:1.3;">You're invited to ${safeCompany}</h1>
+              <h1 style="margin:0 0 16px;font-size:24px;font-weight:700;color:#FFFFFF;line-height:1.3;">You're invited to ${safeCompany}</h1>
               <p style="margin:0 0 16px;font-size:15px;line-height:1.55;color:#cbd5e1;">Hey ${safeName},</p>
-              <p style="margin:0 0 16px;font-size:15px;line-height:1.55;color:#cbd5e1;">${safeInviter} added you to <strong style="color:#f7f8f5;">${safeCompany}</strong> on FounderFlow as <strong style="color:#b6f425;">${safeRole}</strong>. Set your password and you'll be in.</p>
+              <p style="margin:0 0 16px;font-size:15px;line-height:1.55;color:#cbd5e1;">${safeInviter} added you to <strong style="color:#FFFFFF;">${safeCompany}</strong> on FounderFlow as <strong style="color:#34D399;">${safeRole}</strong>. Set your password and you'll be in.</p>
               <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:28px 0;">
                 <tr>
                   <td>
-                    <a href="${v.acceptUrl}" style="display:inline-block;background:#b6f425;color:#0a0a0a;text-decoration:none;font-weight:700;font-size:14px;padding:14px 28px;border-radius:9999px;">Accept invite</a>
+                    <a href="${v.acceptUrl}" style="display:inline-block;background:#10B981;color:#1F2933;text-decoration:none;font-weight:700;font-size:14px;padding:14px 28px;border-radius:9999px;">Accept invite</a>
                   </td>
                 </tr>
               </table>

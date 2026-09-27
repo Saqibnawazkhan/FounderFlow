@@ -23,6 +23,8 @@
 
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
+import { deriveHandle } from "../lib/user/handle";
+import { ensureGeneralChannel, joinDefaultChannels } from "../lib/chat/bootstrap";
 
 const db = new PrismaClient();
 
@@ -125,6 +127,7 @@ async function main() {
       id: founderId,
       name: "Saqib Nawaz",
       email: "demo@founderflow.app",
+      handle: deriveHandle("demo@founderflow.app"),
       passwordHash: hash("demo123"),
       role: "admin",
       companyId,
@@ -142,6 +145,7 @@ async function main() {
         id: aliId,
         name: "Ali Raza",
         email: "ali@nimbus.app",
+        handle: deriveHandle("ali@nimbus.app"),
         passwordHash: hash("demo123"),
         role: "cofounder",
         companyId,
@@ -150,6 +154,7 @@ async function main() {
         id: ahmedId,
         name: "Ahmed Khan",
         email: "ahmed@nimbus.app",
+        handle: deriveHandle("ahmed@nimbus.app"),
         passwordHash: hash("demo123"),
         role: "cofounder",
         companyId,
@@ -158,6 +163,7 @@ async function main() {
         id: fatimaId,
         name: "Fatima Sheikh",
         email: "fatima@nimbus.app",
+        handle: deriveHandle("fatima@nimbus.app"),
         passwordHash: hash("demo123"),
         role: "member",
         companyId,
@@ -166,12 +172,31 @@ async function main() {
         id: sarahId,
         name: "Sarah Malik",
         email: "sarah@nimbus.app",
+        handle: deriveHandle("sarah@nimbus.app"),
         passwordHash: hash("demo123"),
         role: "member",
         companyId,
       },
     ],
   });
+
+  // ── Chat bootstrap ────────────────────────────────────────────────
+  //
+  // WHY THIS IS HERE. Deleting the Company above cascades every Channel,
+  // ChannelMember, Message and MessageReaction away (Channel.company is
+  // onDelete: Cascade), and this file used to create none of them back. The
+  // only thing that had ever created #general was the one-shot backfill in
+  // 20260924100000_add_chat, so a reseed left the workspace with no channels
+  // at all -- and scripts/smoke-chat.mjs, which asserts #general is in the
+  // rail, failed on the first run after any reseed.
+  //
+  // It calls the SAME helpers the runtime signup and invite paths call rather
+  // than hand-rolling the rows, so the seed cannot drift from the app again:
+  // one code path owns "what a new workspace gets".
+  const generalId = await ensureGeneralChannel(db, companyId, founderId);
+  for (const userId of [founderId, aliId, ahmedId, fatimaId, sarahId]) {
+    await joinDefaultChannels(db, companyId, userId);
+  }
 
   const userNames: Record<string, string> = {
     [founderId]: "Saqib Nawaz",
@@ -199,7 +224,7 @@ async function main() {
         description: "Public launch of the v2 product including marketing site + analytics.",
         supervisorId: aliId, // cofounder
         status: "active",
-        color: "primary",
+        color: "emerald",
         createdBy: founderId,
       },
       {
@@ -209,7 +234,7 @@ async function main() {
         description: "Beta cohort onboarding, top-10 interviews, NPS reporting.",
         supervisorId: ahmedId, // cofounder
         status: "active",
-        color: "cyan",
+        color: "forest",
         createdBy: founderId,
       },
       {
@@ -219,7 +244,7 @@ async function main() {
         description: "Hiring, CI/CD, internal tooling. Run by Sarah (member supervisor).",
         supervisorId: sarahId, // member-as-supervisor — exercises the elevated-permission path
         status: "active",
-        color: "pink",
+        color: "mint",
         createdBy: founderId,
       },
     ],
@@ -491,12 +516,16 @@ async function main() {
     ],
   });
 
+  const channelMembers = await db.channelMember.count({ where: { channelId: generalId } });
+
   console.log("Seed complete:", {
     company: 1,
     users: 5,
     transactions: investments.length + expenses.length,
     tasks: 8,
     notifications: 2,
+    channels: 1,
+    channelMembers,
   });
 }
 

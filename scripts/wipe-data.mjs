@@ -4,13 +4,28 @@
  *
  * Run: node scripts/wipe-data.mjs
  *
- * NOT for production — there's no confirmation prompt; the .env must be
- * pointing at the dev DB.
+ * There is no confirmation prompt and every deleteMany() below is UNSCOPED —
+ * this empties every company, user, task and transaction in whatever database
+ * it is pointed at. That used to be guarded by nothing but the operator
+ * remembering which database `.env` named — and `.env` named PRODUCTION until
+ * it was emptied on 2026-09-26 (see SECRET-ROTATION.md). Both facts are now
+ * historical, and neither is what protects this script.
+ *
+ * It is now guarded structurally: localDb() reads `.env.local` and throws on
+ * any non-loopback host, so this script cannot reach a hosted database even if
+ * someone runs it by accident. Do not "helpfully" restore a fallback to
+ * process.env.DATABASE_URL.
  */
 
-import { PrismaClient } from "@prisma/client";
+import { localDb } from "./_local-db.mjs";
 
-const db = new PrismaClient();
+// Pinned to the local docker Postgres. A bare `new PrismaClient()` here
+// auto-loads the ROOT .env. That file is value-free since 2026-09-26, so a
+// bare client now fails closed rather than silently reaching production — but
+// do NOT rely on that: the guarantee is localDb()'s loopback check, which holds
+// whatever .env happens to contain. See scripts/_local-db.mjs. This script mutates data; it must never be able
+// to reach a hosted database.
+const db = localDb();
 
 async function main() {
   // Pre-count so we can show what we removed.
