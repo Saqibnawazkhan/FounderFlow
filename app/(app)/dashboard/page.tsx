@@ -7,7 +7,7 @@
 
 import type { Metadata } from "next";
 import { getTransactions } from "@/lib/queries/transactions";
-import { getTasks } from "@/lib/queries/tasks";
+import { getTasks, getTaskStatusCounts } from "@/lib/queries/tasks";
 import { getActivities } from "@/lib/queries/activities";
 import { getCompanyUsers } from "@/lib/queries/users";
 import { getClockedInPeers } from "@/lib/queries/time";
@@ -21,19 +21,24 @@ export const metadata: Metadata = {
 };
 
 export default async function DashboardPage() {
-  const [session, transactions, tasks, activities, users, clockedIn] = await Promise.all([
-    requireScopedSession(),
-    getTransactions(),
-    getTasks(),
-    getActivities(50),
-    getCompanyUsers(),
-    getClockedInPeers(),
-  ]);
+  const [session, transactions, tasks, taskCounts, activities, users, clockedIn] =
+    await Promise.all([
+      requireScopedSession(),
+      getTransactions(),
+      getTasks(),
+      // Not tasks.length: getTasks() is page 1 of a 300-row window, so the KPI
+      // must come from the unbounded groupBy or it under-reports past 300.
+      getTaskStatusCounts(),
+      getActivities(50),
+      getCompanyUsers(),
+      getClockedInPeers(),
+    ]);
 
   return (
     <DashboardClient
       transactions={transactions}
       tasks={tasks}
+      taskCounts={taskCounts}
       activities={activities}
       users={users}
       clockedIn={clockedIn}

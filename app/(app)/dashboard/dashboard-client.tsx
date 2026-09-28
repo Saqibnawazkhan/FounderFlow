@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useMemo } from "react";
+import type { TaskStatusCounts } from "@/lib/queries/tasks";
 import dynamic from "next/dynamic";
 import {
   ArrowRight,
@@ -57,6 +58,7 @@ const CATEGORY_PALETTE = [C_PRIMARY, C_FOREST, C_MINT, C_DEEP, "#34D399", "#6474
 type Props = {
   transactions: Transaction[];
   tasks: Task[];
+  taskCounts: TaskStatusCounts;
   activities: Activity[];
   users: User[];
   clockedIn: { count: number; peers: { userId: string; userName: string }[] };
@@ -67,6 +69,7 @@ type Props = {
 export function DashboardClient({
   transactions,
   tasks,
+  taskCounts,
   activities,
   users,
   clockedIn,
@@ -86,8 +89,10 @@ export function DashboardClient({
     .reduce((sum, t) => sum + t.amount, 0);
   // Cash balance = everything in (founder capital + earned revenue) − spend.
   const balance = totalInvestments + totalRevenue - totalExpenses;
-  const pendingTasks = tasks.filter((t) => t.status !== "completed").length;
-  const completedTasks = tasks.filter((t) => t.status === "completed").length;
+  // From the count query, not from `tasks`: that array is a 300-row window
+  // (perf-002), so filtering it under-reports the KPI in a busy workspace.
+  const pendingTasks = taskCounts.open;
+  const completedTasks = taskCounts.completed;
 
   // A ROLLING three-month window, not the last three calendar months: a
   // calendar window would include a partial current month, so early in the
@@ -240,7 +245,7 @@ export function DashboardClient({
       icon: CheckCircle2,
       tone: "primary",
       delta: pendingTasks === 0 ? "positive" : "neutral",
-      deltaLabel: `${n.number(completedTasks)} shipped · ${n.number(tasks.length)} total`,
+      deltaLabel: `${n.number(completedTasks)} shipped · ${n.number(taskCounts.total)} total`,
     },
   ];
 
