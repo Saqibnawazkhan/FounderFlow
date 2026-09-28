@@ -74,6 +74,23 @@ export interface ProjectClient {
   targetEndDate: string | null;
   createdBy: string;
   createdAt: string;
+  /**
+   * OPTIMISTIC-CONCURRENCY TOKEN (projects-010). The row's `updatedAt`, which
+   * Prisma rewrites on every single write.
+   *
+   * It is on the DTO for one reason: `updateProjectAction` refuses an edit whose
+   * `expectedUpdatedAt` no longer matches the row, and the only way the Edit
+   * modal can send that is if the value reached the client. Drop this field and
+   * the server-side check becomes unreachable from the one surface that needs
+   * it — this repo's most productive defect shape (see
+   * tests/lib/architecture/decision-reachability.test.ts).
+   *
+   * An ISO STRING, like every other timestamp on this DTO. These cross the RSC
+   * boundary, where a `Date` would arrive as a Date in one render and as a
+   * string after `router.refresh()`; the token has to compare equal either way.
+   * The action parses it back with `new Date()`.
+   */
+  updatedAt: string;
 }
 
 export interface ProjectListItem extends ProjectClient {
@@ -120,6 +137,7 @@ function toClient(p: {
   targetEndDate: Date | null;
   createdBy: string;
   createdAt: Date;
+  updatedAt: Date;
   supervisor: { name: string };
 }): ProjectClient {
   return {
@@ -134,6 +152,7 @@ function toClient(p: {
     targetEndDate: p.targetEndDate ? p.targetEndDate.toISOString() : null,
     createdBy: p.createdBy,
     createdAt: p.createdAt.toISOString(),
+    updatedAt: p.updatedAt.toISOString(),
   };
 }
 

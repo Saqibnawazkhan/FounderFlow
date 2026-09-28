@@ -48,6 +48,10 @@ const H = vi.hoisted(() => {
     "task",
     "project",
     "message",
+    // Comment and TimeEntry gained tombstones with data-integrity-001 and
+    // joined the workspace sweep, so the fake needs their delegates too.
+    "comment",
+    "timeEntry",
     "user",
     "company",
     "activity",
@@ -217,7 +221,16 @@ function paidCompany(over: Record<string, unknown> = {}) {
 
 /** Everything the workspace sweep needs to run to completion. */
 function sweepReturns(): void {
-  for (const model of ["transaction", "budget", "task", "project", "message", "user"]) {
+  for (const model of [
+    "transaction",
+    "budget",
+    "task",
+    "project",
+    "message",
+    "comment",
+    "timeEntry",
+    "user",
+  ]) {
     when(`${model}.updateMany`, { count: 1 });
   }
   when("inviteToken.deleteMany", { count: 1 });

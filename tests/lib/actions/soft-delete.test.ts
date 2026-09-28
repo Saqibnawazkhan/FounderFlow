@@ -121,6 +121,11 @@ vi.mock("@/lib/db", () => ({ db: H.db }));
 vi.mock("@/lib/auth", () => ({ auth: async () => H.session.value }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/sentry-server", () => ({ captureServerError: vi.fn() }));
+// lib/queries/transactions.ts (the ledger read the last test in the first
+// describe drives) imports @sentry/nextjs for its read-ceiling warning. The real
+// module drags a whole runtime into a jsdom test and the ceiling is not what
+// this file is about.
+vi.mock("@sentry/nextjs", () => ({ captureMessage: vi.fn() }));
 vi.mock("@/lib/safety/bulk-mutation-guard", () => ({ warnBulkMutation: vi.fn() }));
 // The threshold check re-reads the ledger on its own client; it has its own
 // tests (tests/lib/budgets/threshold.test.ts) and would only add noise here.
@@ -277,15 +282,42 @@ describe("deleteTransactionAction (a mis-clicked ledger line must be recoverable
     expect(callsTo("activity.create")).toHaveLength(0);
   });
 
-  it("hides tombstoned rows from the action-level ledger read", async () => {
-    // listTransactionsAction is the one Transaction read in lib/actions that did
-    // not carry the filter. A soft delete that a list still renders is worse
-    // than a hard delete: the user deletes, sees the row, and deletes again.
+  it("hides tombstoned rows from the ledger read the finance pages render", async () => {
+    // A soft delete that a list still renders is worse than a hard delete: the
+    // user deletes, sees the row, and deletes again.
+    //
+    // THIS ASSERTION USED TO DRIVE `listTransactionsAction`, which was the one
+    // Transaction read in lib/actions/ that shipped WITHOUT the filter. That
+    // action is gone (deleted 2026-09-29; the banner in
+    // lib/actions/transactions.ts says why), and the property did not go with
+    // it — it was never really "some exported function filters the tombstone",
+    // it is "the read a customer's /expenses, /revenue, /investments,
+    // /dashboard and /reports actually render filters the tombstone". That read
+    // is `getTransactions()`. Asserting it against a function no page called is
+    // how the filter drifted out of the action unnoticed in the first place.
+    //
+    // ONE ASSERTION PER TYPE WINDOW, deliberately. `getTransactions()` issues
+    // one findMany PER transaction type (the per-type ceiling, money-008), so a
+    // filter present in "the query" can still be absent from two of the three
+    // windows — revenue and investment rows coming back tombstoned while
+    // expenses stayed clean. Indexing [0] would not have seen that.
     signedInAs("admin");
     when("transaction.findMany", []);
-    const { listTransactionsAction } = await import("@/lib/actions/transactions");
-    await listTransactionsAction();
-    expect(whereOf(callsTo("transaction.findMany")[0]).deletedAt).toBeNull();
+    const { getTransactions } = await import("@/lib/queries/transactions");
+    await getTransactions();
+
+    const windows = callsTo("transaction.findMany");
+    expect(
+      windows,
+      "getTransactions() with no `type` reads one bounded window per type"
+    ).toHaveLength(3);
+    expect(windows.map((w) => whereOf(w).type).sort()).toEqual(["expense", "income", "investment"]);
+    windows.forEach((w) => {
+      expect(
+        whereOf(w).deletedAt,
+        `the ${String(whereOf(w).type)} window must exclude tombstoned rows`
+      ).toBeNull();
+    });
   });
 });
 

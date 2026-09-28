@@ -104,8 +104,33 @@ export type ActivityType =
   | "channel_created"
   | "channel_archived";
 
+/**
+ * The JSON blob on `Activity.metadata`, parsed and cast (never validated — it
+ * is a text column).
+ *
+ * `currency` on the transaction variant is money-006. `Activity.message` is
+ * prose written once and read forever, so whatever figure and whatever currency
+ * label the writer interpolated is frozen into a customer's history and no later
+ * code change repairs it. Carrying the RAW amount and the code it was written in
+ * lets a reader format at read time instead — see lib/activity/message.ts, which
+ * is the reader, and lib/actions/transactions.ts:212, which is the writer.
+ *
+ * It is optional because rows written before 2026-09-28 do not have it, and
+ * those rows must keep parsing. `recurring` / `description` / `dueDate` are the
+ * extra keys the recurring writers have always put here; declaring them stops
+ * the next reader believing the blob is narrower than it is.
+ */
 export type ActivityMetadata =
-  | { kind: "transaction"; amount: number; category: string }
+  | {
+      kind: "transaction";
+      amount: number;
+      category: string;
+      /** ISO 4217 code the amount was RECORDED in. Absent on legacy rows. */
+      currency?: string;
+      description?: string;
+      recurring?: boolean;
+      dueDate?: string;
+    }
   | { kind: "task"; taskId: string; title: string }
   | { kind: "user"; invitedUser?: string; role?: UserRole; previousRole?: UserRole }
   | { kind: "project"; projectId: string; projectName: string }

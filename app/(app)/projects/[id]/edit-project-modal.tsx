@@ -4,9 +4,24 @@
  * Edit project — name, description, color, status, target end date.
  * Supervisor stays in its own modal because reassigning is a
  * heavier-permission action (admin/cofounder only).
+ *
+ * TWO THINGS HERE ARE projects-010 (two people editing one project destroy each
+ * other's work), and they only work as a pair:
+ *
+ *   1. The form RESEEDS itself from the `project` prop every time it opens. It
+ *      is mounted permanently by the detail page, so without this it shows —
+ *      and re-submits — whatever the project looked like when the page first
+ *      loaded.
+ *   2. Every submit carries `expectedUpdatedAt`, the row version the form was
+ *      seeded from. `updateProjectAction` writes only if the row still carries
+ *      it, and otherwise says so instead of overwriting.
+ *
+ * (1) without (2) still loses a colleague's simultaneous edit. (2) without (1)
+ * refuses ordinary first-time edits, because a form seeded at page load IS a
+ * stale payload — and a guard that mostly fires on innocent people gets deleted.
  */
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import toast from "react-hot-toast";
@@ -48,6 +63,27 @@ function toLocalDateInput(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/**
+ * The form's values for a given project. One function, used for the initial
+ * `defaultValues` AND for every reseed, so the two cannot drift — a reseed that
+ * forgot a field would leave that field holding whatever was there before.
+ */
+function formValuesFor(project: ProjectClient): UpdateProjectInput {
+  return {
+    projectId: project.id,
+    name: project.name,
+    description: project.description ?? "",
+    color: project.color as ProjectColor,
+    status: project.status,
+    // Seed as the yyyy-mm-dd string the <input type="date"> expects.
+    // The setValueAs on the register() call coerces back to null on
+    // empty + zod's z.coerce.date handles the string → Date hop at
+    // parse time. Seeding `new Date(...)` here would mismatch the
+    // controlled input and render blank on mount.
+    targetEndDate: toLocalDateInput(project.targetEndDate) as unknown as Date | null,
+  };
+}
+
 export function EditProjectModal({ open, onClose, project, onSaved }: Props) {
   const t = useT();
   const nameId = useId();
@@ -65,38 +101,64 @@ export function EditProjectModal({ open, onClose, project, onSaved }: Props) {
     reset,
   } = useForm<UpdateProjectInput>({
     resolver: zodResolver(UpdateProjectSchema),
-    defaultValues: {
-      projectId: project.id,
-      name: project.name,
-      description: project.description ?? "",
-      color: project.color as ProjectColor,
-      status: project.status,
-      // Seed as the yyyy-mm-dd string the <input type="date"> expects.
-      // The setValueAs on the register() call coerces back to null on
-      // empty + zod's z.coerce.date handles the string → Date hop at
-      // parse time. Seeding `new Date(...)` here would mismatch the
-      // controlled input and render blank on mount.
-      targetEndDate: toLocalDateInput(project.targetEndDate) as unknown as Date | null,
-    },
+    defaultValues: formValuesFor(project),
   });
 
   const selectedColor = watch("color");
 
+  /**
+   * The project's `updatedAt` AS OF THE RENDER THE FORM WAS SEEDED FROM —
+   * deliberately not `project.updatedAt` at submit time.
+   *
+   * It has to travel with the values, not with the props. A `router.refresh()`
+   * fired by something else on this page while the dialog is open updates the
+   * prop but does NOT reseed the form (that would wipe a half-typed name), so
+   * reading the live prop at submit would send a token proving we had seen a row
+   * we had not — which is exactly the write updateProjectAction's check exists
+   * to refuse, handed the credentials to get through.
+   */
+  const seededUpdatedAt = useRef(project.updatedAt);
+
+  /**
+   * RESEED ON OPEN — the other half of projects-010.
+   *
+   * This component is mounted permanently by project-detail-client.tsx
+   * (`{canManage && <EditProjectModal open={editOpen} … />}`), so `useForm` runs
+   * once, at page load. Radix unmounts the dialog's DOM when it closes, but
+   * react-hook-form's state lives up here and survives that, so without this the
+   * form still holds page-load values after any `router.refresh()`. Opening Edit
+   * to change the colour would then re-submit a name and description that are
+   * weeks old — and, with the concurrency token now in place, a stale form would
+   * make a perfectly ordinary first edit fail with "this project changed".
+   *
+   * Only on the false→true transition. Reseeding on every `project` change would
+   * throw away what the user is in the middle of typing the moment any other
+   * mutation on the page refreshes the route.
+   */
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      reset(formValuesFor(project));
+      seededUpdatedAt.current = project.updatedAt;
+    }
+    wasOpen.current = open;
+  }, [open, project, reset]);
+
   function onClosed() {
-    reset({
-      projectId: project.id,
-      name: project.name,
-      description: project.description ?? "",
-      color: project.color as ProjectColor,
-      status: project.status,
-      targetEndDate: toLocalDateInput(project.targetEndDate) as unknown as Date | null,
-    });
+    reset(formValuesFor(project));
+    seededUpdatedAt.current = project.updatedAt;
     onClose();
   }
 
   async function onSubmit(data: UpdateProjectInput) {
     setSubmitting(true);
-    const res = await updateProjectAction(data);
+    // `expectedUpdatedAt` is not a project field and is not in
+    // UpdateProjectSchema — the action reads it off the raw payload, beside the
+    // parsed data, and refuses the write if the row has moved on since.
+    const res = await updateProjectAction({
+      ...data,
+      expectedUpdatedAt: seededUpdatedAt.current,
+    });
     setSubmitting(false);
     if (!res.success) {
       toast.error(res.error);
@@ -176,7 +238,9 @@ export function EditProjectModal({ open, onClose, project, onSaved }: Props) {
           <input
             id={dateId}
             type="date"
-            defaultValue={toLocalDateInput(project.targetEndDate)}
+            // No `defaultValue` here: the form is seeded — and RESEEDED on every
+            // open — by `formValuesFor`, and a React defaultValue would be a
+            // second source of truth that only applies on mount.
             // See new-project-modal — empty "" must become null so the
             // zod resolver doesn't reject the whole form silently.
             {...register("targetEndDate", {

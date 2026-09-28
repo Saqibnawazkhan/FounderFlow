@@ -30,6 +30,11 @@ import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { loadMoreActivitiesAction } from "@/lib/actions/activities";
 import { cn } from "@/lib/utils";
+// money-006: the row's figure is re-rendered from its own `{ amount, currency }`
+// metadata instead of the one frozen into `message` at write time. See the
+// header of lib/activity/message.ts for why, and for why the currency comes
+// from the ROW and never from the workspace's current setting.
+import { activityDisplayMessage } from "@/lib/activity/message";
 import type { Activity, ActivityType } from "@/lib/types";
 import { useNumberFormat } from "@/lib/i18n/use-t";
 import { format, isToday, isYesterday, startOfDay } from "date-fns";
@@ -68,9 +73,16 @@ const TONE_FILL: Record<ActivityTone, string> = {
   info: "bg-info/15 text-info-strong border-info/30",
 };
 
-/** An activity row plus how many identical consecutive events it absorbed.
+/** An activity row plus the sentence actually rendered for it — its stored
+ *  `message` with the money re-formatted from `metadata` (money-006). Computed
+ *  once, because the SEARCH box has to look at the same string the reader sees:
+ *  a founder typing "PKR 1,234.50" off the screen must not be filtering against
+ *  a differently-formatted figure they never saw. */
+type DisplayedActivity = Activity & { display: string };
+
+/** A displayed row plus how many identical consecutive events it absorbed.
  *  repeatCount = 1 → a normal single event; > 1 → rendered with a ×N badge. */
-type DedupedActivity = Activity & { repeatCount: number };
+type DedupedActivity = DisplayedActivity & { repeatCount: number };
 
 // Collapse window: identical events this close together are one user action
 // stuttering (double-click, retried request, HMR double-fire), not two
@@ -84,7 +96,7 @@ const DEDUPE_WINDOW_MS = 5 * 60 * 1000;
  *  Server rows are untouched — this is presentation-only, so the audit
  *  trail in the DB stays complete. Assumes input is newest-first (the
  *  query orders by createdAt desc). */
-function dedupeConsecutive(rows: Activity[]): DedupedActivity[] {
+function dedupeConsecutive(rows: DisplayedActivity[]): DedupedActivity[] {
   const out: DedupedActivity[] = [];
   for (const a of rows) {
     const prev = out[out.length - 1];
@@ -156,16 +168,21 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
     setCursor(res.data.nextCursor);
   }
 
+  const displayed = useMemo<DisplayedActivity[]>(
+    () => activities.map((a) => ({ ...a, display: activityDisplayMessage(a.message, a.metadata) })),
+    [activities]
+  );
+
   const filtered = useMemo(
     () =>
       dedupeConsecutive(
-        activities.filter((a) => {
-          const matchSearch = !search || a.message.toLowerCase().includes(search.toLowerCase());
+        displayed.filter((a) => {
+          const matchSearch = !search || a.display.toLowerCase().includes(search.toLowerCase());
           const matchType = typeFilter === "all" || a.type === typeFilter;
           return matchSearch && matchType;
         })
       ),
-    [activities, search, typeFilter]
+    [displayed, search, typeFilter]
   );
 
   const grouped = useMemo(() => {
@@ -307,7 +324,7 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
                           <Avatar name={activity.userName} size="sm" />
                           <div className="min-w-0 flex-1">
                             <p className="text-sm leading-relaxed text-fg">
-                              {activity.message}
+                              {activity.display}
                               {activity.repeatCount > 1 && (
                                 <span
                                   title={`This event fired ${n.number(activity.repeatCount)} times within a few minutes`}

@@ -46,6 +46,10 @@ const WORKSPACE_DELEGATES = [
   "message",
   "channelMember",
   "channel",
+  // BillingEvent (bill-002 / bill-009) is workspace data: it carries a
+  // companyId, so purgeCompany() must erase it with the workspace and
+  // countCompanyRows() must count it. Listed here in the same order.
+  "billingEvent",
   "comment",
   "timeEntry",
   "transaction",

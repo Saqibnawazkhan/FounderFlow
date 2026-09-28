@@ -34,15 +34,26 @@
  * delivery arriving out of order overwrote newer state; and every column was
  * written on every event, so an event that merely OMITTED a field erased it.
  *
- * WHAT THIS ROUTE STILL DOES NOT HAVE, and it matters: there is no ledger of
- * delivered event ids, so replay protection is INFERRED from state already on the
- * Company row rather than enforced. See the header of
- * lib/billing/subscription-write.ts for exactly what that does and does not
- * cover, and the delivery follow-ups for the DDL. Two guards here narrow the gap
- * without a table and neither closes it: `MAX_GRANT_AGE_MS` refuses a delivery
- * that is too old to be allowed to GRANT the paid plan, and
- * `enforceFreePlanDowngrade` makes a downgrade take the paid privileges away
- * (bill-013) instead of only changing a column.
+ * (1) vs (4) also produced bill-009, and the ledger of delivered event ids that
+ * this file spent the whole audit saying it did not have now EXISTS: every
+ * delivery writes one `BillingEvent` row, and the applied ones write it inside
+ * the same `$transaction` as the `Company` update. That single insert is what
+ * turns the table into an idempotency key rather than a log — a replayed
+ * delivery loses on the unique index and changes nothing, instead of being
+ * judged by whether its own dates still look current. See `recordDelivery` and
+ * `isLedgerReplay` below, and the model comment in prisma/schema.prisma.
+ *
+ * WHAT THE LEDGER DOES NOT COVER, stated plainly so the next reader does not
+ * trust it further than it goes. It keys on `meta.webhook_id`, falling back to a
+ * hash of the signed bytes, so two DIFFERENT deliveries that both legitimately
+ * say the same thing are two rows and both apply (correct — they are not
+ * replays). A delivery we answer 500 to writes NO row at all, because the row
+ * would be an idempotency key for a delivery we have just asked LemonSqueezy to
+ * send again. And the two older guards stay, because they cover what a key
+ * cannot: `MAX_GRANT_AGE_MS` refuses a first delivery that is simply too old to
+ * be allowed to GRANT the paid plan, and `enforceFreePlanDowngrade` makes a
+ * downgrade take the paid privileges away (bill-013) instead of only changing a
+ * column.
  *
  * Setup: LemonSqueezy dashboard → Settings → Webhooks → add
  *   https://<domain>/api/webhooks/lemonsqueezy
@@ -139,37 +150,186 @@ const COMPANY_BILLING_SELECT = {
   deletedAt: true,
 } as const;
 
+/**
+ * Facts a lookup discovers that its return type has no way to express.
+ *
+ * One object per DELIVERY, never a module-level flag: the handler is re-entered
+ * concurrently (LemonSqueezy delivers and retries in parallel), and a shared
+ * mutable flag would let one delivery's ambiguity refuse another's write.
+ */
+interface LookupFlags {
+  /**
+   * More than one workspace holds the incoming subscription id (bill-012, the
+   * half on the column the resolver PREFERS). `CompanyBillingLookup` can only
+   * answer "a row or nothing", so the ambiguity is recorded here and refused by
+   * the caller.
+   */
+  subscriptionAmbiguous: boolean;
+}
+
 /** The three reads the identity decision needs, bound to Prisma. */
-const dbLookup: CompanyBillingLookup = {
-  byId: (companyId) =>
-    db.company.findFirst({ where: { id: companyId }, select: COMPANY_BILLING_SELECT }),
-  bySubscriptionId: (subscriptionId) =>
-    db.company.findFirst({
-      where: { billingSubscriptionId: subscriptionId },
-      select: COMPANY_BILLING_SELECT,
-    }),
-  // bill-012. This was `findFirst` with NO orderBy, over a column with no unique
-  // constraint — so Postgres returned whichever row it liked and the choice could
-  // change between queries. One person paying for two workspaces (one email, one
-  // card: the ordinary serial-founder / agency case) leaves two rows with the same
-  // billingCustomerId, and a cancellation for workspace B could then downgrade
-  // workspace A — non-deterministically, so it would never reproduce on demand.
-  //
-  // `take: 2` is all the information needed: "exactly one" or "more than one".
-  // Ambiguity is REPORTED, never resolved — guessing right is luck, and the
-  // decision refuses and alerts instead. The orderBy makes even the one-row case
-  // stable, so two queries during one delivery cannot disagree.
-  byCustomerId: async (customerId) => {
-    const rows = await db.company.findMany({
-      where: { billingCustomerId: customerId },
-      select: COMPANY_BILLING_SELECT,
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: 2,
+function buildLookup(flags: LookupFlags): CompanyBillingLookup {
+  return {
+    byId: (companyId) =>
+      db.company.findFirst({ where: { id: companyId }, select: COMPANY_BILLING_SELECT }),
+
+    // bill-012, on the column the whole resolution order is built on. This was
+    // also `findFirst` with no orderBy, and `billingSubscriptionId` carries no
+    // unique constraint either — so "prefer the recorded binding" was only ever
+    // as good as that binding being unique, and two rows holding one
+    // subscription id (a Tier 3 restore, a hand-written repair) turned "which
+    // paying customer does this cancellation downgrade?" into a coin flip that
+    // could land differently on the retry. Same remedy as below: see both rows,
+    // refuse, and say so.
+    bySubscriptionId: async (subscriptionId) => {
+      const rows = await db.company.findMany({
+        where: { billingSubscriptionId: subscriptionId },
+        select: COMPANY_BILLING_SELECT,
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take: 2,
+      });
+      if (rows.length > 1) {
+        flags.subscriptionAmbiguous = true;
+        // Null, not the first row: the caller refuses the whole delivery on the
+        // flag, and handing the decision a row it must not use is how a guard
+        // ends up bypassed by the next edit.
+        return null;
+      }
+      return rows[0] ?? null;
+    },
+
+    // bill-012. This was `findFirst` with NO orderBy, over a column with no unique
+    // constraint — so Postgres returned whichever row it liked and the choice could
+    // change between queries. One person paying for two workspaces (one email, one
+    // card: the ordinary serial-founder / agency case) leaves two rows with the same
+    // billingCustomerId, and a cancellation for workspace B could then downgrade
+    // workspace A — non-deterministically, so it would never reproduce on demand.
+    //
+    // `take: 2` is all the information needed: "exactly one" or "more than one".
+    // Ambiguity is REPORTED, never resolved — guessing right is luck, and the
+    // decision refuses and alerts instead. The orderBy makes even the one-row case
+    // stable, so two queries during one delivery cannot disagree.
+    byCustomerId: async (customerId) => {
+      const rows = await db.company.findMany({
+        where: { billingCustomerId: customerId },
+        select: COMPANY_BILLING_SELECT,
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take: 2,
+      });
+      if (rows.length > 1) return AMBIGUOUS_CUSTOMER;
+      return rows[0] ?? null;
+    },
+  };
+}
+
+/* ── The delivered-event ledger (bill-009, bill-002) ─────────────────────── */
+
+/**
+ * What we did about a delivery, in one token. `BillingEvent.outcome` has no
+ * default on purpose — the writer has to state it.
+ *
+ *   applied — the Company write committed, in the same transaction as this row.
+ *   refused — we would not honour it: out of scope, a forged claim, or an
+ *             identity that cannot be pinned to one workspace.
+ *   skipped — in scope and honest, but not news: a replay, a stale grant, a
+ *             superseded subscription, a delivery we cannot place.
+ */
+type LedgerOutcome = "applied" | "refused" | "skipped";
+
+/** One webhook delivery: how it is identified, and the bytes it arrived as. */
+interface Delivery {
+  /**
+   * THE IDEMPOTENCY KEY. `meta.webhook_id` when LemonSqueezy sent one, otherwise
+   * a hash of the exact bytes the signature covers. Never a freshly-minted
+   * cuid/uuid/timestamp: a value that collides with nothing turns the unique
+   * index into a row counter. See the comment on `BillingEvent.eventId`.
+   */
+  eventId: string;
+  /** `meta.event_name`, verbatim — including names this route does not handle. */
+  eventName: string;
+  /** The raw signed body. Verbatim: a re-serialised copy verifies as a forgery. */
+  payload: string;
+}
+
+function deliveryEventId(meta: unknown, rawBody: Buffer): string {
+  const webhookId =
+    meta && typeof meta === "object" ? (meta as Record<string, unknown>).webhook_id : undefined;
+  // Same coercion rule as `attrId`: a string or a finite number, nothing else.
+  // An object here would stringify to "[object Object]" and become one shared
+  // idempotency key for every delivery that carried one.
+  if (typeof webhookId === "string" && webhookId.length > 0) return webhookId;
+  if (typeof webhookId === "number" && Number.isFinite(webhookId)) return String(webhookId);
+  return `sha256:${crypto.createHash("sha256").update(rawBody).digest("hex")}`;
+}
+
+/**
+ * Was that P2002 the ledger's unique index, rather than some other constraint?
+ *
+ * Duck-typed on `code` instead of importing Prisma's error class (the route
+ * imports the client, not its error types), and narrowed on the target: reading
+ * ANY unique violation as "already delivered" would silently drop a real
+ * delivery the day some other unique column collides.
+ */
+function isLedgerReplay(e: unknown): boolean {
+  if (!e || typeof e !== "object") return false;
+  if ((e as { code?: unknown }).code !== "P2002") return false;
+  const target = (e as { meta?: { target?: unknown } }).meta?.target;
+  if (typeof target === "string") return target.indexOf("eventId") !== -1;
+  if (Array.isArray(target)) return target.indexOf("eventId") !== -1;
+  // No target to read. The ledger insert is the only `create` inside these
+  // transactions, so attributing it here is the honest reading.
+  return true;
+}
+
+/** Thrown inside the write transaction so the ledger row rolls back with it. */
+class BillingWriteMiss extends Error {}
+
+interface LedgerFacts {
+  outcome: LedgerOutcome;
+  /** The verdict string, matching the Sentry breadcrumbs. Null for a plain apply. */
+  reason: string | null;
+  /** Null when the delivery resolved to no workspace — the row still gets written. */
+  companyId?: string | null;
+  subscriptionId: string | null;
+  customerId: string | null;
+}
+
+function ledgerRow(delivery: Delivery, facts: LedgerFacts) {
+  return {
+    eventId: delivery.eventId,
+    eventName: delivery.eventName,
+    subscriptionId: facts.subscriptionId,
+    customerId: facts.customerId,
+    companyId: facts.companyId ?? null,
+    outcome: facts.outcome,
+    reason: facts.reason,
+    payload: delivery.payload,
+  };
+}
+
+/**
+ * Record a delivery we are NOT applying.
+ *
+ * Never throws and never changes the HTTP answer: a refusal that has already
+ * been decided must not turn into a 500 — and therefore a retry of the whole
+ * delivery — because its own audit row failed to write. A P2002 here means this
+ * delivery was recorded before; the first row stands, which is the point.
+ *
+ * Deliberately NOT called on the paths that answer 500. A row there would be an
+ * idempotency key for a delivery we have just asked LemonSqueezy to send again,
+ * and the retry would come back and be swallowed as a replay.
+ */
+async function recordDelivery(delivery: Delivery, facts: LedgerFacts): Promise<void> {
+  try {
+    await db.billingEvent.create({ data: ledgerRow(delivery, facts) });
+  } catch (e) {
+    if (isLedgerReplay(e)) return;
+    captureServerError(e, {
+      action: "lemonSqueezyWebhook.recordDelivery",
+      extra: { eventName: delivery.eventName, outcome: facts.outcome, reason: facts.reason },
     });
-    if (rows.length > 1) return AMBIGUOUS_CUSTOMER;
-    return rows[0] ?? null;
-  },
-};
+  }
+}
 
 /**
  * Read a provider-assigned id off an attributes bag.
@@ -341,27 +501,54 @@ async function enforceFreePlanDowngrade(companyId: string, eventName: string): P
  * event must never be able to create a binding.
  */
 async function handleSubscriptionEvent(
-  eventName: string,
+  delivery: Delivery,
   sub: { id?: string | number; attributes?: Record<string, unknown> },
   customData: unknown
 ): Promise<NextResponse> {
+  const eventName = delivery.eventName;
   const attrs = sub.attributes ?? {};
   const status = String(attrs.status ?? "");
   // Both provider-assigned: the buyer cannot choose either.
   const subscriptionId = sub.id != null ? String(sub.id) : null;
   const customerId = attrId(attrs, "customer_id");
+  /** The ids every ledger row on this path carries, resolved or not. */
+  const ids = { subscriptionId, customerId };
 
-  const scope = scopeEvent(eventName, attrs, { subscriptionId, customerId });
+  const scope = scopeEvent(eventName, attrs, ids);
   if (!scope.ok) {
     // 200: retrying will never make a test-mode event, or another store's
     // product, become something we sell.
+    await recordDelivery(delivery, { outcome: "refused", reason: scope.reason, ...ids });
     return NextResponse.json({ received: true, ignored: scope.reason });
   }
 
+  const flags: LookupFlags = { subscriptionAmbiguous: false };
   const identity = await resolveWebhookCompany(
     { subscriptionId, customerId, customData },
-    dbLookup
+    buildLookup(flags)
   );
+
+  // bill-012. Two workspaces hold this subscription id, so "prefer the recorded
+  // binding" cannot say which one the event is about. Checked BEFORE the verdict
+  // is read, because the resolver was handed a null for that lookup and may have
+  // gone on to resolve by the claim or the customer id — and applying a
+  // cancellation to the workspace that answered second is exactly the coin flip
+  // this finding is about. 200: no retry can disambiguate it, only a human can.
+  if (flags.subscriptionAmbiguous) {
+    reportUnplaceableBillingEvent({
+      eventName,
+      reason: "subscription-ambiguous",
+      subscriptionId,
+      customerId,
+      extra: { claimedCompanyId: identity.ok ? null : identity.claimedCompanyId },
+    });
+    await recordDelivery(delivery, {
+      outcome: "refused",
+      reason: "subscription-ambiguous",
+      ...ids,
+    });
+    return NextResponse.json({ received: true, ignored: "subscription-ambiguous" });
+  }
 
   if (!identity.ok) {
     if (identity.forged) {
@@ -375,6 +562,12 @@ async function handleSubscriptionEvent(
         subscriptionId,
         customerId,
       });
+      // Recorded, and STILL answered 400. The ledger row is the durable half of
+      // the audit trail (Sentry ages out); the 400 is the half LemonSqueezy's own
+      // dashboard keeps. A re-POST of the same forgery takes this branch again
+      // and answers 400 again — it never reaches the replay path, so recording it
+      // cannot turn a second attempt into a cheerful 200.
+      await recordDelivery(delivery, { outcome: "refused", reason: identity.reason, ...ids });
       return NextResponse.json(
         { error: "Event does not belong to that workspace" },
         { status: 400 }
@@ -399,8 +592,20 @@ async function handleSubscriptionEvent(
     // reasons are not retryable by anybody: a tombstoned workspace stays
     // tombstoned, and no number of retries can disambiguate a shared customer id.
     if (identity.reason === "unresolvable" && scope.enforced) {
+      // NO ledger row on this branch, deliberately. We are asking LemonSqueezy to
+      // send this delivery again; a row here would be an idempotency key for it,
+      // and the retry we asked for would come back and be swallowed as a replay —
+      // losing the customer's upgrade for good at the moment the operator fixed
+      // the cause. The Sentry report above is the record until then.
       return NextResponse.json({ error: "Could not place this subscription" }, { status: 500 });
     }
+    // An ambiguous customer id is a refusal (someone has to choose); the rest are
+    // honest deliveries we simply cannot place.
+    await recordDelivery(delivery, {
+      outcome: identity.reason === "customer-ambiguous" ? "refused" : "skipped",
+      reason: identity.reason,
+      ...ids,
+    });
     return NextResponse.json({ received: true, ignored: identity.reason });
   }
 
@@ -408,6 +613,7 @@ async function handleSubscriptionEvent(
   // first rule), but that guarantee can't cross the type boundary — re-check
   // rather than reach for a non-null assertion.
   if (!subscriptionId) {
+    await recordDelivery(delivery, { outcome: "skipped", reason: "unresolvable", ...ids });
     return NextResponse.json({ received: true, ignored: "unresolvable" });
   }
 
@@ -433,6 +639,12 @@ async function handleSubscriptionEvent(
       customerId,
       companyId: identity.companyId,
     });
+    await recordDelivery(delivery, {
+      outcome: "skipped",
+      reason: "company-vanished",
+      companyId: null,
+      ...ids,
+    });
     return NextResponse.json({ received: true, ignored: "company-vanished" });
   }
 
@@ -447,9 +659,10 @@ async function handleSubscriptionEvent(
   });
 
   if (!decision.apply) {
-    // bill-002 / bill-003. Until the delivered-event ledger exists, this
-    // breadcrumb IS the audit trail for a refused delivery. 200, because the
-    // refusal is final — a retry would be refused for the same reason.
+    // bill-002 / bill-003. The breadcrumb is the on-call signal; the ledger row
+    // below is the durable record (Sentry ages out, disputes do not). 200,
+    // because the refusal is final — a retry would be refused for the same
+    // reason.
     reportSkippedBillingWrite({
       eventName,
       reason: decision.reason,
@@ -463,6 +676,12 @@ async function handleSubscriptionEvent(
         incomingStatus: status,
         incomingPeriodEnd: period.periodEnd,
       },
+    });
+    await recordDelivery(delivery, {
+      outcome: "skipped",
+      reason: decision.reason,
+      companyId: identity.companyId,
+      ...ids,
     });
     return NextResponse.json({ received: true, skipped: decision.reason });
   }
@@ -486,41 +705,94 @@ async function handleSubscriptionEvent(
     // 200: a retry of a delivery this old would be refused for the same reason,
     // and answering 400 would mark a possibly-legitimate delivery as failed in the
     // LemonSqueezy dashboard without telling the operator anything new.
+    await recordDelivery(delivery, {
+      outcome: "skipped",
+      reason: "stale-grant",
+      companyId: identity.companyId,
+      ...ids,
+    });
     return NextResponse.json({ received: true, skipped: "stale-grant" });
   }
 
-  const result = await db.company.updateMany({
-    where: {
-      id: identity.companyId,
-      // Never write billing state onto a tombstoned workspace: it is inside
-      // its Tier 3 recovery window and ops treat it as gone. Belt and
-      // braces with the same check inside the decision.
-      deletedAt: null,
-      // Compare-and-set: re-assert the binding the decision was made on, so
-      // a concurrent (or retried) event that rebinds the row between our
-      // read and this write matches zero rows instead of stealing it.
-      ...identityWriteGuard(identity.via, subscriptionId, customerId),
-    },
-    // Built by decideSubscriptionWrite, and deliberately PARTIAL: a key that is
-    // absent leaves the column alone. bill-007 was this object being assembled
-    // inline with every key always present, so an event that merely omitted
-    // `renews_at` nulled the customer's paid-through date.
-    data: decision.data,
-  });
-
-  if (result.count === 0) {
-    // The row moved between the read and the write — lost race, or someone
-    // rebinding concurrently. Nothing to retry (a retry would re-resolve
-    // from the new state anyway), but it should be visible.
-    captureServerError(
-      new Error(`Billing write matched no rows: ${eventName} via ${identity.via}`),
-      {
-        action: "lemonSqueezyWebhook.writeMiss",
+  // bill-009 + bill-002. THE WRITE AND ITS LEDGER ROW, IN ONE TRANSACTION.
+  //
+  // The insert is what makes the table an idempotency key rather than a log:
+  // a replayed delivery carries the same `eventId`, loses on the unique index,
+  // and the whole transaction — including the Company update that ran a moment
+  // earlier — rolls back. So a delivery is recorded as applied if and only if
+  // its write committed, and the replay changes nothing at all.
+  //
+  // The update runs FIRST so the row's outcome can be honest: a compare-and-set
+  // that matches zero rows must not leave a ledger row claiming it applied, and
+  // throwing rolls that row back with it.
+  try {
+    await db.$transaction(async (tx) => {
+      const result = await tx.company.updateMany({
+        where: {
+          id: identity.companyId,
+          // Never write billing state onto a tombstoned workspace: it is inside
+          // its Tier 3 recovery window and ops treat it as gone. Belt and
+          // braces with the same check inside the decision.
+          deletedAt: null,
+          // Compare-and-set: re-assert the binding the decision was made on, so
+          // a concurrent (or retried) event that rebinds the row between our
+          // read and this write matches zero rows instead of stealing it.
+          ...identityWriteGuard(identity.via, subscriptionId, customerId),
+        },
+        // Built by decideSubscriptionWrite, and deliberately PARTIAL: a key that is
+        // absent leaves the column alone. bill-007 was this object being assembled
+        // inline with every key always present, so an event that merely omitted
+        // `renews_at` nulled the customer's paid-through date.
+        data: decision.data,
+      });
+      if (result.count === 0) throw new BillingWriteMiss();
+      await tx.billingEvent.create({
+        data: ledgerRow(delivery, {
+          outcome: "applied",
+          reason: null,
+          companyId: identity.companyId,
+          ...ids,
+        }),
+      });
+    });
+  } catch (e) {
+    if (e instanceof BillingWriteMiss) {
+      // The row moved between the read and the write — lost race, or someone
+      // rebinding concurrently. Nothing to retry (a retry would re-resolve
+      // from the new state anyway), but it should be visible.
+      captureServerError(
+        new Error(`Billing write matched no rows: ${eventName} via ${identity.via}`),
+        {
+          action: "lemonSqueezyWebhook.writeMiss",
+          companyId: identity.companyId,
+          extra: { eventName, subscriptionId, customerId, via: identity.via },
+        }
+      );
+      await recordDelivery(delivery, {
+        outcome: "skipped",
+        reason: "write-miss",
         companyId: identity.companyId,
-        extra: { eventName, subscriptionId, customerId, via: identity.via },
-      }
-    );
-    return NextResponse.json({ received: true, ignored: "write-miss" });
+        ...ids,
+      });
+      return NextResponse.json({ received: true, ignored: "write-miss" });
+    }
+    if (isLedgerReplay(e)) {
+      // Already delivered. Nothing was written — the transaction took the
+      // Company update back out with it — so this is the one refusal that needs
+      // no further record: the row that refused it IS the record.
+      reportSkippedBillingWrite({
+        eventName,
+        reason: "replay",
+        subscriptionId,
+        customerId,
+        companyId: identity.companyId,
+        extra: { eventId: delivery.eventId, incomingStatus: status },
+      });
+      return NextResponse.json({ received: true, skipped: "replay" });
+    }
+    // Anything else is transient: let the outer catch answer 500 so LemonSqueezy
+    // retries. No ledger row, so the retry is not swallowed as a replay.
+    throw e;
   }
 
   if (decision.lapsed) {
@@ -573,14 +845,17 @@ async function handleSubscriptionEvent(
  * it touches is `subscriptionStatus`, as a narrow compare-and-set.
  */
 async function handlePaymentEvent(
-  eventName: string,
+  delivery: Delivery,
   attrs: Record<string, unknown>
 ): Promise<NextResponse> {
+  const eventName = delivery.eventName;
   const subscriptionId = attrId(attrs, "subscription_id");
   const customerId = attrId(attrs, "customer_id");
+  const ids = { subscriptionId, customerId };
 
-  const scope = scopeEvent(eventName, attrs, { subscriptionId, customerId });
+  const scope = scopeEvent(eventName, attrs, ids);
   if (!scope.ok) {
+    await recordDelivery(delivery, { outcome: "refused", reason: scope.reason, ...ids });
     return NextResponse.json({ received: true, ignored: scope.reason });
   }
 
@@ -591,15 +866,43 @@ async function handlePaymentEvent(
       subscriptionId: null,
       customerId,
     });
+    await recordDelivery(delivery, {
+      outcome: "skipped",
+      reason: "invoice-without-subscription",
+      ...ids,
+    });
     return NextResponse.json({ received: true, ignored: "invoice-without-subscription" });
   }
 
   // No claim path and no customer-id fallback: a payment event may only report on
   // a binding we already hold, never create one.
-  const company = await db.company.findFirst({
+  //
+  // bill-012: `findMany` + `take: 2`, not `findFirst`. `billingSubscriptionId`
+  // has no unique constraint, so two workspaces holding one subscription id made
+  // "which workspace does this declined card belong to?" a coin flip — and the
+  // loser is marked `past_due` on somebody else's failed payment.
+  const bound = await db.company.findMany({
     where: { billingSubscriptionId: subscriptionId, deletedAt: null },
     select: { id: true, subscriptionStatus: true, currentPeriodEnd: true },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: 2,
   });
+  if (bound.length > 1) {
+    reportUnplaceableBillingEvent({
+      eventName,
+      reason: "subscription-ambiguous",
+      subscriptionId,
+      customerId,
+      extra: { matchedCompanyIds: bound.map((c) => c.id) },
+    });
+    await recordDelivery(delivery, {
+      outcome: "refused",
+      reason: "subscription-ambiguous",
+      ...ids,
+    });
+    return NextResponse.json({ received: true, ignored: "subscription-ambiguous" });
+  }
+  const company = bound[0] ?? null;
   if (!company) {
     reportUnplaceableBillingEvent({
       eventName,
@@ -607,34 +910,74 @@ async function handlePaymentEvent(
       subscriptionId,
       customerId,
     });
+    // bill-009: "money arrived and we could not place it" is the single most
+    // valuable row in the ledger, and it is the one a nullable companyId exists
+    // for. It was previously a 200 and a Sentry breadcrumb with Sentry's
+    // retention, which is not a record of a payment dispute.
+    await recordDelivery(delivery, {
+      outcome: "skipped",
+      reason: "unknown-subscription",
+      companyId: null,
+      ...ids,
+    });
     return NextResponse.json({ received: true, ignored: "unknown-subscription" });
   }
 
-  if (eventName === "subscription_payment_failed") {
-    // Only from a healthy status, and only the status column. Overwriting
-    // `cancelled` or `expired` with `past_due` would resurrect a workspace that is
-    // on its way out. `plan` deliberately stays paid: the dunning window in
-    // ACCESS_GRACE_DAYS is what gives the customer time to fix the card, and the
-    // notification below is what tells them to.
-    await db.company.updateMany({
-      where: {
-        id: company.id,
-        deletedAt: null,
-        billingSubscriptionId: subscriptionId,
-        subscriptionStatus: { in: ["active", "on_trial"] },
-      },
-      data: { subscriptionStatus: "past_due" },
+  // bill-009 + bill-002, same shape as the subscription path: the status change
+  // and the ledger row commit together, so a re-POSTed invoice cannot mark a
+  // recovered workspace `past_due` a second time. A payment_success writes no
+  // column at all — the ledger row IS the record, which is the whole of bill-009
+  // for the event a disputed charge actually corresponds to.
+  try {
+    await db.$transaction(async (tx) => {
+      if (eventName === "subscription_payment_failed") {
+        // Only from a healthy status, and only the status column. Overwriting
+        // `cancelled` or `expired` with `past_due` would resurrect a workspace that is
+        // on its way out. `plan` deliberately stays paid: the dunning window in
+        // ACCESS_GRACE_DAYS is what gives the customer time to fix the card, and the
+        // notification below is what tells them to.
+        await tx.company.updateMany({
+          where: {
+            id: company.id,
+            deletedAt: null,
+            billingSubscriptionId: subscriptionId,
+            subscriptionStatus: { in: ["active", "on_trial"] },
+          },
+          data: { subscriptionStatus: "past_due" },
+        });
+      } else if (eventName === "subscription_payment_recovered") {
+        await tx.company.updateMany({
+          where: {
+            id: company.id,
+            deletedAt: null,
+            billingSubscriptionId: subscriptionId,
+            subscriptionStatus: "past_due",
+          },
+          data: { subscriptionStatus: "active" },
+        });
+      }
+      await tx.billingEvent.create({
+        data: ledgerRow(delivery, {
+          outcome: "applied",
+          reason: null,
+          companyId: company.id,
+          ...ids,
+        }),
+      });
     });
-  } else if (eventName === "subscription_payment_recovered") {
-    await db.company.updateMany({
-      where: {
-        id: company.id,
-        deletedAt: null,
-        billingSubscriptionId: subscriptionId,
-        subscriptionStatus: "past_due",
-      },
-      data: { subscriptionStatus: "active" },
-    });
+  } catch (e) {
+    if (isLedgerReplay(e)) {
+      reportSkippedBillingWrite({
+        eventName,
+        reason: "replay",
+        subscriptionId,
+        customerId,
+        companyId: company.id,
+        extra: { eventId: delivery.eventId },
+      });
+      return NextResponse.json({ received: true, skipped: "replay" });
+    }
+    throw e;
   }
 
   const alert = billingAlertForEvent(eventName);
@@ -675,7 +1018,7 @@ export async function POST(request: Request) {
   }
 
   let event: {
-    meta?: { event_name?: string; custom_data?: unknown };
+    meta?: { event_name?: string; custom_data?: unknown; webhook_id?: string | number };
     data?: { id?: string | number; attributes?: Record<string, unknown> };
   };
   try {
@@ -687,15 +1030,27 @@ export async function POST(request: Request) {
   const eventName = event.meta?.event_name ?? "";
   const sub = event.data;
 
+  // Identified ONCE, from the verified bytes, and carried into every branch: the
+  // ledger is only an idempotency key if the same delivery always produces the
+  // same key, and `payload` is only evidence if it is the bytes the signature
+  // covered rather than a re-serialisation of them.
+  const delivery: Delivery = {
+    eventId: deliveryEventId(event.meta, rawBody),
+    eventName,
+    payload: rawBody.toString("utf8"),
+  };
+
   try {
     if (SUB_EVENTS.has(eventName) && sub?.attributes) {
-      return await handleSubscriptionEvent(eventName, sub, event.meta?.custom_data);
+      return await handleSubscriptionEvent(delivery, sub, event.meta?.custom_data);
     }
     if (INVOICE_EVENTS.has(eventName) && sub?.attributes) {
-      return await handlePaymentEvent(eventName, sub.attributes);
+      return await handlePaymentEvent(delivery, sub.attributes);
     }
   } catch (e) {
-    // 500 so LemonSqueezy retries transient failures.
+    // 500 so LemonSqueezy retries transient failures. No ledger row was written
+    // on the way here (the handlers roll theirs back and rethrow), so the retry
+    // is not swallowed as a replay.
     captureServerError(e, { action: "lemonSqueezyWebhook", extra: { eventName } });
     return NextResponse.json({ error: "Webhook handler failed" }, { status: 500 });
   }
@@ -705,5 +1060,16 @@ export async function POST(request: Request) {
   // bill-008 silence: plans are modelled off subscriptions only, so an order event
   // must not be able to set one (that is the negative result the audit checked).
   // Reporting every one of them would bury the reports that matter.
+  //
+  // bill-009 draws the one distinction that matters: NOT reporting them is right,
+  // not RECORDING them is not. "What arrived" and "what we understood" are
+  // different questions, and a dispute is usually about the gap between them —
+  // e.g. an `order_refunded` we never acted on. The row is cheap and silent.
+  await recordDelivery(delivery, {
+    outcome: "skipped",
+    reason: "unhandled-event",
+    subscriptionId: null,
+    customerId: null,
+  });
   return NextResponse.json({ received: true });
 }

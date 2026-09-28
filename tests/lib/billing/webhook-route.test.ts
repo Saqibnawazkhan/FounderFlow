@@ -13,8 +13,15 @@
  *
  * Findings covered: bill-002/003 (staleness decision), bill-006 (test mode and
  * store/variant scope), bill-007 (absent != NULL), bill-008 (an event that
- * cannot be placed must be loud), bill-012 (an ambiguous customer id must not
- * be guessed at), bill-018 (payment failures must notify someone).
+ * cannot be placed must be loud), bill-009 (every delivery leaves a record),
+ * bill-012 (an ambiguous id must not be guessed at, on either column),
+ * bill-018 (payment failures must notify someone).
+ *
+ * What a delivery DOES to a workspace - one write for two identical deliveries,
+ * a rolled-back ledger row for a write that missed - is pinned behaviourally in
+ * tests/lib/billing/webhook-ledger.test.ts, which drives POST against a fake
+ * Prisma client. Source text can say the transaction is there; only that file
+ * can say it works.
  */
 
 import { describe, expect, it } from "vitest";
@@ -112,7 +119,7 @@ describe("bill-008 - an event that cannot be placed is loud", () => {
 });
 
 describe("bill-012 - an ambiguous customer id is refused, not guessed at", () => {
-  it("no longer picks whichever row Postgres happens to return first", () => {
+  it("no longer picks whichever row Postgres happens to return first, on EITHER id", () => {
     // `findFirst` with no orderBy over a column with no unique constraint: one
     // person paying for two workspaces could have a cancellation for one
     // applied to the other, non-deterministically. The regex is the literal
@@ -123,6 +130,19 @@ describe("bill-012 - an ambiguous customer id is refused, not guessed at", () =>
     const lookup = from(source(), "byCustomerId:");
     expect(lookup).toContain("findMany");
     expect(lookup).toContain("take: 2");
+
+    // The same defect lived on `billingSubscriptionId`, which has no unique
+    // constraint either - and that is the column the whole resolution order
+    // PREFERS, so a duplicated binding made "which paying customer does this
+    // cancellation downgrade?" a coin flip. Both the identity lookup and the
+    // payment path read it the same careful way now.
+    expect(source()).not.toMatch(/findFirst\(\{\s*where:\s*\{\s*billingSubscriptionId/);
+    const bySub = from(source(), "bySubscriptionId:");
+    expect(bySub).toContain("findMany");
+    expect(bySub).toContain("take: 2");
+    expect(source(), "and ambiguity is refused rather than resolved").toContain(
+      "subscription-ambiguous"
+    );
   });
 
   it("orders the lookup deterministically so a repeat query cannot disagree", () => {
@@ -189,9 +209,56 @@ describe("bill-002 - a captured delivery is not a permanent licence", () => {
     expect(src, "and the refusal is reported, not silent").toContain("stale-grant");
   });
 
-  it("still says out loud that it has no delivered-event ledger", () => {
-    // The age window narrows the hole; it does not close it. A file that stops
-    // admitting that is a file the next reader trusts too far.
-    expect(source()).toMatch(/no ledger|ledger of delivered event ids/i);
+  it("closes the rest of the hole with a delivered-event ledger", () => {
+    // THIS ASSERTION USED TO READ THE OTHER WAY. Until 2026-09-29 it was
+    // "still says out loud that it has no delivered-event ledger", which was
+    // honest while the table did not exist and became a test encoding the bug
+    // the moment it did — the repo's most recurrent defect, and one a passing
+    // suite would have hidden (the new header still contains the phrase the old
+    // regex looked for). The age window narrows the hole for a FIRST delivery
+    // that is simply too old; the key below is what stops a second one.
+    const src = source();
+    expect(src).toContain("billingEvent.create");
+    expect(src, "and it still says what the ledger does NOT cover").toMatch(
+      /WHAT THE LEDGER DOES NOT COVER/i
+    );
+  });
+});
+
+describe("bill-009 - the ledger is wired, not merely described", () => {
+  /** Source with comments stripped: a "must not come back" guard on code only. */
+  const codeOnly = () =>
+    source()
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/^\s*\/\/.*$/gm, " ");
+
+  it("writes the ledger row inside the same transaction as the Company update", () => {
+    // Same transaction is the whole mechanism: a rollback takes the ledger row
+    // with it, so a delivery is recorded as applied if and only if its write
+    // committed. A row written next to the update, rather than with it, is a log
+    // - and a log cannot be an idempotency key.
+    const src = source();
+    expect(src).toContain("db.$transaction");
+    const tx = from(src, "db.$transaction");
+    expect(tx).toContain("company.updateMany");
+    expect(tx).toContain("billingEvent.create");
+  });
+
+  it("no longer writes the plan outside a transaction", () => {
+    expect(codeOnly()).not.toContain("await db.company.updateMany(");
+  });
+
+  it("treats a unique violation on the event id as an already-delivered replay", () => {
+    const src = codeOnly();
+    expect(src).toContain("P2002");
+    expect(src, "and only the ledger's constraint - not any unique violation").toContain("eventId");
+  });
+
+  it("derives a deterministic key when LemonSqueezy sends no webhook id", () => {
+    // A cuid/uuid/timestamp collides with nothing, so the unique index would
+    // stop being a dedupe key and become a row counter.
+    const src = codeOnly();
+    expect(src).toContain("webhook_id");
+    expect(src).toContain("sha256");
   });
 });

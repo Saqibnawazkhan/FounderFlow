@@ -118,6 +118,11 @@ function ownProjectRow() {
     targetEndDate: null,
     createdBy: "u_admin",
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    // Project.updatedAt landed with projects-010 and toClient() calls
+    // .toISOString() on it, so a row without it throws — which this file's
+    // own 'titles the page for someone allowed to see it' case exists to
+    // catch, and did.
+    updatedAt: new Date("2026-01-02T00:00:00.000Z"),
     supervisor: { name: "Sana" },
   };
 }

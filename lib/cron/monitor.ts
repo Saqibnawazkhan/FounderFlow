@@ -27,9 +27,17 @@
  * staging installs), exactly like `captureException`, so this is safe to call
  * unconditionally.
  *
- * NOTE for whoever wires the third route: `app/api/cron/sweep-time-entries`
- * still carries the old 206 + no-check-in shape. It was outside a04's file
- * ownership in the P1 wave — see the handback's needsOtherFiles.
+ * ALL THREE nightly routes are wired as of 2026-09-29 — materialize-recurring,
+ * purge-soft-deleted and sweep-time-entries, the last of which carried the old
+ * 206 + no-check-in shape until then because it sat outside the previous wave's
+ * file ownership. Each passes the crontab it is registered with in vercel.json;
+ * `tests/lib/cron/sweep-route.test.ts` reads that file rather than repeating the
+ * expression, because a monitor whose schedule disagrees with the real one turns
+ * every missed-beat alert into noise.
+ *
+ * A FOURTH ROUTE MUST NOT COPY THE HANDLER INSTEAD OF THIS. The point of the
+ * wrapper is that the in_progress/terminal pair, the crontab registration and
+ * the "never let telemetry break the job" try/catch are decided once.
  */
 
 import * as Sentry from "@sentry/nextjs";

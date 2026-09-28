@@ -525,6 +525,61 @@ function mentions(input: unknown, key: string): boolean {
   );
 }
 
+/**
+ * The OPTIMISTIC-CONCURRENCY TOKEN the caller says it read the row at.
+ *
+ * Three outcomes, deliberately distinct:
+ *   • `undefined` — the caller mentioned no token at all (an old client, or a
+ *     status-only click, which is exempt below).
+ *   • `null`      — a token was sent and is not a usable instant. Refused
+ *     rather than ignored: silently dropping an unparseable token would turn
+ *     the guard off for exactly the caller that tried hardest to use it.
+ *   • a `Date`    — the instant to match the row against.
+ *
+ * Read off the RAW payload, not through zod, for the same reason `mentions`
+ * exists: this is a question about what the caller SAID, and the token is not a
+ * project field — it never belongs in `data`.
+ *
+ * Accepts a string (what crosses the RSC boundary; `ProjectClient.updatedAt` is
+ * an ISO string) or a `Date` (a server-side caller with the row in hand).
+ */
+function expectedUpdatedAtOf(input: unknown): Date | null | undefined {
+  if (!mentions(input, "expectedUpdatedAt")) return undefined;
+  const raw = (input as Record<string, unknown>).expectedUpdatedAt;
+  const asDate = typeof raw === "string" ? new Date(raw) : raw instanceof Date ? raw : null;
+  if (asDate === null || Number.isNaN(asDate.getTime())) return null;
+  return asDate;
+}
+
+/**
+ * The one field a caller may write WITHOUT proving it read the current row.
+ *
+ * `status` has dedicated one-click controls — the header dropdown, Archive,
+ * Restore — which now write that single column and nothing else. Nobody TYPES a
+ * status, the result is visible on the card immediately, and losing that race
+ * costs one click. Demanding a token there would make the narrow writes
+ * unusable for the very callers they were built for.
+ *
+ * Everything else reaches this action from the Edit modal, which always has a
+ * token, so requiring one costs nothing and is what stops a future caller
+ * reintroducing the tokenless whole-row overwrite that WAS projects-010.
+ */
+const CONCURRENCY_EXEMPT_FIELDS: readonly string[] = ["status"];
+
+/**
+ * Thrown from inside the update transaction when the token does not match the
+ * row, so the whole write — the UPDATE *and* the activity row that narrates it
+ * — rolls back together. A sentinel class because throwing is the only way to
+ * abort a Prisma interactive transaction, and it has to be distinguishable from
+ * a genuine database failure at the catch.
+ */
+class StaleProjectWriteError extends Error {
+  constructor() {
+    super("project changed since the form was rendered");
+    this.name = "StaleProjectWriteError";
+  }
+}
+
 export async function updateProjectAction(input: unknown): Promise<ActionResult> {
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
@@ -561,6 +616,32 @@ export async function updateProjectAction(input: unknown): Promise<ActionResult>
     return { success: false, error: "Nothing to update — no project field was provided." };
   }
 
+  // Narrow writes (above) stopped a STATUS click from carrying a stale name
+  // back. They cannot help when both writers genuinely mean to write the name —
+  // two people in the Edit modal — because then the later write is a real edit
+  // and last-write-wins destroys prose somebody typed, silently. So any payload
+  // touching a field outside `CONCURRENCY_EXEMPT_FIELDS` has to say which
+  // version of the row it was built from.
+  const expectedUpdatedAt = expectedUpdatedAtOf(input);
+  const writesGuardedFields = Object.keys(data).some(
+    (key) => CONCURRENCY_EXEMPT_FIELDS.indexOf(key) === -1
+  );
+  // `null` means a token WAS sent and is not a usable instant. Refused whatever
+  // it was writing, including an otherwise-exempt status: a caller that tried to
+  // prove it read the row and got it wrong is a caller whose payload we
+  // understand less well than one that never tried.
+  if (expectedUpdatedAt === null || (writesGuardedFields && !(expectedUpdatedAt instanceof Date))) {
+    // Fail closed. A missing token means the caller cannot prove it read the
+    // current row, and the whole point is that we cannot tell that payload apart
+    // from a deliberate edit. Reached by a tab still running the previous
+    // deployment's JavaScript, which is minutes of "reload the page" against a
+    // permanent, invisible loss of somebody's work.
+    return {
+      success: false,
+      error: "This form is out of date. Reload the page and try again.",
+    };
+  }
+
   try {
     // deletedAt:null (data-integrity-002): deleteProjectAction soft-deletes and
     // leaves Project.status alone, so without this a tab that was open when the
@@ -591,7 +672,28 @@ export async function updateProjectAction(input: unknown): Promise<ActionResult>
       data.name !== undefined && data.name !== project.name ? project.name : undefined;
 
     await db.$transaction(async (tx) => {
-      await tx.project.update({ where: { id: projectId }, data });
+      if (expectedUpdatedAt instanceof Date) {
+        // `updateMany`, not `update`, because only the *Many form takes a
+        // non-unique WHERE — and the whole guarantee is that the match on
+        // `updatedAt` happens INSIDE the statement that writes. A re-read here
+        // and a comparison in JavaScript would have the identical race sitting
+        // in the gap between the two queries.
+        //
+        // companyId + deletedAt are restated rather than trusted from the
+        // findFirst above for the same reason: they are cheap, and the row could
+        // have been soft-deleted in between.
+        const { count } = await tx.project.updateMany({
+          where: { id: projectId, companyId, deletedAt: null, updatedAt: expectedUpdatedAt },
+          data,
+        });
+        // Zero rows means the token did not match: somebody else has written
+        // this project since the caller's form was rendered. Throwing rolls the
+        // activity row back with it, so the feed never narrates a change that
+        // did not happen.
+        if (count === 0) throw new StaleProjectWriteError();
+      } else {
+        await tx.project.update({ where: { id: projectId }, data });
+      }
 
       // Distinct activity type when the status transition is archive — the
       // activity feed reads better than a generic "updated".
@@ -630,6 +732,14 @@ export async function updateProjectAction(input: unknown): Promise<ActionResult>
     revalidatePath(`/projects/${projectId}`);
     return { success: true, data: undefined };
   } catch (e) {
+    // A lost-update refusal is an ordinary, expected outcome of two people
+    // working at once — not an exception worth a Sentry event.
+    if (e instanceof StaleProjectWriteError) {
+      return {
+        success: false,
+        error: "This project changed since you opened it. Reload and try again.",
+      };
+    }
     captureServerError(e, { action: "updateProjectAction" });
     return { success: false, error: "Couldn't update the project right now." };
   }

@@ -112,8 +112,17 @@ export async function clockInAction(input: unknown): Promise<ActionResult<{ entr
   try {
     // One open entry max. If the user is already clocked in, surface that
     // instead of creating a parallel row.
+    //
+    // `deletedAt: null` IS LOAD-BEARING, and it is the sharpest edge of
+    // data-integrity-001. `deleteTimeEntryAction` now tombstones instead of
+    // hard-deleting, so without this filter a user who deleted their own RUNNING
+    // timer would match here for the rest of time: every future clock-in refused
+    // with "You're already clocked in.", and no entry anywhere in the UI to
+    // clock out of, because every read filters the tombstone out. The soft
+    // delete would have created a permanent lockout that the hard delete did
+    // not have.
     const existing = await db.timeEntry.findFirst({
-      where: { userId, clockOutAt: null },
+      where: { userId, clockOutAt: null, deletedAt: null },
     });
     if (existing) {
       return { success: false, error: "You're already clocked in." };
@@ -220,6 +229,29 @@ export async function createManualEntryAction(
   }
 }
 
+/**
+ * One lookup, one rule: a tombstoned entry is GONE to every writer in this file,
+ * and answers exactly as an id that never existed does (data-integrity-001).
+ *
+ * Not exported, and must not be: this module is `"use server"`, so an export is
+ * a publicly-routable endpoint (see the note at the foot of this file about
+ * cron-001). A plain helper is the right shape.
+ *
+ * Why a branch rather than a `where` clause: Prisma's `findUnique` accepts only
+ * unique fields in its filter, so `deletedAt: null` cannot be added to it, and
+ * switching to `findFirst` on every caller would change five query shapes to
+ * express one boolean. Written once here because five hand-copied
+ * `entry.deletedAt` checks is five chances to forget the sixth.
+ *
+ * `closeEntry` below deliberately has no check of its own — both its callers go
+ * through this function first, and a second lookup inside a helper that already
+ * holds the row would just be a slower way to ask the same question.
+ */
+async function findLiveEntry(entryId: string) {
+  const entry = await db.timeEntry.findUnique({ where: { id: entryId } });
+  return entry && entry.deletedAt === null ? entry : null;
+}
+
 /** Internal helper — owns the close + revalidate path. */
 async function closeEntry(opts: {
   entryId: string;
@@ -249,7 +281,7 @@ export async function clockOutAction(input: unknown): Promise<ActionResult> {
   const { entryId, note } = parsed.data;
 
   try {
-    const entry = await db.timeEntry.findUnique({ where: { id: entryId } });
+    const entry = await findLiveEntry(entryId);
     if (!entry) return { success: false, error: "Entry not found" };
     if (entry.userId !== session.user.id) return { success: false, error: "Not authorized" };
     if (entry.clockOutAt) return { success: false, error: "Already clocked out" };
@@ -280,7 +312,7 @@ export async function autoCloseEntryAction(input: unknown): Promise<ActionResult
   if (!parsed.success) return { success: false, error: "Invalid request" };
 
   try {
-    const entry = await db.timeEntry.findUnique({ where: { id: parsed.data.entryId } });
+    const entry = await findLiveEntry(parsed.data.entryId);
     if (!entry) return { success: false, error: "Entry not found" };
     if (entry.userId !== session.user.id) return { success: false, error: "Not authorized" };
     if (entry.clockOutAt) return { success: true, data: undefined }; // idempotent
@@ -310,7 +342,7 @@ export async function heartbeatAction(input: unknown): Promise<ActionResult> {
   if (!parsed.success) return { success: false, error: "Invalid request" };
 
   try {
-    const entry = await db.timeEntry.findUnique({ where: { id: parsed.data.entryId } });
+    const entry = await findLiveEntry(parsed.data.entryId);
     if (!entry) return { success: false, error: "Entry not found" };
     if (entry.userId !== session.user.id) return { success: false, error: "Not authorized" };
     if (entry.clockOutAt) return { success: false, error: "Entry already closed" };
@@ -334,7 +366,7 @@ export async function deleteTimeEntryAction(entryId: string): Promise<ActionResu
   if (!entryId) return { success: false, error: "Missing entry id" };
 
   try {
-    const entry = await db.timeEntry.findUnique({ where: { id: entryId } });
+    const entry = await findLiveEntry(entryId);
     if (!entry) return { success: false, error: "Entry not found" };
     if (entry.companyId !== session.user.companyId) {
       return { success: false, error: "Not authorized" };
@@ -343,7 +375,24 @@ export async function deleteTimeEntryAction(entryId: string): Promise<ActionResu
     if (entry.userId !== session.user.id && !canEditEntryTimes(session.user.role)) {
       return { success: false, error: "Only the owner or a founder can delete this entry" };
     }
-    await db.timeEntry.delete({ where: { id: entryId } });
+    /* THE TOMBSTONE, NOT A DELETE (data-integrity-001).
+     *
+     * This was `db.timeEntry.delete(...)` until 2026-09-29, and it is the
+     * soft-delete gap with the sharpest consequence in the schema: the guard
+     * above lets a MEMBER delete their OWN entry, so one mis-click destroyed
+     * billable hours that only that person could have reconstructed, and the
+     * editedBy / editedByName / editedAt audit trail — the columns that exist to
+     * prove an admin did or did not adjust someone's timesheet — went with it.
+     * CLAUDE.md's Tier 3 section counted these rows as recoverable for 90 days
+     * the whole time.
+     *
+     * The row is now collected exactly when a Transaction or a Task tombstone is:
+     * when /api/cron/purge-soft-deleted hard-purges the overdue Company, which
+     * already names `timeEntry` by hand (route.ts). There is deliberately no
+     * individual-entry purge stage, for the same reason there is no
+     * individual-user one.
+     */
+    await db.timeEntry.update({ where: { id: entryId }, data: { deletedAt: new Date() } });
     revalidatePath("/time");
     return { success: true, data: undefined };
   } catch (e) {
@@ -370,7 +419,7 @@ export async function updateTimeEntryAction(input: unknown): Promise<ActionResul
   const { entryId, clockInAt, clockOutAt, taskId, note } = parsed.data;
 
   try {
-    const entry = await db.timeEntry.findUnique({ where: { id: entryId } });
+    const entry = await findLiveEntry(entryId);
     if (!entry) return { success: false, error: "Entry not found" };
     if (entry.companyId !== session.user.companyId) {
       return { success: false, error: "Not authorized" };

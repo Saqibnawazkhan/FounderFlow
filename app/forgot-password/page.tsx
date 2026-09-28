@@ -19,6 +19,27 @@ import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/use-t";
 import { useHydrated } from "@/lib/hooks/use-hydrated";
 
+/**
+ * prodready-005, the UI half.
+ *
+ * Copy is inline rather than in `lib/i18n/strings.ts` ONLY because `Strings =
+ * typeof en` makes every new key a required Urdu translation too, and that file
+ * belongs to another slice of this wave. The keys are specified in this agent's
+ * hand-off; moving these four strings there is a mechanical follow-up and
+ * changes no behaviour.
+ */
+const COPY = {
+  requested: (email: string) =>
+    `We've requested a reset link for ${email}. If an account matches that address, the email usually arrives within a couple of minutes, and the link expires 15 minutes after it is sent.`,
+  notArrivedTitle: "Nothing after a few minutes?",
+  notArrivedBody:
+    "Check your spam folder first. Email delivery can fail, and this page cannot confirm whether the message left our server — so if a second attempt doesn't arrive either, ask a workspace admin to reset your password for you.",
+  resend: "Send it again",
+  resending: "Sending…",
+  resent: "Requested again.",
+  differentEmail: "Use a different email address",
+};
+
 export default function ForgotPasswordPage() {
   const t = useT();
   /**
@@ -40,6 +61,20 @@ export default function ForgotPasswordPage() {
   const hydrated = useHydrated();
   const emailId = useId();
   const [submitted, setSubmitted] = useState(false);
+  /** The address the confirmation is about, so "send it again" needs no retype. */
+  const [sentTo, setSentTo] = useState("");
+  /**
+   * A refusal the customer can still read a minute later.
+   *
+   * This endpoint is enumeration-safe, so a rate-limit refusal (auth-007) is
+   * the ONLY thing it can actually tell someone — and it was being told in a
+   * toast that clears itself after a few seconds, to a person who cannot sign
+   * in and may well be on a phone. The toast stays as well; this is the copy
+   * that survives.
+   */
+  const [formError, setFormError] = useState<string | null>(null);
+  const [resending, setResending] = useState(false);
+  const [resent, setResent] = useState(false);
 
   const {
     register,
@@ -53,15 +88,55 @@ export default function ForgotPasswordPage() {
   });
 
   async function onSubmit(data: RequestPasswordResetInput) {
+    setFormError(null);
     const result = await requestPasswordResetAction(data);
     if (!result.success) {
+      setFormError(result.error);
       toast.error(result.error);
       return;
     }
-    // Regardless of whether the email existed, we show the same success state
-    // — the server action deliberately doesn't leak that signal, and neither
-    // do we. See lib/actions/password-reset.ts for the enumeration posture.
+    /**
+     * `result.data.dispatched` is deliberately NOT read here, and nothing below
+     * branches on it.
+     *
+     * The action returns `dispatched: false` for three different things: the
+     * address was never registered, the account is tombstoned, and the send
+     * actually failed (lib/actions/password-reset.ts:119-152). On a healthy
+     * deployment the third is rare, so rendering anything differently on that
+     * flag would tell an attacker whether an address has an account — the exact
+     * oracle the whole flow is built to deny.
+     *
+     * The real outcome a locked-out customer needs is therefore surfaced
+     * WITHOUT it: the panel stops asserting that an email was sent, and gives
+     * them a retry and an escalation instead. Naming a transport failure out
+     * loud needs a signal that does not depend on the address existing — see
+     * this slice's hand-off for the `deliveryBlocked` follow-up.
+     */
+    setSentTo(data.email);
+    setResent(false);
     setSubmitted(true);
+  }
+
+  /** Ask again for the same address. Goes through the same limiter, which is
+   *  keyed on the submitted address precisely so this is uniform. */
+  async function resend() {
+    if (!sentTo || resending) return;
+    setResending(true);
+    setFormError(null);
+    const result = await requestPasswordResetAction({ email: sentTo });
+    setResending(false);
+    if (!result.success) {
+      setFormError(result.error);
+      return;
+    }
+    setResent(true);
+  }
+
+  function useDifferentEmail() {
+    setSubmitted(false);
+    setSentTo("");
+    setResent(false);
+    setFormError(null);
   }
 
   return (
@@ -89,15 +164,57 @@ export default function ForgotPasswordPage() {
         </Link>
 
         {submitted ? (
-          <div className="rounded-2xl border border-border bg-surface p-8 text-center">
+          /* role="status" + aria-live: the panel replaces the form in place, so
+             a screen-reader user otherwise gets no indication anything
+             happened. Nothing inside it varies with `dispatched` — see
+             onSubmit, and tests/components/forgot-password-outcome.test.tsx,
+             which pins the two renderings as byte-identical. */
+          <div
+            role="status"
+            aria-live="polite"
+            className="rounded-2xl border border-border bg-surface p-8 text-center"
+          >
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/15 text-primary-strong">
               <MailCheck className="h-6 w-6" aria-hidden="true" />
             </div>
             <h1 className="text-2xl font-bold tracking-tight">{t.auth.resetLinkSentTitle}</h1>
-            <p className="mt-3 text-sm text-fg-muted">{t.auth.resetLinkSentBody}</p>
+            <p className="mt-3 text-sm text-fg-muted">{COPY.requested(sentTo)}</p>
+
+            <div className="mt-6 rounded-xl border border-border bg-bg p-4 text-left">
+              <p className="text-xs font-bold text-fg">{COPY.notArrivedTitle}</p>
+              <p className="mt-1.5 text-xs leading-relaxed text-fg-muted">{COPY.notArrivedBody}</p>
+            </div>
+
+            {formError && (
+              <p role="alert" className="mt-4 text-xs font-medium text-danger">
+                {formError}
+              </p>
+            )}
+            {resent && !formError && (
+              <p className="mt-4 text-xs font-medium text-fg-muted">{COPY.resent}</p>
+            )}
+
+            <div className="mt-6 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={resend}
+                disabled={resending}
+                className="inline-flex w-full items-center justify-center rounded-xl border border-border px-5 py-2.5 text-sm font-semibold text-fg transition-colors hover:border-primary/40 hover:text-primary-strong disabled:opacity-60"
+              >
+                {resending ? COPY.resending : COPY.resend}
+              </button>
+              <button
+                type="button"
+                onClick={useDifferentEmail}
+                className="inline-flex w-full items-center justify-center rounded-xl px-5 py-2.5 text-sm font-medium text-fg-muted transition-colors hover:text-fg"
+              >
+                {COPY.differentEmail}
+              </button>
+            </div>
+
             <Link
               href="/login"
-              className="mt-8 inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg transition-transform hover:scale-[1.02] active:scale-[0.98]"
+              className="mt-6 inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg transition-transform hover:scale-[1.02] active:scale-[0.98]"
             >
               {t.auth.backToSignIn}
               <ArrowRight className="h-4 w-4" aria-hidden="true" />
@@ -146,6 +263,12 @@ export default function ForgotPasswordPage() {
                   </p>
                 )}
               </div>
+
+              {formError && (
+                <p role="alert" className="text-xs font-medium text-danger">
+                  {formError}
+                </p>
+              )}
 
               {/* Disabling the default button also closes the Enter-key path:
                   implicit submission fires a click at it, and a disabled button

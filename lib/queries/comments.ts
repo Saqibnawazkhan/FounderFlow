@@ -152,7 +152,16 @@ export async function listCommentsForTarget(target: CommentTarget): Promise<Comm
     db.comment.findMany({
       // Spread of the narrowed union, so the filtering column is always a
       // string. There is no branch here that can assign `undefined`.
-      where: { companyId, ...scope },
+      //
+      // `deletedAt: null` is the other half of data-integrity-001. Comment
+      // became the eighth soft-delete table on 2026-09-29, so
+      // `deleteCommentAction` now stamps a tombstone instead of hard-deleting.
+      // A tombstone this read does not filter on does not HIDE the comment, it
+      // DUPLICATES it: the deleted comment keeps rendering, the author deletes
+      // it again, and the second call is refused as "Comment not found" on a row
+      // they can still see. The filter sits before the spread so no target
+      // branch can drop it.
+      where: { companyId, deletedAt: null, ...scope },
       // Newest-first plus a reverse below, not oldest-first plus a take: with
       // a cap in play, `asc` would drop the most recent comments — the only
       // ones anybody is reading a thread for. `id` breaks a createdAt tie so

@@ -40,7 +40,7 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { deleteProjectAction, updateProjectAction } from "@/lib/actions/projects";
 import { canManageProject, canReassignSupervisor } from "@/lib/auth/project-permissions";
-import type { ProjectStatus, ProjectColor } from "@/lib/schemas/project";
+import type { ProjectStatus } from "@/lib/schemas/project";
 import type { Role } from "@/lib/auth/role-gates";
 import { formatDate, cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/time/thresholds";
@@ -157,13 +157,17 @@ export function ProjectDetailClient({
       tone: "primary",
     });
     if (!ok) return;
+    // STATUS ONLY — projects-010. This button is not trying to change a name, a
+    // description, a colour or a date, so it does not send them. It used to send
+    // all four, read from the props this page was MOUNTED with, and
+    // `updateProjectAction` wrote every column it was given: archiving a project
+    // in a tab opened before a colleague's rename silently reverted the rename,
+    // the description and the target date, with no error and no toast. The
+    // action now leaves a column alone when the payload does not mention it, and
+    // these three handlers are what makes that reachable.
     const res = await updateProjectAction({
       projectId: project.id,
-      name: project.name,
-      description: project.description ?? undefined,
-      color: project.color as "primary",
       status: "archived",
-      targetEndDate: project.targetEndDate ?? null,
     });
     if (!res.success) {
       toast.error(res.error);
@@ -176,13 +180,10 @@ export function ProjectDetailClient({
   async function handleUnarchive() {
     // Reactivate straight to "active" — the confirm modal would be friction
     // here; the header's delete/archive buttons are the destructive path.
+    // Status only — see handleArchive.
     const res = await updateProjectAction({
       projectId: project.id,
-      name: project.name,
-      description: project.description ?? undefined,
-      color: project.color as "primary",
       status: "active",
-      targetEndDate: project.targetEndDate ?? null,
     });
     if (!res.success) {
       toast.error(res.error);
@@ -197,13 +198,12 @@ export function ProjectDetailClient({
   // Reuses updateProjectAction (same path as archive/unarchive).
   async function handleStatusChange(status: ProjectStatus) {
     if (status === project.status) return;
+    // Status only — see handleArchive. This was the headline case in
+    // projects-010: a cofounder clicking "Completed" in a stale tab reverted a
+    // founder's rename.
     const res = await updateProjectAction({
       projectId: project.id,
-      name: project.name,
-      description: project.description ?? undefined,
-      color: project.color as ProjectColor,
       status,
-      targetEndDate: project.targetEndDate ?? null,
     });
     if (!res.success) {
       toast.error(res.error);

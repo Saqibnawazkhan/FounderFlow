@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import {
   ArrowDown,
@@ -156,6 +156,7 @@ export function ExpensesClient({
   const money = useMoney();
   const n = useNumberFormat();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
 
@@ -187,6 +188,101 @@ export function ExpensesClient({
       }),
     [expenses, search, categoryFilter]
   );
+
+  /* ───────────────────────────────────────────────────────────────────────── *
+   * DEEP LINK FROM A MENTION (tasks-and-comments-003, finance half)
+   *
+   * `createCommentAction` sends "<name> mentioned you" on a transaction comment
+   * to `/expenses?transactionId=<id>&comment=<id>`. This island had no
+   * `useSearchParams` at all, so that link resolved to a bare /expenses — the
+   * reader was told someone was talking about one of their expenses and then
+   * shown a list of all of them. The /tasks half of the same finding already
+   * honours `?taskId=`; this is the same shape, deliberately, so the two
+   * surfaces answer a mention identically.
+   *
+   * ONE ID OWNS SEVERAL NODES. The table (md+) and the card list (phones) both
+   * render every row and CSS hides one of them, so a plain id → element map
+   * keeps whichever branch registered last — on a desktop that is the
+   * `display:none` one, and scrollIntoView on a hidden element silently does
+   * nothing. Keep every node; pick a laid-out one at scroll time.
+   *
+   * `?comment=` is read by neither page yet (opening the thread itself is the
+   * remaining half of the follow-up recorded in lib/actions/comments.ts).
+   * ───────────────────────────────────────────────────────────────────────── */
+  const highlightIdParam = searchParams.get("transactionId");
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const scrollRefs = useRef<Map<string, Set<HTMLElement>>>(new Map());
+  function registerRef(id: string) {
+    return (el: HTMLElement | null) => {
+      // React passes null when it detaches the PREVIOUS callback, which it does
+      // on every render because this closure is fresh each time — so a null
+      // here says nothing about whether the node is gone. Stale nodes are
+      // pruned at read time against `isConnected` instead.
+      if (!el) return;
+      const nodes = scrollRefs.current.get(id);
+      if (nodes) nodes.add(el);
+      else scrollRefs.current.set(id, new Set([el]));
+    };
+  }
+  /** A node for `id` that is still in the document and actually laid out. */
+  function scrollTargetFor(id: string): HTMLElement | null {
+    const nodes = scrollRefs.current.get(id);
+    if (!nodes) return null;
+    const live: HTMLElement[] = [];
+    nodes.forEach((node) => {
+      if (node.isConnected) live.push(node);
+      else nodes.delete(node);
+    });
+    if (nodes.size === 0) scrollRefs.current.delete(id);
+    // getClientRects() is empty for anything inside a `display:none` subtree,
+    // which is how the two layouts above hide the one this viewport is not
+    // using. jsdom lays nothing out, so tests fall through to live[0].
+    return live.find((el) => el.getClientRects().length > 0) ?? live[0] ?? null;
+  }
+
+  // THE READER'S OWN FILTER CAN HIDE THE TARGET. The notification bell is on
+  // this page too, so following one of these links is usually a client-side
+  // navigation from /expenses to /expenses?transactionId=… — the island never
+  // unmounts and the search text / category the reader had typed is still
+  // applied. Scrolling to a row that was filtered out of the DOM is the
+  // original bug wearing a fix, so the filters step aside for a deep link.
+  const targetHiddenByFilter =
+    highlightIdParam !== null &&
+    expenses.some((t) => t.id === highlightIdParam) &&
+    !filtered.some((t) => t.id === highlightIdParam);
+
+  useEffect(() => {
+    if (!highlightIdParam) return;
+    setHighlightId(highlightIdParam);
+    if (targetHiddenByFilter) {
+      setSearch("");
+      setCategoryFilter("all");
+    }
+    // Resolve the target across a few frames rather than in this commit: when
+    // the filters were just cleared above, the row does not exist yet.
+    let attempts = 0;
+    let frame = requestAnimationFrame(function find() {
+      const el = scrollTargetFor(highlightIdParam);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      attempts += 1;
+      if (attempts < 10) frame = requestAnimationFrame(find);
+    });
+    const t = setTimeout(() => {
+      setHighlightId(null);
+      const url = new URL(window.location.href);
+      url.searchParams.delete("transactionId");
+      url.searchParams.delete("comment");
+      window.history.replaceState({}, "", url.toString());
+    }, 2500);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightIdParam]);
 
   // One `new Date()` per render so the This-month window cannot move between
   // figures. The metric row goes through `expenseHeadline`, which prefers the
@@ -431,7 +527,11 @@ export function ExpensesClient({
                 {filtered.map((t) => (
                   <tr
                     key={t.id}
-                    className="border-b border-border/60 transition-colors last:border-b-0 hover:bg-bg"
+                    ref={registerRef(t.id)}
+                    className={cn(
+                      "border-b border-border/60 transition-all last:border-b-0 hover:bg-bg",
+                      highlightId === t.id && "bg-primary/[0.08] shadow-inner"
+                    )}
                   >
                     <td className="px-6 py-4">
                       <p className="text-sm font-medium text-fg">{t.description}</p>
@@ -500,7 +600,14 @@ export function ExpensesClient({
         {filtered.length > 0 && (
           <ul className="divide-y divide-border md:hidden">
             {filtered.map((t) => (
-              <li key={t.id} className="p-4">
+              <li
+                key={t.id}
+                ref={registerRef(t.id)}
+                className={cn(
+                  "p-4 transition-all",
+                  highlightId === t.id && "bg-primary/[0.08] shadow-inner"
+                )}
+              >
                 <div className="flex items-start justify-between gap-3">
                   <p className="min-w-0 flex-1 text-sm font-medium text-fg">{t.description}</p>
                   <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm font-bold tabular-nums text-mint-strong">

@@ -258,6 +258,20 @@ async function purgeCompany(
     // to be deleted BEFORE the channel it hangs off.
     await del(tx.channelMember.deleteMany({ where: { channel: { companyId } } }));
     await del(tx.channel.deleteMany(where));
+    // BillingEvent BEFORE the company row. Its companyId FK is ON DELETE
+    // CASCADE, so the final company.delete() would remove these anyway — but
+    // naming it explicitly is the point: purgeCompany is the one place that
+    // states what an erased workspace takes with it, `del()` is what makes the
+    // row count (and therefore the 100-row canary) honest, and the
+    // schema-derived guard in tests/lib/db/purge-invariants.test.ts fails until
+    // every companyId-bearing model is listed here. A cascade nobody wrote down
+    // is how a table survives an erasure request unnoticed.
+    //
+    // NOTE the rows this deliberately does NOT reach: a BillingEvent that
+    // resolved to NO workspace has companyId = null, so no workspace erasure
+    // will ever collect it. Those need a time-based sweep of their own, which
+    // is a third purge scope and is not in this change.
+    await del(tx.billingEvent.deleteMany(where));
     // Leaf rows that reference tasks/transactions/projects first.
     await del(tx.comment.deleteMany(where));
     await del(tx.timeEntry.deleteMany(where));
@@ -301,6 +315,10 @@ async function countCompanyRows(
   await add("Message", db.message.count(where));
   await add("Activity", db.activity.count(where));
   await add("Notification", db.notification.count(where));
+  // Ordered as purgeCompany() deletes them, so the two lists can be read side by
+  // side — which is what the drift guard in tests/lib/cron/purge-route.test.ts
+  // checks, and what it caught when billingEvent was added to one and not the other.
+  await add("BillingEvent", db.billingEvent.count(where));
   await add("ChannelMember", db.channelMember.count({ where: { channel: { companyId } } }));
   await add("Channel", db.channel.count(where));
   await add("Comment", db.comment.count(where));

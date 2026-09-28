@@ -229,7 +229,14 @@ export async function deleteCommentAction(input: unknown): Promise<ActionResult>
 
   try {
     const comment = await db.comment.findUnique({ where: { id: commentId } });
-    if (!comment) return { success: false, error: "Comment not found" };
+    // A tombstoned comment is GONE as far as this endpoint is concerned, and it
+    // answers exactly as it would for an id that never existed. Two reasons it
+    // is a hard refusal rather than a no-op success: re-stamping `deletedAt`
+    // would move the tombstone's timestamp, and the range-filter restore in
+    // CLAUDE.md's Tier 3 runbook reunites a workspace's rows BY that timestamp;
+    // and the notification sweep below would run again on a second call, for a
+    // comment whose pings were already cleared.
+    if (!comment || comment.deletedAt) return { success: false, error: "Comment not found" };
     if (comment.companyId !== companyId) return { success: false, error: "Not authorized" };
     if (comment.authorId !== userId && role !== "admin") {
       return { success: false, error: "Only the author or an admin can delete this comment" };
@@ -248,13 +255,27 @@ export async function deleteCommentAction(input: unknown): Promise<ActionResult>
      * soft-delete world: a notification is a transient ping, not a record, and
      * nothing promises to restore one. Scoped to `companyId` so one workspace's
      * delete can never touch another's rows even if a comment id were guessed.
+     * schema.prisma's `Comment.deletedAt` comment says the same thing from the
+     * other side: do NOT "make this consistent" with the tombstone. A restored
+     * comment gets a live thread back, not a re-delivered ping.
      *
      * In a transaction so the two cannot land apart — a swept notification with
      * the comment still there would delete a live ping, and a deleted comment
      * with its ping intact is the dead end this exists to close.
+     *
+     * THE COMMENT ITSELF IS A TOMBSTONE, NOT A DELETE (data-integrity-001).
+     * This was `tx.comment.delete(...)` until 2026-09-29, while CLAUDE.md's
+     * Tier 3 section and the recovery runbook both counted comments as
+     * recoverable for 90 days. On a thread hanging off a transaction the comment
+     * IS the record of why a founder's money moved — the one thing a bank
+     * statement cannot reconstruct — and a mis-click destroyed it outright.
+     * `lib/queries/comments.ts` filters `deletedAt: null` on the thread read, so
+     * the row stops rendering the moment this lands; without that filter a
+     * tombstone does not hide a comment, it duplicates it.
      */
+    const now = new Date();
     await db.$transaction(async (tx) => {
-      await tx.comment.delete({ where: { id: commentId } });
+      await tx.comment.update({ where: { id: commentId }, data: { deletedAt: now } });
       await tx.notification.deleteMany({
         where: { companyId, link: { contains: `comment=${commentId}` } },
       });

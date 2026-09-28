@@ -180,6 +180,16 @@ export type Decision = {
  */
 const DECLARED_DECISIONS: Decision[] = [
   {
+    name: "visibleNotifications",
+    module: "lib/queries/notifications.ts",
+    why:
+      "the read-time finance-visibility filter for notifications (sec-005). It decides on the notification CATEGORY, " +
+      "not on its link, which is the whole point: a burn or budget alert carries no link at all and a link-shaped " +
+      "filter let every one of them through to a member. Unreached from the topbar bell — the most-read notification " +
+      "surface in the app — a project-tagged expense shows every member the rupee figure. It also carries the " +
+      "supervised-project escape hatch, so a second copy of the rule anywhere means one of the two will lose it.",
+  },
+  {
     name: "gateAuthAction",
     module: "lib/rate-limit.ts",
     why: "the single entry point to every auth-family rate limit. Unreached, the P0 login brute-force hole is open and signup/reset/token-redeem are unthrottled.",
@@ -294,20 +304,12 @@ const DECLARED_DECISIONS: Decision[] = [
  * It has one entry because the author of this file owns one file and could not
  * fix it. It is a finding, not an exception.
  */
-const KNOWN_UNREACHED: Decision[] = [
-  {
-    name: "visibleNotifications",
-    module: "lib/queries/notifications.ts",
-    why:
-      "the read-time finance notification filter (sec-005). Called only by getNotifications (the /notifications page). " +
-      "listNotificationsAction in lib/actions/notifications.ts — the TOPBAR BELL, the most-read notification surface in " +
-      "the app — carries a second, older copy that filters on n.link only, so a finance-CATEGORY row with no link, or a " +
-      "link to /dashboard, still shows a member the rupee figure in its message. REMEDY: replace lines 36-47 of " +
-      "lib/actions/notifications.ts with `await visibleNotifications(rows, { userId, companyId, role })`. The category " +
-      "rule and the supervised-project escape hatch then apply to the bell as well. When that lands, delete this entry " +
-      "and add visibleNotifications to DECLARED_DECISIONS.",
-  },
-];
+// EMPTY, and that is the intended steady state — see the header: this list says
+// "this one is BROKEN, here is the fix", never "this one is fine". Its single
+// entry (visibleNotifications) was promoted to DECLARED_DECISIONS on 2026-09-29
+// when lib/actions/notifications.ts finally called it, which is exactly the
+// promotion this list exists to force.
+const KNOWN_UNREACHED: Decision[] = [];
 
 /** Beyond this, the inventory of open defects has become an allow-list. */
 const KNOWN_UNREACHED_CAP = 2;
@@ -644,7 +646,7 @@ describe("decision reachability (a decision nobody calls is a decision not made)
       "DECLARED_DECISIONS has shrunk. Deleting rows is how this file gets to green " +
         "without anything being fixed — if a decision genuinely stopped being one, say " +
         "so in its entry and lower this floor in the same commit"
-    ).toBeGreaterThanOrEqual(19);
+    ).toBeGreaterThanOrEqual(20);
 
     const missing: string[] = [];
     const all = DECLARED_DECISIONS.concat(KNOWN_UNREACHED);

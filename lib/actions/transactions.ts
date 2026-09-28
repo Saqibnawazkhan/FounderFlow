@@ -87,30 +87,35 @@ function txnActivityType(type: string): "expense_added" | "revenue_added" | "inv
       : "investment_added";
 }
 
-/* ─────────────────────────────────────────────────────────────────────────── */
-/* Reads                                                                       */
-/* ─────────────────────────────────────────────────────────────────────────── */
-
-export async function listTransactionsAction(): Promise<ActionResult<Transaction[]>> {
-  const session = await auth();
-  if (!session?.user?.companyId) return { success: false, error: "Not authenticated" };
-  if (!canSeeFinances(session.user.role as Role)) {
-    return { success: false, error: "Not authorized" };
-  }
-
-  const rows = await db.transaction.findMany({
-    // deletedAt:null is the Tier 3 tombstone filter. It was missing here while
-    // every OTHER Transaction read had it (lib/queries/transactions.ts,
-    // budgets, projects, search, export) — harmless only for as long as
-    // deleteTransactionAction hard-deleted. Now that a delete writes the
-    // sentinel, an unfiltered list is the worst of both worlds: the user
-    // deletes a row, still sees it, and deletes it again.
-    where: { companyId: session.user.companyId, deletedAt: null },
-    orderBy: { date: "desc" },
-  });
-
-  return { success: true, data: rows.map(toClient) };
-}
+/* ─────────────────────────────────────────────────────────────────────────── *
+ * THERE IS NO LEDGER READ IN THIS FILE, AND THAT IS THE FIX.
+ *
+ * `listTransactionsAction()` used to live here: an `ActionResult<Transaction[]>`
+ * over every row in the workspace, with no type filter, no date window and no
+ * `take`. It was deleted (tasks-and-comments / reachability wave, 2026-09-29)
+ * rather than wired, for three reasons:
+ *
+ *   1. NOTHING CALLED IT. It was the last name on
+ *      tests/lib/actions/reachability.test.ts' unreachable list — no component,
+ *      no page, no other action. Every finance surface reads
+ *      `getTransactions()` from lib/queries/transactions.ts, which is the same
+ *      data without the `"use server"` round trip.
+ *   2. EVERY EXPORT OF A `"use server"` MODULE IS A PUBLIC POST ENDPOINT. So an
+ *      unreached export is not inert: it is an unbounded, unwindowed dump of a
+ *      company's entire ledger that anyone with a session could POST for, and
+ *      that no page needed. Deleting it removes the endpoint, not just the
+ *      function.
+ *   3. IT HAD ALREADY DRIFTED. It shipped without the `deletedAt: null` filter
+ *      every other Transaction read carries, so a tombstoned row came back from
+ *      it — a read nobody renders is a read nobody notices going wrong. The
+ *      tombstone property it was supposed to hold is now asserted against the
+ *      read that IS rendered: see "hides tombstoned rows from the ledger read"
+ *      in tests/lib/actions/soft-delete.test.ts, which drives
+ *      `getTransactions()`.
+ *
+ * A new read belongs in lib/queries/transactions.ts (bounded per type, with the
+ * roll-ups beside it), not here.
+ * ─────────────────────────────────────────────────────────────────────────── */
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Writes                                                                      */

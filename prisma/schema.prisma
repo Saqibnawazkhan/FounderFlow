@@ -8,11 +8,17 @@
 //   of truth at the application boundary.
 // - Money (Transaction.amount, RecurringRule.amount, Budget.monthlyLimit) is
 //   Decimal(12,2), not Float — see the P0-4 migration.
-// - The seven soft-delete tables (User/Company/Project/Task/Budget/Transaction
-//   /Message) carry a nullable deletedAt sentinel; scoped reads filter
-//   deletedAt: null. Message joined the set with the chat rollout — a deleted
-//   chat message is tombstoned, never erased, so a thread can't silently
-//   rewrite its own history.
+// - The NINE soft-delete tables (User/Company/Project/Task/Budget/Transaction
+//   /Message/Comment/TimeEntry) carry a nullable deletedAt sentinel; scoped
+//   reads filter deletedAt: null. Message joined the set with the chat rollout
+//   — a deleted chat message is tombstoned, never erased, so a thread can't
+//   silently rewrite its own history. Comment and TimeEntry joined on
+//   2026-09-29 (data-integrity-001): both were hard deletes while the Tier 3
+//   section of CLAUDE.md counted them as recoverable for 90 days.
+//   This count is not decoration — tests/lib/db/purge-invariants.test.ts
+//   DERIVES the list from the model blocks below and checks the nightly purge,
+//   the workspace tombstone sweep and the existence of a writer against it, so
+//   a tenth table is covered on the day its column lands.
 
 generator client {
   provider      = "prisma-client-js"
@@ -37,9 +43,9 @@ datasource db {
 }
 
 model User {
-  id                         String    @id @default(cuid())
-  name                       String
-  email                      String    @unique
+  id              String    @id @default(cuid())
+  name            String
+  email           String    @unique
   // Parser-addressable name: the token after the `@` in a comment or chat
   // mention (`@ali`). Deliberately NOT `name` — a name is how PEOPLE address
   // you and may be written in any script; a handle is how the MENTION PARSER
@@ -70,58 +76,52 @@ model User {
   // the column ship without a NOT NULL backfill that must provably succeed for
   // every historical row, including rows whose local-part sanitises to nothing.
   // 20260925140000_add_user_handle backfills every row that exists today.
-  handle                     String?
-  passwordHash               String // bcrypt hash, never the raw password
-  role                       String // "admin" | "cofounder" | "member"
-  avatar                     String?
-  companyId                  String
-  createdAt                  DateTime  @default(now())
+  handle          String?
+  passwordHash    String // bcrypt hash, never the raw password
+  role            String // "admin" | "cofounder" | "member"
+  avatar          String?
+  companyId       String
+  createdAt       DateTime  @default(now())
   // Updated by the Auth.js signIn callback. Surfaces on /settings as
   // "Last sign-in" so the user can spot rogue logins. Nullable for
   // legacy rows that predate the column.
-  lastSignInAt               DateTime?
+  lastSignInAt    DateTime?
   // Set the moment the user clicks their email-verification link. NULL =
   // unverified (the default for a fresh signup, and for legacy rows that
   // predate the column). Drives the "verify your email" banner. Soft gate
   // for now — nothing is blocked while null; the EMAIL_VERIFICATION_REQUIRED
   // env flag is reserved for a future hard gate.
-  emailVerifiedAt            DateTime?
+  emailVerifiedAt DateTime?
   // Cross-device UI preferences (S6). Synced from the settings appearance +
   // language controls so a user's theme/locale follow them to a new device
   // instead of living only in that browser's localStorage.
-  theme                      String    @default("dark") // "light" | "dark"
-  locale                     String    @default("en") // "en" | "ur"
+  theme           String    @default("dark") // "light" | "dark"
+  locale          String    @default("en") // "en" | "ur"
   // Session-invalidation counter. Baked into the JWT at sign-in; the auth
   // jwt callback re-checks it against this column on every request and kills
   // the session if they diverge. Bumping it (password reset, "log out
   // everywhere") force-signs-out every existing token instead of waiting for
   // the cookie to expire. Complements the deletedAt check below.
-  sessionVersion             Int       @default(0)
-  // Durable brute-force counter for the login throttle (requested by a06 in
-  // the 2026-09-28 P1 wave). The in-process limiter in lib/rate-limit.ts lives
-  // in a module-level Map, so on Vercel it resets on every cold start and is
-  // not shared between concurrent lambdas — an attacker gets a fresh quota per
-  // instance, which is most of the protection gone. These two columns give the
-  // throttle one counter per account that survives both.
-  //
-  // Additive and cheap on a populated table: an `Int NOT NULL DEFAULT 0` is a
-  // metadata-only ALTER in Postgres 11+ (no rewrite), and the timestamp is
-  // nullable, so neither needs a back-fill. No index either — every read is by
-  // the existing unique `email` or by `id`.
-  //
-  // Two things for whoever uses them, neither of them schema problems: the
-  // increment is a WRITE on an unauthenticated path, so it row-locks the
-  // account an attacker is hammering; and a per-account counter is a lockout
-  // vector against a victim, so the throttle it feeds should delay rather than
-  // hard-block, and must not leak whether the account exists.
-  failedLoginCount           Int       @default(0)
-  failedLoginWindowStartedAt DateTime?
+  sessionVersion  Int       @default(0)
+  // DELIBERATELY ABSENT: a durable per-account login-failure counter.
+  // Proposed 2026-09-28 for sec-011 and removed 2026-09-29 after the wiring
+  // was attempted. A brute-force gate has to run BEFORE bcrypt or it limits
+  // no guesses, and a pre-bcrypt account-keyed gate cannot distinguish a
+  // guess from the owner's correct password — so the failures an attacker
+  // sends for free refuse the real owner too. The in-memory equivalent
+  // (`limiters.credentialsEmail`, 10 failures/15min) is survivable only
+  // because it evaporates on a cold start; a column would make that lockout
+  // reliable, fleet-wide and deploy-proof, with no admin unlock in this app.
+  // It buys one order of magnitude on a number that changes no outcome.
+  // The answer to sec-011 is a shared store keyed on the CLIENT ADDRESS
+  // (Upstash / Vercel KV) — that bucket is purely protective, and it has no
+  // row to hang off, which is exactly why the row route looked cheap.
   // Tier 3 soft-delete sentinel. NULL = live row. Any timestamp = soft
   // deleted; the row survives until the nightly purge cron hard-deletes
   // it after 90 days. Auth + queries filter `deletedAt: null` so a
   // soft-deleted user can't sign in and their data isn't rendered, but
   // ops can restore with `UPDATE "User" SET "deletedAt" = NULL`.
-  deletedAt                  DateTime?
+  deletedAt       DateTime?
 
   company            Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   ownedCompany       Company?                 @relation("CompanyOwner")
@@ -231,6 +231,7 @@ model Company {
   currentPeriodEnd      DateTime?
 
   owner          User?           @relation("CompanyOwner", fields: [ownerId], references: [id])
+  billingEvents  BillingEvent[]
   users          User[]
   transactions   Transaction[]
   tasks          Task[]
@@ -246,6 +247,129 @@ model Company {
   messages       Message[]
 
   @@index([deletedAt])
+}
+
+// ─── Billing ledger ──────────────────────────────────────────────────────────
+//
+// One row per webhook DELIVERY we acted on (bill-002 + bill-009, 2026-09-29).
+// Two different holes, closed by the same table, which is why it is one table
+// and not a log plus a dedupe cache:
+//
+//   bill-009 — nothing anywhere recorded that a billing event had ever arrived.
+//     After a dispute ("I cancelled in March, you charged me in April") the only
+//     record was LemonSqueezy's own dashboard: the counterparty's copy, with the
+//     counterparty's retention. Our side could show the CURRENT Company row and
+//     nothing about how it got there. Sentry breadcrumbs are not that record —
+//     they cover the deliveries we REFUSED (see reportSkippedBillingWrite) and
+//     expire on Sentry's retention.
+//   bill-002 — replay protection was INFERRED from state already on the Company
+//     row (is the stored status dead? has the stored period passed?) plus a
+//     7-day age ceiling on grants. A LemonSqueezy HMAC never expires, so a
+//     delivery captured once was re-playable for as long as its own dates stayed
+//     current. Nothing could tell a first delivery from its tenth replay,
+//     because nothing remembered the first.
+//
+// HOW IT BECOMES AN IDEMPOTENCY KEY RATHER THAN A LOG. The webhook inserts its
+// row INSIDE the same `$transaction` as the Company update and treats a Prisma
+// P2002 on `eventId` as "already applied — skip". Same transaction is the whole
+// mechanism: a rollback takes the ledger row with it, so a delivery is recorded
+// as applied if and only if its write committed, and a replay loses the race on
+// the unique index instead of on a timestamp comparison.
+model BillingEvent {
+  id String @id @default(cuid())
+
+  // THE IDEMPOTENCY KEY. The provider's own identifier for this delivery.
+  //
+  // NOT NULL, and that is load-bearing rather than tidy: Postgres unique indexes
+  // are NULLS DISTINCT, so a nullable unique column deduplicates NOTHING and a
+  // replay with no id would insert happily, for ever, while the schema looked
+  // like it had replay protection. (Same property, used deliberately in the
+  // opposite direction, on User.handle.)
+  //
+  // So the writer must always have a value. LemonSqueezy's payload carries
+  // `meta.webhook_id` on current deliveries but this integration cannot prove it
+  // for every event it is subscribed to, and a missing field must not become a
+  // missing constraint. Where the provider gives no id, derive one DETERMIN-
+  // ISTICALLY from the signed bytes — `sha256:<hex of the raw body>`, which the
+  // route already has in hand for the HMAC. Never a cuid, a uuid or a
+  // timestamp: a freshly-minted value collides with nothing, so the constraint
+  // silently stops being a dedupe key and becomes a row counter.
+  eventId String @unique
+
+  // `meta.event_name` — subscription_created, subscription_payment_failed, …
+  // Stored verbatim, including names this deployment does not handle, so the
+  // ledger answers "what arrived" and not merely "what we understood".
+  eventName String
+
+  // Provider-assigned ids, both nullable because both genuinely go missing: an
+  // invoice payload carries `attributes.subscription_id` rather than `data.id`,
+  // and a delivery that fails scope checks may carry neither. NOT the buyer's
+  // `custom_data` claim — that is untrusted input (bill-001) and has no business
+  // in the audit trail as if it were fact.
+  subscriptionId String?
+  customerId     String?
+
+  // The workspace this delivery resolved to, or NULL for one that resolved to
+  // none — forged, out-of-scope, or for a subscription this deployment has never
+  // seen. NULL is the most valuable row in the table and must stay insertable:
+  // "money arrived and we could not place it" is precisely the state bill-008
+  // found being answered with a cheerful 200 and no record at all. A required FK
+  // would refuse exactly that row.
+  companyId String?
+
+  // WHAT WE DID ABOUT IT, in one token: "applied" | "skipped" | "refused".
+  // NOT NULL with no default, on purpose — the writer has to state it. A default
+  // would let a future insert record a refusal as an application by omission,
+  // and a ledger that cannot distinguish the two answers none of the questions
+  // it was built for. Pair it with `reason` for the detail.
+  outcome String
+  // The machine-readable reason behind a non-applied outcome — the same verdict
+  // strings the Sentry breadcrumbs already use ("stale-grant", "unresolvable",
+  // "replay", "wrong-store"). NULL for a plain application.
+  reason  String?
+
+  // THE RAW SIGNED BODY, verbatim, as the bytes arrived.
+  //
+  // KEPT, after weighing it. A ledger row without the payload cannot settle the
+  // dispute it exists for: "subscription_updated arrived at 03:12" says nothing
+  // about what it CLAIMED, which is the entire question. Verbatim rather than a
+  // picked subset because these exact bytes are the only thing that can be
+  // re-verified against the stored HMAC later — a re-serialised copy changes key
+  // order and whitespace and verifies as a forgery.
+  //
+  // WHAT IS ACTUALLY IN IT, because "raw payload" hides the question. A
+  // LemonSqueezy subscription payload carries user_email, user_name, card_brand
+  // and card_last_four. That is identifying customer data under the same
+  // retention promise as the rest of the workspace — it is NOT cardholder data:
+  // no PAN, no CVV, and no token that could charge anybody. So this column does
+  // not pull the schema into PCI scope, and it does have to be erasable with the
+  // workspace, which is what the Cascade below and the explicit
+  // `tx.billingEvent.deleteMany` in the purge cron are for.
+  //
+  // NULLABLE so it can be redacted independently: a retention job can null the
+  // payload and keep the skeleton (what arrived, when, in what order, what we
+  // did), which a NOT NULL column would forbid. NULL means "not retained", never
+  // "nothing arrived".
+  payload String?
+
+  receivedAt DateTime @default(now())
+
+  // Nullable FK, Cascade. Cascade so an erased workspace takes its billing
+  // payloads with it instead of leaving card-adjacent detail behind after the
+  // Tier 3 window; the purge cron also names this table explicitly, because this
+  // schema's own doctrine is that relying on cascade ordering is the bug (see
+  // purgeCompany's header). An unplaced row (companyId NULL) has no workspace to
+  // be erased with and needs a time-based sweep of its own — noted as an open
+  // follow-up rather than pretended away.
+  company Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  // "Every delivery for this workspace, newest first" — the support query — and
+  // the index Postgres needs to resolve the Cascade above without a sequential
+  // scan (the omission that was perf-005 on Notification.projectId).
+  @@index([companyId, receivedAt])
+  // "Every delivery for this subscription" — the bill-012 question: one payer,
+  // two workspaces, which cancellation belonged to which.
+  @@index([subscriptionId])
 }
 
 model Transaction {
@@ -567,6 +691,17 @@ model Comment {
   mentions      String    @default("[]")
   createdAt     DateTime  @default(now())
   editedAt      DateTime?
+  // Tier 3 soft-delete sentinel — see User.deletedAt for semantics. Comment is
+  // the EIGHTH soft-delete table (data-integrity-001, 2026-09-29). It was a hard
+  // delete while CLAUDE.md's Tier 3 section and the recovery runbook both
+  // counted comments as recoverable for 90 days, so a mis-clicked delete on a
+  // thread hanging off a transaction destroyed the only written record of WHY a
+  // founder's money moved — the one thing a bank statement cannot reconstruct.
+  //
+  // `deleteCommentAction`'s notification sweep stays a HARD delete and must not
+  // be "made consistent" with this: a mention ping is a transient pointer, and a
+  // restored comment gets a live thread back, not a re-delivered ping.
+  deletedAt     DateTime?
 
   company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
   author      User         @relation("CommentAuthor", fields: [authorId], references: [id], onDelete: Cascade)
@@ -577,6 +712,7 @@ model Comment {
   @@index([transactionId, createdAt])
   @@index([companyId, createdAt])
   @@index([authorId])
+  @@index([deletedAt])
 }
 
 // Per-user work session. `clockOutAt = null` means "currently clocked in".
@@ -621,6 +757,19 @@ model TimeEntry {
   editedByName   String?
   editedAt       DateTime?
   createdAt      DateTime  @default(now())
+  // Tier 3 soft-delete sentinel — see User.deletedAt for semantics. TimeEntry is
+  // the NINTH soft-delete table (data-integrity-001, 2026-09-29), and the one
+  // with the sharpest consequence: `deleteTimeEntryAction` lets a MEMBER erase
+  // their own entry outright, so an accidental delete destroyed billable hours
+  // that only that person could have reconstructed, and the audit trail the
+  // editedBy/editedAt columns exist to keep went with it.
+  //
+  // READ FILTERS ARE PART OF THIS COLUMN, not a follow-up: every hours roll-up
+  // (lib/queries/time.ts, lib/queries/projects.ts, lib/queries/stats.ts, the
+  // workspace export) sums rows without asking, and the auto-close sweep in
+  // lib/time/sweep.ts would happily re-close a tombstoned open entry. A
+  // tombstone nobody filters on does not hide a row, it duplicates it.
+  deletedAt      DateTime?
 
   company Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   user    User     @relation("TimeEntryUser", fields: [userId], references: [id], onDelete: Cascade)
@@ -634,6 +783,7 @@ model TimeEntry {
   @@index([projectId, clockInAt])
   // Lets the cron find open entries to auto-close without scanning every row.
   @@index([clockOutAt, lastActivityAt])
+  @@index([deletedAt])
 }
 
 // A project is the unit founders plan against — owns tasks, budgets, time
@@ -681,6 +831,27 @@ model Project {
   targetEndDate DateTime?
   createdBy     String
   createdAt     DateTime  @default(now())
+  // OPTIMISTIC-CONCURRENCY TOKEN for project edits (projects-010, 2026-09-29).
+  // Two people editing the same project's NAME still silently destroyed each
+  // other's work: the status paths were narrowed to write one column, but a name
+  // or description edit is a whole-form submit, so the slower save wins and the
+  // faster one vanishes with no error and no trace. Detecting that needs a value
+  // that changes on EVERY write, which is what @updatedAt is; the edit action
+  // compares the value the form was rendered from and reports a conflict instead
+  // of overwriting. That comparison is the point of the column — a project row
+  // that merely carries a fresh timestamp has changed nothing.
+  //
+  // BOTH ATTRIBUTES, deliberately. `@updatedAt` is maintained by the Prisma
+  // client, so a row written by anything else — the migration's own back-fill, a
+  // raw INSERT, an ops fix in the Supabase console — would have nothing to put
+  // here. `@default(now())` puts the DEFAULT in Postgres as well, and that is
+  // what makes this column safe to deploy: migrations run at BUILD time
+  // (CLAUDE.md), so for the minutes between `migrate deploy` and the new
+  // deployment going live, the PREVIOUS build's Prisma client is still creating
+  // projects and does not know this column exists. Without a database-side
+  // default those INSERTs fail the NOT NULL and project creation 500s for every
+  // customer mid-deploy. Do not "tidy" the @default away.
+  updatedAt     DateTime  @default(now()) @updatedAt
   // Tier 3 soft-delete sentinel — see User.deletedAt for semantics.
   deletedAt     DateTime?
 

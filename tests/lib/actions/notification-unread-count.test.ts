@@ -41,7 +41,9 @@ const H = vi.hoisted(() => {
   const calls: Array<{ path: string; args: Record<string, unknown> }> = [];
   const results = new Map<string, unknown>();
 
-  const MODELS = ["notification", "user"];
+  // `project` is here because a member's badge has to know which projects that
+  // member SUPERVISES — the finance escape hatch. See the sec-005 block below.
+  const MODELS = ["notification", "user", "project"];
   const OPS = ["findMany", "count", "findUnique", "update", "updateMany", "deleteMany"];
 
   const db: Record<string, unknown> = {};
@@ -179,6 +181,57 @@ describe("perf-004 — a member's badge counts only what a member may open", () 
     // bare path — every notification link in the app carries a query string.
     expect(serialized).toContain("/expenses/");
     expect(serialized).toContain("/expenses?");
+  });
+
+  // sec-005 residue. The exclusion above is the LINK half of the rule and it was
+  // the whole of it, which made the badge count the project-tagged expense rows
+  // `visibleNotifications` hides from the dropdown. The behavioural pin — badge
+  // equals dropdown, over one fixture inbox — is in
+  // tests/lib/actions/notification-bell-finance-gate.test.ts; these two keep the
+  // query SHAPE honest, since a `where` that reads correctly can still be built
+  // from the wrong predicate.
+  it("excludes finance-CATEGORY rows, not merely finance-LINKED ones", async () => {
+    signedIn("member");
+    const queue = [5, 2];
+    H.results.set("notification.count", () => queue.shift() ?? 0);
+    H.results.set("project.findMany", () => []);
+
+    await notifications.unreadNotificationCountAction();
+
+    const second = callsTo("notification.count")[1].args.where as Record<string, unknown>;
+    const or = second.OR as Array<Record<string, unknown>>;
+    expect(
+      or.some((c) => c.category === "finance"),
+      "a member supervising no project may see no finance row at all — the category is the rule, " +
+        "and a link to /projects/<id> was how every expense figure got past the link-only one"
+    ).toBe(true);
+  });
+
+  it("asks which projects the member supervises, scoped to their live workspace", async () => {
+    signedIn("member");
+    const queue = [5, 2];
+    H.results.set("notification.count", () => queue.shift() ?? 0);
+    H.results.set("project.findMany", () => [{ id: "p-mine" }]);
+
+    await notifications.unreadNotificationCountAction();
+
+    const lookups = callsTo("project.findMany");
+    expect(lookups.length, "the escape hatch needs the supervised project ids").toBe(1);
+    const where = lookups[0].args.where as Record<string, unknown>;
+    expect(where.companyId).toBe("co-1");
+    expect(where.supervisorId).toBe("u-1");
+    expect(where.deletedAt, "a tombstoned project supervises nothing").toBe(null);
+
+    const second = callsTo("notification.count")[1].args.where as Record<string, unknown>;
+    const serialized = JSON.stringify(second.OR);
+    expect(
+      serialized,
+      "a supervised project's finance rows must NOT be subtracted — the dropdown shows them"
+    ).toContain("p-mine");
+    expect(
+      serialized,
+      "`projectId: null` has to be its own positive clause: in SQL, NULL NOT IN (…) is NULL"
+    ).toContain("projectId");
   });
 
   it("never reports a negative count if the two counts disagree", async () => {

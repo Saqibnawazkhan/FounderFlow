@@ -149,6 +149,10 @@ function projectRow(overrides: Record<string, unknown> = {}) {
     targetEndDate: null,
     createdBy: "u_admin",
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    // Project.updatedAt landed with projects-010 and toClient() calls
+    // .toISOString() on it, so a project row without it throws inside
+    // getProjectForUser — which is how the supervisor case here failed.
+    updatedAt: new Date("2026-01-02T00:00:00.000Z"),
     supervisor: { name: "Sana" },
     ...overrides,
   };

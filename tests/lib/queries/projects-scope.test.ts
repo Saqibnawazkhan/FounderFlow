@@ -150,6 +150,10 @@ function projectRow(overrides: Partial<Record<string, unknown>> = {}) {
     targetEndDate: null,
     createdBy: "u_admin",
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    // The optimistic-concurrency token (projects-010). Present on every row the
+    // database can return — the column is NOT NULL with a Postgres-side default
+    // — so a fixture without it would be a row that cannot exist.
+    updatedAt: new Date("2026-03-04T05:06:07.008Z"),
     supervisor: { name: "Sana" },
     _count: { tasks: 3 },
     ...overrides,
@@ -559,5 +563,53 @@ describe("the tracked-time roll-up", () => {
 
     expect(rows[0].trackedMs).toBe(0);
     expect(overview?.trackedMs).toBe(0);
+  });
+});
+
+/**
+ * projects-010 — the read side of the lost update.
+ *
+ * `updateProjectAction` refuses an edit whose `expectedUpdatedAt` no longer
+ * matches the row, which is only a real guard if the Edit form can obtain that
+ * value in the first place. The column exists on `Project`; if the DTO drops it
+ * on the way to the client, the modal has nothing to send and the server-side
+ * check is unreachable by the only surface that needs it — this repo's most
+ * productive defect shape (tests/lib/architecture/decision-reachability.test.ts).
+ *
+ * ISO string, not a `Date`: these DTOs cross the RSC boundary, where every other
+ * timestamp on them (`createdAt`, `targetEndDate`) is already serialised the
+ * same way. A `Date` would arrive as one thing in a server render and a string
+ * after `router.refresh()`, and the token has to compare equal either way.
+ */
+describe("projects-010 — the DTO carries the token the Edit form must send back", () => {
+  const TOKEN_ISO = "2026-03-04T05:06:07.008Z";
+
+  it("getProjectOverview surfaces updatedAt", async () => {
+    asRole("admin");
+
+    const overview = await getProjectOverview("p_nimbus");
+
+    expect(
+      overview?.updatedAt,
+      "the detail page cannot tell the Edit modal which version of the row it is looking at, so the modal has no token to send and the concurrency check can never fire"
+    ).toBe(TOKEN_ISO);
+  });
+
+  it("listProjectsForUser surfaces updatedAt on every row", async () => {
+    asRole("admin");
+
+    const rows = await listProjectsForUser();
+
+    expect(rows[0].updatedAt).toBe(TOKEN_ISO);
+  });
+
+  it("getProjectForUser surfaces it too — same DTO, same token", async () => {
+    asRole("admin");
+
+    // getProjectTitleForUser goes through getProjectForUser, so a null here
+    // would mean the row was not visible and the assertion above proved nothing.
+    expect(await getProjectTitleForUser("p_nimbus")).toBe("Nimbus Rebuild");
+    const overview = await getProjectOverview("p_nimbus");
+    expect(typeof overview?.updatedAt).toBe("string");
   });
 });

@@ -381,7 +381,7 @@ async function softDeleteWorkspace(
    */
   billingWrite?: BillingTeardownWrite
 ): Promise<number> {
-  const [txn, budget, task, project, message, invites, devices, user, company] =
+  const [txn, budget, task, project, message, comment, timeEntry, invites, devices, user, company] =
     await db.$transaction([
       db.transaction.updateMany({
         where: { companyId, deletedAt: null },
@@ -404,6 +404,23 @@ async function softDeleteWorkspace(
       // the workspace by the sweep's timestamp brings the thread back without
       // resurrecting the one message its author took down.
       db.message.updateMany({
+        where: { companyId, deletedAt: null },
+        data: { deletedAt: now },
+      }),
+      // Comment and TimeEntry gained tombstones with data-integrity-001, so
+      // they join the sweep. They carry the SAME timestamp as every sibling
+      // above, which is what makes CLAUDE.md's published recovery work: one
+      // range filter on `deletedAt` reunites a whole workspace. Left out, a
+      // restored workspace would come back with every comment and every logged
+      // hour still marked live while the rows they hang off were tombstoned —
+      // and the `deletedAt: null` filter is load-bearing for the same reason it
+      // is on `message`: a comment its author deleted last week must keep ITS
+      // own timestamp, so a restore does not resurrect it.
+      db.comment.updateMany({
+        where: { companyId, deletedAt: null },
+        data: { deletedAt: now },
+      }),
+      db.timeEntry.updateMany({
         where: { companyId, deletedAt: null },
         data: { deletedAt: now },
       }),
@@ -449,6 +466,13 @@ async function softDeleteWorkspace(
     task.count +
     project.count +
     message.count +
+    // Comment and TimeEntry gained tombstones with data-integrity-001. They
+    // belong in this sum for the same reason every sibling does: warnBulkMutation
+    // thresholds on it, so a row missing here is erased from the ALERT rather than
+    // from the database — which is the under-count this route's own header calls
+    // the real harm of the missing chat tables.
+    comment.count +
+    timeEntry.count +
     invites.count +
     devices.count +
     user.count +
