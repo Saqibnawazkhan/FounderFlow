@@ -1067,10 +1067,11 @@ async function main() {
               fail(
                 "the nightly purge's orphan-project stage will jam on a Restrict FK",
                 `Deleting my overdue tombstoned project raised: ${msg.slice(0, 200)}. ` +
-                  `Scope 2 in app/api/cron/purge-soft-deleted/route.ts is ONE bulk ` +
-                  `project.deleteMany for every tenant, so this row aborts the entire stage ` +
-                  `for every customer, every night, reported only as a 206 with a failures[] ` +
-                  `entry nobody reads.`
+                  `Scope 2 in app/api/cron/purge-soft-deleted/route.ts now deletes each project ` +
+                  `in its own transaction and answers 5xx, so one jammed row should cost only ` +
+                  `that project (stage "orphanProject:<id>") and should page. If this fires, ` +
+                  `either the per-project isolation regressed or a Restrict FK exists that the ` +
+                  `child deletes do not cover.`
               );
             } else {
               note(`purge probe ended with an unexpected error: ${msg.slice(0, 200)}`);

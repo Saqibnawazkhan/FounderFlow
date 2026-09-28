@@ -1062,18 +1062,37 @@ async function checkDryRunCannotSizeTheBlastRadius() {
         `companiesPurged=${r.companiesPurged}`
     );
 
-  // THE FINDING: the dry run is the only pre-flight before an irreversible
-  // global erasure, and it cannot tell you how many rows are at stake.
-  if (r.workspaceRowsDeleted > 0)
-    ok(`purge dry-run reports the row count at stake (${r.workspaceRowsDeleted})`);
+  // THE FINDING (cron-005, now FIXED): the dry run is the only pre-flight before
+  // an irreversible global erasure, and it could not say how many rows were at
+  // stake — purgeCompany() was never called in dry-run, so the number
+  // warnBulkMutation thresholds on was always 0 and the 100-row canary could not
+  // fire even once before the deletion was already permanent.
+  //
+  // The pass condition is the FIXED state. `countCompanyRows()` now reports
+  // `workspaceRowsWouldDelete` (+ a per-table breakdown); the old field name
+  // `workspaceRowsDeleted` is still accepted so this probe keeps working against
+  // an older deployment. If NEITHER is present the check has drifted from the
+  // route and says so, rather than reporting a closed finding as a live bug —
+  // which is exactly how a stale probe trains people to ignore the suite.
+  const sized = r.workspaceRowsWouldDelete ?? r.workspaceRowsDeleted;
+  if (sized === undefined)
+    fail(
+      "re-point this check: the purge dry run reports neither row-count field",
+      `expected workspaceRowsWouldDelete (or the legacy workspaceRowsDeleted) in the dry-run ` +
+        `body, got keys: ${Object.keys(r).join(", ")}. The route's response shape changed and this ` +
+        `probe no longer measures anything.`
+    );
+  else if (sized > 0)
+    ok(
+      `purge dry-run sizes its own blast radius (${sized} rows` +
+        `${r.workspaceRowsByTable ? `, ${Object.keys(r.workspaceRowsByTable).length} tables` : ""})`
+    );
   else
     fail(
       "purge dry-run cannot size its own blast radius",
       `my single overdue workspace holds ${myRows} rows (${JSON.stringify(mine)}), yet the dry run ` +
-        `reports workspaceRowsDeleted=${r.workspaceRowsDeleted}. purgeCompany() is never called in ` +
-        `dry-run, so the one number an operator needs before flipping PURGE_ENABLED=true — and the ` +
-        `number warnBulkMutation thresholds on — is always 0. The 100-row canary therefore cannot ` +
-        `fire even once before the deletion is already permanent.`
+        `reports ${sized}. The one number an operator needs before flipping PURGE_ENABLED=true — and ` +
+        `the number warnBulkMutation thresholds on — is 0.`
     );
 
   // Tables purgeCompany never names. The schema-derived guard in
@@ -1229,15 +1248,21 @@ async function checkScope2RestrictJam(page) {
       "purge scope 2's deleteMany survived a project holding a soft-deleted task (rolled back)"
     );
 
-  // And show the failure is silent: nothing escalates a 206, and a 2xx is
-  // what Vercel's cron dashboard calls success.
+  // cron-008, now FIXED. This used to be a note() explaining that the failure
+  // was silent: the route answered 206, which is a 2xx, and Vercel cron only
+  // escalates 5xx — so a permanently failing stage produced no page. It is now an
+  // assertion, because a note cannot regress. A 2xx here means the escalation
+  // path is gone again.
   const res = await hit(CRON_ROUTES.purge, { headers: authed() });
-  note(
-    "purge status on a failing stage",
-    `route returned ${res.status} (ok=${res.json?.ok}, failures=${JSON.stringify(res.json?.failures ?? [])}). ` +
-      "206 is a 2xx: Vercel cron only escalates 5xx, and there is no Sentry cron monitor / check-in " +
-      "anywhere in the repo, so a permanently failing stage produces no page and no alert."
-  );
+  if (res.status >= 500)
+    ok(`purge answers ${res.status} on a failing stage, so Vercel cron escalates it`);
+  else
+    fail(
+      "a failing purge stage is invisible to Vercel cron",
+      `route returned ${res.status} (ok=${res.json?.ok}, failures=` +
+        `${JSON.stringify(res.json?.failures ?? [])}). Anything below 500 is success to the cron ` +
+        `dashboard, so a stage that fails every night produces no page and no alert.`
+    );
 
   await db.task.deleteMany({ where: { companyId: TENANT.companyId, id: task.id } });
   await db.project.deleteMany({ where: { companyId: TENANT.companyId, id: project.id } });

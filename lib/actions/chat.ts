@@ -239,12 +239,12 @@ export async function sendMessageAction(input: unknown): Promise<
       // CORRECTION to what this comment said when it was first written: it
       // claimed lib/queries/chat.ts "DOES select handle", so that a chat
       // mention rendered a chip while notifying nobody. That was wrong.
-      // `loadRoster` there selects `{ id, name }` (lib/queries/chat.ts:350), so
-      // in CHAT the render path is handle-blind too, and fixing this select
-      // alone inverts the asymmetry rather than closing it: the notification now
-      // fires and the `@ali` token still renders as plain text. The one-word fix
-      // is in a query module this agent does not own and is reported as such —
-      // the SAME select, one directory over. (Comments were never in that state:
+      // `loadRoster` there used to select `{ id, name }`, so for a while CHAT's
+      // render path was handle-blind too and fixing this select alone INVERTED
+      // the asymmetry rather than closing it: the notification fired and the
+      // `@ali` token still rendered as plain text. Both halves are now in place —
+      // lib/queries/chat.ts adds `handle` to that select — so the parser and the
+      // renderer see the same roster. (Comments were never in that state:
       // lib/queries/comments.ts:170 does select handle, which is why the finding
       // was spotted from the chip.)
       //

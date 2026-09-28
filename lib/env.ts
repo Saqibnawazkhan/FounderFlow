@@ -29,14 +29,30 @@ const envSchema = z.object({
   // The localhost default stays, for two reasons. Local dev and every preview
   // build legitimately have no canonical origin, and this module throws on a
   // failed parse — making it required outright would break `next dev` and every
-  // PR deploy. And a required var here would buy nothing while SEVEN call sites
-  // (app/layout.tsx:25 metadataBase, lib/actions/password-reset.ts:60,
-  // lib/actions/team.ts:55, lib/actions/email-change.ts:100,
-  // lib/email/verification.ts:17, lib/notify/email.ts:23,
-  // lib/lemonsqueezy/config.ts:27) each repeat `?? "http://localhost:3000"`
-  // themselves — the fallback would simply move. `appOrigin()` below is the one
-  // decision those seven are meant to call; the production assertion further
-  // down is what stops the default reaching a customer in the meantime.
+  // PR deploy. And a required var here would buy nothing while TEN call sites
+  // read the origin for themselves, seven of them repeating
+  // `?? "http://localhost:3000"`:
+  //
+  //   app/layout.tsx:25 (metadataBase)   lib/actions/password-reset.ts:60
+  //   lib/actions/team.ts:55             lib/actions/email-change.ts:100
+  //   lib/email/verification.ts:17       lib/notify/email.ts:23
+  //   lib/lemonsqueezy/config.ts:27
+  //
+  // The other three do NOT use that fallback, and the differences matter:
+  //   app/robots.ts:24 and app/sitemap.ts:5 read `env.NEXT_PUBLIC_APP_URL`
+  //     directly, so they get the validated default above rather than a literal.
+  //   app/page.tsx:53 falls back to a HARDCODED PRODUCTION DOMAIN
+  //     (`|| "https://founderflow-seven.vercel.app"`), not to localhost. So the
+  //     landing page's canonical and OG URLs silently point at that domain
+  //     whenever the var is unset — and keep pointing at it if the deployment
+  //     ever moves. That one is a latent bug, not just a duplicated default.
+  //
+  // (This said SEVEN and listed seven until 2026-09-28. An undercount here is
+  // not cosmetic: this comment is the evidence base for deciding whether to make
+  // the var required, and it was missing the only site with a non-localhost
+  // fallback.) `appOrigin()` below is the one decision all of them are meant to
+  // call; the production assertion further down is what stops the default
+  // reaching a customer in the meantime.
   NEXT_PUBLIC_APP_URL: z.string().url().default(LOCAL_DEV_ORIGIN),
 
   DATABASE_URL: z.string().optional(),
@@ -182,7 +198,12 @@ export const env = parsed.data;
 export function appOrigin(raw: string | undefined = env.NEXT_PUBLIC_APP_URL): string {
   const value = raw === undefined ? "" : raw.trim();
   // A whitespace-only value is "I added the variable in Vercel and forgot the
-  // value"; the seven `??` sites all accept it today and then build links that
-  // are bare paths.
+  // value". Note what this branch can and cannot catch: reached through the
+  // default argument it is effectively unreachable, because the schema above
+  // validates with `.url()`, so `"   "` fails the parse and this module throws
+  // before `appOrigin()` is ever called. It earns its place for the EXPLICIT
+  // `appOrigin(someRawString)` call — and because the seven `??` sites read
+  // `process.env` directly, bypassing the schema entirely, so for them a
+  // whitespace value really does become a bare-path link.
   return (value === "" ? LOCAL_DEV_ORIGIN : value).replace(/\/+$/, "");
 }

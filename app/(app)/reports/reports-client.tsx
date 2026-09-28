@@ -466,9 +466,16 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
     [breakdown]
   );
 
-  // The Financial Summary, defined once (money-010). `transactions` is the FULL
-  // ledger — app/(app)/reports/page.tsx passes getTransactions() unwindowed — so
-  // the all-time cash balance needs no extra query.
+  // The Financial Summary, defined once (money-010).
+  //
+  // `transactions` is NOT the full ledger, and believing it was is precisely
+  // money-008: getTransactions() returns a per-type window (5,000 rows each), so
+  // netting it gave the balance of the most recent rows and silently omitted the
+  // seed investment from an investor-facing export. The all-time balance
+  // therefore DOES need its own query — `allTimeBalance`, from
+  // getTransactionTotals() in app/(app)/reports/page.tsx. The `?? netOf(all)`
+  // fallback in summaryFigures is a safety net for a caller that forgets it, not
+  // a second supported mode.
   const summary = useMemo(
     () => summaryFigures({ ranged: rangedTxns, all: transactions, allTimeBalance }),
     [rangedTxns, transactions, allTimeBalance]

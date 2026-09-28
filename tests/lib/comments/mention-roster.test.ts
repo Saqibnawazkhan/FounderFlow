@@ -27,14 +27,15 @@
  *     green "Mentioned Ali Khan" chip, because lib/queries/comments.ts DOES
  *     select handle. The writer was told the ping landed and it never did.
  *
- *   • THE CHAT RENDER PATH (still open, and the assertion below is red for it).
- *     `loadRoster` in lib/queries/chat.ts selects `{ id, name }`. With the write
- *     path now fixed, a chat mention by handle fires its notification and stores
- *     the id — and then renders as plain text with no chip, because the roster
- *     that tokenizes it cannot resolve the handle. The asymmetry is simply
- *     inverted, and lib/comments/mentions.ts promises "a chip renders exactly
- *     when a notification fired". That file is not this agent's to edit; the
- *     one-word fix is reported to the orchestrator.
+ *   • THE CHAT RENDER PATH (closed — this assertion was red for it, and is the
+ *     reason it is worth keeping green). `loadRoster` in lib/queries/chat.ts
+ *     selected `{ id, name }`, so with only the write path fixed a chat mention
+ *     by handle fired its notification and stored the id, then rendered as plain
+ *     text with no chip, because the roster that tokenizes it could not resolve
+ *     the handle. The asymmetry was inverted rather than closed, against the
+ *     promise in lib/comments/mentions.ts that "a chip renders exactly when a
+ *     notification fired". `handle` is now in that select, and this sweep is
+ *     what fails if any future roster drops it again.
  *
  * WHAT THIS DOES NOT COVER. The @-autocomplete in the tasks, expenses and
  * project surfaces narrows its roster with

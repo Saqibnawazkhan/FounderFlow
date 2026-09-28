@@ -98,8 +98,24 @@ const MAX_DRAIN_BATCHES = 25;
  */
 const MAX_COMPANIES_PER_RUN = 10;
 const MAX_PROJECTS_PER_RUN = 200;
-const COMPANY_TIME_BUDGET_MS = 40_000;
-const PROJECT_TIME_BUDGET_MS = 52_000;
+
+/**
+ * The latest elapsed time at which a new unit of work may be STARTED.
+ *
+ * DERIVED, not chosen. The check happens before a unit begins, and the unit
+ * then opens a transaction that may run for `TX_OPTIONS.timeout`, so any
+ * deadline later than `maxDuration - timeout` lets the work outlive the
+ * function that started it — which is the half-open transaction the budget
+ * exists to prevent.
+ *
+ * This replaces two hand-picked literals that promised a guarantee the
+ * arithmetic could not deliver: 40_000 + 25_000 = 65s and 52_000 + 25_000 =
+ * 77s, both against `maxDuration = 60`. Keeping the relationship in code means
+ * raising the transaction timeout moves the deadline automatically instead of
+ * silently invalidating a comment.
+ */
+const WIND_DOWN_MS = 3_000; // response assembly + the cron check-in close
+const START_DEADLINE_MS = maxDuration * 1_000 - TX_OPTIONS.timeout - WIND_DOWN_MS;
 
 /**
  * Models that carry a `deletedAt` tombstone — or a companyId — but that this
@@ -362,6 +378,14 @@ async function purgeRun(): Promise<NextResponse> {
     if (dryRun) {
       result.companiesPurged = overdueCompanies.length;
       for (const c of overdueCompanies) {
+        // The dry run needs the same deadline as the live loop. It opens no
+        // transaction, but 10 workspaces x 16 sequential counts is not free and
+        // this is the branch that runs EVERY night, PURGE_ENABLED being off by
+        // design. Overrunning turns the nightly heartbeat into a false alarm.
+        if (Date.now() - startedAt > START_DEADLINE_MS) {
+          result.companiesDeferred += 1;
+          continue;
+        }
         const counted = await countCompanyRows(c.id);
         result.workspaceRowsWouldDelete += counted.total;
         const models = Object.keys(counted.byTable);
@@ -382,7 +406,7 @@ async function purgeRun(): Promise<NextResponse> {
       });
     } else {
       for (const c of overdueCompanies) {
-        if (Date.now() - startedAt > COMPANY_TIME_BUDGET_MS) {
+        if (Date.now() - startedAt > START_DEADLINE_MS) {
           // Out of budget for this invocation. Starting a workspace we cannot
           // finish inside maxDuration is how a half-open transaction happens.
           result.companiesDeferred += 1;
@@ -445,11 +469,20 @@ async function purgeRun(): Promise<NextResponse> {
     if (dryRun) {
       result.orphanProjectsPurged = overdueProjects.length;
       for (const p of overdueProjects) {
-        const [tasks, budgets] = await Promise.all([
+        if (Date.now() - startedAt > START_DEADLINE_MS) {
+          result.orphanProjectsDeferred += 1;
+          continue;
+        }
+        const [tasks, budgets, comments] = await Promise.all([
           db.task.count({ where: { projectId: p.id } }),
           db.budget.count({ where: { projectId: p.id } }),
+          // Counted although nothing deletes them directly: Comment.task is
+          // onDelete: Cascade, so Postgres removes them and reports no count.
+          // Leaving them out makes the dry run understate what a live run
+          // destroys, and the canary below thresholds on this number.
+          db.comment.count({ where: { task: { projectId: p.id } } }),
         ]);
-        result.orphanProjectRowsWouldDelete += tasks + budgets + 1;
+        result.orphanProjectRowsWouldDelete += tasks + budgets + comments + 1;
       }
       warnBulkMutation(result.orphanProjectRowsWouldDelete, {
         action: "purgeSoftDeleted.orphanProjects.dryRun",
@@ -457,7 +490,7 @@ async function purgeRun(): Promise<NextResponse> {
       });
     } else {
       for (const p of overdueProjects) {
-        if (Date.now() - startedAt > PROJECT_TIME_BUDGET_MS) {
+        if (Date.now() - startedAt > START_DEADLINE_MS) {
           // Same reason as the company loop: the rest are still overdue
           // tomorrow, and `orphanProjectsDeferred` says how many.
           result.orphanProjectsDeferred += 1;
@@ -468,11 +501,17 @@ async function purgeRun(): Promise<NextResponse> {
             let n = 0;
             // Unconditional, not `deletedAt: { not: null }`: the project row is
             // going, so every row holding its Restrict FK has to go with it.
-            // Comment rows hanging off these tasks are `onDelete: Cascade` and
-            // TimeEntry.task is SetNull, so neither jams and neither is counted
-            // here. TimeEntry/Transaction/Activity/Notification/RecurringRule
-            // point at Project with SetNull and are deliberately kept: they are
-            // live workspace data that merely loses its project tag.
+            // TimeEntry.task is SetNull, so it never jams.
+            // TimeEntry/Transaction/Activity/Notification/RecurringRule point at
+            // Project with SetNull and are deliberately kept: they are live
+            // workspace data that merely loses its project tag.
+            //
+            // Comment.task is onDelete: Cascade, so Postgres deletes these rows
+            // and reports no count for them. Count them BEFORE the tasks go, or
+            // the tally under-states what was destroyed and the canary below
+            // thresholds on the wrong number — the same under-count this file's
+            // own header calls the real harm of the missing chat tables.
+            n += await tx.comment.count({ where: { task: { projectId: p.id } } });
             n += (await tx.task.deleteMany({ where: { projectId: p.id } })).count;
             n += (await tx.budget.deleteMany({ where: { projectId: p.id } })).count;
             await tx.project.delete({ where: { id: p.id } });
