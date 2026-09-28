@@ -59,8 +59,19 @@ on:
   # TEMPORARY, and here for a specific reason. GitHub only offers the
   # `workflow_dispatch` button for workflows that exist on the DEFAULT branch,
   # and putting this file on `main` would trigger a production deployment — 50
-  # days of unreleased code plus six migrations applied to live customer data at
-  # build time. Which is the very thing this workflow exists to de-risk.
+  # days of unreleased code plus EIGHT migrations applied to live customer data
+  # at build time. Which is the very thing this workflow exists to de-risk.
+  #
+  # Eight, not six: the count was six on 2026-09-27 and is checked rather than
+  # remembered —
+  #   comm -13 <(git ls-tree -d --name-only origin/main -- prisma/migrations/ \
+  #     | sed 's|.*/||' | sort) \
+  #     <(ls -d prisma/migrations/*/ | sed 's|prisma/migrations/||; s|/$||' | sort)
+  # The two added on 2026-09-28/29 are the ones that most want verifying against
+  # real rows: a UNIQUE index on Transaction(ruleId, date), which refuses to
+  # apply if duplicate recurring postings already exist rather than choosing a
+  # customer's financial record to delete, and a NOT NULL Project.updatedAt that
+  # back-fills from createdAt.
   #
   # So until this lands on `main` deliberately, it triggers on a push to the
   # branch it lives on, narrowed to changes to this file so ordinary commits do
