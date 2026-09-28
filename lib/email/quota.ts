@@ -16,8 +16,14 @@
  * Counting is in-memory and per-instance, exactly like `lib/rate-limit.ts` —
  * on several warm Vercel instances the effective ceiling is higher than the
  * number below. That is understood and acceptable: this is a circuit breaker
- * against a loop, not an accountant. The same file documents the upgrade path
- * (swap the store for Upstash Redis, keep the signature).
+ * against a loop, not an accountant.
+ *
+ * The upgrade path is NOT signature-preserving, and lib/rate-limit.ts used to
+ * claim otherwise. Every Redis client is async while this counter is read
+ * synchronously, so a shared store means an async API and an `await` at every
+ * call site — a refactor, not a swap. Worth stating because the old wording
+ * made the work look free, and a comment that under-states a safety task is
+ * the same defect shape as one that over-states a safety guarantee.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;

@@ -20,7 +20,7 @@ import { AuthError } from "next-auth";
 import { signIn, signOut } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { LoginSchema, SignupSchema } from "@/lib/schemas/auth";
-import { limiters } from "@/lib/rate-limit";
+import { gateAuthAction } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendVerificationEmail } from "@/lib/email/verification";
@@ -109,19 +109,52 @@ async function createGeneralProject(
 }
 
 export async function signupAction(input: unknown): Promise<ActionResult> {
-  // Brute-force / signup-spam guard. 5/min/IP — covers a tab-spam attacker
-  // but is well above any human signup rate.
-  const ip = await getClientIp();
-  const gate = limiters.auth.consume(ip);
-  if (!gate.allowed) {
-    return { success: false, error: gate.error ?? "Too many requests" };
-  }
-
   const parsed = SignupSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
   const { name, email, password, companyName, industry, currency } = parsed.data;
+
+  // Signup-spam guard, BELOW the parse because the bucket is keyed on the
+  // submitted address and that address does not exist until the input is
+  // parsed. Safe to sit here: `safeParse` is pure, allocates nothing and
+  // touches no database, so an unparseable flood still costs nothing — and it
+  // can no longer spend a slot that belongs to a real signup, which is what
+  // happened while the gate was above it.
+  //
+  // 15 per address per 10 minutes (a dozen teammates onboarding at once is
+  // real) but a sustained rate three times lower than the old 5/min, because
+  // sustained is what a script does — and each signup costs a bcrypt(12) and a
+  // verification email against a capped Gmail account. Plus 5 per submitted
+  // address, so one address cannot be hammered. See auth-007.
+  const ip = await getClientIp();
+  const gate = gateAuthAction({ kind: "signup", ip, email });
+  if (!gate.allowed) {
+    return { success: false, error: gate.error ?? "Too many requests" };
+  }
+
+  // SECOND LAYER, and it has to be asked BEFORE the write rather than after.
+  //
+  // This action does not end at the gate above: its tail calls
+  // `signIn("credentials")`, which runs `authorizeCredentials` ->
+  // `gateLoginAttempt` -> `limiters.credentials`, a 5-per-60s bucket keyed on
+  // the bare client address wherever that address is trusted (i.e. on Vercel).
+  // The signup budget above is deliberately wider than that, so without this
+  // check signups 6-15 inside a rolling minute would commit a Company, a User,
+  // a General project and #general, send a verification email, and only THEN be
+  // refused by signIn — answering "Account created but sign-in failed", with the
+  // suggested recovery refused too, because `loginAction` checks this same
+  // exhausted bucket. A post-write half-state is worse than the clean pre-write
+  // refusal the old shared bucket happened to give.
+  //
+  // `kind: "login"` CHECKS both credential buckets and consumes nothing, so it
+  // is exactly the question "would signIn refuse this?" and it does not spend
+  // the budget `authorize()` is about to spend. It costs nothing when the
+  // downstream has room, which is the ordinary case.
+  const signInGate = gateAuthAction({ kind: "login", ip, email });
+  if (!signInGate.allowed) {
+    return { success: false, error: signInGate.error ?? "Too many requests" };
+  }
 
   try {
     // Reject duplicate emails up front so the user sees a useful message
@@ -282,19 +315,31 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
 }
 
 export async function loginAction(input: unknown): Promise<ActionResult> {
-  // Same auth bucket as signup — 5 failed credential attempts per IP per
-  // minute is the classic brute-force threshold.
-  const ip = await getClientIp();
-  const gate = limiters.auth.consume(ip);
-  if (!gate.allowed) {
-    return { success: false, error: gate.error ?? "Too many requests" };
-  }
-
   const parsed = LoginSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: "Email and password are required" };
   }
   const { email, password } = parsed.data;
+
+  // CHECKS, NEVER CONSUMES — and that is load-bearing, not an optimisation.
+  // This is the readable early error for the form; the COUNTING happens once,
+  // inside authorize() (lib/auth/login-throttle.ts), which is the choke point
+  // both this form and a direct POST to /api/auth/callback/credentials pass
+  // through. loginAction -> signIn() -> authorize() is one user action crossing
+  // two layers: if both consumed, one submission would spend two entries and
+  // the five attempts a minute the copy promises would silently be two — a
+  // founder with three typos locked out of their own product. `gateAuthAction`
+  // enforces the check-only rule for `kind: "login"`; do not swap it for a
+  // consume here.
+  //
+  // Below the parse because the buckets are keyed on the submitted address as
+  // well as the client address — a distributed spray at one known founder's
+  // email is invisible to an IP bucket of any size.
+  const ip = await getClientIp();
+  const gate = gateAuthAction({ kind: "login", ip, email });
+  if (!gate.allowed) {
+    return { success: false, error: gate.error ?? "Too many requests" };
+  }
 
   try {
     await signIn("credentials", { email, password, redirect: false });

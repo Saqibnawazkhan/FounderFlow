@@ -83,26 +83,34 @@ const SCAN_ROOTS = ["lib", "app", "components"];
 const PRE_AUTH_ENDPOINTS: Record<string, string> = {
   "lib/actions/auth.ts:signupAction":
     "Creates the account. There is no session to check — this is what mints one. " +
-    "Defended by the IP auth bucket (5/min) and SignupSchema.",
+    "Defended by SignupSchema and gateAuthAction's signup class: 15 per client " +
+    "address / 10 min AND 5 per submitted address / 10 min (auth-007).",
   "lib/actions/auth.ts:loginAction":
-    "Exchanges a credential for a session. Defended by the IP auth bucket, which " +
-    "is the brute-force threshold, and by Auth.js credential comparison.",
+    "Exchanges a credential for a session. Defended by Auth.js credential " +
+    "comparison and, inside authorize(), the credentials buckets that every " +
+    "sign-in path funnels through. gateAuthAction's login class CHECKS those " +
+    "buckets here for a readable early error and deliberately consumes nothing — " +
+    "counting in both layers would halve the advertised 5/min (auth-007).",
   "lib/actions/auth.ts:logoutAction":
     "Destroys the caller's OWN cookie via signOut(). It reads nothing and can " +
     "affect no one else, so a session check would only make sign-out fail for " +
     "someone whose session is already broken — the exact case it must handle.",
   "lib/actions/email-verification.ts:verifyEmailAction":
     "Bearer of a single-use e-mail verification token; the token IS the " +
-    "credential. IP-rate-limited on top, so the token space cannot be swept.",
+    "credential. gateAuthAction's tokenRedeem class on top (30/min/address), so " +
+    "the token space cannot be swept — loose on purpose, because the token is " +
+    "unforgeable and a false refusal lands on a customer's good link.",
   "lib/actions/email-change.ts:confirmEmailChangeAction":
     "Bearer of a single-use e-mail-change token, followed from a mail client " +
-    "that carries no session cookie. IP-rate-limited.",
+    "that carries no session cookie. gateAuthAction tokenRedeem class.",
   "lib/actions/password-reset.ts:requestPasswordResetAction":
     "By definition reachable by someone locked out. Enumeration-safe (same " +
-    "response either way) and IP-rate-limited.",
+    "response either way) and on gateAuthAction's emailDispatch class, keyed on " +
+    "the SUBMITTED address so the allowance is identical whether or not the " +
+    "account exists.",
   "lib/actions/password-reset.ts:resetPasswordAction":
     "Bearer of a single-use reset token; it also bumps sessionVersion in the " +
-    "same UPDATE as the new hash. IP-rate-limited.",
+    "same UPDATE as the new hash. gateAuthAction tokenRedeem class.",
   "lib/actions/team.ts:acceptInviteAction":
     "Bearer of a single-use invite token — the invitee has no account yet, so " +
     "there is no session to require. The token row is checked for used/expired " +
@@ -117,7 +125,11 @@ const PRE_AUTH_ENDPOINTS: Record<string, string> = {
 const PRE_AUTH_WITHOUT_SECOND_LINE = new Set<string>(["lib/actions/auth.ts:logoutAction"]);
 
 /** The two calls that actually read a session. See the header. */
-const PRIMITIVE_GATES = ["auth", "requireScopedSession"];
+// `requireFinanceSession` delegates to `requireScopedSession` internally and
+// additionally refuses a non-finance role, so it is strictly stronger than the
+// other two. Without it here the traversal reports every reader gated by it as
+// an ungated endpoint — a false alarm about a security property.
+const PRIMITIVE_GATES = ["auth", "requireScopedSession", "requireFinanceSession"];
 
 /**
  * How many helpers deep a gate may hide. See the header: one, on purpose.
@@ -617,7 +629,14 @@ describe("server-action auth gates (every endpoint is anonymous until it checks)
     for (const id of Object.keys(PRE_AUTH_ENDPOINTS)) {
       if (PRE_AUTH_WITHOUT_SECOND_LINE.has(id)) continue;
       const body = byId.get(id)?.body ?? "";
-      const rateLimited = /limiters\.\w+\.consume\s*\(/.test(body);
+      // `gateAuthAction(…)` is the auth family's limiter since auth-007 — ten
+      // call sites moved off the single shared `limiters.auth` bucket, and
+      // three of them (signup, login, request-password-reset) carry no `token`
+      // either, so a detector that knew only the old spelling would have
+      // reported them as open, unthrottled write paths. It is a widening of
+      // what counts as a limiter, NOT of what counts as a gate: a pre-auth
+      // endpoint with neither still fails here.
+      const rateLimited = /limiters\.\w+\.consume\s*\(|gateAuthAction\s*\(/.test(body);
       const tokenBearing = /\btoken\b/.test(body);
       if (!rateLimited && !tokenBearing) undefended.push(id);
     }

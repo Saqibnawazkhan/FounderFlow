@@ -1,14 +1,27 @@
 /**
  * Environment validation.
  *
- * SCOPE, READ THIS BEFORE TRUSTING IT. Only `app/robots.ts` and
- * `app/sitemap.ts` import this module. It is NOT app-wide validation and must
- * not be cited as though it were: `process.env` is read directly in ~30 other
- * places, so a var missing here is a var missing everywhere, and only these two
- * routes will say so. The build-time gate in `scripts/vercel-build.mjs` is what
- * actually stands between a misconfigured Production scope and a live deploy;
- * the production assertion at the bottom of this file is a second line for the
- * one var whose absence is invisible until a customer clicks a dead link.
+ * SCOPE, READ THIS BEFORE TRUSTING IT. This is still NOT app-wide validation and
+ * must not be cited as though it were: `process.env` is read directly in ~30
+ * other places, so a var missing here is a var missing almost everywhere. The
+ * build-time gate in `scripts/vercel-build.mjs` is what actually stands between a
+ * misconfigured Production scope and a live deploy; the production assertion at
+ * the bottom of this file is a second line for the one var whose absence is
+ * invisible until a customer clicks a dead link.
+ *
+ * What DID change, 2026-09-29: this used to say "only `app/robots.ts` and
+ * `app/sitemap.ts` import this module", and that is no longer true. Wiring
+ * `appOrigin()` into its call sites (prodready-004) added `app/layout.tsx`,
+ * `app/page.tsx`, `lib/email/verification.ts`, `lib/notify/email.ts` and
+ * `lib/lemonsqueezy/config.ts`. `app/layout.tsx` is the root layout, so the
+ * module — and therefore the parse below and the production assertion at the
+ * bottom — now evaluates on every route rather than on two static files.
+ *
+ * That widening is deliberate and costs nothing in practice: `robots.ts` and
+ * `sitemap.ts` are statically generated, so this module already evaluated during
+ * every `next build`, and anything that throws here already failed the build
+ * before a deploy could serve it. The gain is that a production deploy with a
+ * loopback origin can no longer be saved by someone deleting the sitemap.
  */
 
 import { z } from "zod";
@@ -26,33 +39,39 @@ const optionalUrl = z.preprocess((v) => (v === "" ? undefined : v), z.string().u
 const LOCAL_DEV_ORIGIN = "http://localhost:3000";
 
 const envSchema = z.object({
-  // The localhost default stays, for two reasons. Local dev and every preview
-  // build legitimately have no canonical origin, and this module throws on a
-  // failed parse — making it required outright would break `next dev` and every
-  // PR deploy. And a required var here would buy nothing while TEN call sites
-  // read the origin for themselves, seven of them repeating
-  // `?? "http://localhost:3000"`:
+  // The localhost default stays. Local dev and every preview build legitimately
+  // have no canonical origin, and this module throws on a failed parse — making
+  // it required outright would break `next dev` and every PR deploy. What makes
+  // that default safe is that a *production* deploy cannot reach it:
+  // NEXT_PUBLIC_APP_URL is in `requiredProdEnv` in scripts/vercel-build.mjs (the
+  // build fails without it) and `productionAppUrlProblem` below rejects a
+  // loopback value even when one is present.
   //
-  //   app/layout.tsx:25 (metadataBase)   lib/actions/password-reset.ts:60
-  //   lib/actions/team.ts:55             lib/actions/email-change.ts:100
-  //   lib/email/verification.ts:17       lib/notify/email.ts:23
-  //   lib/lemonsqueezy/config.ts:27
+  // HISTORY, because the shape of the error is this repo's recurring one. Until
+  // 2026-09-28 this comment said SEVEN call sites read the origin for
+  // themselves; it was then corrected to TEN, listing the seven that repeated
+  // `?? "http://localhost:3000"`, the two that read the validated value, and
+  // app/page.tsx, which fell back to a hard-coded deployment hostname instead.
+  // Both versions were accurate when written and both described a problem that
+  // no longer exists: as of 2026-09-29 `appOrigin()` is actually WIRED, so the
+  // duplication the comment existed to measure is down to the three sites named
+  // below — and that residue is machine-checked rather than remembered.
   //
-  // The other three do NOT use that fallback, and the differences matter:
-  //   app/robots.ts:24 and app/sitemap.ts:5 read `env.NEXT_PUBLIC_APP_URL`
-  //     directly, so they get the validated default above rather than a literal.
-  //   app/page.tsx:53 falls back to a HARDCODED PRODUCTION DOMAIN
-  //     (`|| "https://founderflow-seven.vercel.app"`), not to localhost. So the
-  //     landing page's canonical and OG URLs silently point at that domain
-  //     whenever the var is unset — and keep pointing at it if the deployment
-  //     ever moves. That one is a latent bug, not just a duplicated default.
+  // RAW READERS REMAINING (ceiling, enforced by tests/lib/env/app-origin-call-sites.test.ts):
+  //   lib/actions/password-reset.ts
+  //   lib/actions/email-change.ts
+  //   lib/actions/team.ts
   //
-  // (This said SEVEN and listed seven until 2026-09-28. An undercount here is
-  // not cosmetic: this comment is the evidence base for deciding whether to make
-  // the var required, and it was missing the only site with a non-localhost
-  // fallback.) `appOrigin()` below is the one decision all of them are meant to
-  // call; the production assertion further down is what stops the default
-  // reaching a customer in the meantime.
+  // Those three belong to another agent in the same wave and may already be
+  // done; the list is enforced as a CEILING, so it is true either way. What the
+  // test refuses is a file OUTSIDE it reading `process.env.NEXT_PUBLIC_APP_URL`
+  // directly — which is how the duplication came back last time, one reasonable
+  // one-liner at a time. If you genuinely need the raw value, add the file here
+  // so the next reader is not misled.
+  //
+  // Everything else now goes through `appOrigin()`: app/layout.tsx (metadataBase),
+  // app/page.tsx (JSON-LD), app/robots.ts, app/sitemap.ts,
+  // lib/email/verification.ts, lib/notify/email.ts and lib/lemonsqueezy/config.ts.
   NEXT_PUBLIC_APP_URL: z.string().url().default(LOCAL_DEV_ORIGIN),
 
   DATABASE_URL: z.string().optional(),
@@ -159,8 +178,12 @@ if (!parsed.success) {
 // Production-only. `robots.ts` and `sitemap.ts` are statically generated, so on
 // a production Vercel build this throw happens during `next build` and fails
 // the deploy — which is the outcome we want, and the reason it is safe to be
-// this blunt. On the unlikely runtime path it costs /robots.txt and
-// /sitemap.xml rather than the app, because nothing else imports this module.
+// this blunt. NOTE the runtime blast radius changed with prodready-004: nine
+// modules now import this one, including app/layout.tsx (the root layout), so a
+// runtime throw here takes EVERY route rather than just /robots.txt and
+// /sitemap.xml. That is still the outcome we want — a production deploy with no
+// canonical origin emits broken links in every email — but it is no longer the
+// small, contained failure this comment used to promise.
 // A localhost sitemap is also why the marketing site would be unindexable.
 if (IS_PRODUCTION_DEPLOY) {
   const problem = productionAppUrlProblem(process.env.NEXT_PUBLIC_APP_URL);
@@ -178,14 +201,17 @@ export const env = parsed.data;
  * (prodready-004).
  *
  * WHY NORMALISATION IS THE POINT AND NOT A TIDY-UP. Every link in this app is
- * built by concatenation: `` `${origin}/reset-password/${token}` ``. Seven call
- * sites currently read `process.env.NEXT_PUBLIC_APP_URL` with their own
- * `?? "http://localhost:3000"`, and exactly one of them — `lib/actions/team.ts`
- * — strips a trailing slash. Copying the origin out of a browser address bar
- * gives you `https://app.founderflow.com/`, and the other six then emit
+ * built by concatenation: `` `${origin}/reset-password/${token}` ``. Copying the
+ * origin out of a browser address bar gives you `https://app.founderflow.com/`,
+ * which is a perfectly valid `.url()` and passes every other check in this file —
+ * and every call site that concatenated onto it emitted
  * `https://app.founderflow.com//reset-password/<token>`. A doubled slash in a
  * path is the sort of URL that works in one mail client and 404s in the next,
  * and it lands on a locked-out customer clicking a single-use link.
+ *
+ * Until 2026-09-29 this function had ZERO callers while prodready-004 was
+ * recorded as fixed. It is now called by the sites listed against
+ * NEXT_PUBLIC_APP_URL above; see the ceiling block there for what is left.
  *
  * `raw` is a parameter, defaulting to the validated value, so the decision is
  * unit-testable without mutating `process.env`. Call it with no argument.
@@ -202,8 +228,8 @@ export function appOrigin(raw: string | undefined = env.NEXT_PUBLIC_APP_URL): st
   // default argument it is effectively unreachable, because the schema above
   // validates with `.url()`, so `"   "` fails the parse and this module throws
   // before `appOrigin()` is ever called. It earns its place for the EXPLICIT
-  // `appOrigin(someRawString)` call — and because the seven `??` sites read
-  // `process.env` directly, bypassing the schema entirely, so for them a
-  // whitespace value really does become a bare-path link.
+  // `appOrigin(someRawString)` call — and for the call sites still reading
+  // `process.env` directly (the ceiling block above), which bypass the schema
+  // entirely, so for them a whitespace value really does become a bare-path link.
   return (value === "" ? LOCAL_DEV_ORIGIN : value).replace(/\/+$/, "");
 }

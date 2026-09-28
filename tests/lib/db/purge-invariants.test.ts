@@ -31,13 +31,16 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 
 const ROOT = process.cwd();
 const SCHEMA = join(ROOT, "prisma", "schema.prisma");
 const PURGE_ROUTE = join(ROOT, "app", "api", "cron", "purge-soft-deleted", "route.ts");
 const ACCOUNT_ACTIONS = join(ROOT, "lib", "actions", "account.ts");
+
+/** Where product code lives. A tombstone written only by a test is not written. */
+const PRODUCT_ROOTS = ["lib", "app"];
 
 /** Strip comments so a file that *mentions* a table isn't credited with sweeping it. */
 function codeOnly(source: string): string {
@@ -124,6 +127,54 @@ function declaredExclusions(file: string, constName: string): Set<string> {
   ).not.toBeNull();
   const names = Array.from((found?.[1] ?? "").matchAll(/["'`]([^"'`]+)["'`]/g)).map((m) => m[1]);
   return new Set(names);
+}
+
+let productSourceCache: Array<{ path: string; src: string }> | null = null;
+
+/** Every .ts/.tsx file under `lib/` and `app/`, recursively. Read once. */
+function productSources(): Array<{ path: string; src: string }> {
+  if (productSourceCache) return productSourceCache;
+  const out: Array<{ path: string; src: string }> = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir)) {
+      if (entry === "node_modules" || entry.charAt(0) === ".") continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.tsx?$/.test(entry)) continue;
+      // Posix-normalised, so an assertion on a path reads the same on Windows.
+      out.push({
+        path: relative(ROOT, full).split(sep).join("/"),
+        src: readFileSync(full, "utf8"),
+      });
+    }
+  };
+  for (const root of PRODUCT_ROOTS) walk(join(ROOT, root));
+  productSourceCache = out;
+  return out;
+}
+
+/**
+ * Files that write a tombstone onto `model` — a `data:` bag naming `deletedAt`
+ * on an update/updateMany/upsert of that model's delegate.
+ *
+ * `data:` is required, and that is the whole precision of this matcher: nearly
+ * every scoped write in this codebase carries `where: { deletedAt: null }`, so
+ * matching the column name alone would credit every read filter in the repo as
+ * a tombstone writer and the guard below would pass on a column nothing sets.
+ */
+function tombstoneWriters(model: string): string[] {
+  const delegate = delegateFor(model);
+  const write = new RegExp(
+    "\\b(?:db|tx)\\." +
+      delegate +
+      "\\.(?:update|updateMany|upsert)\\s*\\([\\s\\S]{0,400}?\\bdata\\s*:[\\s\\S]{0,240}?\\bdeletedAt\\b"
+  );
+  return productSources()
+    .filter(({ src }) => write.test(codeOnly(src)))
+    .map(({ path }) => path);
 }
 
 describe("prisma schema parsing (the list nobody is allowed to hardcode)", () => {
@@ -251,5 +302,58 @@ describe("softDeleteWorkspace (the tombstone sweep behind both danger-zone actio
           `from the alert, not from the database.`
       ).toBe(true);
     }
+  });
+});
+
+describe("the tombstone has a writer (data-integrity-001)", () => {
+  it("scans real product source, so the guard below cannot pass on an empty list", () => {
+    // The failure mode this file exists to prevent, applied to itself: if
+    // `productSources()` ever returns nothing, every assertion after it goes
+    // green by finding no counter-example.
+    const sources = productSources();
+    expect(sources.length).toBeGreaterThan(100);
+    expect(sources.some(({ path }) => path === "lib/actions/account.ts")).toBe(true);
+  });
+
+  it("every model carrying deletedAt is tombstoned by product code, not hard-deleted", () => {
+    /*
+     * THE DEFECT THIS ENCODES, and it is the one this repo produces most often:
+     * a column that is written, migrated and unread. `User.failedLoginCount`
+     * shipped in a committed migration on 2026-09-28 with zero readers and was
+     * withdrawn on 2026-09-29 for exactly that reason.
+     *
+     * A `deletedAt` column is a PROMISE to the customer — "deleted for 90 days,
+     * then gone" — and the promise is kept by the code that sets it, not by the
+     * column. A model whose delete path still calls `.delete()` while its
+     * schema advertises a tombstone is worse than one with no column at all:
+     * CLAUDE.md's Tier 3 section, the recovery runbook and this very file all
+     * count it as covered, and nothing recovers.
+     *
+     * Derived from the schema for the same reason as every other assertion
+     * here — so the ninth soft-delete table is caught on the day it lands
+     * rather than on the day somebody needs a restore.
+     */
+    const models = softDeletableModels();
+    expect(models.length).toBeGreaterThan(1);
+
+    // Collected, not asserted per model: `expect` throws on the first failure,
+    // so a per-model assertion names ONE gap and hides the rest until it is
+    // fixed. Whoever picks this up needs the whole list in one read.
+    const unwritten = models.filter((model) => tombstoneWriters(model).length === 0);
+    expect(
+      unwritten,
+      unwritten.length === 0
+        ? ""
+        : `${unwritten.join(" and ")} declare deletedAt in prisma/schema.prisma and NO file ` +
+            `under ${PRODUCT_ROOTS.join("/ or ")}/ ever writes it: no ` +
+            `db.<delegate>.update({ data: { deletedAt } }) anywhere.\n\n` +
+            `So the column ships to a live customer database inert. Its delete path is ` +
+            `still a hard delete, the 90-day recovery window CLAUDE.md promises does not ` +
+            `exist for these rows, and the purge sweep above now reports them as covered.\n\n` +
+            `Fix the delete path (swap .delete() for an update that sets deletedAt, and add ` +
+            `deletedAt: null to every read of this model), or take the column back out of ` +
+            `the schema. Do NOT satisfy this test by writing the column without also ` +
+            `filtering reads on it — that resurrects deleted rows in every report.`
+    ).toEqual([]);
   });
 });

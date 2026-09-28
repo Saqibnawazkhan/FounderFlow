@@ -65,8 +65,9 @@ import { z } from "zod";
 
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { limiters } from "@/lib/rate-limit";
+import { gateAuthAction } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
+import { appOrigin } from "@/lib/env";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendEmail } from "@/lib/email/send";
 import {
@@ -96,8 +97,22 @@ const RequestEmailChangeWithPasswordSchema = RequestEmailChangeSchema.extend({
   password: z.string().min(1, "Enter your current password to change your login email."),
 });
 
+/**
+ * The origin the confirm link and both warning links are concatenated onto.
+ *
+ * `appOrigin` (lib/env.ts) is the one decision — prodready-004. This was one of
+ * six copies of `process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"`
+ * that did not strip a trailing slash, so an origin pasted out of an address
+ * bar emitted `https://app.founderflow.com//verify-email-change?token=…`. That
+ * matters twice over here: the confirm link is the only thing that completes
+ * the change, and `${linkBase()}/forgot-password` is what the OWNER is told to
+ * open when the request was not theirs.
+ *
+ * The raw value is passed explicitly so the read stays at call time, as it is
+ * today, rather than a module-load snapshot of the validated `env`.
+ */
 function linkBase(): string {
-  return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  return appOrigin(process.env.NEXT_PUBLIC_APP_URL);
 }
 
 /**
@@ -146,8 +161,13 @@ export async function requestEmailChangeAction(
   const session = await auth();
   if (!session?.user?.id) return { success: false, error: "Not authenticated" };
 
+  // The "we will now send a human an email" class, keyed on the signed-in
+  // account as well as the client address (auth-007). Two emails go out per
+  // call — the confirmation and the warning to the old address — so the
+  // per-account dimension is what protects both inboxes and our send quota,
+  // and it means an office behind one NAT cannot spend each other's budget.
   const ip = await getClientIp();
-  const gate = limiters.auth.consume(ip);
+  const gate = gateAuthAction({ kind: "emailDispatch", ip, account: session.user.id });
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   const parsed = RequestEmailChangeWithPasswordSchema.safeParse(input);
@@ -231,8 +251,13 @@ export async function requestEmailChangeAction(
 export async function confirmEmailChangeAction(
   input: unknown
 ): Promise<ActionResult<{ email: string }>> {
+  // Redeeming a signed link, followed from a mail client that carries no
+  // session cookie: its own loose class, 30 per address per minute, and
+  // uncounted where no proxy gives us a trustworthy address. It shared one
+  // 5/min bucket with login and signup until auth-007, which meant a few
+  // ordinary sign-ins from the same office could refuse this link outright.
   const ip = await getClientIp();
-  const gate = limiters.auth.consume(ip);
+  const gate = gateAuthAction({ kind: "tokenRedeem", ip });
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   const parsed = ConfirmEmailChangeSchema.safeParse(input);

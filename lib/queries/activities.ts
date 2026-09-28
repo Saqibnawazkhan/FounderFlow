@@ -1,10 +1,35 @@
 /**
  * Read-side queries for activities. Activities are write-only side effects
  * of other server actions — there's no Activity write API on its own.
+ *
+ * ── WHY THE FINANCE GATE, NOT A ROW FILTER (sec-002) ───────────────────────
+ * The feed carries finance events verbatim: `addTransactionAction` writes
+ * "Ahmed logged 250,000 PKR" into `Activity.message`, so a row IS a rupee
+ * figure. lib/auth/role-gates.ts states the resulting rule out loud — "The
+ * activity feed leaks finance activity types … so it's hidden too rather than
+ * filtered — keeps the rule simple and unambiguous" — and puts BOTH surfaces
+ * that read this module behind it: `/activities` and `/dashboard` are each in
+ * `MEMBER_BLOCKED_ROUTES`, and the sidebar and command palette filter both out
+ * for a member.
+ *
+ * So this is not the `visibleNotifications` shape. That function filters rows
+ * because its surface (`/notifications`, the bell) is one a member is MEANT to
+ * open, and a project-scoped finance ping legitimately belongs to a supervisor.
+ * Here the whole page is out of bounds, there is no per-project scope on an
+ * Activity row to grant a supervisor anything, and a filtered feed would have to
+ * classify free-text messages by type string — a second, drifting copy of a rule
+ * `MEMBER_BLOCKED_ROUTES` already spells once. Diverting is both the smaller
+ * change and the one that agrees with middleware.
+ *
+ * Both callers of `getActivitiesPage` serve `/activities` only: the page itself
+ * and `loadMoreActivitiesAction` (its "Load more" button). `getActivities` has
+ * exactly one caller, `/dashboard`. No member-visible surface reads this module,
+ * so the redirect can only fire for the stale cookie it exists to stop.
+ * Pinned in tests/lib/queries/finance-reader-gates.test.ts.
  */
 
 import { db } from "@/lib/db";
-import { requireScopedSession } from "@/lib/queries/session";
+import { requireFinanceSession } from "@/lib/queries/session";
 import type { Activity, ActivityType, ActivityMetadata } from "@/lib/types";
 
 function toClient(a: {
@@ -38,7 +63,7 @@ function toClient(a: {
 }
 
 export async function getActivities(limit = 500): Promise<Activity[]> {
-  const { companyId } = await requireScopedSession();
+  const { companyId } = await requireFinanceSession();
   const rows = await db.activity.findMany({
     where: { companyId },
     orderBy: { createdAt: "desc" },
@@ -63,7 +88,7 @@ export async function getActivitiesPage(opts?: {
   take?: number;
   userId?: string | null;
 }): Promise<ActivityPage> {
-  const { companyId } = await requireScopedSession();
+  const { companyId } = await requireFinanceSession();
   const take = Math.min(Math.max(opts?.take ?? 40, 1), 100);
   const rows = await db.activity.findMany({
     where: { companyId, ...(opts?.userId ? { userId: opts.userId } : {}) },

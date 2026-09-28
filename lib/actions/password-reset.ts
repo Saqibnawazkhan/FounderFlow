@@ -13,9 +13,15 @@
  * link is logged to the server console. The client toast is identical
  * either way so the enumeration guarantee holds.
  *
- * Rate limit: reuses the existing `limiters.auth` bucket — 5 requests per
- * IP per minute. Same bucket as signup + login so the raw brute-force
- * attempts across all three routes share the same allowance.
+ * Rate limit: the two halves of this flow are in DIFFERENT risk classes and no
+ * longer share a bucket with login or signup (auth-007). Requesting a link is
+ * `emailDispatch` — 10 per client address / 10 min and 5 per submitted address
+ * / 15 min, because the cost is somebody's inbox and our capped Gmail quota.
+ * Redeeming one is `tokenRedeem` — 30 per address / minute, loose because the
+ * token is unforgeable and a false refusal lands on a locked-out customer. Both
+ * used to be one 5-per-minute IP bucket shared with eight other actions, so a
+ * few ordinary sign-ins behind an office NAT meant no reset email at all — and,
+ * because this endpoint is enumeration-safe, no explanation either.
  *
  * Tombstones (auth-006): a soft-deleted user is NOT a resettable account.
  * `authorize()` filters `deletedAt: null`, so a tombstoned row can never sign
@@ -43,8 +49,9 @@
 
 import bcrypt from "bcryptjs";
 import { db } from "@/lib/db";
-import { limiters } from "@/lib/rate-limit";
+import { gateAuthAction } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
+import { appOrigin } from "@/lib/env";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendEmail } from "@/lib/email/send";
 import {
@@ -56,24 +63,50 @@ import { RequestPasswordResetSchema, ResetPasswordSchema } from "@/lib/schemas/p
 
 import type { ActionResult } from "@/lib/actions/types";
 
+/**
+ * The origin every link in this file is concatenated onto.
+ *
+ * `appOrigin` (lib/env.ts) is the ONE decision — prodready-004. This used to be
+ * its own `process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"`, one of
+ * seven such copies, and one of the six that did NOT strip a trailing slash: an
+ * origin pasted out of a browser address bar (`https://app.founderflow.com/`)
+ * produced `https://app.founderflow.com//reset-password?token=…`, a URL that
+ * works in one mail client and 404s in the next, in front of someone who cannot
+ * sign in. `appOrigin` also trims whitespace, which `.replace(/\/$/, "")`
+ * silently fails to handle when a pasted value ends in a space.
+ *
+ * The raw value is passed EXPLICITLY rather than relying on the default
+ * argument, so the read stays at call time exactly as it is today. The default
+ * argument would snapshot `env.NEXT_PUBLIC_APP_URL` at module load instead.
+ */
 function resetLinkBase(): string {
-  return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  return appOrigin(process.env.NEXT_PUBLIC_APP_URL);
 }
 
 export async function requestPasswordResetAction(
   input: unknown
 ): Promise<ActionResult<{ dispatched: boolean }>> {
-  const ip = await getClientIp();
-  const gate = limiters.auth.consume(ip);
-  if (!gate.allowed) {
-    return { success: false, error: gate.error ?? "Too many requests" };
-  }
-
   const parsed = RequestPasswordResetSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid email" };
   }
   const { email } = parsed.data;
+
+  // The "we will now send a human an email" class (auth-007): 10 per client
+  // address per 10 minutes, AND 5 per target address per 15 minutes. Below the
+  // parse because the per-account key IS the submitted address — `safeParse` is
+  // pure and touches no database, so an unparseable flood still costs nothing.
+  //
+  // Keyed on the SUBMITTED address, never on the looked-up user, so the
+  // allowance is identical whether the account exists, never existed or is
+  // tombstoned. Keying the found user would make the number of requests this
+  // endpoint accepts an oracle for "is this address registered", which is the
+  // exact posture the header above exists to protect.
+  const ip = await getClientIp();
+  const gate = gateAuthAction({ kind: "emailDispatch", ip, account: email });
+  if (!gate.allowed) {
+    return { success: false, error: gate.error ?? "Too many requests" };
+  }
 
   try {
     const user = await db.user.findFirst({
@@ -129,8 +162,14 @@ export async function requestPasswordResetAction(
 export async function resetPasswordAction(
   input: unknown
 ): Promise<ActionResult<{ email: string }>> {
+  // Redeeming a signed link — its own loose class, and deliberately NOT the
+  // bucket the request half above uses. A reset token is an HS256 JWT bound to
+  // the current password hash, so the defence against a guessed one is
+  // cryptographic; the numeric limit here is a courtesy valve against a hot
+  // loop, and the cost of a false refusal is telling a locked-out customer that
+  // their single-use link is "too many requests" (auth-007).
   const ip = await getClientIp();
-  const gate = limiters.auth.consume(ip);
+  const gate = gateAuthAction({ kind: "tokenRedeem", ip });
   if (!gate.allowed) {
     return { success: false, error: gate.error ?? "Too many requests" };
   }

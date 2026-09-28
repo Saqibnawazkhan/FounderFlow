@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono, Playfair_Display } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
+import { appOrigin } from "@/lib/env";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -22,7 +23,31 @@ const serif = Playfair_Display({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"),
+  // `appOrigin()` is the one decision for the public origin (prodready-004).
+  //
+  // Be precise about what this changed, because the honest answer is "less than
+  // it looks" and the overclaim would be worse than the bug. WHATWG `new URL()`
+  // normalises an empty path to "/", so for a bare origin
+  // `new URL("https://host/")` and `new URL("https://host")` are the SAME
+  // metadataBase: every canonical and og:url tag this app emits is byte-identical
+  // before and after. Next resolves the relative `"/"` values in this file and in
+  // app/page.tsx via `path.posix.join(metadataBase.pathname, url)` and then
+  // collapses a "/" pathname back to the bare origin
+  // (next/dist/lib/metadata/resolvers/resolve-url.js), so the doubled slash that
+  // the e-mail call sites suffered never reached a meta tag.
+  //
+  // What it does change:
+  //   - A reverse-proxied sub-path origin (`https://host/app/`) produced a
+  //     canonical of `https://host/app/` while every e-mail link and sitemap
+  //     entry said `https://host/app`. Those now agree.
+  //   - `?? ` let an EMPTY NEXT_PUBLIC_APP_URL through to `new URL("")`, which
+  //     throws `TypeError: Invalid URL` from the root layout — i.e. every page in
+  //     the app 500s, on a build that went green. Importing lib/env moves that
+  //     failure to the build, with the variable named.
+  //   - The root layout is on every route, so lib/env's production assertion
+  //     (a loopback origin on a production deploy) now covers the whole app
+  //     rather than only /robots.txt and /sitemap.xml.
+  metadataBase: new URL(appOrigin()),
   title: {
     default: "FounderFlow — Co-Founder Company Management",
     template: "%s · FounderFlow",

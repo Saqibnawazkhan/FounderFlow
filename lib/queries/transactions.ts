@@ -5,6 +5,27 @@
  *
  * Writes still live in lib/actions/transactions.ts (server actions).
  *
+ * ── WHO MAY ASK (sec-002) ──────────────────────────────────────────────────
+ * Every read below starts at `requireFinanceSession()`, not
+ * `requireScopedSession()`. `requireScopedSession` proves only that SOMEBODY is
+ * signed in; the finance predicate was left to `authorized()` in auth.config.ts,
+ * which reads `role` out of the caller's own cookie, and the Edge `jwt` callback
+ * refreshes nothing — so a demoted co-founder who blocks the one
+ * /api/auth/session request kept reading the full company ledger for the JWT
+ * lifetime (30 days). The gate lives HERE, where the rows are fetched, so it
+ * covers every route and every server action that reaches the same query rather
+ * than only the one page that remembered (/reports).
+ *
+ * EVERY CALLER OF THIS MODULE IS A FINANCE SURFACE, which is what makes a
+ * redirect safe. /dashboard, /expenses, /revenue, /investments and /reports are
+ * all in `MEMBER_BLOCKED_ROUTES`. The two callers that are NOT blocked routes
+ * both ask the predicate before they call: app/(app)/team/page.tsx passes
+ * `canSeeFin ? getTransactions() : Promise.resolve([])`, and
+ * `postRunwayCardAction` refuses on `canPostRunwayCard` (which delegates to
+ * `canSeeFinances`) three steps before it reads. So no member reaches these
+ * functions on a legitimate path, and the redirect only ever fires for the stale
+ * cookie it exists to stop. Pinned in tests/lib/queries/finance-reader-gates.test.ts.
+ *
  * ── TWO KINDS OF READ, AND WHY THE DIFFERENCE MATTERS (money-008) ───────────
  *
  * ROW READS (`getTransactions`) are for rendering a LIST. They are windowed:
@@ -69,7 +90,7 @@ import { Prisma } from "@prisma/client";
 import * as Sentry from "@sentry/nextjs";
 import { db } from "@/lib/db";
 import { captureServerError } from "@/lib/sentry-server";
-import { requireScopedSession } from "@/lib/queries/session";
+import { requireFinanceSession } from "@/lib/queries/session";
 import { startOfUtcMonth, utcMonthShortLabel, utcMonthWindow } from "@/lib/date-range";
 import type { Transaction } from "@/lib/types";
 
@@ -211,7 +232,7 @@ function noteReadCeiling(type: TransactionType, count: number, companyId: string
 export async function getTransactions(
   query: TransactionQuery = {}
 ): Promise<TransactionWithCount[]> {
-  const { companyId } = await requireScopedSession();
+  const { companyId } = await requireFinanceSession();
   // A caller cannot lift the ceiling, only lower it: an unbounded `take` from a
   // page is the original unbounded read with extra steps.
   const take = Math.min(
@@ -278,7 +299,7 @@ function emptyTotals(): Record<TransactionType, TypeTotal> {
  * large the workspace gets — which is the actual fix for money-008.
  */
 export async function getTransactionTotals(window: DateWindow = {}): Promise<TransactionTotals> {
-  const { companyId } = await requireScopedSession();
+  const { companyId } = await requireFinanceSession();
   const rows = await db.transaction.groupBy({
     by: ["type"],
     where: { companyId, deletedAt: null, ...dateFilter(window) },
@@ -328,7 +349,7 @@ export interface MonthTotals {
  * so the fan-out stays small; the `(companyId, date)` index serves each window.
  */
 export async function getMonthlyTotals(months = 6, ref: Date = new Date()): Promise<MonthTotals[]> {
-  const { companyId } = await requireScopedSession();
+  const { companyId } = await requireFinanceSession();
   const span = Math.min(Math.max(1, Math.floor(months)), MAX_SERIES_MONTHS);
 
   // Oldest → newest: offset -(span-1) … 0, inclusive of the current month.
@@ -377,7 +398,7 @@ export async function getMonthlyTotals(months = 6, ref: Date = new Date()): Prom
 export async function getExpenseTotalsByCategory(
   window: DateWindow = {}
 ): Promise<{ category: string; amount: number }[]> {
-  const { companyId } = await requireScopedSession();
+  const { companyId } = await requireFinanceSession();
   const rows = await db.transaction.groupBy({
     by: ["category"],
     where: { companyId, deletedAt: null, type: "expense", ...dateFilter(window) },
@@ -419,7 +440,7 @@ export type UserContribution = Record<TransactionType, number>;
 export async function getContributionTotalsByUser(
   window: DateWindow = {}
 ): Promise<Record<string, UserContribution>> {
-  const { companyId } = await requireScopedSession();
+  const { companyId } = await requireFinanceSession();
   const rows = await db.transaction.groupBy({
     by: ["addedBy", "type"],
     where: { companyId, deletedAt: null, ...dateFilter(window) },

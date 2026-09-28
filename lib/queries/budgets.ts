@@ -35,7 +35,9 @@
  */
 
 import { db } from "@/lib/db";
-import { requireScopedSession } from "@/lib/queries/session";
+import { requireFinanceSession, requireScopedSession } from "@/lib/queries/session";
+import { canSeeProjectFinances } from "@/lib/auth/project-permissions";
+import { canSeeFinances } from "@/lib/auth/role-gates";
 import { startOfUtcMonth } from "@/lib/date-range";
 
 export interface BudgetClient {
@@ -62,10 +64,68 @@ function spendKey(projectId: string, category: string): string {
   return `${projectId}\u0000${category}`;
 }
 
+/**
+ * The finance gate, asked DIFFERENTLY for the two modes — because the two modes
+ * have different audiences (sec-002 + the CLAUDE.md escape hatch).
+ *
+ * `/budgets`, the unscoped mode, is a `MEMBER_BLOCKED_ROUTES` page and its
+ * company-wide answer belongs only to someone who passes `canSeeFinances`. Until
+ * now app/(app)/budgets/page.tsx called this with NO session check of any kind —
+ * not even `requireScopedSession` — so the one thing standing between a demoted
+ * co-founder and every cap in the company was a middleware redirect reading
+ * `role` out of their own cookie, which the Edge `jwt` callback never refreshes.
+ *
+ * The project-scoped mode is the opposite case, and a blanket
+ * `requireFinanceSession()` here would have been a WORSE bug than the one being
+ * fixed. CLAUDE.md: "Members never see finance pages. Per-project supervisors get
+ * an escape hatch inside their own project." `canSeeFinances` is false for a
+ * member, so a blanket gate would have redirected a member-supervisor off the
+ * Budgets tab of their own project — a tab app/(app)/projects/[id]/page.tsx
+ * deliberately renders for them via `canSeeProjectFinances`. So the scoped mode
+ * asks the PROJECT question instead, against the project's own row rather than
+ * anything the caller said, and it is the same predicate the page and
+ * `visibleNotifications` use rather than a second copy of it.
+ *
+ * DENIAL IS EMPTY ROWS HERE, NOT A REDIRECT. A member who merely holds a task in
+ * the project can legitimately open `/projects/[id]` (`canSeeProject` lets an
+ * assignee in), so diverting them would bounce them off a page they are entitled
+ * to see. Returning nothing is exactly what the page already computes for them,
+ * and it is the `visibleNotifications` answer: filter the rows where redirecting
+ * would be wrong.
+ *
+ * The supervisor lookup is skipped entirely for a caller who already passes
+ * `canSeeFinances`, so the common path buys no extra query.
+ */
+async function financeScopeFor(projectId?: string): Promise<{ companyId: string } | null> {
+  if (!projectId) {
+    // Company-wide: /budgets. Diverts a member to /tasks, the same place
+    // middleware sends them, instead of answering with every cap in the company.
+    return { companyId: (await requireFinanceSession()).companyId };
+  }
+
+  const { userId, companyId, role } = await requireScopedSession();
+  // The common case — an admin or cofounder opening a project — buys no extra
+  // query. Only a caller relying on the escape hatch pays for the lookup.
+  if (canSeeFinances(role)) return { companyId };
+
+  const project = await db.project.findFirst({
+    where: { id: projectId, companyId, deletedAt: null },
+    select: { supervisorId: true },
+  });
+  // No row means a project in another tenant, a tombstoned one, or an id that
+  // never existed — all three answer the same way, which is also what keeps this
+  // from confirming that an id exists.
+  if (!project) return null;
+  if (!canSeeProjectFinances({ userId, role, project })) return null;
+  return { companyId };
+}
+
 export async function getBudgetsWithSpend(
   opts: { projectId?: string } = {}
 ): Promise<BudgetWithSpend[]> {
-  const { companyId } = await requireScopedSession();
+  const scope = await financeScopeFor(opts.projectId);
+  if (!scope) return [];
+  const { companyId } = scope;
 
   // The UTC calendar month — the same boundary lib/budgets/check.ts,
   // lib/queries/projects.ts and (since money-007) the client cards use. Spelled

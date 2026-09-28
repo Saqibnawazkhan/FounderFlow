@@ -124,11 +124,16 @@ vi.mock("@/lib/safety/bulk-mutation-guard", () => ({ warnBulkMutation: vi.fn() }
 vi.mock("@/lib/client-ip", () => ({ getClientIp: async () => "10.0.0.1" }));
 // The IP auth bucket is 5/min and these tests call the delete paths more than
 // five times. Its own behaviour is covered by tests/lib/rate-limit.test.ts.
-vi.mock("@/lib/rate-limit", () => ({
+vi.mock("@/lib/rate-limit", async (importOriginal) => ({
+  // Spread the real module so a NEW export cannot silently break this suite:
+  // a factory mock REPLACES the module, so an omitted export is absent, and
+  // wiring gateAuthAction broke 31 tests across three files exactly this way.
+  ...(await importOriginal<typeof import("@/lib/rate-limit")>()),
   limiters: {
     auth: { consume: () => ({ allowed: true }) },
     write: { consume: () => ({ allowed: true }) },
   },
+  gateAuthAction: () => ({ allowed: true }),
 }));
 vi.mock("bcryptjs", () => ({
   default: { compare: async () => true, hash: async () => "hash" },

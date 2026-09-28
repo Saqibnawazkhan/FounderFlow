@@ -17,6 +17,7 @@ import {
   Zap,
 } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
+import { appOrigin } from "@/lib/env";
 import { cn } from "@/lib/utils";
 
 import { ChannelPanel } from "@/components/landing/channel-panel";
@@ -50,7 +51,41 @@ import { display } from "@/components/landing/fonts";
 /* token blocks in globals.css). MarketingThemeToggle flips that attribute.     */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-const SITE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://founderflow-seven.vercel.app";
+/* Absolute origin for this page's JSON-LD (see <LandingJsonLd/> below).
+ *
+ * This line used to read the raw NEXT_PUBLIC_APP_URL with `||` and fall back to a
+ * literal `https://founderflow-seven` vercel-app hostname (spelled out in
+ * tests/lib/env/app-origin-call-sites.test.ts, which now fails if any deployment
+ * hostname reappears in this file). That fallback was a latent bug of its own,
+ * not just a tenth copy of the localhost one. Three things were wrong with it:
+ *
+ *  1. A HARD-CODED DEPLOYMENT HOSTNAME. Whenever the variable is unset, the
+ *     landing page told every crawler that FounderFlow lives at that one
+ *     preview-style hostname — and would keep telling them so after the app moved
+ *     to its own domain, silently, with nothing to fail and nothing to log. A
+ *     wrong-but-well-formed absolute URL is the dangerous kind: a crawler
+ *     believes it and splits the site's identity across two hosts, whereas an
+ *     obviously-local one is discarded. It was also the only place in the repo
+ *     where a deployment hostname was committed to source at all.
+ *  2. `||`, not `??`, so an empty NEXT_PUBLIC_APP_URL — the shape of "I added the
+ *     variable in Vercel and left the value blank" — fell through to it too.
+ *  3. It was the raw variable, so it bypassed both the trailing-slash
+ *     normalisation and lib/env's production assertion.
+ *
+ * `appOrigin()` fixes all three, and picks up the property that matters most for
+ * structured data: it is the SAME decision app/layout.tsx feeds to
+ * `metadataBase`, so the JSON-LD `url` and the `<link rel="canonical">` on this
+ * page can no longer disagree about where this app lives. Disagreeing is exactly
+ * what Google treats as a conflicting signal.
+ *
+ * On localhost as a fallback: yes, an absolute localhost URL in structured data
+ * is its own kind of wrong — but it is only ever emitted where nothing indexes
+ * it. A production build cannot reach it (NEXT_PUBLIC_APP_URL is in
+ * `requiredProdEnv` in scripts/vercel-build.mjs and a loopback value is rejected
+ * outright), and Vercel serves preview deployments with `x-robots-tag: noindex`.
+ * So the choice is between "obvious junk in a document no crawler reads" and
+ * "a plausible lie in the document every crawler reads". This takes the first. */
+const SITE_URL = appOrigin();
 
 const DESCRIPTION =
   "Channels, DMs, tasks, and real financials in one workspace. FounderFlow gives small teams and startups a place to talk about the work — and see what it costs — without switching tabs.";

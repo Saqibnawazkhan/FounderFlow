@@ -99,8 +99,13 @@ vi.mock("@/lib/auth/password-reset-token", () => ({
   signPasswordResetToken: token.signPasswordResetToken,
   verifyPasswordResetToken: () => Promise.resolve(token.verified),
 }));
-vi.mock("@/lib/rate-limit", () => ({
+vi.mock("@/lib/rate-limit", async (importOriginal) => ({
+  // Spread the real module so a NEW export cannot silently break this suite:
+  // a factory mock REPLACES the module, so an omitted export is absent, and
+  // wiring gateAuthAction broke 31 tests across three files exactly this way.
+  ...(await importOriginal<typeof import("@/lib/rate-limit")>()),
   limiters: { auth: { consume: () => ({ allowed: true }) } },
+  gateAuthAction: () => ({ allowed: true }),
 }));
 vi.mock("@/lib/client-ip", () => ({ getClientIp: () => Promise.resolve("203.0.113.7") }));
 vi.mock("bcryptjs", () => ({

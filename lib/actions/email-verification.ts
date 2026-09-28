@@ -18,7 +18,7 @@
 
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { limiters } from "@/lib/rate-limit";
+import { gateAuthAction } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendVerificationEmail } from "@/lib/email/verification";
@@ -55,10 +55,15 @@ export async function resendVerificationEmailAction(): Promise<
   const session = await auth();
   if (!session?.user?.id) return { success: false, error: "Not authenticated" };
 
-  // Same auth bucket as login/signup/reset — a resend is cheap but we don't
-  // want a script hammering Gmail's quota.
+  // The "we will now send a human an email" class — shared with
+  // request-password-reset and request-email-change, and keyed on the signed-in
+  // account as well as the address. A resend is cheap, but Gmail's daily send
+  // cap is not, and the per-account dimension is what stops one person's Resend
+  // button spending the whole office's budget (auth-007). It used to be the
+  // single `limiters.auth` bucket that login, signup, reset and the two
+  // token-redemption links also drew on.
   const ip = await getClientIp();
-  const gate = limiters.auth.consume(ip);
+  const gate = gateAuthAction({ kind: "emailDispatch", ip, account: session.user.id });
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   try {
@@ -84,10 +89,15 @@ export async function resendVerificationEmailAction(): Promise<
 }
 
 export async function verifyEmailAction(input: unknown): Promise<ActionResult<{ email: string }>> {
-  // Rate-limited by IP even though it's token-gated — a scripted brute over
-  // the token space shares the auth bucket with everything else.
+  // Redeeming a signed link: its own, deliberately loose class (30/min/address,
+  // and uncounted where no proxy gives us a trustworthy address). The token is
+  // an HS256 JWT, so the protection against a guessed one is cryptographic
+  // rather than numeric; the cost of a refusal here is telling a customer their
+  // perfectly good link is "too many requests". Until auth-007 this shared one
+  // 5/min bucket with login and signup, so a burst of ordinary sign-ins behind
+  // an office NAT broke a colleague's verification link.
   const ip = await getClientIp();
-  const gate = limiters.auth.consume(ip);
+  const gate = gateAuthAction({ kind: "tokenRedeem", ip });
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   const parsed = VerifyEmailSchema.safeParse(input);

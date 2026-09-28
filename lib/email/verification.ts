@@ -10,12 +10,9 @@
  * the caller can toast honestly.
  */
 
+import { appOrigin } from "@/lib/env";
 import { sendEmail } from "@/lib/email/send";
 import { signEmailVerificationToken } from "@/lib/auth/email-verification-token";
-
-function linkBase(): string {
-  return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
-}
 
 export async function sendVerificationEmail(input: {
   userId: string;
@@ -23,7 +20,13 @@ export async function sendVerificationEmail(input: {
   email: string;
 }): Promise<{ delivered: boolean }> {
   const token = await signEmailVerificationToken(input.userId);
-  const url = `${linkBase()}/verify-email?token=${encodeURIComponent(token)}`;
+  // `appOrigin()` is the single decision for the public origin (prodready-004).
+  // This file used to keep its own `?? "http://localhost:3000"`, which meant a
+  // Production origin stored with a trailing slash produced
+  // `https://app.founderflow.com//verify-email?token=…` — a doubled slash in a
+  // path is the kind of URL that works in one mail client and 404s in the next,
+  // and the account then stays unverified with no error anywhere.
+  const url = `${appOrigin()}/verify-email?token=${encodeURIComponent(token)}`;
 
   const html = `
     <div style="font-family:system-ui,sans-serif;max-width:520px;margin:auto;">

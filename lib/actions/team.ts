@@ -24,6 +24,7 @@ import { AuthError } from "next-auth";
 import { signIn } from "@/lib/auth";
 import { AcceptInviteSchema, InviteUserSchema, UpdateRoleSchema } from "@/lib/schemas/user";
 import { limiters } from "@/lib/rate-limit";
+import { appOrigin } from "@/lib/env";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendEmail } from "@/lib/email/send";
 import { renderInviteEmail } from "@/lib/email/templates/invite";
@@ -52,7 +53,15 @@ async function deliverInviteEmail(params: {
   role: string;
   token: string;
 }): Promise<{ emailSent: boolean; inviteUrl: string }> {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000";
+  // `appOrigin` (lib/env.ts) is the one decision for the public origin —
+  // prodready-004. This site already stripped ONE trailing slash, so the
+  // ordinary pasted-from-an-address-bar case was already right here; what
+  // changes is the two it got wrong. A value with trailing WHITESPACE
+  // (" https://app.founderflow.com/ ", a paste into Vercel's env UI) did not
+  // match /\/$/ at all, so the href in the invite e-mail began with a space and
+  // carried " /" in the middle; and a doubled trailing slash lost only one of
+  // the two. `appOrigin` trims first, then strips every trailing slash.
+  const baseUrl = appOrigin(process.env.NEXT_PUBLIC_APP_URL);
   const inviteUrl = `${baseUrl}/invite/${params.token}`;
   const { html, text } = renderInviteEmail({
     inviteeName: params.inviteeName,

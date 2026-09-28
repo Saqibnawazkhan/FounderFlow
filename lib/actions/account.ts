@@ -34,7 +34,7 @@ import bcrypt from "bcryptjs";
 import { cancelSubscription } from "@lemonsqueezy/lemonsqueezy.js";
 import { auth, signOut } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { limiters } from "@/lib/rate-limit";
+import { gateAuthAction } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
 import { captureServerError } from "@/lib/sentry-server";
 import { DeleteAccountSchema, DeleteWorkspaceSchema } from "@/lib/schemas/account";
@@ -69,8 +69,15 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
   const session = await auth();
   if (!session?.user?.id) return { success: false, error: "Not authenticated" };
 
+  // Password-confirmed destruction: 10 per client address / 10 min, 5 per USER
+  // / 10 min (auth-007). The per-user bucket is the real one — this is an
+  // authenticated action, so the account is always known, and keying the budget
+  // to it means an office sharing one address can never block each other from
+  // closing their own accounts, while a hijacked session still gets only five
+  // password guesses. It used to be the 5/min bucket shared with login, signup,
+  // reset and both verification links.
   const ip = await getClientIp();
-  const gate = limiters.auth.consume(ip);
+  const gate = gateAuthAction({ kind: "destructive", ip, userId: session.user.id });
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   const parsed = DeleteAccountSchema.safeParse(input);
@@ -475,8 +482,10 @@ export async function deleteWorkspaceAction(input: unknown): Promise<ActionResul
     return { success: false, error: "Only an admin can delete the workspace" };
   }
 
+  // Same destructive class as deleteAccountAction above, keyed on the admin
+  // doing it rather than on the office they are sitting in (auth-007).
   const ip = await getClientIp();
-  const gate = limiters.auth.consume(ip);
+  const gate = gateAuthAction({ kind: "destructive", ip, userId: session.user.id });
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   const parsed = DeleteWorkspaceSchema.safeParse(input);

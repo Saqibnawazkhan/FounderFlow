@@ -57,14 +57,25 @@ const H = vi.hoisted(() => {
 });
 
 vi.mock("@/lib/db", () => ({ db: H.db }));
+/**
+ * Both gates are stubbed with the same admin scope. The roll-ups moved from
+ * `requireScopedSession` to `requireFinanceSession` when sec-002 was wired in
+ * (a signed-in member could otherwise read every founder's capital), and this
+ * file is not where that boundary is proven — tests/lib/queries/
+ * finance-reader-gates.test.ts runs the REAL gate against a real `auth()` for
+ * that. Here the session is a fixture so the assertions can stay about the
+ * aggregate's shape.
+ */
+const ADMIN_SCOPE = vi.hoisted(() => ({
+  userId: "u-1",
+  userName: "Ada",
+  email: "ada@example.com",
+  companyId: "co-1",
+  role: "admin",
+}));
 vi.mock("@/lib/queries/session", () => ({
-  requireScopedSession: async () => ({
-    userId: "u-1",
-    userName: "Ada",
-    email: "ada@example.com",
-    companyId: "co-1",
-    role: "admin",
-  }),
+  requireScopedSession: async () => ADMIN_SCOPE,
+  requireFinanceSession: async () => ADMIN_SCOPE,
 }));
 vi.mock("@sentry/nextjs", () => ({ captureMessage: vi.fn() }));
 vi.mock("@/lib/sentry-server", () => ({ captureServerError: vi.fn() }));

@@ -26,14 +26,24 @@
  * ── THE UPSTASH SWAP IS NOT A DROP-IN, whatever the old comment said ───────
  * This file used to promise "swap the storage for Upstash Redis — the
  * consume() signature stays the same so callers (server actions) don't have to
- * change", and lib/auth/login-throttle.ts repeats it. It is false, and it is
+ * change", and lib/auth/login-throttle.ts carried it too (both corrected now;
+ * lib/email/quota.ts:20 still states it about its own counter). It is false, and it is
  * the kind of false that makes someone under-estimate a security task: every
  * Redis client is async, `consume(key): RateLimitResult` is synchronous, and
  * `authorize()` / every server action treats it as such. A shared store means
- * an async API and therefore an `await` at all ~40 call sites. Plan for that,
- * or plan for a durable per-account counter instead (see sec-011 in the audit:
- * a `User.failedLoginCount` + `User.failedLoginWindowStartedAt` pair needs no
- * shared cache at all, because the row IS the shared state).
+ * an async API and therefore an `await` at all ~40 call sites. Plan for that.
+ *
+ * AND POINT IT AT THE ADDRESS-KEYED BUCKETS FIRST. This banner used to offer a
+ * shortcut — "a `User.failedLoginCount` + `User.failedLoginWindowStartedAt`
+ * pair needs no shared cache at all, because the row IS the shared state" —
+ * and `20260928000100_add_failed_login_counter` was written on the strength of
+ * it. It was rejected on 2026-09-29 and the columns should go: a row can only
+ * make durable the per-ACCOUNT failure budget, and a durable per-account budget
+ * is a reliable, fleet-wide, deploy-proof way for a stranger who knows an
+ * address to refuse its owner sign-in. The argument in full, including why
+ * `credentialsEmail` should stay in this in-memory store even after a shared one
+ * exists, is at the bottom of lib/auth/login-throttle.ts; it is enforced by
+ * tests/lib/auth/durable-login-counter.test.ts.
  */
 
 type Bucket = number[]; // timestamps (ms) of recent allowed requests
@@ -301,12 +311,14 @@ export const limiters = {
    * provider's authorize() — the choke point BOTH login paths funnel through
    * (see lib/auth/login-throttle.ts for the whole argument).
    *
-   * A SEPARATE KEY-SPACE FROM `auth`, ON PURPOSE, and this is not cosmetic.
-   * loginAction consumes `auth`, then calls signIn(), which calls authorize().
-   * If authorize() consumed `auth` as well, one form submission would spend TWO
-   * entries and the advertised 5/min would silently become 2 — a founder with
-   * three typos locked out of their own product. Two buckets means each layer
-   * counts each attempt exactly once, and the effective limit on the form stays
+   * ONE CONSUMER, ON PURPOSE, and this is not cosmetic.
+   * `loginAction` used to consume `auth` and then call signIn(), which calls
+   * authorize(). Since auth-007 it calls `gateAuthAction({ kind: "login" })`,
+   * which CHECKS these buckets and consumes nothing, so authorize() remains the
+   * only consumer. That is the invariant to protect: if both layers consumed,
+   * one form submission would spend TWO entries and the advertised 5/min would
+   * silently become 2 — a founder with three typos locked out of their own
+   * product. One consumer means each attempt is counted exactly once and the
    * the 5 the copy promises. (Same reasoning as `read` vs `write` below: a
    * rejection must land on the action that caused it.)
    *
@@ -334,6 +346,15 @@ export const limiters = {
    * administrator-cleared lockout. The owner's way out stays open throughout:
    * password reset runs on its own `emailDispatch` budget and never reads or
    * writes this one.
+   *
+   * SO FOR THIS BUCKET ALONE, THE IN-MEMORY STORE IS PART OF THE MITIGATION —
+   * do not "fix" it when a shared store arrives. Every other limiter here is
+   * weakened by being per-instance. This one is a lockout primitive by
+   * construction (the gate must refuse before bcrypt, so it cannot tell the
+   * owner's correct password from a guess), and being per-instance and
+   * evaporating on a cold start is what keeps that lockout an annoyance instead
+   * of a dependable denial of sign-in. That is why the durable row-counter route
+   * was rejected — see the bottom of lib/auth/login-throttle.ts.
    */
   credentialsEmail: rateLimiter("credentials-email", { limit: 10, windowMs: 15 * 60_000 }),
   /** 60 writes per user per minute. Covers transaction / task / invite create. */

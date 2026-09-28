@@ -10,17 +10,27 @@
  */
 
 import { claimEmailBudget } from "@/lib/email/quota";
+import { appOrigin } from "@/lib/env";
 import { EVENT_COPY, type NotifyEvent } from "@/lib/notify/events";
 
 export type EmailRecipient = { name: string; email: string };
 
 /**
  * Absolute base for links in email. Mail clients cannot resolve a relative
- * path, so every URL has to be fully qualified. Same fallback as
- * lib/email/verification.ts.
+ * path, so every URL has to be fully qualified.
+ *
+ * Delegates to `appOrigin()` — the one decision for the public origin
+ * (prodready-004) — rather than repeating `?? "http://localhost:3000"`. The
+ * difference that shows up in someone's inbox: `job.link` always begins with a
+ * slash (`"/tasks?taskId=123"`), so a Production origin saved as
+ * `https://app.founderflow.com/` used to produce
+ * `https://app.founderflow.com//tasks?taskId=123` in every notification email
+ * and `…//settings` in every "manage your preferences" footer.
+ *
+ * Kept as a named export so it stays mockable from tests/lib/notify/fan-out.test.ts.
  */
 export function linkBase(): string {
-  return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  return appOrigin();
 }
 
 export type NotificationEmailJob = {
