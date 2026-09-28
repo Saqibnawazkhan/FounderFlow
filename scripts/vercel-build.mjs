@@ -74,11 +74,13 @@
  *
  * ── Env vars this script reads ──────────────────────────────────────────────
  *   VERCEL_ENV — set automatically by Vercel; every gate here keys off it.
- *   Everything else: see REQUIRED_PROD_ENV / FORBIDDEN_PROD_ENV / VALUE_RULES,
- *   which are the single source of truth. CLAUDE.md's "Vercel env vars this
- *   depends on" table still lists only DATABASE_URL and DIRECT_URL and is
- *   therefore stale — trust these three objects, not that table, and update it
- *   when you next touch the doc.
+ *   Everything else: see REQUIRED_PROD_ENV / RECOMMENDED_PROD_ENV /
+ *   FORBIDDEN_PROD_ENV / VALUE_RULES, which are the single source of truth.
+ *   CLAUDE.md's "Vercel env vars this depends on" table now matches
+ *   REQUIRED_PROD_ENV row for row, but it names no Sentry variable at all —
+ *   SENTRY_DSN, NEXT_PUBLIC_SENTRY_DSN, SENTRY_AUTH_TOKEN, SENTRY_ORG and
+ *   SENTRY_PROJECT are all missing from it. Trust these four objects, not the
+ *   table, and add those five rows when you next touch the doc.
  *
  * Local dev never runs this — `npm run dev` and `npm run build` still call
  * `next` directly. This is Vercel-only.
@@ -351,6 +353,14 @@ export function productionEnvProblems(env) {
     if (problem) problems.push(problem);
   }
 
+  // prodready-006. A rule ACROSS two vars, which is why it cannot live in
+  // VALUE_RULES (per-var) or REQUIRED_PROD_ENV (per-var, and neither DSN is
+  // required): no Sentry at all is a choice this project has actually made, and
+  // only the self-misrepresenting half-configuration is refused. See
+  // sentryDsnPairProblem for the argument.
+  const sentryPair = sentryDsnPairProblem(env);
+  if (sentryPair) problems.push(sentryPair);
+
   return problems;
 }
 
@@ -408,6 +418,25 @@ function main() {
           "Production, then redeploy. See the header of this file for what each one breaks."
       );
       process.exit(1);
+    }
+
+    // Step 1b: say out loud what is not configured, and carry on. Deliberately
+    // AFTER the process.exit above and BEFORE the migrate step: a warning that
+    // could stop a deploy is a gate, and the next person to meet one during an
+    // incident deletes the mechanism rather than the entry. So nothing between
+    // this call and `next build` is allowed to exit — pinned by
+    // tests/lib/env/build-config.test.ts ("prints the warnings on a production
+    // build without failing it").
+    //
+    // What it buys: the build log is the only place anyone would notice that
+    // `app/error.tsx` says "The team has been notified" while no DSN exists.
+    const warnings = productionEnvWarnings(process.env);
+    if (warnings.length > 0) {
+      console.warn(
+        `[vercel-build] ${warnings.length} thing(s) worth knowing about this Production ` +
+          "environment. None of them stops the deploy."
+      );
+      for (const warning of warnings) console.warn(`  ! ${warning}`);
     }
 
     // Step 2: the 2026-07-03 fix.

@@ -104,10 +104,61 @@ export async function notifyUsers(input: NotifyInput): Promise<{ notified: numbe
 
   const channels = splitByChannel(input.event, recipients, stored);
 
-  // Nothing is going anywhere on any channel — don't spend a round trip
-  // resolving people we are not about to deliver to.
-  if (channels.inApp.length + channels.push.length + channels.email.length === 0) {
-    return { notified: 0 };
+  // Everyone some channel would actually reach. Nothing is going anywhere when
+  // this is empty, so don't spend a round trip — and don't ask the finance rule
+  // below about people who muted every channel either.
+  const reachable = recipients.filter(
+    (id) =>
+      channels.inApp.indexOf(id) !== -1 ||
+      channels.push.indexOf(id) !== -1 ||
+      channels.email.indexOf(id) !== -1
+  );
+  if (reachable.length === 0) return { notified: 0 };
+
+  // THE FINANCE ENTITLEMENT FILTER (sec-005).
+  //
+  // Members never see finance pages — audit-flow #1 in CLAUDE.md — and
+  // `visibleNotifications` enforces that when a notification is READ. Read-time
+  // is the last line and for two of the three channels it is no line at all:
+  // this function writes the in-app row, fires push and sends email before any
+  // reader calls any filter. `addTransactionAction` fans `transaction_logged` at
+  // every other member of the company with `message: "<name> logged 2,500,000
+  // PKR"`, and when the expense carries a projectId the link is `/projects/<id>`,
+  // which is not a member-blocked route — so a member with that event's push or
+  // email switched on received the figure on their lock screen and in their
+  // inbox, outside the app, where nothing downstream can reach it.
+  //
+  // Narrowing the RECIPIENT LIST is the only place that covers all three
+  // channels at once. The rule itself lives in lib/queries/notifications beside
+  // the read-time filter it has to agree with (a second copy is how the two
+  // would drift) and is unit-tested there; what is asserted here is the wiring.
+  //
+  // IMPORTED LAZILY, like `firePush` above and for the same kind of reason: that
+  // module reaches `requireScopedSession`, and therefore next-auth, which has no
+  // business in the static graph of every server action that sends a
+  // notification. The cost is paid on finance events only.
+  //
+  // It reads the base client rather than `input.tx`: `NotifyInput.tx` is typed
+  // `Pick<typeof db, "notification" | "notificationPreference" | "user">` and has
+  // no `project` delegate, and the rows the rule reads (the roster, and the
+  // project's supervisor) are rows no finance caller's transaction writes —
+  // `addTransactionAction` creates a Transaction, an Activity and the
+  // notifications, and `checkBudgetThresholdAfterExpense` reads. A plain SELECT
+  // on another connection does not block on their uncommitted writes either. If a
+  // future finance event ever fires from a transaction that CREATES the project
+  // it is scoped to, this read will not see it and the supervisor would be
+  // dropped — fail-closed, but it would need `project` on the tx type to fix.
+  let allowed = reachable;
+  if (input.category === "finance") {
+    const { financeRecipients } = await import("@/lib/queries/notifications");
+    allowed = await financeRecipients(reachable, {
+      companyId: input.companyId,
+      // Explicitly null, never undefined: an unscoped money ping is a
+      // company-wide one, and the rule refuses those for a member. `undefined`
+      // would read as "no opinion" to anything stricter added later.
+      projectId: input.projectId ?? null,
+    });
+    if (allowed.length === 0) return { notified: 0 };
   }
 
   // THE TOMBSTONE FILTER, FOR EVERY CHANNEL (data-integrity-004).
@@ -130,7 +181,7 @@ export async function notifyUsers(input: NotifyInput): Promise<{ notified: numbe
   // read that filters the tombstones also supplies the email addresses. The
   // delivery boundary (`sendPushToUsers`) filters again on its own, deliberately.
   const live = await client.user.findMany({
-    where: { id: { in: recipients }, deletedAt: null },
+    where: { id: { in: allowed }, deletedAt: null },
     select: { id: true, name: true, email: true },
   });
   if (live.length === 0) return { notified: 0 };

@@ -34,7 +34,9 @@ const h = vi.hoisted(() => ({
   compare: vi.fn(),
   // Mutable so a test can hand every attempt a different source IP and
   // reproduce the realistic attack: a distributed spray at ONE known email.
-  ip: { value: "198.51.100.1" },
+  // `null` means the header is absent, i.e. NO trusted client address — the
+  // runtime every self-host, Docker and nginx deployment is in.
+  ip: { value: "198.51.100.1" as string | null },
   // Whatever lib/auth.ts hands to NextAuth(), captured so we can prove the
   // provider is wired to the same function the tests drive.
   nextAuthConfig: { value: undefined as unknown },
@@ -106,6 +108,7 @@ vi.mock("bcryptjs", () => ({ default: { compare: h.compare } }));
 vi.mock("@/lib/sentry-server", () => ({ captureServerError: vi.fn() }));
 
 import { authorizeCredentials } from "@/lib/auth";
+import { gateAuthAction, ipBucketKey, UNTRUSTED_CLIENT_IP } from "@/lib/rate-limit";
 
 const PASSWORD = "whatever-they-guessed";
 
@@ -129,6 +132,18 @@ function fakeUser(email: string) {
 /** One attempt down the provider path, arriving from `ip`. */
 async function attempt(email: string, ip: string) {
   h.ip.value = ip;
+  return authorizeCredentials({ email, password: PASSWORD });
+}
+
+/**
+ * One attempt from a deployment where NO forwarding header can be trusted, so
+ * `getClientIp()` returns the `UNTRUSTED_CLIENT_IP` sentinel. Dropping the
+ * header is the honest way to produce that: it exercises the real
+ * `getClientIpInfo()` "header-absent" branch rather than passing the sentinel
+ * in by hand and assuming that is what production would do.
+ */
+async function attemptWithNoTrustedIp(email: string) {
+  h.ip.value = null;
   return authorizeCredentials({ email, password: PASSWORD });
 }
 
@@ -302,5 +317,122 @@ describe("credentials provider path is throttled (auth-001 / sec-008)", () => {
     expect(await authorizeCredentials({ email: "not-an-email", password: "x" })).toBeNull();
     expect(await authorizeCredentials({ email: "a@b.com", password: "" })).toBeNull();
     expect(h.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* No trusted client address — the per-IP bucket must not become a global one   */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+describe("login throttle where there is no trusted client address (sec-001)", () => {
+  /**
+   * WHAT THESE ARE FOR. `getClientIp()` returns the sentinel
+   * `UNTRUSTED_CLIENT_IP` whenever no forwarding header may be believed — every
+   * self-hosted box, every Docker/nginx deployment, `vercel dev`, and any
+   * production runtime we cannot identify (lib/client-ip.ts:88-100). A sentinel
+   * used verbatim as a bucket key is a BUCKET: one 5-per-minute budget shared by
+   * every visitor on earth, which an attacker empties on purpose to refuse
+   * sign-in to every paying customer at once, from one machine, in one second.
+   *
+   * lib/rate-limit.ts already built the answer — `ipBucketKey(ip, identity)`
+   * returns a trusted address verbatim and otherwise degrades to a per-ACCOUNT
+   * key — and `gateAuthAction({ kind: "login" })` already uses it. The choke
+   * point inside `authorize()`, which is the one that actually COUNTS, did not.
+   *
+   * Two distinct harms follow from that, and the two tests separate them.
+   */
+
+  beforeEach(() => {
+    vi.stubEnv("RATE_LIMIT_DISABLED", "");
+    h.findFirst.mockReset();
+    h.update.mockReset();
+    h.compare.mockReset();
+    h.findFirst.mockImplementation(async ({ where }: { where: { email: string } }) =>
+      fakeUser(where.email)
+    );
+    h.compare.mockResolvedValue(false);
+    h.update.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    h.ip.value = "198.51.100.1";
+  });
+
+  it("one attacker cannot spend every other customer's login budget", async () => {
+    // HARM 1: denial of service against everybody. The attacker burns the whole
+    // per-address minute on their own account; an unrelated customer's very
+    // first attempt must still be served.
+    const attacker = "untrusted-attacker@example.com";
+    const bystander = "untrusted-bystander@example.com";
+
+    for (let i = 0; i < IP_LIMIT; i++) {
+      expect(await attemptWithNoTrustedIp(attacker)).toBeNull();
+    }
+    expect(h.compare).toHaveBeenCalledTimes(IP_LIMIT);
+
+    // A different person, a different account, nothing of theirs spent. Asserted
+    // on the WORK REACHED, like the rest of this file — a refused attempt and a
+    // wrong password both return null, so null proves nothing.
+    expect(await attemptWithNoTrustedIp(bystander)).toBeNull();
+    expect(h.compare).toHaveBeenCalledTimes(IP_LIMIT + 1);
+    expect(h.findFirst).toHaveBeenCalledTimes(IP_LIMIT + 1);
+  });
+
+  it("the budget is still per-account, not unlimited, without a trusted address", async () => {
+    // The flip side, so the fix above cannot be mistaken for "stop counting".
+    // The attacker's OWN account still runs out after IP_LIMIT.
+    const target = "untrusted-own-budget@example.com";
+
+    for (let i = 0; i < IP_LIMIT; i++) {
+      expect(await attemptWithNoTrustedIp(target)).toBeNull();
+    }
+    expect(h.compare).toHaveBeenCalledTimes(IP_LIMIT);
+
+    expect(await attemptWithNoTrustedIp(target)).toBeNull();
+    expect(h.compare).toHaveBeenCalledTimes(IP_LIMIT);
+    expect(h.findFirst).toHaveBeenCalledTimes(IP_LIMIT);
+  });
+
+  it("the form's early rejection reads the same bucket the choke point wrote", async () => {
+    // HARM 2, and the quieter one. `loginAction` calls
+    // `gateAuthAction({ kind: "login" })` purely to produce a READABLE error,
+    // because authorize() can only return null. That gate CHECKS
+    // `ipBucketKey(ip, email)`. While authorize() consumed the raw sentinel
+    // instead, the two layers addressed different keys, so the form-side gate
+    // was reading a bucket nothing ever wrote — permanently inert in exactly the
+    // deployments that have no trusted header, and silently so.
+    const email = "untrusted-two-layers@example.com";
+
+    for (let i = 0; i < IP_LIMIT; i++) {
+      await attemptWithNoTrustedIp(email);
+    }
+
+    const verdict = gateAuthAction({ kind: "login", ip: UNTRUSTED_CLIENT_IP, email });
+    expect(verdict.allowed).toBe(false);
+    // And the copy the user sees comes from the bucket that actually refused.
+    expect(verdict.error).toMatch(/Too many requests/);
+  });
+
+  it("a trusted address keys on the address itself, exactly as before", async () => {
+    // The guard on the fix: this is what must NOT change. On Vercel x-real-ip is
+    // always set from the TCP peer, so `ipBucketKey` returns it verbatim and the
+    // key-space is byte-identical to the one before this change — a household or
+    // office behind one address still shares the 5/min, which is the intended
+    // behaviour there and not a bug to be "fixed" by this key.
+    const first = "trusted-shared-a@example.com";
+    const second = "trusted-shared-b@example.com";
+    const ip = "198.51.100.77";
+    expect(ipBucketKey(ip, first)).toBe(ip);
+
+    for (let i = 0; i < IP_LIMIT; i++) {
+      expect(await attempt(first, ip)).toBeNull();
+    }
+    expect(h.compare).toHaveBeenCalledTimes(IP_LIMIT);
+
+    // Same address, different account: still refused, because a trusted address
+    // is the dimension being priced.
+    expect(await attempt(second, ip)).toBeNull();
+    expect(h.compare).toHaveBeenCalledTimes(IP_LIMIT);
   });
 });

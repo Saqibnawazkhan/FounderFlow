@@ -247,8 +247,29 @@ export interface SummaryFigure {
 export function summaryFigures(args: {
   ranged: Transaction[];
   all: Transaction[];
+  /**
+   * The workspace's cash balance from the server roll-up
+   * (`getTransactionTotals().balance`), preferred over summing `all` (money-008).
+   *
+   * WHY IT IS NEEDED even though `all` is "the full ledger": `all` is
+   * `getTransactions()`, a LIST window capped at `MAX_TRANSACTIONS_PER_TYPE`
+   * (5,000 per type) whose own docstring ends "DO NOT SUM THE RESULT". Past the
+   * ceiling, the row labelled "Cash balance (all time)" is the balance of the
+   * most recent 5,000 rows per type — and a capped read drops the OLDEST rows,
+   * which for a startup is the seed round. That is money-010's wrong number
+   * arriving by a second route, in the one document a customer hands an investor.
+   *
+   * Only this row can come from an aggregate: every other figure here is scoped
+   * by the client-side period picker, so it would need a per-window server round
+   * trip. This one does not depend on the window at all.
+   *
+   * Optional ONLY so it could land ahead of the page.tsx change that supplies it;
+   * tests/app/reports/reports-period.test.ts fails while /reports does not pass
+   * it.
+   */
+  allTimeBalance?: number;
 }): SummaryFigure[] {
-  const { ranged, all } = args;
+  const { ranged, all, allTimeBalance } = args;
   return [
     { label: "Investments (in period)", amount: sumOfType(ranged, "investment") },
     { label: "Revenue (in period)", amount: sumOfType(ranged, "income") },
@@ -256,7 +277,10 @@ export function summaryFigures(args: {
     { label: "Net flow (in period)", amount: netOf(ranged) },
     // Last, and all-time: the row a reader will look for, positioned after the
     // flows so it cannot be mistaken for one of them.
-    { label: "Cash balance (all time)", amount: netOf(all) },
+    {
+      label: "Cash balance (all time)",
+      amount: allTimeBalance ?? netOf(all),
+    },
   ];
 }
 
@@ -379,9 +403,13 @@ type Props = {
   transactions: Transaction[];
   users: User[];
   company: Company;
+  /** `getTransactionTotals().balance` — the workspace's cash balance with no read
+   *  ceiling. See `summaryFigures` for why the row needs it and why it is the
+   *  only figure on this page that can come from an aggregate. */
+  allTimeBalance?: number;
 };
 
-export function ReportsClient({ transactions, users, company }: Props) {
+export function ReportsClient({ transactions, users, company, allTimeBalance }: Props) {
   const money = useMoney();
   const n = useNumberFormat();
   // Date window (F5): presets OR a custom from/to range. The whole report —
@@ -442,16 +470,17 @@ export function ReportsClient({ transactions, users, company }: Props) {
   // ledger — app/(app)/reports/page.tsx passes getTransactions() unwindowed — so
   // the all-time cash balance needs no extra query.
   const summary = useMemo(
-    () => summaryFigures({ ranged: rangedTxns, all: transactions }),
-    [rangedTxns, transactions]
+    () => summaryFigures({ ranged: rangedTxns, all: transactions, allTimeBalance }),
+    [rangedTxns, transactions, allTimeBalance]
   );
 
   const totalExpenses = rangedTxns
     .filter((t) => t.type === "expense")
     .reduce((s, t) => s + t.amount, 0);
-  const totalInvestments = rangedTxns
-    .filter((t) => t.type === "investment")
-    .reduce((s, t) => s + t.amount, 0);
+  // `totalInvestments` used to live here too, for the "% of capital" column. That
+  // column now comes from `contributorRows` (rep-004), which computes the
+  // denominator itself, so the local copy was left unreferenced — a figure-shaped
+  // dead binding is exactly what a later edit re-wires by mistake.
 
   async function exportPDF() {
     toast.loading("Generating PDF report…", { id: "pdf" });

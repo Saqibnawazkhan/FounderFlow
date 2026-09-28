@@ -17,6 +17,8 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const SECRET = "purge-secret-for-tests";
 
@@ -458,5 +460,53 @@ describe("prodready-003 — a missing CRON_SECRET must not fail silently", () =>
     const res = await mod.GET(new Request("https://app.test/api/cron/purge-soft-deleted"));
     expect(res.status).toBe(500);
     expect(sentry.captureException).toHaveBeenCalled();
+  });
+});
+
+/* ── drift guard ───────────────────────────────────────────────────────── */
+
+describe("the dry-run counter and the live purge must not drift apart", () => {
+  // cron-005's fix put a SECOND hand-maintained list of workspace tables in
+  // this route: `countCompanyRows` mirrors `purgeCompany` table for table. Two
+  // such lists in one file is exactly how the chat tables went missing for a
+  // day in 2026-09-24 — so the mirror is checked, not remembered. A table added
+  // to the delete and not to the count makes the dry run under-report by
+  // however many rows it holds, which is the one number the canary reads.
+  const ROUTE = join(process.cwd(), "app", "api", "cron", "purge-soft-deleted", "route.ts");
+
+  /** One top-level `async function` body, up to its column-zero closing brace. */
+  function functionBody(name: string): string {
+    const source = readFileSync(ROUTE, "utf8");
+    const start = source.indexOf(`async function ${name}`);
+    expect(
+      start,
+      `${name}() is gone from the purge route — fix the name, don't delete this test.`
+    ).toBeGreaterThan(-1);
+    const end = source.indexOf("\n}", start);
+    expect(end, `Could not find the closing brace of ${name}().`).toBeGreaterThan(start);
+    return source.slice(start, end);
+  }
+
+  it("counts every delegate the purge deletes", () => {
+    const purge = functionBody("purgeCompany");
+    const counter = functionBody("countCompanyRows");
+    const found = purge.match(/\b(?:tx|db)\.(\w+)\.delete(?:Many)?\s*\(/g) ?? [];
+    const delegates: string[] = [];
+    for (const hit of found) {
+      const name = /\b(?:tx|db)\.(\w+)\./.exec(hit)?.[1];
+      // `company` is the workspace row itself; the counter adds it as a literal 1.
+      if (!name || name === "company" || delegates.indexOf(name) !== -1) continue;
+      delegates.push(name);
+    }
+    expect(delegates.length).toBeGreaterThan(10);
+
+    for (const delegate of delegates) {
+      expect(
+        new RegExp("\\bdb\\." + delegate + "\\.count\\s*\\(").test(counter),
+        `purgeCompany() deletes db.${delegate} but countCompanyRows() never counts it, so ` +
+          `the dry run under-reports by every row in that table — and the bulk-mutation ` +
+          `canary thresholds on that number. Add it to countCompanyRows().`
+      ).toBe(true);
+    }
   });
 });

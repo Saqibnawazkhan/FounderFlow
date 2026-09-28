@@ -39,8 +39,13 @@ export async function sendPushToUsers(userIds: string[], payload: PushPayload): 
         // its own. (2) The purge cron deliberately has NO individual-user stage
         // (see its header), so those device rows live forever in a live
         // workspace. (3) Recipient lists upstream have historically forgotten
-        // the filter — lib/notify/fan-out.ts applies it on the EMAIL branch
-        // only.
+        // the filter — lib/notify/fan-out.ts applied it on the EMAIL branch
+        // alone, and the in-app write and the push two statements away from it
+        // did not. That is now resolved once, up front, for all three channels
+        // (data-integrity-004), which makes this filter the second of two rather
+        // than the only one. It stays: it is the boundary a caller added later
+        // cannot route around, and `sendPushToUsers` is reachable from
+        // lib/push/notify.ts without going through the fan-out at all.
         //
         // So a removed employee's phone kept buzzing with "New expense — 2,500,000"
         // from a workspace they had lost access to: confidential finance data

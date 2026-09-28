@@ -3,6 +3,10 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import type { TaskStatusCounts } from "@/lib/queries/tasks";
+// TYPE-ONLY import, so none of lib/queries' server graph (db, Sentry, the
+// scoped-session read) is pulled into the client bundle — the same shape as the
+// TaskStatusCounts line above.
+import type { MonthTotals, TransactionTotals, UserContribution } from "@/lib/queries/transactions";
 import dynamic from "next/dynamic";
 import {
   ArrowRight,
@@ -55,6 +59,234 @@ const C_MINT = "#6EE7B7";
 const C_DEEP = "#065F46";
 const CATEGORY_PALETTE = [C_PRIMARY, C_FOREST, C_MINT, C_DEEP, "#34D399", "#64748B"];
 
+/* ─────────────────────────────────────────────────────────────────────────── *
+ * The dashboard's money figures, as pure functions over EITHER an aggregate or
+ * the row array (money-008).
+ *
+ * WHAT WAS WRONG. Every figure below was `transactions.filter(…).reduce(…)` over
+ * the prop. That prop is `getTransactions()`, a windowed LIST read capped at
+ * `MAX_TRANSACTIONS_PER_TYPE` (5,000 per type) whose own docstring ends "DO NOT
+ * SUM THE RESULT". Past the ceiling the Balance card, the runway, the cash-flow
+ * chart, the category pie and the per-founder bars all silently shrink — and
+ * because a capped read drops the OLDEST rows, the first figure to go wrong is
+ * the seed investment: the founder whose capital started the company is the one
+ * whose contribution disappears as the workspace grows. This is the same defect
+ * the task KPI below already had (`tasks.length` over a 300-row window, fixed in
+ * 19bd7e7 by reading `getTaskStatusCounts()`), and the same one /reports' "Net
+ * Balance" had (money-010).
+ *
+ * WHY EACH TAKES AN OPTIONAL ROLL-UP. The aggregates are server-side
+ * (lib/queries/transactions.ts) so only app/(app)/dashboard/page.tsx can fetch
+ * them. Until it does, the array path keeps the page exactly as correct as it is
+ * today rather than half-wiring it; once it does, no figure here can be short by
+ * a dropped row. The fallback is a shim, not the destination —
+ * tests/app/money-rollups.test.ts asserts the page passes `rollups` and fails
+ * while it does not, because a roll-up with no caller fixes nothing and this repo
+ * has shipped that exact non-fix six times.
+ *
+ * All of them are exported and pure so the preference is testable without
+ * rendering React, the way reports-client.tsx already does it.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The server-side aggregates /dashboard needs, in one prop.
+ *
+ * One object rather than five props deliberately: the figures have to come from
+ * the same instant, and a page that can forget one of five props will.
+ */
+export interface DashboardRollups {
+  /** `getTransactionTotals()` — whole-ledger sums + counts per type. */
+  totals: TransactionTotals;
+  /** `getMonthToDateExpense()` — expense total for the current UTC month. */
+  monthToDateExpense: number;
+  /** Expense total over the rolling burn window:
+   *  `getTransactionTotals({ from: utcMonthsAgo(now, BURN_WINDOW_MONTHS) })`. */
+  burnWindowExpense: number;
+  /** `getMonthlyTotals(CASH_FLOW_MONTHS)` — oldest bucket first. */
+  monthly: MonthTotals[];
+  /** `getExpenseTotalsByCategory()` — biggest first. */
+  categories: { category: string; amount: number }[];
+  /** `getContributionTotalsByUser()` — keyed by `Transaction.addedBy`. */
+  contributions: Record<string, UserContribution>;
+}
+
+/** Months in the rolling burn window behind the runway figure. */
+export const BURN_WINDOW_MONTHS = 3;
+/** Buckets on the cash-flow chart. */
+export const CASH_FLOW_MONTHS = 6;
+/** Slices the pie stays readable at. */
+const MAX_PIE_SLICES = 6;
+
+function sumOfType(txns: Transaction[], type: Transaction["type"]): number {
+  return txns.filter((t) => t.type === type).reduce((s, t) => s + t.amount, 0);
+}
+
+export interface LedgerTotals {
+  investments: number;
+  revenue: number;
+  expenses: number;
+  /** Cash in (founder capital + earned revenue) − cash out. The same formula
+   *  /reports' "Cash balance (all time)" row uses, so the two cannot drift. */
+  balance: number;
+}
+
+export function ledgerTotals(
+  transactions: Transaction[],
+  rollups?: DashboardRollups
+): LedgerTotals {
+  if (rollups) {
+    const { byType, balance } = rollups.totals;
+    return {
+      investments: byType.investment.total,
+      revenue: byType.income.total,
+      expenses: byType.expense.total,
+      balance,
+    };
+  }
+  const investments = sumOfType(transactions, "investment");
+  const revenue = sumOfType(transactions, "income");
+  const expenses = sumOfType(transactions, "expense");
+  return { investments, revenue, expenses, balance: investments + revenue - expenses };
+}
+
+/**
+ * This month's spend, in the UTC calendar month.
+ *
+ * `isInUtcMonth` is the SAME boundary lib/queries/budgets.ts, lib/budgets/check.ts
+ * and /expenses use, which is the point: this card and the budget cap a row
+ * consumes agree about which month that row is in (money-007). The roll-up's own
+ * window is built from `startOfUtcMonth`, so both paths mean one thing.
+ */
+export function monthToDateExpense(
+  transactions: Transaction[],
+  now: Date,
+  rollups?: DashboardRollups
+): number {
+  if (rollups) return rollups.monthToDateExpense;
+  return transactions
+    .filter((t) => t.type === "expense" && isInUtcMonth(t.date, now))
+    .reduce((s, t) => s + t.amount, 0);
+}
+
+/**
+ * Spend over the rolling burn window.
+ *
+ * A ROLLING window, not the last N calendar months: a calendar window would
+ * include a partial current month, so early in the month the
+ * `/BURN_WINDOW_MONTHS` understates burn and therefore overstates runway.
+ * `utcMonthsAgo` pins the edge to UTC midnight so the window does not shift with
+ * the hour of day the dashboard happens to be opened.
+ */
+export function burnWindowExpense(
+  transactions: Transaction[],
+  now: Date,
+  rollups?: DashboardRollups
+): number {
+  if (rollups) return rollups.burnWindowExpense;
+  const cutoff = utcMonthsAgo(now, BURN_WINDOW_MONTHS);
+  return transactions
+    .filter((t) => t.type === "expense" && new Date(t.date) >= cutoff)
+    .reduce((s, t) => s + t.amount, 0);
+}
+
+export interface CashFlowBucket {
+  month: string;
+  expenses: number;
+  investments: number;
+  revenue: number;
+}
+
+/**
+ * Six UTC month buckets, oldest first, that abut exactly — `[start,
+ * endExclusive)` per month, so no row lands in two buckets or in none.
+ *
+ * The label is `utcMonthShortLabel`, never `format(monthStart, "MMM")`: the
+ * latter renders a UTC-midnight Date in the viewer's zone and prints "Sep" for
+ * the October bucket west of UTC — the same off-by-one as money-007, moved from
+ * the sum into the axis label. `getMonthlyTotals` labels its buckets with the
+ * same helper, so the two paths produce the same axis.
+ */
+export function cashFlowSeries(
+  transactions: Transaction[],
+  now: Date,
+  rollups?: DashboardRollups
+): CashFlowBucket[] {
+  if (rollups) {
+    return rollups.monthly.map((b) => ({
+      month: b.month,
+      expenses: b.expense,
+      investments: b.investment,
+      revenue: b.income,
+    }));
+  }
+  return Array.from({ length: CASH_FLOW_MONTHS }).map((_, i) => {
+    // i - (CASH_FLOW_MONTHS - 1) walks oldest→newest; `utcMonthWindow`
+    // normalises the year rollover.
+    const { start: monthStart, endExclusive } = utcMonthWindow(now, i - (CASH_FLOW_MONTHS - 1));
+    const monthTxns = transactions.filter((t) => {
+      const d = new Date(t.date);
+      return d >= monthStart && d < endExclusive;
+    });
+    return {
+      month: utcMonthShortLabel(monthStart),
+      expenses: sumOfType(monthTxns, "expense"),
+      investments: sumOfType(monthTxns, "investment"),
+      revenue: sumOfType(monthTxns, "income"),
+    };
+  });
+}
+
+/** Expense spend per category for the pie, biggest first, capped at
+ *  `MAX_PIE_SLICES`. The roll-up already orders its rows; re-sorting keeps the
+ *  function total rather than dependent on a caller's ordering. */
+export function expenseCategorySlices(
+  transactions: Transaction[],
+  rollups?: DashboardRollups
+): { name: string; value: number }[] {
+  let rows: { category: string; amount: number }[];
+  if (rollups) {
+    rows = rollups.categories.slice();
+  } else {
+    const m = new Map<string, number>();
+    transactions
+      .filter((t) => t.type === "expense")
+      .forEach((t) => m.set(t.category, (m.get(t.category) || 0) + t.amount));
+    // Array.from, not a spread: tsconfig sets no `target`, so it defaults to ES5
+    // and spreading a Map fails `npm run typecheck` while passing vitest.
+    rows = Array.from(m.entries()).map(([category, amount]) => ({ category, amount }));
+  }
+  return rows
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, MAX_PIE_SLICES)
+    .map((r) => ({ name: r.category, value: r.amount }));
+}
+
+/**
+ * Capital contributed per person, biggest first, zero-contributors omitted.
+ *
+ * This is money-008 at its sharpest and the reason the roll-up exists: over the
+ * capped array the founder whose seed round opened the company is exactly the
+ * person whose bar vanishes, because the rows a ceiling drops are the oldest.
+ * Keyed by `Transaction.addedBy` (who RECORDED the row), matching what the card
+ * has always displayed.
+ */
+export function founderContributionRows(
+  users: User[],
+  transactions: Transaction[],
+  rollups?: DashboardRollups
+): { name: string; amount: number; role: string }[] {
+  const investedBy = (id: string): number =>
+    rollups
+      ? (rollups.contributions[id]?.investment ?? 0)
+      : transactions
+          .filter((t) => t.addedBy === id && t.type === "investment")
+          .reduce((s, t) => s + t.amount, 0);
+  return users
+    .map((u) => ({ name: u.name, amount: investedBy(u.id), role: u.role as string }))
+    .filter((f) => f.amount > 0)
+    .sort((a, b) => b.amount - a.amount);
+}
+
 type Props = {
   transactions: Transaction[];
   tasks: Task[];
@@ -64,6 +296,12 @@ type Props = {
   clockedIn: { count: number; peers: { userId: string; userName: string }[] };
   currentUserId: string;
   currentUserName: string;
+  /** Server-side aggregates. Optional ONLY so this could land ahead of the
+   *  page.tsx change that supplies it (see DashboardRollups); every money figure
+   *  on this page is short by whatever the 5,000-row-per-type list read dropped
+   *  until it is passed. tests/app/money-rollups.test.ts fails while it is
+   *  absent. */
+  rollups?: DashboardRollups;
 };
 
 export function DashboardClient({
@@ -75,52 +313,43 @@ export function DashboardClient({
   clockedIn,
   currentUserId,
   currentUserName,
+  rollups,
 }: Props) {
   const money = useMoney();
   const n = useNumberFormat();
-  const totalInvestments = transactions
-    .filter((t) => t.type === "investment")
-    .reduce((sum, t) => sum + t.amount, 0);
-  const totalExpenses = transactions
-    .filter((t) => t.type === "expense")
-    .reduce((sum, t) => sum + t.amount, 0);
-  const totalRevenue = transactions
-    .filter((t) => t.type === "income")
-    .reduce((sum, t) => sum + t.amount, 0);
-  // Cash balance = everything in (founder capital + earned revenue) − spend.
-  const balance = totalInvestments + totalRevenue - totalExpenses;
+
+  // EVERY money figure below goes through the pure functions above, which prefer
+  // the server-side aggregate and fall back to the row array (money-008). The
+  // array is `getTransactions()`, a 5,000-row-per-type LIST window whose own
+  // docstring says not to sum it — so `transactions.filter(…).reduce(…)` here
+  // was the same defect as the task KPI four lines down.
+  //
+  // One `new Date()` per render, shared by every window below: re-reading the
+  // clock per figure could, across a month boundary, put the This-month card and
+  // the cash-flow chart in different months.
+  const now = useMemo(() => new Date(), []);
+
+  const {
+    investments: totalInvestments,
+    expenses: totalExpenses,
+    balance,
+  } = useMemo(() => ledgerTotals(transactions, rollups), [transactions, rollups]);
   // From the count query, not from `tasks`: that array is a 300-row window
   // (perf-002), so filtering it under-reports the KPI in a busy workspace.
   const pendingTasks = taskCounts.open;
   const completedTasks = taskCounts.completed;
 
-  // A ROLLING three-month window, not the last three calendar months: a
-  // calendar window would include a partial current month, so early in the
-  // month the /3 understates burn and therefore overstates runway. `utcMonthsAgo`
-  // pins the edge to UTC midnight so the window does not shift with the hour of
-  // day the dashboard happens to be opened.
-  const last3MoExpenses = useMemo(() => {
-    const cutoff = utcMonthsAgo(new Date(), 3);
-    return transactions
-      .filter((t) => t.type === "expense" && new Date(t.date) >= cutoff)
-      .reduce((s, t) => s + t.amount, 0);
-  }, [transactions]);
-  const monthlyBurn = last3MoExpenses / 3;
+  const monthlyBurn =
+    useMemo(() => burnWindowExpense(transactions, now, rollups), [transactions, now, rollups]) /
+    BURN_WINDOW_MONTHS;
   const runwayMonths = monthlyBurn > 0 ? balance / monthlyBurn : Infinity;
 
-  // This-month spend + how it compares to the 3-month average burn — a far more
+  // This-month spend + how it compares to the average burn — a far more
   // frequently-checked number than all-time capital raised.
-  //
-  // `isInUtcMonth` is the SAME boundary lib/queries/budgets.ts and
-  // lib/budgets/check.ts use, which is the point: this card and the budget cap
-  // a row consumes now agree about which month that row is in. /expenses reads
-  // the same helper (money-003), so the two "This month" cards agree too.
-  const currentMonthSpend = useMemo(() => {
-    const now = new Date();
-    return transactions
-      .filter((t) => t.type === "expense" && isInUtcMonth(t.date, now))
-      .reduce((s, t) => s + t.amount, 0);
-  }, [transactions]);
+  const currentMonthSpend = useMemo(
+    () => monthToDateExpense(transactions, now, rollups),
+    [transactions, now, rollups]
+  );
   // Kept as a whole-number percent (not a 0–1 ratio) because the sign test
   // below reads it. `|| 0` normalises -0: a -0.4% drift rounds to -0, which
   // passes `>= 0` and would take the "+" branch while Intl rendered the value
@@ -128,58 +357,20 @@ export function DashboardClient({
   const burnDeltaPct =
     monthlyBurn > 0 ? Math.round(((currentMonthSpend - monthlyBurn) / monthlyBurn) * 100) || 0 : 0;
 
-  const monthlyData = useMemo(() => {
-    // One `now` for all six buckets: re-reading the clock per bucket could,
-    // across a month boundary, build a series with a duplicated or missing month.
-    const now = new Date();
-    return Array.from({ length: 6 }).map((_, i) => {
-      // Six half-open UTC windows that abut exactly — [start, endExclusive)
-      // per month, so no row lands in two buckets or in none. i-5 walks
-      // oldest→newest; `utcMonthWindow` normalises the year rollover.
-      const { start: monthStart, endExclusive } = utcMonthWindow(now, i - 5);
-      const monthTxns = transactions.filter((t) => {
-        const d = new Date(t.date);
-        return d >= monthStart && d < endExclusive;
-      });
-      return {
-        // NOT `format(monthStart, "MMM")`: that renders a UTC-midnight Date in
-        // the viewer's zone, so the October bucket would print "Sep" west of
-        // UTC — the same off-by-one, moved from the sum into the axis label.
-        month: utcMonthShortLabel(monthStart),
-        expenses: monthTxns.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0),
-        investments: monthTxns
-          .filter((t) => t.type === "investment")
-          .reduce((s, t) => s + t.amount, 0),
-        revenue: monthTxns.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0),
-      };
-    });
-  }, [transactions]);
-
-  const founderContributions = useMemo(
-    () =>
-      users
-        .map((u) => ({
-          name: u.name,
-          amount: transactions
-            .filter((t) => t.addedBy === u.id && t.type === "investment")
-            .reduce((s, t) => s + t.amount, 0),
-          role: u.role,
-        }))
-        .filter((f) => f.amount > 0)
-        .sort((a, b) => b.amount - a.amount),
-    [users, transactions]
+  const monthlyData = useMemo(
+    () => cashFlowSeries(transactions, now, rollups),
+    [transactions, now, rollups]
   );
 
-  const categoryData = useMemo(() => {
-    const m = new Map<string, number>();
-    transactions
-      .filter((t) => t.type === "expense")
-      .forEach((t) => m.set(t.category, (m.get(t.category) || 0) + t.amount));
-    return Array.from(m.entries())
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 6);
-  }, [transactions]);
+  const founderContributions = useMemo(
+    () => founderContributionRows(users, transactions, rollups),
+    [users, transactions, rollups]
+  );
+
+  const categoryData = useMemo(
+    () => expenseCategorySlices(transactions, rollups),
+    [transactions, rollups]
+  );
 
   const recentActivities = activities.slice(0, 6);
 

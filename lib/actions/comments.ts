@@ -102,7 +102,11 @@ export async function createCommentAction(input: unknown): Promise<
       // mentioned at all.
       // tests/lib/comments/mention-delivery.test.ts pins this, with a fake
       // Prisma that honours `select` — a fake that ignored it would have passed
-      // against the bug.
+      // against the bug. tests/lib/comments/mention-roster.test.ts then sweeps
+      // every OTHER whole-company roster that feeds the parser, because the
+      // module header of lib/comments/mentions.ts says the only thing that
+      // catches a missing `handle` is a grep — and a grep nobody runs is not a
+      // guard.
       db.user.findMany({
         where: { companyId, deletedAt: null },
         select: { id: true, name: true, handle: true },

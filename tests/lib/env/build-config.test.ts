@@ -23,6 +23,12 @@
  *   prodready-005  no GMAIL_USER / GMAIL_APP_PASSWORD → lib/email/send.ts logs
  *                  the message and reports success, so a locked-out customer
  *                  is told to check an inbox nothing was sent to.
+ *   prodready-006  HALF a Sentry configuration — SENTRY_DSN without
+ *                  NEXT_PUBLIC_SENTRY_DSN or the reverse. Not a missing var but
+ *                  a lying one: the dashboard receives events, looks alive, and
+ *                  is missing an entire half of the application, so nobody goes
+ *                  looking for the gap. This is the one case here that is
+ *                  refused while its absence only warns.
  *
  * WHY A TEST AND NOT JUST THE GUARD. The guard lives in a build script that
  * never runs on a developer's machine and whose output nobody reads while it is
@@ -47,6 +53,13 @@
  * migrate step each failed a named assertion here. If you change the guard,
  * plant one again — "the tests still pass" means nothing until you have seen
  * them fail.
+ *
+ * The prodready-006 and prodready-004 cases were proven the other way round,
+ * which is stronger: the assertions were written first and watched fail against
+ * the unfixed code — 5 red for 006 ("expected 0 to be greater than 0",
+ * "productionEnvWarnings is never called — the warnings are dead code",
+ * "expected 0 to be greater than 1") and 3 red for 004 ("appOrigin is not a
+ * function") — before any of it was wired up.
  */
 
 import { describe, expect, it } from "vitest";
@@ -59,7 +72,7 @@ import {
   productionEnvProblems,
   productionEnvWarnings,
 } from "@/scripts/vercel-build.mjs";
-import { productionAppUrlProblem } from "@/lib/env";
+import { appOrigin, productionAppUrlProblem } from "@/lib/env";
 
 const ROOT = process.cwd();
 const BUILD_SCRIPT = "scripts/vercel-build.mjs";
@@ -569,5 +582,64 @@ describe("lib/env.ts production assertion (the second line for the e-mail origin
       src.indexOf("productionAppUrlProblem(process.env.NEXT_PUBLIC_APP_URL)"),
       "nothing calls productionAppUrlProblem — the assertion is dead code"
     ).toBeGreaterThan(-1);
+  });
+});
+
+describe("prodready-004 — one place that decides the canonical origin", () => {
+  /**
+   * The build gate above stops a production deploy with no NEXT_PUBLIC_APP_URL.
+   * What it cannot fix is that SEVEN call sites each decide the fallback for
+   * themselves — `app/layout.tsx:25`, `lib/actions/password-reset.ts:60`,
+   * `lib/actions/team.ts:55`, `lib/actions/email-change.ts:100`,
+   * `lib/email/verification.ts:17`, `lib/notify/email.ts:23` and
+   * `lib/lemonsqueezy/config.ts:27` — so the next one added gets it wrong, and a
+   * reader cannot answer "what origin do e-mails use?" from one place.
+   *
+   * The second, quieter bug those seven copies hide: only `team.ts` strips a
+   * trailing slash. Every link is built by string concatenation onto this value,
+   * so a Production value saved as `https://app.founderflow.com/` — which is what
+   * copying the origin out of a browser address bar gives you — produces
+   * `https://app.founderflow.com//reset-password/<token>` from the other six.
+   * A protocol-relative-looking double slash in a path is the kind of URL that
+   * works in one mail client and 404s in the next, and the failure lands on a
+   * locked-out customer clicking a one-time link.
+   *
+   * So the accessor normalises, and it is the ONE decision. These assertions are
+   * about lib/env.ts alone; routing the seven sites through it is a separate
+   * change to files this slice does not own.
+   */
+  it("strips a trailing slash, so concatenated links never contain a double slash", () => {
+    expect(
+      appOrigin("https://app.founderflow.com/"),
+      "a Production origin saved with a trailing slash produces " +
+        "https://app.founderflow.com//invite/<token> at six of the seven call sites"
+    ).toBe("https://app.founderflow.com");
+    expect(appOrigin("https://app.founderflow.com//")).toBe("https://app.founderflow.com");
+    expect(appOrigin("https://app.founderflow.com")).toBe("https://app.founderflow.com");
+    // A path prefix is legitimate (a reverse-proxied sub-path) and must survive.
+    expect(appOrigin("https://founderflow.com/app/")).toBe("https://founderflow.com/app");
+  });
+
+  it("falls back for local dev, and treats an empty value as unset", () => {
+    // `next dev` and preview builds have no canonical origin; an empty string is
+    // the shape of "I added the variable in Vercel and forgot the value", and
+    // the seven `??` sites all let it through as a valid origin today.
+    expect(appOrigin(undefined)).toBe("http://localhost:3000");
+    expect(
+      appOrigin("   "),
+      "a whitespace-only NEXT_PUBLIC_APP_URL was used as the origin, so every e-mail link " +
+        "would be a bare path"
+    ).toBe("http://localhost:3000");
+  });
+
+  it("reads the environment when called with no argument", () => {
+    // The zero-arg call is what the seven call sites will use; the argument
+    // exists so the decision is testable without mutating process.env.
+    const origin = appOrigin();
+    expect(origin.length, "appOrigin() returned an empty origin").toBeGreaterThan(0);
+    expect(
+      origin.endsWith("/"),
+      "appOrigin() returned a trailing slash, which is the whole thing it exists to prevent"
+    ).toBe(false);
   });
 });

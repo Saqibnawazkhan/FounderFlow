@@ -45,6 +45,27 @@ vi.mock("next/navigation", () => ({
 const toastMock = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 vi.mock("react-hot-toast", () => ({ default: toastMock }));
 
+/**
+ * The viewer's company role, as the browser already has it.
+ *
+ * <Providers> wraps the whole app in next-auth's <SessionProvider> and
+ * components/providers.tsx already reads `session.user.role` out of it to
+ * hydrate the store, so the role is not a new thing shipped to the client — it
+ * is a thing this island was not reading.
+ */
+const sessionMock = vi.hoisted(() => ({
+  data: null as { user?: { id?: string; role?: string } } | null,
+  status: "loading" as "loading" | "authenticated" | "unauthenticated",
+}));
+vi.mock("next-auth/react", () => ({
+  useSession: () => ({ data: sessionMock.data, status: sessionMock.status }),
+}));
+
+function signedInAs(role: "admin" | "cofounder" | "member") {
+  sessionMock.data = { user: { id: "u_me", role } };
+  sessionMock.status = "authenticated";
+}
+
 const chatActions = vi.hoisted(() => ({
   pollChannelActivityAction: vi.fn(),
   addChannelMembersAction: vi.fn(),
@@ -71,9 +92,22 @@ vi.mock("@/components/chat/message-list", () => ({
     <div data-testid="message-list" data-disabled={disabled ? "true" : "false"} />
   ),
 }));
+// `canPostRunway` is surfaced as an attribute rather than swallowed, because
+// whether this island passes it is the whole of reachability row 4.
 vi.mock("@/components/chat/message-composer", () => ({
-  MessageComposer: ({ onSent }: { onSent?: () => void }) => (
-    <button type="button" onClick={() => onSent?.()}>
+  MessageComposer: ({
+    onSent,
+    canPostRunway,
+  }: {
+    onSent?: () => void;
+    canPostRunway?: boolean;
+  }) => (
+    <button
+      type="button"
+      data-testid="composer"
+      data-can-post-runway={canPostRunway ? "true" : "false"}
+      onClick={() => onSent?.()}
+    >
       Send a message
     </button>
   ),
@@ -144,6 +178,8 @@ beforeEach(() => {
     data: { lastMessageAt: LAST },
   });
   chatActions.addChannelMembersAction.mockResolvedValue({ success: true, data: { added: 1 } });
+  sessionMock.data = null;
+  sessionMock.status = "loading";
 });
 
 /* ═════════════════ chat-002 — who may post in a channel ══════════════ */
@@ -346,5 +382,60 @@ describe("ChatClient — adding people to a channel (chat-003)", () => {
     );
 
     expect(screen.queryByRole("button", { name: /add people/i })).not.toBeInTheDocument();
+  });
+});
+
+/* ═════ the Runway card has an entry point — reachability row 4 ════════════
+ *
+ * `postRunwayCardAction` is the product's differentiator: it posts the
+ * workspace's cash / burn / runway snapshot into a conversation. It is
+ * complete, unit-tested, re-checks `canPostRunwayCard(role)` server-side, and
+ * HAS a caller — <MessageComposer> imports it and calls it. It has still never
+ * been reachable, because the button is drawn only when `canPostRunway` is
+ * true, the prop defaults to false, and no caller anywhere in the app passed
+ * it. tests/lib/actions/reachability.test.ts fails on exactly that
+ * ("<message-composer.tsx canPostRunway> is never passed"), and has since
+ * before this wave.
+ *
+ * These assertions are about the CHANNEL composer, which is the only one that
+ * can draw the control: <MessageComposer> hides it whenever `parentId` is set,
+ * because `PostRunwayCardSchema` carries no parentId and a card posted from a
+ * thread would land in the timeline instead — so <ThreadPanel> is not a
+ * candidate entry point and is not asserted on here.
+ *
+ * WHY THE ROLE, AND NOT A BOOLEAN: `canPostRunwayCard` delegates to
+ * `canSeeFinances`, and the one thing this island must not do is restate that
+ * rule. It is deliberately NOT mocked, for the reason `canPostInChannel` is not
+ * mocked above — stubbing the predicate would assert that the component calls a
+ * stub, not that it agrees with the server.
+ */
+describe("ChatClient — the Runway control has an entry point (reachability row 4)", () => {
+  const composer = () => screen.getByTestId("composer");
+
+  it("offers the Runway control to an admin", () => {
+    signedInAs("admin");
+    renderClient(channel({ isMember: true }));
+    expect(composer().getAttribute("data-can-post-runway")).toBe("true");
+  });
+
+  it("offers it to a cofounder, because the finance boundary says so", () => {
+    signedInAs("cofounder");
+    renderClient(channel({ isMember: true }));
+    expect(composer().getAttribute("data-can-post-runway")).toBe("true");
+  });
+
+  it("never offers it to a member — chat is open to every role, the ledger is not", () => {
+    // Members never see finance pages (audit-flow #1), and a Runway card in a
+    // public channel is read by the whole company.
+    signedInAs("member");
+    renderClient(channel({ isMember: true }));
+    expect(composer().getAttribute("data-can-post-runway")).toBe("false");
+  });
+
+  it("offers nothing while the session is still resolving", () => {
+    // Fail-closed: an unknown role is not an admin. The worst outcome is a
+    // control that appears a moment late.
+    renderClient(channel({ isMember: true }));
+    expect(composer().getAttribute("data-can-post-runway")).toBe("false");
   });
 });

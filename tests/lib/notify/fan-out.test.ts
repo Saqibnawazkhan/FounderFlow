@@ -28,6 +28,22 @@ vi.mock("@/lib/notify/email", () => ({
   linkBase: () => "http://localhost:3000",
 }));
 
+/**
+ * The finance entitlement rule (sec-005). It lives in lib/queries/notifications
+ * beside the read-time filter it has to agree with, and it is unit-tested there
+ * over 15 cases — so what is asserted HERE is the wiring: that the fan-out asks
+ * it, asks it with the right scope, and honours the answer on all three
+ * channels. Mocked rather than exercised, because the real module reaches a
+ * Prisma client and the rule itself already has its own suite.
+ *
+ * The default implementation is a pass-through so that every pre-existing
+ * finance-category test in this file keeps meaning what it meant.
+ */
+const financeRecipients = vi.fn();
+vi.mock("@/lib/queries/notifications", () => ({
+  financeRecipients: (...args: unknown[]) => financeRecipients(...args),
+}));
+
 type Stored = { userId: string; event: string; inApp: boolean; email: boolean; push: boolean };
 
 /**
@@ -87,6 +103,8 @@ const settlePush = () => new Promise((r) => setTimeout(r, 0));
 beforeEach(() => {
   pushForNotificationRows.mockClear();
   fireNotificationEmails.mockClear();
+  financeRecipients.mockReset();
+  financeRecipients.mockImplementation((ids: string[]) => Promise.resolve(ids));
 });
 
 describe("notifyUsers (the single notification delivery path)", () => {
@@ -352,5 +370,101 @@ describe("a deactivated teammate is not a recipient (data-integrity-004)", () =>
     expect(calls).toHaveLength(0);
     expect(pushForNotificationRows).not.toHaveBeenCalled();
     expect(fireNotificationEmails).not.toHaveBeenCalled();
+  });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* sec-005 — a member is never TOLD a finance figure, on any channel           */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+describe("a finance event only reaches people entitled to the money (sec-005)", () => {
+  // WHY THE READ FILTER IS NOT ENOUGH, restated because it is the whole point.
+  // `visibleNotifications` strips a finance row at READ time, which covers
+  // /notifications — and covers nothing else. `notifyUsers` writes the in-app
+  // row, fires push and sends email before any reader calls any filter, so a
+  // member with `budget_alert` push on gets "Marketing is 90% spent —
+  // 2,500,000 PKR" on their lock screen and in their inbox, outside the app,
+  // where nothing downstream can reach it. The recipient list is the only place
+  // that covers all three at once.
+  const finance = {
+    event: "budget_alert",
+    companyId: "c1",
+    title: "Budget alert",
+    message: "Marketing is at 90% — 2,500,000 PKR of 2,800,000 PKR",
+    category: "finance",
+    projectId: "p1",
+    link: "/projects/p1",
+  } as const;
+
+  it("drops a recipient the finance rule does not allow, in-app", async () => {
+    // u2 is an ordinary member on a project they do not supervise.
+    financeRecipients.mockResolvedValue(["u1"]);
+    const { client, calls } = fakeClient();
+    const res = await notifyUsers({ ...finance, userIds: ["u1", "u2"], tx: client });
+    expect(res.notified, "only the entitled reader was notified").toBe(1);
+    expect(calls[0]!.data.map((d) => d.userId)).toEqual(["u1"]);
+  });
+
+  it("raises no push for a recipient the finance rule does not allow", async () => {
+    financeRecipients.mockResolvedValue(["u1"]);
+    const { client } = fakeClient();
+    await notifyUsers({ ...finance, userIds: ["u1", "u2"], tx: client });
+    await settlePush();
+    const rows = pushForNotificationRows.mock.calls[0]![0] as { userId: string }[];
+    expect(rows.map((r) => r.userId)).toEqual(["u1"]);
+  });
+
+  it("sends no email to a recipient the finance rule does not allow", async () => {
+    financeRecipients.mockResolvedValue(["u1"]);
+    const { client } = fakeClient();
+    await notifyUsers({ ...finance, userIds: ["u1", "u2"], tx: client });
+    const job = fireNotificationEmails.mock.calls[0]![0] as { recipients: { email: string }[] };
+    expect(job.recipients.map((r) => r.email)).toEqual(["u1@nimbus.app"]);
+  });
+
+  it("delivers nothing at all when nobody may be told about the money", async () => {
+    financeRecipients.mockResolvedValue([]);
+    const { client, calls } = fakeClient();
+    const res = await notifyUsers({ ...finance, userIds: ["u1", "u2"], tx: client });
+    await settlePush();
+    expect(res.notified).toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(pushForNotificationRows).not.toHaveBeenCalled();
+    expect(fireNotificationEmails).not.toHaveBeenCalled();
+  });
+
+  it("asks the rule with the event's company and project scope", async () => {
+    // The project scope is what grants the supervisor escape hatch. Passing it
+    // as `undefined` (rather than null) for an unscoped event would make a
+    // company-wide money ping look project-scoped to a stricter rule later.
+    financeRecipients.mockResolvedValue(["u1"]);
+    const { client } = fakeClient();
+    await notifyUsers({ ...finance, userIds: ["u1", "u2"], tx: client });
+    expect(financeRecipients).toHaveBeenCalledTimes(1);
+    expect(financeRecipients.mock.calls[0]![1]).toEqual({ companyId: "c1", projectId: "p1" });
+
+    financeRecipients.mockClear();
+    const second = fakeClient();
+    await notifyUsers({ ...finance, projectId: undefined, userIds: ["u1"], tx: second.client });
+    expect(financeRecipients.mock.calls[0]![1]).toEqual({ companyId: "c1", projectId: null });
+  });
+
+  it("does not consult the finance rule for a task event", async () => {
+    // Every notification would otherwise pay for the extra reads, and a task
+    // ping has no money in it to protect.
+    const { client } = fakeClient();
+    await notifyUsers({ ...base, userIds: ["u1", "u2"], tx: client });
+    expect(financeRecipients).not.toHaveBeenCalled();
+  });
+
+  it("asks the rule only about people some channel would actually reach", async () => {
+    // u2 muted every channel, so they are not a recipient of anything and the
+    // entitlement question about them is moot.
+    financeRecipients.mockImplementation((ids: string[]) => Promise.resolve(ids));
+    const { client } = fakeClient([
+      { userId: "u2", event: "budget_alert", inApp: false, email: false, push: false },
+    ]);
+    await notifyUsers({ ...finance, userIds: ["u1", "u2"], tx: client });
+    expect(financeRecipients.mock.calls[0]![0]).toEqual(["u1"]);
   });
 });

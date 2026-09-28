@@ -314,6 +314,59 @@ describe("summaryFigures (money-010)", () => {
     const f = figures();
     expect(f[f.length - 1]?.label.toLowerCase()).toContain("cash balance");
   });
+
+  /* ─────────────────────── money-008, on the same row ────────────────────── *
+   *
+   * The all-time balance closed money-010 by deriving from `all` — the full
+   * ledger the page is handed. But that prop is `getTransactions()`, a LIST
+   * window capped at `MAX_TRANSACTIONS_PER_TYPE` (5,000 per type) whose own
+   * docstring ends "DO NOT SUM THE RESULT". So on a workspace past the ceiling
+   * the row labelled "Cash balance (all time)" is not the all-time balance
+   * either — it is the balance of the most recent 5,000 rows per type, and the
+   * rows a ceiling drops are the OLDEST, which for a startup is the seed. The
+   * mislabelled export was the finding; this is the same wrong number arriving
+   * by a different route, in the one artefact a customer hands an investor.
+   *
+   * Unlike the windowed rows, this one CAN come from an aggregate: it does not
+   * depend on the client-side period picker. `getTransactionTotals().balance` is
+   * exactly this figure with no ceiling.
+   */
+  it("prefers an unbounded balance from the server over summing the capped list", () => {
+    const withRollup = summaryFigures({ ranged, all, allTimeBalance: 92_000_000 });
+    const balance = withRollup[withRollup.length - 1];
+    expect(balance.label.toLowerCase()).toContain("cash balance");
+    expect(balance.amount).toBe(92_000_000);
+  });
+
+  it("keeps the windowed rows windowed even when the balance comes from the server", () => {
+    // The period figures must NOT follow the all-time number — that would undo
+    // money-010 from the other direction.
+    const withRollup = summaryFigures({ ranged, all, allTimeBalance: 92_000_000 });
+    const flow = withRollup.find((f) => f.label.toLowerCase().includes("net flow"));
+    expect(flow?.amount).toBe(-500_000);
+  });
+
+  it("still sums the ledger when the server figure is absent", () => {
+    expect(summaryFigures({ ranged, all, allTimeBalance: undefined }).pop()?.amount).toBe(
+      4_500_000
+    );
+  });
+});
+
+/**
+ * `allTimeBalance` reaching `summaryFigures` is only half the fix: the Server
+ * Component has to fetch it. This assertion fails until
+ * app/(app)/reports/page.tsx calls `getTransactionTotals()` and passes
+ * `allTimeBalance` — see a09's report under `needsOtherFiles` for the patch.
+ * Deleting this to go green is how `getTransactionTotals` came to exist for a
+ * whole wave with no caller at all.
+ */
+describe("/reports' Server Component supplies the unbounded balance", () => {
+  it("fetches the roll-up and passes allTimeBalance", () => {
+    const code = source("app", "(app)", "reports", "page.tsx");
+    expect(code).toContain("getTransactionTotals");
+    expect(code).toMatch(/allTimeBalance=\{/);
+  });
 });
 
 describe("both exporters state the date range before the figures it qualifies", () => {

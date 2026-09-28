@@ -29,7 +29,7 @@
  * horizontal scale. See the follow-up note at the bottom of this file.
  */
 
-import { limiters } from "@/lib/rate-limit";
+import { ipBucketKey, limiters } from "@/lib/rate-limit";
 
 /** Which bucket refused the attempt. For logging/metrics, never for the user. */
 export type LoginThrottleScope = "ip" | "email";
@@ -68,14 +68,33 @@ export function loginEmailKey(email: string): string {
  *    into a lockout on their own account, which is the failure mode that would
  *    make an account-keyed limit unshippable.
  *
- * `ip` comes from `getClientIp()`, which falls back to the literal "unknown"
- * when no proxy headers are present. On Vercel, x-real-ip is always set from
- * the TCP peer, so production keys on a real address. In local dev there are no
- * such headers and every caller shares the one "unknown" bucket — accepted, and
- * NOT worked around by weakening production, because the form path already
- * shared that same key before this change (via `limiters.auth`): dev is no
- * worse off than it was, and a second bucket at the same 5/min does not change
- * when a human hits it.
+ * WHAT THE PER-IP BUCKET IS ACTUALLY KEYED ON, and why it is not `ip`:
+ *
+ * `ip` comes from `getClientIp()`, which returns a real address only where a
+ * forwarding header may be believed, and otherwise the sentinel
+ * `UNTRUSTED_CLIENT_IP` — every self-hosted box, every Docker/nginx deployment,
+ * `vercel dev`, and any production runtime lib/client-ip.ts cannot identify. So
+ * the key is `ipBucketKey(ip, loginEmailKey(email))`:
+ *
+ *   - With a trusted address the key is that address verbatim, byte-identical
+ *     to what this file used before, so nothing about Vercel changes. An office
+ *     behind one address still shares the 5/min, which is the point of an
+ *     address-keyed bucket and not a bug.
+ *   - Without one it degrades to a per-ACCOUNT key. A sentinel used verbatim is
+ *     a BUCKET: one 5-per-minute budget shared by every visitor alive, which an
+ *     attacker empties deliberately to refuse sign-in to every paying customer
+ *     at once, from one machine. Never key a limiter on a constant.
+ *
+ * (An earlier version of this paragraph said the fallback was the literal string
+ * "unknown" and called the shared bucket "accepted", true only of local dev. It
+ * was wrong on both counts by the time it was read: the sentinel had been
+ * renamed, the fallback reaches production wherever we are not on Vercel, and
+ * `gateAuthAction({ kind: "login" })` in lib/rate-limit.ts had already moved to
+ * `ipBucketKey` — so the form's CHECK and this function's CONSUME were
+ * addressing different keys, leaving the form-side gate reading a bucket
+ * nothing ever wrote. A comment that overstates a safety mechanism is this
+ * repo's most recurrent defect; both layers now use one key function, and
+ * tests/lib/auth/login-throttle.test.ts pins that they agree.)
  *
  * DO NOT "fix" a local annoyance with `RATE_LIMIT_DISABLED=true`. That flag is
  * a hazard, not a tool: `.env.local` deliberately pins it to "false", so the
@@ -90,7 +109,10 @@ export function loginEmailKey(email: string): string {
  * entirely with zero signal.
  */
 export function gateLoginAttempt(ip: string, email: string): LoginThrottleDecision {
-  const byIp = limiters.credentials.consume(ip);
+  // `ipBucketKey`, never the raw `ip`: see the paragraph above, and note that
+  // `gateAuthAction({ kind: "login" })` CHECKS this same key. The two must not
+  // drift, or the form's readable early rejection stops seeing this counter.
+  const byIp = limiters.credentials.consume(ipBucketKey(ip, loginEmailKey(email)));
   if (!byIp.allowed) {
     return { allowed: false, scope: "ip", retryAfterMs: byIp.retryAfterMs };
   }
@@ -117,12 +139,28 @@ export function recordLoginFailure(email: string): void {
 }
 
 /**
- * FOLLOW-UP, deliberately not done here (needs infra, not code): move these two
- * buckets to a durable shared store — Upstash Redis is what lib/rate-limit.ts
- * already names as the intended swap, and `consume()`/`check()` keep their
- * signatures, so only the storage changes. Until then the guarantee is
- * per-instance: an attacker who can land requests on N warm lambdas gets N
- * times the budget, and a redeploy resets every counter. That is a real
- * weakening of the numbers above, and it is still strictly better than the
- * unbounded endpoint this replaced.
+ * FOLLOW-UP, deliberately not done here (needs infra, not code): make these two
+ * counters durable and shared. Until then the guarantee is per-instance — an
+ * attacker who can land requests on N warm lambdas gets N times the budget, and
+ * a redeploy resets every counter. That is a real weakening of the numbers
+ * above, and it is still strictly better than the unbounded endpoint this
+ * replaced.
+ *
+ * DO NOT BUDGET THIS AS A STORAGE SWAP. This file used to claim that moving to
+ * Upstash Redis would leave `consume()` / `check()` signatures intact "so only
+ * the storage changes", and lib/rate-limit.ts carried the same sentence before
+ * correcting itself (see the banner at the top of that file). It is false, and
+ * false in the direction that makes someone under-estimate a security task:
+ * every Redis client is async, both methods are declared synchronous in
+ * `RateLimiter`, and `authorize()` plus ~40 server-action call sites treat them
+ * as such. A shared store means an async API and an `await` at every one of
+ * them.
+ *
+ * The cheaper route, and the one the audit prefers (sec-011): a durable
+ * PER-ACCOUNT counter on the row itself — `User.failedLoginCount` +
+ * `User.failedLoginWindowStartedAt`, which the
+ * `20260928000100_add_failed_login_counter` migration adds. The row IS the
+ * shared state, so no cache is needed; `authorize()` already reads that row,
+ * and it would replace `credentialsEmail` only, leaving the per-address bucket
+ * (which has no row to hang off) in memory where it is.
  */

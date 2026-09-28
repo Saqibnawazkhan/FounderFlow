@@ -64,7 +64,7 @@ export interface ChannelListItem {
 
 export interface ChannelDetail extends ChannelListItem {
   archivedAt: string | null;
-  members: { id: string; name: string }[];
+  members: { id: string; name: string; handle?: string | null }[];
   /** "owner" | "member", or null when the viewer has no membership row. */
   myChannelRole: string | null;
 }
@@ -349,7 +349,12 @@ function toMessageClient(
 function loadRoster(companyId: string): Promise<MentionUser[]> {
   return db.user.findMany({
     where: { companyId, deletedAt: null },
-    select: { id: true, name: true },
+    // `handle` is not optional here: this roster is what tokenizeForRender
+    // matches against, so dropping it renders no chip for a mention that DID
+    // notify someone — the inverse of tasks-and-comments-001, and a breach of
+    // the "a chip renders exactly when a notification fired" contract in
+    // lib/comments/mentions.ts.
+    select: { id: true, name: true, handle: true },
   });
 }
 
@@ -515,12 +520,19 @@ export async function getChannelBySlug(slug: string): Promise<ChannelDetail | nu
       userId: true,
       role: true,
       lastReadAt: true,
-      user: { select: { id: true, name: true } },
+      // handle: feeds the composer's mention autocomplete, which prefers a
+      // handle and falls back to a name slug — so without it a teammate whose
+      // display name has no ASCII letters cannot be picked from the list.
+      user: { select: { id: true, name: true, handle: true } },
     },
     orderBy: { joinedAt: "asc" },
   });
 
-  const memberList = members.map((m) => ({ id: m.user.id, name: m.user.name }));
+  const memberList = members.map((m) => ({
+    id: m.user.id,
+    name: m.user.name,
+    handle: m.user.handle,
+  }));
 
   // The roster is already loaded here, so the DM rename costs nothing extra —
   // no second query, unlike the rail. Falls back to the stored name when

@@ -18,19 +18,26 @@ import { z } from "zod";
 // the feature, and z.string().url() would otherwise reject "" as invalid.
 const optionalUrl = z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional());
 
+/**
+ * The origin to use when there is no canonical one: local dev and preview
+ * builds, which legitimately have none. Declared once so `appOrigin` and the
+ * schema default cannot drift apart.
+ */
+const LOCAL_DEV_ORIGIN = "http://localhost:3000";
+
 const envSchema = z.object({
   // The localhost default stays, for two reasons. Local dev and every preview
   // build legitimately have no canonical origin, and this module throws on a
   // failed parse — making it required outright would break `next dev` and every
-  // PR deploy. And it would buy nothing today: six call sites
-  // (lib/actions/password-reset.ts, lib/actions/team.ts,
-  // lib/actions/email-change.ts, lib/email/verification.ts, lib/notify/email.ts,
-  // lib/lemonsqueezy/config.ts) each repeat `?? "http://localhost:3000"`
-  // themselves, so the fallback would simply move. Routing those through
-  // `env.NEXT_PUBLIC_APP_URL` is the follow-up that makes this the only
-  // fallback decision in the codebase; until then see the production
-  // assertion below, which is what stops the default reaching a customer.
-  NEXT_PUBLIC_APP_URL: z.string().url().default("http://localhost:3000"),
+  // PR deploy. And a required var here would buy nothing while SEVEN call sites
+  // (app/layout.tsx:25 metadataBase, lib/actions/password-reset.ts:60,
+  // lib/actions/team.ts:55, lib/actions/email-change.ts:100,
+  // lib/email/verification.ts:17, lib/notify/email.ts:23,
+  // lib/lemonsqueezy/config.ts:27) each repeat `?? "http://localhost:3000"`
+  // themselves — the fallback would simply move. `appOrigin()` below is the one
+  // decision those seven are meant to call; the production assertion further
+  // down is what stops the default reaching a customer in the meantime.
+  NEXT_PUBLIC_APP_URL: z.string().url().default(LOCAL_DEV_ORIGIN),
 
   DATABASE_URL: z.string().optional(),
   AUTH_SECRET: z.string().optional(),
@@ -43,6 +50,20 @@ const envSchema = z.object({
   EMAIL_FROM: z.string().optional(),
 
   SENTRY_DSN: optionalUrl,
+
+  // prodready-006. This module validated only SENTRY_DSN, so the variable
+  // `sentry.client.config.ts` actually reads was a name no part of the repo had
+  // ever declared — which is precisely how a deploy could look fully configured
+  // for error reporting while every browser crash went nowhere. Declaring it
+  // here does not make it required (it is not: see RECOMMENDED_PROD_ENV in
+  // scripts/vercel-build.mjs, and the pair rule that refuses exactly one of
+  // the two); it makes it a name the codebase knows about, and a malformed
+  // value a parse error instead of a silent no-op.
+  //
+  // It has to carry the NEXT_PUBLIC_ prefix. A server-only variable is not
+  // inlined into the client bundle, so reading SENTRY_DSN in browser code
+  // compiles to `undefined` and the SDK never initialises.
+  NEXT_PUBLIC_SENTRY_DSN: optionalUrl,
 });
 
 /**
@@ -111,6 +132,7 @@ const parsed = envSchema.safeParse({
   EMAIL_VERIFICATION_REQUIRED: process.env.EMAIL_VERIFICATION_REQUIRED,
   EMAIL_FROM: process.env.EMAIL_FROM,
   SENTRY_DSN: process.env.SENTRY_DSN,
+  NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN,
 });
 
 if (!parsed.success) {
@@ -133,3 +155,34 @@ if (IS_PRODUCTION_DEPLOY) {
 }
 
 export const env = parsed.data;
+
+/**
+ * The canonical origin, with no trailing slash — the ONE place that decides what
+ * every e-mail link, `metadataBase` and checkout redirect is built onto
+ * (prodready-004).
+ *
+ * WHY NORMALISATION IS THE POINT AND NOT A TIDY-UP. Every link in this app is
+ * built by concatenation: `` `${origin}/reset-password/${token}` ``. Seven call
+ * sites currently read `process.env.NEXT_PUBLIC_APP_URL` with their own
+ * `?? "http://localhost:3000"`, and exactly one of them — `lib/actions/team.ts`
+ * — strips a trailing slash. Copying the origin out of a browser address bar
+ * gives you `https://app.founderflow.com/`, and the other six then emit
+ * `https://app.founderflow.com//reset-password/<token>`. A doubled slash in a
+ * path is the sort of URL that works in one mail client and 404s in the next,
+ * and it lands on a locked-out customer clicking a single-use link.
+ *
+ * `raw` is a parameter, defaulting to the validated value, so the decision is
+ * unit-testable without mutating `process.env`. Call it with no argument.
+ *
+ * Note this does NOT decide whether the value is acceptable — see
+ * `productionAppUrlProblem` and the build gate in `scripts/vercel-build.mjs` for
+ * that. This function always returns a usable origin, because a page that
+ * throws is not an improvement on a page with a wrong link.
+ */
+export function appOrigin(raw: string | undefined = env.NEXT_PUBLIC_APP_URL): string {
+  const value = raw === undefined ? "" : raw.trim();
+  // A whitespace-only value is "I added the variable in Vercel and forgot the
+  // value"; the seven `??` sites all accept it today and then build links that
+  // are bare paths.
+  return (value === "" ? LOCAL_DEV_ORIGIN : value).replace(/\/+$/, "");
+}

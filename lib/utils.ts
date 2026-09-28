@@ -80,6 +80,61 @@ export function formatCurrency(amount: number, currency = "PKR"): string {
   return formatted;
 }
 
+/* ------------------------------------------------------------------------- *
+ * Money inside a string that outlives the render (money-001, persisted half).
+ * ------------------------------------------------------------------------- */
+
+/**
+ * A grouped, fixed-scale amount for a string this app PERSISTS or MAILS:
+ * `1234.5` -> `"1,234.50"`. No currency code — the sentence supplies that.
+ *
+ * WHAT IT REPLACES. `amount.toLocaleString()`, interpolated into three strings
+ * in lib/actions/transactions.ts that are written once and then read by every
+ * member of the workspace forever: the activity-log `message`, the notification
+ * body (which leaves the app as an email subject and a lock-screen push), and
+ * the delete entry. Two faults in one call:
+ *
+ *  1. NOT DETERMINISTIC. `Number.prototype.toLocaleString()` with no locale
+ *     resolves to the RUNTIME's default, which on a server is ambient
+ *     environment — LANG / LC_ALL / whatever the container image sets — not a
+ *     product decision. In a de-DE container `1234.5` is persisted as
+ *     `"1.234,5"`, a decimal comma and dot grouping, directly beside the
+ *     literal code "PKR", in a customer's audit trail and in their inbox.
+ *
+ *  2. FLOATING SCALE. `toLocaleString()` defaults to `maximumFractionDigits: 3`
+ *     with no minimum, so one workspace's history holds "1,234", "1,234.5" and
+ *     "1,234.56" for amounts the columns all store at scale 2 — and "1,234.5"
+ *     sits in the feed while `formatCurrency` renders the same row as
+ *     "PKR 1,234.50" a panel away. Cents appear or vanish depending only on
+ *     whether they happen to be zero.
+ *
+ * WHY NOT `formatNumber` FROM lib/format.ts. That one takes the VIEWER's locale,
+ * and lib/format.ts explains why these strings must not have one: a row written
+ * once is read by everybody, so there is no single viewer whose locale applies,
+ * and localising only the digits of an English sentence half-translates it. The
+ * answer is not "no locale" (that is the bug) but "the prose locale", pinned
+ * here the same way `formatCurrency` pins it and for the same reason: a figure
+ * copied out of FounderFlow should paste into a bank portal or a spreadsheet.
+ *
+ * The scale comes from `currencyMinorUnits`, so a zero-decimal currency does not
+ * gain phantom cents, and the output goes through `sanitizeNumericOutput` so no
+ * NBSP is baked into a stored row.
+ */
+const MESSAGE_AMOUNT_CACHE = new Map<number, Intl.NumberFormat>();
+
+export function formatAmountForMessage(amount: number, currency: string): string {
+  const digits = currencyMinorUnits(currency);
+  let fmt = MESSAGE_AMOUNT_CACHE.get(digits);
+  if (!fmt) {
+    fmt = new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    });
+    MESSAGE_AMOUNT_CACHE.set(digits, fmt);
+  }
+  return sanitizeNumericOutput(fmt.format(amount));
+}
+
 /**
  * A wall-clock instant, rendered in the RUNTIME's timezone.
  *

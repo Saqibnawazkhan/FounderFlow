@@ -30,6 +30,11 @@ import { checkBudgetThresholdAfterExpense } from "@/lib/budgets/check";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
 import { captureServerError } from "@/lib/sentry-server";
+// money-001, persisted half: the three money figures below go into strings that
+// are written once and read forever (and one of them is mailed), so they cannot
+// be formatted with `toLocaleString()` — that resolves to the HOST's default
+// locale and to a floating 0-3 decimal places. See lib/utils.ts.
+import { formatAmountForMessage } from "@/lib/utils";
 import {
   EXPENSE_CATEGORIES,
   INVESTMENT_CATEGORIES,
@@ -189,7 +194,10 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
         companyId,
         projectId: projectId ?? null,
         type: txnActivityType(type),
-        message: `${user.name} added ${noun} of ${amount.toLocaleString()} ${currency} for ${category}`,
+        message: `${user.name} added ${noun} of ${formatAmountForMessage(
+          amount,
+          currency
+        )} ${currency} for ${category}`,
         userId,
         userName: user.name,
         // money-006, the durable half: the `message` above is prose written
@@ -237,7 +245,9 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
         // This body leaves the app verbatim — email subject line AND lock-screen
         // push (lib/notify/fan-out.ts), so a wrong currency code here is read
         // by someone who cannot click through to check.
-        message: `${user.name} ${type === "expense" ? "logged" : "recorded"} ${amount.toLocaleString()} ${currency}`,
+        message: `${user.name} ${
+          type === "expense" ? "logged" : "recorded"
+        } ${formatAmountForMessage(amount, currency)} ${currency}`,
         // Expenses read as a caution (cash out); money-in is a success.
         tone: type === "expense" ? "warning" : "success",
         category: "finance",
@@ -454,7 +464,10 @@ export async function deleteTransactionAction(id: string): Promise<ActionResult>
         // — those still surface in the global activity feed.
         projectId: txn.projectId,
         type: "transaction_deleted",
-        message: `${me.name} deleted a ${txn.type} of ${txn.amount.toLocaleString()} ${me.company.currency}`,
+        message: `${me.name} deleted a ${txn.type} of ${formatAmountForMessage(
+          txn.amount.toNumber(),
+          me.company.currency
+        )} ${me.company.currency}`,
         userId: me.id,
         userName: me.name,
         metadata: JSON.stringify({

@@ -16,6 +16,29 @@
  * Rate limit: reuses the existing `limiters.auth` bucket — 5 requests per
  * IP per minute. Same bucket as signup + login so the raw brute-force
  * attempts across all three routes share the same allowance.
+ *
+ * Tombstones (auth-006): a soft-deleted user is NOT a resettable account.
+ * `authorize()` filters `deletedAt: null`, so a tombstoned row can never sign
+ * in; both lookups below therefore filter it too. Until 2026-09-28 they did
+ * not, and the reset ran to completion on a deleted account — it rewrote the
+ * password hash, advanced `sessionVersion`, and returned success, so the app
+ * told a locked-out customer their new password was set and then still refused
+ * it. Two harms, both closed here: the false success, and the WRITE to a row
+ * inside the retention window CLAUDE.md promises is restorable with a single
+ * `UPDATE … SET "deletedAt" = NULL`.
+ *
+ * Both reads are `findFirst`, not `findUnique`, for a reason that is easy to
+ * undo by accident: Prisma's `findUnique` accepts only unique fields in
+ * `where`, so it CANNOT carry `deletedAt: null`. Changing either back to
+ * `findUnique` silently reopens the hole.
+ *
+ * Note what does NOT change: `requestPasswordResetAction` still returns the
+ * same `{ dispatched: false }` envelope for a tombstone that it returns for an
+ * address that was never registered. The anti-enumeration posture above is
+ * deliberate, and a distinct "that account was deleted" response would turn
+ * this endpoint into an oracle for it. Only `resetPasswordAction` — which is
+ * reached solely by someone already holding a valid signed token for that
+ * user — says so out loud.
  */
 
 import bcrypt from "bcryptjs";
@@ -53,12 +76,13 @@ export async function requestPasswordResetAction(
   const { email } = parsed.data;
 
   try {
-    const user = await db.user.findUnique({
-      where: { email },
+    const user = await db.user.findFirst({
+      // `deletedAt: null` is why this is findFirst — findUnique cannot express it.
+      where: { email, deletedAt: null },
       select: { id: true, name: true, passwordHash: true },
     });
-    // Anti-enumeration: same success path whether the account exists or not.
-    // The email only fires when it does.
+    // Anti-enumeration: same success path whether the account exists, never
+    // existed, or has been tombstoned. The email only fires when it is live.
     if (!user) {
       return { success: true, data: { dispatched: false } };
     }
@@ -129,11 +153,18 @@ export async function resetPasswordAction(
   }
 
   try {
-    const user = await db.user.findUnique({
-      where: { id: verified.userId },
+    const user = await db.user.findFirst({
+      // Same tombstone filter as `authorize()`, in the SAME query as the read,
+      // so there is no window in which the row is fetched and then written
+      // before anyone checks whether it still exists. findUnique cannot carry
+      // this filter; do not change it back.
+      where: { id: verified.userId, deletedAt: null },
       select: { id: true, email: true, passwordHash: true },
     });
     if (!user) {
+      // Covers both "never existed" and "deleted". A holder of a valid signed
+      // token for this id is the account owner, so naming it leaks nothing and
+      // replaces a success envelope that was a lie.
       return { success: false, error: "This account no longer exists." };
     }
     // Single-use enforcement: the token's pv must still match the live hash.

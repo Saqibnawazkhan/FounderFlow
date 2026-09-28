@@ -6,13 +6,21 @@
  */
 
 import type { Metadata } from "next";
-import { getTransactions } from "@/lib/queries/transactions";
+import {
+  getContributionTotalsByUser,
+  getExpenseTotalsByCategory,
+  getMonthToDateExpense,
+  getMonthlyTotals,
+  getTransactionTotals,
+  getTransactions,
+} from "@/lib/queries/transactions";
+import { utcMonthsAgo } from "@/lib/date-range";
 import { getTasks, getTaskStatusCounts } from "@/lib/queries/tasks";
 import { getActivities } from "@/lib/queries/activities";
 import { getCompanyUsers } from "@/lib/queries/users";
 import { getClockedInPeers } from "@/lib/queries/time";
 import { requireScopedSession } from "@/lib/queries/session";
-import { DashboardClient } from "./dashboard-client";
+import { BURN_WINDOW_MONTHS, CASH_FLOW_MONTHS, DashboardClient } from "./dashboard-client";
 
 export const metadata: Metadata = {
   title: "Dashboard",
@@ -21,24 +29,59 @@ export const metadata: Metadata = {
 };
 
 export default async function DashboardPage() {
-  const [session, transactions, tasks, taskCounts, activities, users, clockedIn] =
-    await Promise.all([
-      requireScopedSession(),
-      getTransactions(),
-      getTasks(),
-      // Not tasks.length: getTasks() is page 1 of a 300-row window, so the KPI
-      // must come from the unbounded groupBy or it under-reports past 300.
-      getTaskStatusCounts(),
-      getActivities(50),
-      getCompanyUsers(),
-      getClockedInPeers(),
-    ]);
+  // One `now` for every window below: two calls to new Date() inside one
+  // Promise.all can straddle a month boundary and produce a month-to-date
+  // figure that disagrees with the chart beside it.
+  const now = new Date();
+  const [
+    session,
+    transactions,
+    tasks,
+    taskCounts,
+    activities,
+    users,
+    clockedIn,
+    totals,
+    monthToDate,
+    burnWindow,
+    monthly,
+    categories,
+    contributions,
+  ] = await Promise.all([
+    requireScopedSession(),
+    getTransactions(),
+    getTasks(),
+    // Not tasks.length: getTasks() is page 1 of a 300-row window, so the KPI
+    // must come from the unbounded groupBy or it under-reports past 300.
+    getTaskStatusCounts(),
+    getActivities(50),
+    getCompanyUsers(),
+    getClockedInPeers(),
+    // money-008: every figure below comes from an aggregate, never from
+    // summing `transactions` — that array is a per-type 5,000-row window.
+    getTransactionTotals(),
+    getMonthToDateExpense(now),
+    // A ROLLING window, not a calendar one: a calendar window includes a
+    // partial current month, which understates burn and so overstates runway.
+    getTransactionTotals({ from: utcMonthsAgo(now, BURN_WINDOW_MONTHS) }),
+    getMonthlyTotals(CASH_FLOW_MONTHS, now),
+    getExpenseTotalsByCategory(),
+    getContributionTotalsByUser(),
+  ]);
 
   return (
     <DashboardClient
       transactions={transactions}
       tasks={tasks}
       taskCounts={taskCounts}
+      rollups={{
+        totals,
+        monthToDateExpense: monthToDate,
+        burnWindowExpense: burnWindow.byType.expense.total,
+        monthly,
+        categories,
+        contributions,
+      }}
       activities={activities}
       users={users}
       clockedIn={clockedIn}

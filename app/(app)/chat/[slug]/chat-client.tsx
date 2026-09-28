@@ -28,6 +28,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import toast from "react-hot-toast";
 import { UserPlus } from "lucide-react";
 import { ChannelHeader } from "@/components/chat/channel-header";
@@ -39,7 +40,7 @@ import { NewDmModal } from "@/components/chat/new-dm-modal";
 import { ThreadPanel } from "@/components/chat/thread-panel";
 import { Modal } from "@/components/ui/modal";
 import { addChannelMembersAction, pollChannelActivityAction } from "@/lib/actions/chat";
-import { canPostInChannel } from "@/lib/auth/channel-permissions";
+import { canPostInChannel, canPostRunwayCard } from "@/lib/auth/channel-permissions";
 import { cn } from "@/lib/utils";
 import { loadOlderMessagesAction, loadThreadAction } from "./actions";
 import type {
@@ -80,6 +81,9 @@ export function ChatClient({
   currentUserId,
 }: Props) {
   const router = useRouter();
+  // The viewer's company role, for the Runway control only — see the long note
+  // beside `canPostRunway` below.
+  const { data: session } = useSession();
   const [, startTransition] = useTransition();
 
   const [olderPages, setOlderPages] = useState<MessageClient[]>([]);
@@ -385,6 +389,43 @@ export function ChatClient({
     archivedAt: channel.archivedAt,
   });
 
+  /* ── THE RUNWAY CARD GETS AN ENTRY POINT ─────────────────────────────────
+   *
+   * `postRunwayCardAction` — posting the workspace's cash / burn / runway
+   * snapshot into a conversation, and the product's own differentiator — was
+   * complete, unit-tested, server-gated, imported and CALLED by
+   * <MessageComposer>, and still unreachable: the button behind it is drawn only
+   * when `canPostRunway` is true, the prop defaults to false (correctly,
+   * fail-closed), and NO caller in the app ever passed it. So the feature had a
+   * component, an action, a permission predicate, green tests and no way in.
+   * `tests/lib/actions/reachability.test.ts` fails on exactly that, in two
+   * places, and has since before this fix wave.
+   *
+   * THE PREDICATE IS THE RULE, and it is imported rather than restated:
+   * `canPostRunwayCard` delegates to `canSeeFinances`, so "who may disclose the
+   * company balance in a room every role can read" is answered in one place and
+   * the server re-asks the identical function. `readOnly` above is derived the
+   * same way for the same reason.
+   *
+   * WHY THE ROLE COMES FROM `useSession()` RATHER THAN A SERVER-RENDERED PROP.
+   * The prop's own doc prefers server-rendered, and threading `viewerRole` down
+   * from the RSC would be marginally better — one fewer frame before the control
+   * appears. It needs a line in `app/(app)/chat/[slug]/page.tsx`, which this
+   * island does not own, and that change is reported rather than made. Reading
+   * it here is not a new disclosure: <Providers> already wraps the app in
+   * next-auth's <SessionProvider>, and components/providers.tsx already reads
+   * `session.user.role` out of it to hydrate the store — the role is in the
+   * browser either way. What matters is that this is NOT the gate: the action
+   * re-checks `canPostRunwayCard(session.role)` server-side before it computes a
+   * single figure, so a tampered client draws a button whose click is refused.
+   *
+   * FAIL-CLOSED WHILE THE SESSION RESOLVES. An unknown role is not an admin, so
+   * the worst case is a control that appears a moment late rather than one shown
+   * to a member.
+   */
+  const viewerRole = session?.user?.role;
+  const canPostRunway = viewerRole ? canPostRunwayCard(viewerRole) : false;
+
   return (
     <div className="flex h-full min-h-0">
       <ChannelRail
@@ -463,6 +504,7 @@ export function ChatClient({
               parentId={null}
               users={channel.members}
               disabled={false}
+              canPostRunway={canPostRunway}
               onSent={handleSent}
             />
           )}

@@ -37,14 +37,98 @@ import { formatUtcDate, cn } from "@/lib/utils";
 import { isInUtcMonth } from "@/lib/date-range";
 import { useMoney } from "@/lib/hooks/useMoney";
 import { useNumberFormat } from "@/lib/i18n/use-t";
-import { EXPENSE_CATEGORIES, type User } from "@/lib/types";
-import type { TransactionWithCount } from "@/lib/queries/transactions";
+import { EXPENSE_CATEGORIES, type Transaction, type User } from "@/lib/types";
+// TYPE-ONLY imports, so lib/queries' server graph (db, Sentry, the scoped-session
+// read) stays out of the client bundle.
+import type { TransactionWithCount, TypeTotal } from "@/lib/queries/transactions";
 
 // Recharts is ~200KB. Lazy-load to keep /expenses initial bundle lean.
 const CategoryBreakdownBar = dynamic(
   () => import("./expenses-charts").then((m) => ({ default: m.CategoryBreakdownBar })),
   { ssr: false, loading: () => <Skeleton className="h-full w-full rounded-xl" /> }
 );
+
+/* ─────────────────────────────────────────────────────────────────────────── *
+ * /expenses' money figures, as pure functions over EITHER an aggregate or the
+ * row array (money-008).
+ *
+ * WHAT WAS WRONG. "Total spend", the "N transactions" caption, "This month", the
+ * "% of all-time" line and the category breakdown were all computed from
+ * `transactions`, which is `getTransactions()` — a LIST window capped at
+ * `MAX_TRANSACTIONS_PER_TYPE` (5,000 per type) whose docstring ends "DO NOT SUM
+ * THE RESULT". Past the ceiling every one of them is short, silently, and the
+ * rows dropped are the oldest.
+ *
+ * "Avg / transaction" was wrong in a second way: `total / expenses.length` mixes
+ * a numerator and a denominator from different populations the moment either
+ * comes from an aggregate. The roll-up carries its own `count`, so the average is
+ * computed from one population.
+ *
+ * WHY THE ROLL-UP IS OPTIONAL: see the same note in dashboard-client.tsx. It is a
+ * shim until app/(app)/expenses/page.tsx fetches the aggregates, and
+ * tests/app/money-rollups.test.ts fails until it does.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/** The server-side aggregates /expenses needs, in one prop. */
+export interface ExpenseRollups {
+  /** `getTransactionTotals().byType.expense` — whole-ledger expense sum + row
+   *  count, neither of them capped. */
+  expense: TypeTotal;
+  /** `getMonthToDateExpense()` — the current UTC calendar month. */
+  monthToDateExpense: number;
+  /** `getExpenseTotalsByCategory()` — biggest first. */
+  categories: { category: string; amount: number }[];
+}
+
+export interface ExpenseHeadline {
+  /** All-time expense total. */
+  total: number;
+  /** All-time expense ROW COUNT — the denominator of the average, and the
+   *  "N transactions" caption. */
+  count: number;
+  thisMonth: number;
+  /** `total / count`, NOT pre-rounded: `money(Math.round(x))` threw the cents
+   *  away before formatting, so three 0.50 expenses averaged to "PKR 1.00" — a
+   *  wrong figure wearing a decimal point that makes it look exact (money-001).
+   *  `formatCurrency` already rounds to the stored scale. */
+  average: number;
+}
+
+export function expenseHeadline(
+  expenses: Transaction[],
+  now: Date,
+  rollups?: ExpenseRollups
+): ExpenseHeadline {
+  const total = rollups ? rollups.expense.total : expenses.reduce((s, t) => s + t.amount, 0);
+  const count = rollups ? rollups.expense.count : expenses.length;
+  const thisMonth = rollups
+    ? rollups.monthToDateExpense
+    : // money-003 / rep-003: this compared `getMonth() === getMonth()` — the
+      // month INDEX, with no year — so "This month" also counted the same
+      // calendar month of every previous year and drifted further from
+      // /dashboard's identically labelled card every year the workspace stayed
+      // alive. `isInUtcMonth` is the shared boundary (lib/date-range.ts) the
+      // dashboard card and the server-side budget queries use, so all three
+      // bucket a row dated the 1st identically — see money-007 for why UTC.
+      expenses.filter((t) => isInUtcMonth(t.date, now)).reduce((s, t) => s + t.amount, 0);
+  return { total, count, thisMonth, average: count > 0 ? total / count : 0 };
+}
+
+/** Expense spend per category, biggest first. Re-sorted in both branches so the
+ *  function does not depend on a caller's ordering. */
+export function expenseCategoryRows(
+  expenses: Transaction[],
+  rollups?: ExpenseRollups
+): { category: string; amount: number }[] {
+  if (rollups) return rollups.categories.slice().sort((a, b) => b.amount - a.amount);
+  const map = new Map<string, number>();
+  expenses.forEach((t) => map.set(t.category, (map.get(t.category) || 0) + t.amount));
+  // Array.from, not a spread: tsconfig sets no `target`, so it defaults to ES5
+  // and spreading a Map fails `npm run typecheck` while passing vitest.
+  return Array.from(map.entries())
+    .map(([category, amount]) => ({ category, amount }))
+    .sort((a, b) => b.amount - a.amount);
+}
 
 type Props = {
   /** All company transactions — we filter to expenses inside. */
@@ -53,6 +137,12 @@ type Props = {
   projects: { id: string; name: string }[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
+  /** Server-side aggregates. Optional ONLY so this could land ahead of the
+   *  page.tsx change that supplies it (see ExpenseRollups); until it is passed,
+   *  every figure on the metric row is short by whatever the 5,000-row-per-type
+   *  list read dropped. tests/app/money-rollups.test.ts fails while it is
+   *  absent. */
+  rollups?: ExpenseRollups;
 };
 
 export function ExpensesClient({
@@ -61,6 +151,7 @@ export function ExpensesClient({
   projects,
   currentUserId,
   currentUserRole,
+  rollups,
 }: Props) {
   const money = useMoney();
   const n = useNumberFormat();
@@ -97,28 +188,18 @@ export function ExpensesClient({
     [expenses, search, categoryFilter]
   );
 
-  const totalExpenses = expenses.reduce((s, t) => s + t.amount, 0);
-  // money-003 / rep-003: this compared `getMonth() === getMonth()` — the month
-  // INDEX, with no year — so "This month" also counted the same calendar month
-  // of every previous year and grew further from /dashboard's identically
-  // labelled card every year the workspace stayed alive. It was the only
-  // month-index comparison in the app, which is how it survived.
-  //
-  // `isInUtcMonth` is the shared boundary (lib/date-range.ts) the dashboard card
-  // and the server-side budget queries use, so all three now bucket a row dated
-  // the 1st of the month identically — see money-007 for why UTC and not local.
-  const thisMonthExpenses = useMemo(() => {
-    const now = new Date();
-    return expenses.filter((t) => isInUtcMonth(t.date, now)).reduce((s, t) => s + t.amount, 0);
-  }, [expenses]);
+  // One `new Date()` per render so the This-month window cannot move between
+  // figures. The metric row goes through `expenseHeadline`, which prefers the
+  // server-side aggregate over this page's capped list (money-008).
+  const now = useMemo(() => new Date(), []);
+  const headline = useMemo(() => expenseHeadline(expenses, now, rollups), [expenses, now, rollups]);
+  const totalExpenses = headline.total;
+  const thisMonthExpenses = headline.thisMonth;
 
-  const categoryBreakdown = useMemo(() => {
-    const map = new Map<string, number>();
-    expenses.forEach((t) => map.set(t.category, (map.get(t.category) || 0) + t.amount));
-    return Array.from(map.entries())
-      .map(([category, amount]) => ({ category, amount }))
-      .sort((a, b) => b.amount - a.amount);
-  }, [expenses]);
+  const categoryBreakdown = useMemo(
+    () => expenseCategoryRows(expenses, rollups),
+    [expenses, rollups]
+  );
 
   async function handleDelete(id: string) {
     const ok = await confirm({
@@ -171,7 +252,9 @@ export function ExpensesClient({
           value={money(totalExpenses)}
           icon={TrendingDown}
           tone="mint"
-          deltaLabel={`${n.number(expenses.length)} transactions`}
+          // headline.count, not expenses.length: the caption and the figure above
+          // it must describe the same population (money-008).
+          deltaLabel={`${n.number(headline.count)} transactions`}
         />
         <DashboardStat
           label="This month"
@@ -192,16 +275,17 @@ export function ExpensesClient({
         />
         <DashboardStat
           label="Avg / transaction"
-          // money-001, one call site further out than the formatter: this used to
-          // be `money(Math.round(total / count))`, which threw the cents away
-          // BEFORE formatting — three 0.50 expenses averaged to "PKR 1.00", a
-          // wrong figure now wearing a decimal point that makes it look exact.
-          // `formatCurrency` already rounds to the stored scale, so the rounding
-          // here was only ever a second, coarser one.
-          value={money(expenses.length > 0 ? totalExpenses / expenses.length : 0)}
+          // money-001 lived one call site further out than the formatter: this
+          // used to be `money(Math.round(total / count))`, which threw the cents
+          // away BEFORE formatting — three 0.50 expenses averaged to "PKR 1.00",
+          // a wrong figure wearing a decimal point that makes it look exact.
+          // `formatCurrency` already rounds to the stored scale. The division
+          // itself now lives in `expenseHeadline`, so numerator and denominator
+          // come from one population (money-008).
+          value={money(headline.average)}
           icon={Calculator}
           tone="primary"
-          deltaLabel={`Across ${n.number(expenses.length)} entries`}
+          deltaLabel={`Across ${n.number(headline.count)} entries`}
         />
       </section>
 

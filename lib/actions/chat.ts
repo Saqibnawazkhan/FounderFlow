@@ -232,13 +232,25 @@ export async function sendMessageAction(input: unknown): Promise<
       // was missing, and `MentionUser.handle` is optional in the TYPE, so this
       // compiled and failed silently: pass 1 of `buildMentionIndex` indexed
       // nothing, `@ali` resolved to nobody, `mentions` was stored as "[]" and
-      // zero notifications fanned out — while lib/queries/chat.ts DOES select
-      // handle, so the posted message still rendered a chip reading
-      // "Mentioned Ali Khan". The writer was told the ping landed and it never
-      // did. For a teammate whose display name carries no ASCII letters the
-      // handle is their ONLY address, so they could not be mentioned at all.
-      // tests/lib/comments/mention-roster.test.ts pins this select, and sweeps
-      // every other roster that feeds the parser.
+      // zero notifications fanned out. For a teammate whose display name
+      // carries no ASCII letters the handle is their ONLY address, so they
+      // could not be mentioned at all.
+      //
+      // CORRECTION to what this comment said when it was first written: it
+      // claimed lib/queries/chat.ts "DOES select handle", so that a chat
+      // mention rendered a chip while notifying nobody. That was wrong.
+      // `loadRoster` there selects `{ id, name }` (lib/queries/chat.ts:350), so
+      // in CHAT the render path is handle-blind too, and fixing this select
+      // alone inverts the asymmetry rather than closing it: the notification now
+      // fires and the `@ali` token still renders as plain text. The one-word fix
+      // is in a query module this agent does not own and is reported as such —
+      // the SAME select, one directory over. (Comments were never in that state:
+      // lib/queries/comments.ts:170 does select handle, which is why the finding
+      // was spotted from the chip.)
+      //
+      // tests/lib/comments/mention-roster.test.ts pins this select and sweeps
+      // every other whole-company roster that feeds the parser; it is red on
+      // lib/queries/chat.ts by design until that line lands.
       db.user.findMany({
         where: { companyId, deletedAt: null },
         select: { id: true, name: true, handle: true },
