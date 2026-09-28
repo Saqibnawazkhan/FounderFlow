@@ -80,6 +80,48 @@ const PRIORITY_LABEL: Record<TaskPriority, string> = {
  *     the whole recipient list — per-recipient localisation needs the copy
  *     to move into lib/notify/email.ts first.)
  */
+/**
+ * The bulk-selection ceiling, mirrored from `TaskIdList` in lib/schemas/task.ts.
+ *
+ * MIRRORED, not imported, because the schema keeps the number inline and does
+ * not export it. Two constants that must agree in two files is real drift risk
+ * — a message promising 200 while the parser rejects at 150 — so
+ * tests/lib/actions/bulk-task-selection-limit.test.ts DISCOVERS the schema's
+ * actual ceiling by binary probe and asserts the sentence below names that
+ * number. If lib/schemas/task.ts ever exports its cap, import it here and delete
+ * this constant.
+ *
+ * Not exported: an export from a `"use server"` module is a public HTTP endpoint
+ * (tests/lib/actions/use-server-exports.test.ts).
+ */
+const MAX_BULK_TASK_IDS = 200;
+
+/**
+ * A human sentence for an over-sized selection, or null if the payload is fine
+ * (tasks-and-comments-010).
+ *
+ * `toggleSelectAll` (app/(app)/tasks/tasks-client.tsx:381) selects every
+ * FILTERED id with no ceiling, and both bulk actions surfaced zod's own words
+ * verbatim through `parsed.error.issues[0]?.message`. So a 201-task select-all
+ * answered with "Array must contain at most 200 element(s)" — a sentence about a
+ * JavaScript array, in English, shown in a product that ships Urdu, to a founder
+ * who pressed a checkbox. The headline bulk feature became an error message with
+ * no user-facing meaning and no hint at what to do instead.
+ *
+ * Checked BEFORE the schema so the count in the message is the real selection
+ * size; zod reports the ceiling but not what was sent.
+ */
+function bulkSelectionTooLargeError(input: unknown): string | null {
+  if (typeof input !== "object" || input === null) return null;
+  const ids = (input as { ids?: unknown }).ids;
+  if (!Array.isArray(ids) || ids.length <= MAX_BULK_TASK_IDS) return null;
+  return (
+    `You selected ${ids.length} tasks, and ${MAX_BULK_TASK_IDS} is the most that can be ` +
+    `changed in one go. Narrow the selection with a filter, or work through them ` +
+    `${MAX_BULK_TASK_IDS} at a time.`
+  );
+}
+
 function formatDeadline(deadline: Date): string {
   const utcDay = new Date(deadline.getUTCFullYear(), deadline.getUTCMonth(), deadline.getUTCDate());
   return format(utcDay, "MMM dd, yyyy");
@@ -153,11 +195,12 @@ export async function addTaskAction(input: unknown): Promise<ActionResult<Task>>
     // deleteProjectAction soft-deletes and leaves Project.status alone, so
     // without this filter a New-task modal that was open when the project was
     // deleted — or any known id — still resolves, and the task lands in a
-    // project that exists on no surface. It then shows on the global board
-    // forever (lib/queries/tasks.ts filters project.status, not
-    // project.deletedAt), is absent from search and from /projects/<id>, and —
-    // because Task.project is onDelete: Restrict — pins the project row open so
-    // the purge cron's orphan-project stage cannot delete it.
+    // project that exists on no surface: absent from search and from
+    // /projects/<id>, and — because Task.project is onDelete: Restrict — pinning
+    // the project row open so the purge cron's orphan-project stage cannot
+    // delete it. (lib/queries/tasks.ts used to leave such a task on the global
+    // board forever, because it filtered project.status and not
+    // project.deletedAt; `taskScopeWhere` there now filters both.)
     where: { id: projectId, companyId, deletedAt: null },
     select: { id: true, name: true, supervisorId: true, status: true },
   });
@@ -513,6 +556,9 @@ export async function bulkUpdateTaskStatusAction(
   const gate = limiters.write.consume(session.user.id);
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
+  const tooLarge = bulkSelectionTooLargeError(input);
+  if (tooLarge) return { success: false, error: tooLarge };
+
   const parsed = BulkTaskStatusSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid request" };
@@ -583,6 +629,9 @@ export async function bulkDeleteTasksAction(
   }
   const gate = limiters.write.consume(session.user.id);
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
+  const tooLarge = bulkSelectionTooLargeError(input);
+  if (tooLarge) return { success: false, error: tooLarge };
 
   const parsed = BulkTaskDeleteSchema.safeParse(input);
   if (!parsed.success) {

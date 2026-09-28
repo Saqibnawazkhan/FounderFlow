@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, ChevronsLeft, ChevronsRight, X } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
 import { useStore, useStoreHasHydrated } from "@/lib/store";
-import { listNotificationsAction } from "@/lib/actions/notifications";
+import { unreadNotificationCountAction } from "@/lib/actions/notifications";
 import { useT } from "@/lib/i18n/use-t";
 import { cn } from "@/lib/utils";
 import { homeRouteForRole, isMemberBlockedRoute, type Role } from "@/lib/auth/role-gates";
@@ -69,27 +69,49 @@ export function Sidebar() {
     return () => document.removeEventListener("keydown", handler);
   }, [mobileOpen, setMobileOpen]);
 
-  // Just the unread count for the nav badge — full notification list lives
-  // in the topbar dropdown + /notifications page. Re-fetch every 30s so the
-  // badge stays roughly current; could upgrade to Supabase realtime later.
+  // Just the unread count for the nav badge — the full notification list lives
+  // in the topbar dropdown + /notifications page.
+  //
+  // perf-004. This used to call `listNotificationsAction()` and count the rows
+  // client-side: up to 200 full notification rows (titles, message bodies,
+  // links) plus a User lookup, twice a minute, in every open tab, to render one
+  // integer. Ten seats with three tabs each came to ~3,600 requests and ~140MB
+  // of egress an hour for a badge. `unreadNotificationCountAction` answers with
+  // `{ count }` from a `count()` on the `(userId, read)` index instead.
+  //
+  // And it polls only while the tab is VISIBLE. There was no `document.hidden`
+  // gate here — unlike the clock heartbeat in components/time/clock-widget.tsx —
+  // so a tab left open on Friday kept polling all weekend. This is the app's
+  // only background load, so that gate is also what keeps idle database
+  // connections at zero. Coming back to the tab refetches immediately, so the
+  // badge is never showing an hour-old number.
   const [unreadCount, setUnreadCount] = useState(0);
   useEffect(() => {
     let cancelled = false;
     async function fetchCount() {
-      const res = await listNotificationsAction();
+      if (cancelled) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+      const res = await unreadNotificationCountAction();
       if (!cancelled && res.success) {
-        setUnreadCount(res.data.filter((n) => !n.read).length);
+        setUnreadCount(res.data.count);
       }
     }
     fetchCount();
     const id = setInterval(fetchCount, 30_000);
+    // Re-focus: catch up now rather than waiting out the interval the hidden
+    // tab was skipping.
+    const onVisibility = () => {
+      if (typeof document !== "undefined" && !document.hidden) fetchCount();
+    };
     // A push arriving while the app is open fires this — refresh the badge now
     // instead of waiting up to 30s for the next poll.
     const onPush = () => fetchCount();
+    document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("ff-notifications-changed", onPush);
     return () => {
       cancelled = true;
       clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("ff-notifications-changed", onPush);
     };
   }, []);

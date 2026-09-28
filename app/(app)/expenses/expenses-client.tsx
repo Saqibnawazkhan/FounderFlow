@@ -27,7 +27,13 @@ import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
-import { formatDate, cn } from "@/lib/utils";
+// formatUtcDate, not formatDate: `Transaction.date` is a DATE-ONLY value
+// stored at UTC midnight (money-007), so the local renderer printed the day
+// BEFORE the one the customer typed for every viewer west of UTC — an
+// expense dated the 1st showed as the last day of the previous month, on the
+// same page whose "This month" card had just been fixed to count it in this
+// one. lib/utils.ts explains why `formatDate` itself stays local.
+import { formatUtcDate, cn } from "@/lib/utils";
 import { isInUtcMonth } from "@/lib/date-range";
 import { useMoney } from "@/lib/hooks/useMoney";
 import { useNumberFormat } from "@/lib/i18n/use-t";
@@ -186,7 +192,13 @@ export function ExpensesClient({
         />
         <DashboardStat
           label="Avg / transaction"
-          value={money(expenses.length > 0 ? Math.round(totalExpenses / expenses.length) : 0)}
+          // money-001, one call site further out than the formatter: this used to
+          // be `money(Math.round(total / count))`, which threw the cents away
+          // BEFORE formatting — three 0.50 expenses averaged to "PKR 1.00", a
+          // wrong figure now wearing a decimal point that makes it look exact.
+          // `formatCurrency` already rounds to the stored scale, so the rounding
+          // here was only ever a second, coarser one.
+          value={money(expenses.length > 0 ? totalExpenses / expenses.length : 0)}
           icon={Calculator}
           tone="primary"
           deltaLabel={`Across ${n.number(expenses.length)} entries`}
@@ -352,7 +364,7 @@ export function ExpensesClient({
                       </div>
                     </td>
                     <td className="px-6 py-4 font-mono text-xs uppercase tracking-wider text-fg-muted">
-                      {formatDate(t.date)}
+                      {formatUtcDate(t.date)}
                     </td>
                     <td className="px-6 py-4 text-right">
                       <span className="inline-flex items-center gap-1 font-mono text-sm font-bold tabular-nums text-mint-strong">
@@ -420,7 +432,7 @@ export function ExpensesClient({
                     <Avatar name={t.addedByName} size="xs" /> {t.addedByName}
                   </span>
                   <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
-                    {formatDate(t.date)}
+                    {formatUtcDate(t.date)}
                   </span>
                   <div className="ml-auto flex items-center gap-1">
                     <button

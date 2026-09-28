@@ -3,14 +3,28 @@
  * timestamp, returns the list of new transactions that should be created.
  *
  * Pulled out into a pure function so we can unit-test edge cases (month
- * boundaries, dayOfMonth=31 in February, idempotency on same-day reruns)
- * without spinning up Prisma or a clock-mock-friendly server action.
+ * boundaries, dayOfMonth=31 in February, idempotency on same-day reruns,
+ * catch-up after a missed night) without spinning up Prisma or a
+ * clock-mock-friendly server action.
+ *
+ * IT IS A RECONCILER, NOT A TRIGGER (cron-004, fixed 2026-09-28). It used to
+ * answer one question — "is this rule due TODAY?" — and Vercel cron does not
+ * retry a failed invocation. So any night the job 500'd (a DB blip, a deploy
+ * window, a missing CRON_SECRET) permanently skipped that rule's period: the
+ * customer's rent or salary for that month simply never appeared, and because
+ * no row was ever written there was nothing in the UI to notice.
+ * `dueDatesFor` now walks every due date strictly after `lastMaterializedAt`
+ * up to today, so running late costs a day of latency instead of a month of a
+ * founder's books.
  *
  * Callers (cron route, manual trigger) are responsible for:
  *   1. Loading active rules from DB
  *   2. Passing them in
- *   3. Persisting the returned transactions in a $transaction alongside
- *      updating each rule's lastMaterializedAt = now
+ *   3. Persisting the returned transactions, and advancing the rule's
+ *      `lastMaterializedAt` to the LAST occurrence they actually wrote — not
+ *      to `now`. Stamping `now` would swallow any occurrence the cap deferred;
+ *      stamping the last written occurrence means the next run picks the tail
+ *      up. See `RulePlan.claimToken` for the concurrency half.
  */
 
 import type { RecurringRule } from "@prisma/client";
@@ -24,10 +38,58 @@ export interface MaterializedTransaction {
   description: string;
   addedBy: string;
   addedByName: string;
-  /** ISO date for the Transaction.date field — we use `now` so the entry
-   * lands in the month it fires; the recurring source is signaled by ruleId. */
+  /**
+   * The project this spend is attributed to, carried from the rule (money-005).
+   * Null for company-wide rules. Without it, recurring spend — rent, salaries,
+   * subscriptions, i.e. most of a real startup's outgoings — could never trip a
+   * budget cap, because every Budget belongs to a project and
+   * `checkBudgetThresholdAfterExpense` returns early on a null projectId.
+   */
+  projectId: string | null;
+  /**
+   * UTC midnight of the occurrence this row represents — the day the money was
+   * DUE, not the day the job happened to run. A June rent posted with a July
+   * date leaves June's burn, runway and budget figures wrong for ever, and it
+   * is also what makes `@@unique([ruleId, date])` on Transaction a usable
+   * idempotency key (cron-003).
+   */
   date: Date;
 }
+
+/** One rule's worth of work, with everything the writer needs to claim it. */
+export interface RulePlan {
+  ruleId: string;
+  /**
+   * The `lastMaterializedAt` value this plan was computed from. The writer
+   * claims the rule with `updateMany({ where: { id, lastMaterializedAt:
+   * claimToken } })` and skips the rule when that matches 0 rows — which is how
+   * two overlapping runs stop posting the same expense twice (cron-003).
+   */
+  claimToken: Date | null;
+  /** Oldest first. Never empty: a rule with nothing owed produces no plan. */
+  occurrences: MaterializedTransaction[];
+  /** Due occurrences left for the next run because of the per-run cap. */
+  deferred: number;
+  /** True when occurrences older than the lookback window were dropped. */
+  truncatedLookback: boolean;
+}
+
+/**
+ * How many occurrences one run will post for one rule. The cap exists so a
+ * rule that has been asleep for a year cannot mint a year of history in one
+ * night; the remainder is reported as `deferred` and picked up by the next run,
+ * because the writer only advances `lastMaterializedAt` as far as it got.
+ */
+export const MAX_CATCHUP_OCCURRENCES = 12;
+
+/**
+ * How far back the walk reconciles at all. Anything older is dropped for good
+ * and flagged as `truncatedLookback` — deliberately: back-posting three years
+ * of rent into a live ledger is a worse outcome than not posting it, and it has
+ * to be visible rather than silent either way. Also bounds the day-by-day walk
+ * to ~400 iterations per rule.
+ */
+export const MAX_CATCHUP_LOOKBACK_DAYS = 400;
 
 /**
  * Decide whether a single rule should fire on the given date.
@@ -40,9 +102,9 @@ export interface MaterializedTransaction {
  * Weekly rule:
  *   - Fires when today's day-of-week matches rule.dayOfWeek (0=Sun..6=Sat)
  *
- * Idempotency (deferred to the materializer below): a rule with
- * lastMaterializedAt within the current calendar day is skipped, so two
- * cron runs in the same UTC day can't double-fire.
+ * This is a pure per-day predicate: it knows nothing about whether the rule has
+ * already fired. `dueDatesFor` owns that, and calls this once per candidate
+ * day, which is what makes catch-up possible without a second calendar.
  */
 export function isRuleDueOn(rule: RecurringRule, when: Date): boolean {
   if (!rule.active) return false;
@@ -69,43 +131,129 @@ export function isRuleDueOn(rule: RecurringRule, when: Date): boolean {
 
 /**
  * Idempotency check: did this rule already fire today?
- * lastMaterializedAt is set to `now` after every successful run, so we
- * compare its UTC-date to today's UTC-date.
+ *
+ * Retained for the smoke scripts and for reading old Sentry breadcrumbs.
+ * `dueDatesFor` no longer uses it: "already fired today" is just the special
+ * case of "already fired on this candidate day", and a materializer that could
+ * only ever ask about today was cron-004.
  */
 export function alreadyFiredToday(rule: RecurringRule, when: Date): boolean {
   if (!rule.lastMaterializedAt) return false;
   return sameUTCDay(rule.lastMaterializedAt, when);
 }
 
+export interface CatchUpOptions {
+  maxOccurrences?: number;
+  maxLookbackDays?: number;
+}
+
 /**
- * Top-level: given all active rules + a clock, return the array of
- * transactions to materialize. Pure — no DB, no side effects.
+ * Every date this rule owes, oldest first.
+ *
+ * The window is (lastMaterializedAt, today] — strictly after the last day that
+ * materialized, so a same-day rerun owes nothing, and inclusive of today, so an
+ * on-time run still fires. A rule that has never materialized reconciles from
+ * its own `startDate` (inclusive), never earlier.
  */
-export function materialize(rules: RecurringRule[], when: Date): MaterializedTransaction[] {
-  const out: MaterializedTransaction[] = [];
+export function dueDatesFor(
+  rule: RecurringRule,
+  when: Date,
+  opts: CatchUpOptions = {}
+): { dates: Date[]; deferred: number; truncatedLookback: boolean } {
+  const maxOccurrences = opts.maxOccurrences ?? MAX_CATCHUP_OCCURRENCES;
+  const maxLookbackDays = opts.maxLookbackDays ?? MAX_CATCHUP_LOOKBACK_DAYS;
+
+  const today = startOfDayUTC(when);
+  const startDay = startOfDayUTC(rule.startDate);
+  // First day we may consider: the day after the last one that materialized,
+  // floored at the rule's own startDate.
+  const firstCandidate = rule.lastMaterializedAt
+    ? laterOf(addDaysUTC(startOfDayUTC(rule.lastMaterializedAt), 1), startDay)
+    : startDay;
+  const windowFloor = addDaysUTC(today, -maxLookbackDays);
+  const truncatedLookback = firstCandidate.getTime() < windowFloor.getTime();
+  const walkFrom = truncatedLookback ? windowFloor : firstCandidate;
+
+  const dates: Date[] = [];
+  let deferred = 0;
+  for (let day = walkFrom; day.getTime() <= today.getTime(); day = addDaysUTC(day, 1)) {
+    if (!isRuleDueOn(rule, day)) continue;
+    if (dates.length < maxOccurrences) dates.push(day);
+    else deferred += 1;
+  }
+  return { dates, deferred, truncatedLookback };
+}
+
+/**
+ * Per-rule plans for everything owed right now. Rules with nothing owed are
+ * omitted entirely rather than returned empty, so the writer never takes a row
+ * lock or bumps a timestamp for a rule it has no work for.
+ */
+export function planRecurring(
+  rules: RecurringRule[],
+  when: Date,
+  opts: CatchUpOptions = {}
+): RulePlan[] {
+  const plans: RulePlan[] = [];
   for (const rule of rules) {
-    if (!isRuleDueOn(rule, when)) continue;
-    if (alreadyFiredToday(rule, when)) continue;
-    out.push({
+    const { dates, deferred, truncatedLookback } = dueDatesFor(rule, when, opts);
+    if (dates.length === 0) continue;
+    plans.push({
       ruleId: rule.id,
-      companyId: rule.companyId,
-      type: rule.type as "expense" | "investment",
-      // FaultsAudit.md P0-4: RecurringRule.amount is Prisma.Decimal after Float→Decimal.
-      // The MaterializedTransaction shape stays `number` so downstream JSON
-      // paths and tests don't have to know about Decimal.
-      amount: rule.amount.toNumber(),
-      category: rule.category,
-      description: rule.description,
-      addedBy: rule.addedBy,
-      addedByName: rule.addedByName,
-      date: when,
+      claimToken: rule.lastMaterializedAt,
+      occurrences: dates.map((date) => occurrence(rule, date)),
+      deferred,
+      truncatedLookback,
     });
+  }
+  return plans;
+}
+
+/**
+ * Flat view of `planRecurring` — every transaction to create, across all rules.
+ * Kept because it is the shape the unit tests and the QA scripts read; the cron
+ * route uses `planRecurring` because it needs the per-rule claim token.
+ */
+export function materialize(
+  rules: RecurringRule[],
+  when: Date,
+  opts: CatchUpOptions = {}
+): MaterializedTransaction[] {
+  const out: MaterializedTransaction[] = [];
+  for (const plan of planRecurring(rules, when, opts)) {
+    for (const occ of plan.occurrences) out.push(occ);
   }
   return out;
 }
 
+function occurrence(rule: RecurringRule, date: Date): MaterializedTransaction {
+  return {
+    ruleId: rule.id,
+    companyId: rule.companyId,
+    type: rule.type as "expense" | "investment",
+    // FaultsAudit.md P0-4: RecurringRule.amount is Prisma.Decimal after Float→Decimal.
+    // The MaterializedTransaction shape stays `number` so downstream JSON
+    // paths and tests don't have to know about Decimal.
+    amount: rule.amount.toNumber(),
+    category: rule.category,
+    description: rule.description,
+    addedBy: rule.addedBy,
+    addedByName: rule.addedByName,
+    projectId: rule.projectId ?? null,
+    date,
+  };
+}
+
 function startOfDayUTC(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+function addDaysUTC(d: Date, days: number): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + days));
+}
+
+function laterOf(a: Date, b: Date): Date {
+  return a.getTime() >= b.getTime() ? a : b;
 }
 
 function sameUTCDay(a: Date, b: Date): boolean {

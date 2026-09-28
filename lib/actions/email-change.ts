@@ -1,18 +1,67 @@
 "use server";
 
 /**
- * Change-email server actions (audit S3).
+ * Change-email server actions (audit S3; hardened for acct-004 / auth-004 /
+ * auth-005 / sec-010).
  *
- *   - `requestEmailChangeAction(newEmail)` — session-scoped. Validates the
- *     new address isn't taken, then emails a confirmation link TO THE NEW
- *     ADDRESS. The email is NOT changed yet — only clicking the link (which
- *     proves the user controls the destination inbox) applies it. Sending to
- *     the new address is the whole point: it verifies ownership before the
- *     swap, so a typo can't lock the user out of their account.
- *   - `confirmEmailChangeAction(token)` — token-scoped (works logged-out on
- *     any device). Swaps the email + marks it verified. Idempotent-ish: a
- *     second click after the swap fails the not-taken check gracefully.
+ *   - `requestEmailChangeAction({ newEmail, password })` — session-scoped AND
+ *     password-scoped. Re-verifies the current password with bcrypt, validates
+ *     the new address isn't taken, then emails a confirmation link TO THE NEW
+ *     ADDRESS and a plain heads-up TO THE CURRENT ONE. The email is NOT changed
+ *     yet — only clicking the link (which proves the user controls the
+ *     destination inbox) applies it. Sending the link to the new address is the
+ *     whole point: it verifies ownership before the swap, so a typo can't lock
+ *     the user out of their account.
+ *   - `confirmEmailChangeAction(token)` — token-scoped (works logged-out on any
+ *     device, which is why it takes no session). Swaps the email, marks it
+ *     verified and bumps `sessionVersion` in ONE update, then tells the old
+ *     address the move has landed. Single-use: a spent or superseded link is
+ *     refused, it is not quietly re-applied.
+ *
+ * WHY THE EXTRA CEREMONY. Moving the login address is the last step of an
+ * account takeover, not a profile edit: once the row holds attacker@x, the
+ * ordinary /forgot-password flow delivers to the attacker's inbox and the real
+ * owner's password no longer reaches any address they control. The shipped flow
+ * made that step free — a session cookie was the entire credential, nothing was
+ * ever sent to the address being replaced, the confirmation link survived the
+ * password change that is the documented remedy, and confirming left every
+ * other live session alone. Four audit rows, one chain. So:
+ *
+ *   1. RE-AUTHENTICATE (sec-010, auth-005). The current password is required
+ *      and bcrypt-checked before a token is minted, the same bar
+ *      `changePasswordAction` (lib/actions/profile.ts) and
+ *      `deleteAccountAction` (lib/actions/account.ts) already set. A minute at
+ *      an unlocked tab is no longer enough. (2FA is out of scope by product
+ *      decision; the password is the re-auth factor this product has.)
+ *   2. TELL THE OLD ADDRESS (auth-005, sec-010), twice: when a change is
+ *      requested, and again when it lands. This is the owner's only signal, and
+ *      the request-time notice is the one that matters — it arrives while the
+ *      change can still be stopped, and it says how (change your password;
+ *      that both signs every device out and revokes the pending link). The
+ *      notice deliberately does NOT contain the confirmation link: the link is
+ *      a credential for the NEW inbox, and mailing it to the old one would make
+ *      the warning a second way to complete the change.
+ *   3. BIND THE TOKEN TO THE ACCOUNT (acct-004, auth-004). See
+ *      lib/auth/email-change-token.ts — `bv` is a digest of
+ *      {sessionVersion, email, passwordHash} at mint time, recomputed here from
+ *      the live row. A password change, a reset, a logout-everywhere, a later
+ *      email change, or this link's own first use all move it, so all of them
+ *      revoke the pending change for free.
+ *   4. REVOKE OTHER SESSIONS (auth-005, sec-010). The confirm writes
+ *      `sessionVersion: { increment: 1 }` in the SAME update as the new email,
+ *      exactly as lib/actions/password-reset.ts:153 does with the new hash, so
+ *      the two cannot land apart. A hijacked session does not survive the
+ *      change it was used to make.
+ *
+ * `confirmEmailChangeAction` still calls no `auth()`, on purpose: the link is
+ * followed from a mail client that carries no session cookie, possibly on
+ * another device. The token IS the credential, which is why it is now bound and
+ * IP-rate-limited (and why it is listed, with that reason, in
+ * tests/lib/actions/action-auth-gates.test.ts's PRE_AUTH_ENDPOINTS).
  */
+
+import bcrypt from "bcryptjs";
+import { z } from "zod";
 
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -20,13 +69,75 @@ import { limiters } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendEmail } from "@/lib/email/send";
-import { signEmailChangeToken, verifyEmailChangeToken } from "@/lib/auth/email-change-token";
+import {
+  emailChangeBinding,
+  signEmailChangeToken,
+  verifyEmailChangeToken,
+} from "@/lib/auth/email-change-token";
 import { RequestEmailChangeSchema, ConfirmEmailChangeSchema } from "@/lib/schemas/email-change";
 
 import type { ActionResult } from "@/lib/actions/types";
 
+/**
+ * The request contract, with the re-auth factor added here rather than in
+ * `lib/schemas/email-change.ts`.
+ *
+ * WHY HERE. A `"use server"` module may only export async functions (see
+ * tests/lib/actions/use-server-exports.test.ts), so a schema cannot be shared
+ * from this file — and the shared schema's own file is owned by another agent in
+ * this wave. Extending it locally means the SERVER is correct today, with no
+ * edit to a file this change does not own, and stays correct if `password` is
+ * later folded into the shared schema (an `.extend()` simply overrides). The
+ * client-side modal needs the field added to its form either way; until it is,
+ * a change request is refused with the message below, which is the fail-closed
+ * direction.
+ */
+const RequestEmailChangeWithPasswordSchema = RequestEmailChangeSchema.extend({
+  password: z.string().min(1, "Enter your current password to change your login email."),
+});
+
 function linkBase(): string {
   return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+}
+
+/**
+ * The heads-up to the address being replaced. Never carries the confirmation
+ * link (see point 2 in the header) — it carries the one control that actually
+ * stops the change, which is a password change, because that bumps
+ * `sessionVersion` and so invalidates both every session and the pending link.
+ */
+async function warnOldAddress(args: {
+  oldEmail: string;
+  newEmail: string;
+  name: string;
+  applied: boolean;
+}): Promise<void> {
+  const { oldEmail, newEmail, name, applied } = args;
+  const settingsUrl = `${linkBase()}/settings`;
+
+  const subject = applied
+    ? "Your FounderFlow login email was changed"
+    : "Someone asked to change your FounderFlow login email";
+
+  const headline = applied
+    ? `Your FounderFlow login email has been changed from ${oldEmail} to ${newEmail}. Sign in with the new address from now on.`
+    : `A request was made to change your FounderFlow login email from ${oldEmail} to ${newEmail}. Nothing has changed yet — it only takes effect if the confirmation link sent to ${newEmail} is opened.`;
+
+  const remedy = applied
+    ? `If this wasn't you, reset your password immediately at ${linkBase()}/forgot-password and contact support — whoever made this change now controls password resets for this account.`
+    : `If this wasn't you, change your password now at ${settingsUrl}. That signs out every device AND cancels this pending request.`;
+
+  const text = `Hi ${name},\n\n${headline}\n\n${remedy}\n`;
+  const html = `
+      <div style="font-family:system-ui,sans-serif;max-width:520px;margin:auto;">
+        <h2 style="margin:0 0 12px 0;">${applied ? "Your login email was changed" : "Your login email is being changed"}</h2>
+        <p>Hi ${name},</p>
+        <p>${headline}</p>
+        <p style="color:#B42318;"><strong>${remedy}</strong></p>
+      </div>
+    `;
+
+  await sendEmail({ to: oldEmail, subject, html, text });
 }
 
 export async function requestEmailChangeAction(
@@ -39,18 +150,34 @@ export async function requestEmailChangeAction(
   const gate = limiters.auth.consume(ip);
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
-  const parsed = RequestEmailChangeSchema.safeParse(input);
+  const parsed = RequestEmailChangeWithPasswordSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid email" };
   }
-  const { newEmail } = parsed.data;
+  const { newEmail, password } = parsed.data;
 
   try {
-    const me = await db.user.findUnique({
-      where: { id: session.user.id },
-      select: { id: true, name: true, email: true },
+    const me = await db.user.findFirst({
+      // `deletedAt: null`: a tombstoned account must not be able to move its
+      // login address, or a soft-deleted workspace could be re-pointed during
+      // the retention window and then recovered under someone else's inbox.
+      where: { id: session.user.id, deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        passwordHash: true,
+        sessionVersion: true,
+      },
     });
     if (!me) return { success: false, error: "Account no longer exists" };
+
+    // Re-auth FIRST, before any existence check below, so this endpoint cannot
+    // be used as an "is this address registered?" oracle by someone who only
+    // has the session.
+    const reauthenticated = await bcrypt.compare(password, me.passwordHash);
+    if (!reauthenticated) return { success: false, error: "Current password is incorrect" };
+
     if (newEmail === me.email) {
       return { success: false, error: "That's already your email." };
     }
@@ -59,7 +186,7 @@ export async function requestEmailChangeAction(
       return { success: false, error: "An account with this email already exists." };
     }
 
-    const token = await signEmailChangeToken(me.id, newEmail);
+    const token = await signEmailChangeToken(me.id, newEmail, emailChangeBinding(me));
     const url = `${linkBase()}/verify-email-change?token=${encodeURIComponent(token)}`;
     const html = `
       <div style="font-family:system-ui,sans-serif;max-width:520px;margin:auto;">
@@ -72,7 +199,7 @@ export async function requestEmailChangeAction(
           </a>
         </p>
         <p style="color:#666;font-size:12px;word-break:break-all;">${url}</p>
-        <p style="color:#666;font-size:12px;">If you didn't request this, ignore this email — your current address stays in place.</p>
+        <p style="color:#666;font-size:12px;">If you didn't request this, ignore this email — your current address stays in place. The link also stops working if the account's password is changed.</p>
       </div>
     `;
     const text = `Confirm your new FounderFlow email: ${url}\n\nThe link expires in 1 hour. If you didn't request this, ignore it.`;
@@ -83,6 +210,17 @@ export async function requestEmailChangeAction(
       html,
       text,
     });
+
+    // The owner's signal. Sent after the confirmation mail and never allowed to
+    // fail the request: `sendEmail` reports delivery rather than throwing, and a
+    // bounced warning must not leave the user unable to change their address.
+    await warnOldAddress({
+      oldEmail: me.email,
+      newEmail,
+      name: me.name,
+      applied: false,
+    });
+
     return { success: true, data: { dispatched: result.delivered, newEmail } };
   } catch (e) {
     captureServerError(e, { action: "requestEmailChange", userId: session.user.id });
@@ -112,26 +250,79 @@ export async function confirmEmailChangeAction(
   }
 
   try {
-    const user = await db.user.findUnique({
-      where: { id: verified.userId },
-      select: { id: true, email: true },
+    const user = await db.user.findFirst({
+      // `deletedAt: null` — the old lookup had no such filter, so a
+      // confirmation link could still rewrite the login address of an account
+      // inside its soft-delete retention window (acct-004).
+      where: { id: verified.userId, deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        passwordHash: true,
+        sessionVersion: true,
+      },
     });
     if (!user) return { success: false, error: "This account no longer exists." };
-    if (user.email === verified.newEmail) {
-      // Already applied (double click) — treat as success.
-      return { success: true, data: { email: user.email } };
+
+    // THE REVOCATION CHECK. `bv` was computed from {sessionVersion, email,
+    // passwordHash} when the link was minted; if the live row no longer digests
+    // to the same value, something has happened that must cancel this change —
+    // a password change or reset, a logout-everywhere, a later email change, or
+    // this very link's own first use.
+    //
+    // Two separate messages because the two cases mean different things to the
+    // person reading them: "already used" is reassuring (the change went
+    // through), "no longer valid" is a revocation they need to act on.
+    if (verified.bv !== emailChangeBinding(user)) {
+      if (user.email === verified.newEmail) {
+        return {
+          success: false,
+          error: `This confirmation link has already been used — your login email is already ${user.email}.`,
+        };
+      }
+      return {
+        success: false,
+        error:
+          "This confirmation link is no longer valid: the account changed after it was sent " +
+          "(a password change, a sign-out of all devices, or a later email change). " +
+          "Request the change again.",
+      };
     }
+
     // Re-check the target isn't taken in the window since the link was sent.
     const collision = await db.user.findUnique({ where: { email: verified.newEmail } });
     if (collision && collision.id !== user.id) {
       return { success: false, error: "That email is now in use by another account." };
     }
 
+    const previousEmail = user.email;
     await db.user.update({
       where: { id: user.id },
-      // The clicked link proves the new address, so it lands verified.
-      data: { email: verified.newEmail, emailVerifiedAt: new Date() },
+      data: {
+        // The clicked link proves the new address, so it lands verified.
+        email: verified.newEmail,
+        emailVerifiedAt: new Date(),
+        // ONE UPDATE, both facts. Moving the login address is a credential
+        // change: every other live session — including the borrowed one that
+        // may have started this — has to die, and it must not be possible for
+        // the new address to land while the bump does not. Same construction as
+        // lib/actions/password-reset.ts:153 and lib/actions/profile.ts.
+        //
+        // This also revokes THIS link (its `bv` is now stale), which is what
+        // makes it single-use, and it revokes any OTHER outstanding link for
+        // the account, which is what stops an earlier address being restored.
+        sessionVersion: { increment: 1 },
+      },
     });
+
+    await warnOldAddress({
+      oldEmail: previousEmail,
+      newEmail: verified.newEmail,
+      name: user.name,
+      applied: true,
+    });
+
     return { success: true, data: { email: verified.newEmail } };
   } catch (e) {
     captureServerError(e, { action: "confirmEmailChange", userId: verified.userId });

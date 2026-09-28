@@ -49,6 +49,21 @@
  * and is broken is an outage. That asymmetry is the whole argument for doing
  * this here rather than logging a warning at runtime.
  *
+ * ── AND WHY A WARNING LIST TOO ─────────────────────────────────────────────
+ * Not everything that is wrong with a Production scope should stop a deploy.
+ * The asymmetry above cuts both ways: a build that refuses to ship because an
+ * observability tool is not configured is its own kind of outage. So
+ * REQUIRED_PROD_ENV holds the things that break customers, and
+ * RECOMMENDED_PROD_ENV holds the things that leave the TEAM blind — printed
+ * loudly, never fatal.
+ *
+ * The one exception, and the reason prodready-006 is a gate rather than a
+ * warning: HALF a Sentry configuration. `SENTRY_DSN` without
+ * `NEXT_PUBLIC_SENTRY_DSN` gives a deploy that reports server errors, drops
+ * every browser crash, and still tells the customer "The team has been
+ * notified" on the error screen. A state that misrepresents itself is worse
+ * than a state that is plainly off, so it is refused.
+ *
  * ── AND WHY A FORBIDDEN LIST ───────────────────────────────────────────────
  * `RATE_LIMIT_DISABLED=true` makes every limiter in `lib/rate-limit.ts` return
  * `{ allowed: true }` — including the login bucket that is the app's only
@@ -110,6 +125,25 @@ const REQUIRED_PROD_ENV = {
     "the SMTP app password. Same failure as GMAIL_USER — either both are set or " +
     "no mail leaves the building.",
 };
+
+/**
+ * Vars a production deploy WORKS without, but whose absence leaves the team
+ * unable to see what customers are hitting. Printed on every production build
+ * and never fatal — see the header for why that asymmetry is deliberate.
+ */
+const RECOMMENDED_PROD_ENV = {
+  SENTRY_DSN:
+    "server-side error reporting (lib/sentry-server.ts, sentry.server.config.ts). " +
+    "Without it every server-action, RSC and route-handler failure is visible only as a " +
+    "line in a Vercel function log nobody is watching.",
+  NEXT_PUBLIC_SENTRY_DSN:
+    "browser-side error reporting (sentry.client.config.ts). Without it every client " +
+    "crash — the whole (app) error boundary and the root fatal boundary — is invisible, " +
+    "while app/error.tsx tells the customer \"The team has been notified\".",
+};
+
+/** The three vars @sentry/nextjs needs to upload source maps. */
+const SENTRY_UPLOAD_ENV = ["SENTRY_AUTH_TOKEN", "SENTRY_ORG", "SENTRY_PROJECT"];
 
 /**
  * Vars that must NOT be switched on in a production build, each with the
@@ -206,6 +240,80 @@ const VALUE_RULES = {
     return null;
   },
 };
+
+/**
+ * prodready-006. Why a MISMATCHED Sentry pair fails the build while an absent
+ * one only warns.
+ *
+ * The two DSNs are not alternatives, they are the two halves of one thing.
+ * `SENTRY_DSN` is read by `sentry.server.config.ts`; `NEXT_PUBLIC_SENTRY_DSN` is
+ * read by `sentry.client.config.ts`, and it has to be `NEXT_PUBLIC_` because a
+ * server-only variable is not inlined into the client bundle and would be
+ * `undefined` in the browser. Setting one of them produces a Sentry project that
+ * receives events, looks healthy, and is missing an entire half of the
+ * application — which is strictly more misleading than a project that receives
+ * nothing, because nobody goes looking for the gap.
+ *
+ * Returns the problem string, or null when the pair is consistent (both set, or
+ * both absent — the latter is the warning list's business, not this one's).
+ */
+export function sentryDsnPairProblem(env) {
+  const server = !isBlank(env.SENTRY_DSN);
+  const browser = !isBlank(env.NEXT_PUBLIC_SENTRY_DSN);
+  if (server === browser) return null;
+  if (server) {
+    return (
+      "NEXT_PUBLIC_SENTRY_DSN is not set although SENTRY_DSN is. Server errors would " +
+      "report and every browser crash would be dropped, while app/error.tsx keeps telling " +
+      "the customer \"The team has been notified\". Set NEXT_PUBLIC_SENTRY_DSN to the same " +
+      "DSN in the Production scope (it must carry the NEXT_PUBLIC_ prefix to reach the " +
+      "browser bundle), or unset both."
+    );
+  }
+  return (
+    "SENTRY_DSN is not set although NEXT_PUBLIC_SENTRY_DSN is. Browser crashes would " +
+    "report and every server action, RSC and route handler failure would be dropped — " +
+    "including the ones that touch money. Set SENTRY_DSN in the Production scope, or " +
+    "unset both."
+  );
+}
+
+/**
+ * Things that are worth saying about a Production scope but must never stop a
+ * deploy. Pure and exported for the same reason as productionEnvProblems.
+ */
+export function productionEnvWarnings(env) {
+  const warnings = [];
+
+  const recommended = Object.keys(RECOMMENDED_PROD_ENV);
+  for (const name of recommended) {
+    if (isBlank(env[name])) {
+      warnings.push(`${name} is not set — ${RECOMMENDED_PROD_ENV[name]}`);
+    }
+  }
+
+  // The coupling that makes a DSN-only configuration report NOTHING today:
+  // next.config.js applies withSentryConfig only when the DSN *and* all three
+  // upload vars are present, and that wrapper is what injects
+  // sentry.client.config.ts / sentry.server.config.ts into the build. So half a
+  // configuration here is not "events without source maps", it is no SDK at all.
+  // Remove this warning if next.config.js is ever changed to wrap on the DSN
+  // alone — at that point a missing upload trio really would only cost readable
+  // stack traces.
+  const hasAnyDsn = !isBlank(env.SENTRY_DSN) || !isBlank(env.NEXT_PUBLIC_SENTRY_DSN);
+  const missingUpload = SENTRY_UPLOAD_ENV.filter((name) => isBlank(env[name]));
+  if (hasAnyDsn && missingUpload.length > 0) {
+    warnings.push(
+      `A Sentry DSN is set but ${missingUpload.join(", ")} ` +
+        `${missingUpload.length === 1 ? "is" : "are"} not. next.config.js only applies ` +
+        "withSentryConfig when the DSN and ALL THREE upload vars are present, and that " +
+        "wrapper is what bundles the SDK — so as things stand this deploy reports nothing " +
+        "at all while looking configured."
+    );
+  }
+
+  return warnings;
+}
 
 /**
  * Every reason this production build must not proceed, as printable lines.

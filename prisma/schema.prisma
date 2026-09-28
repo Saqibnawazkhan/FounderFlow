@@ -37,9 +37,9 @@ datasource db {
 }
 
 model User {
-  id              String    @id @default(cuid())
-  name            String
-  email           String    @unique
+  id                         String    @id @default(cuid())
+  name                       String
+  email                      String    @unique
   // Parser-addressable name: the token after the `@` in a comment or chat
   // mention (`@ali`). Deliberately NOT `name` — a name is how PEOPLE address
   // you and may be written in any script; a handle is how the MENTION PARSER
@@ -70,39 +70,58 @@ model User {
   // the column ship without a NOT NULL backfill that must provably succeed for
   // every historical row, including rows whose local-part sanitises to nothing.
   // 20260925140000_add_user_handle backfills every row that exists today.
-  handle          String?
-  passwordHash    String // bcrypt hash, never the raw password
-  role            String // "admin" | "cofounder" | "member"
-  avatar          String?
-  companyId       String
-  createdAt       DateTime  @default(now())
+  handle                     String?
+  passwordHash               String // bcrypt hash, never the raw password
+  role                       String // "admin" | "cofounder" | "member"
+  avatar                     String?
+  companyId                  String
+  createdAt                  DateTime  @default(now())
   // Updated by the Auth.js signIn callback. Surfaces on /settings as
   // "Last sign-in" so the user can spot rogue logins. Nullable for
   // legacy rows that predate the column.
-  lastSignInAt    DateTime?
+  lastSignInAt               DateTime?
   // Set the moment the user clicks their email-verification link. NULL =
   // unverified (the default for a fresh signup, and for legacy rows that
   // predate the column). Drives the "verify your email" banner. Soft gate
   // for now — nothing is blocked while null; the EMAIL_VERIFICATION_REQUIRED
   // env flag is reserved for a future hard gate.
-  emailVerifiedAt DateTime?
+  emailVerifiedAt            DateTime?
   // Cross-device UI preferences (S6). Synced from the settings appearance +
   // language controls so a user's theme/locale follow them to a new device
   // instead of living only in that browser's localStorage.
-  theme           String    @default("dark") // "light" | "dark"
-  locale          String    @default("en") // "en" | "ur"
+  theme                      String    @default("dark") // "light" | "dark"
+  locale                     String    @default("en") // "en" | "ur"
   // Session-invalidation counter. Baked into the JWT at sign-in; the auth
   // jwt callback re-checks it against this column on every request and kills
   // the session if they diverge. Bumping it (password reset, "log out
   // everywhere") force-signs-out every existing token instead of waiting for
   // the cookie to expire. Complements the deletedAt check below.
-  sessionVersion  Int       @default(0)
+  sessionVersion             Int       @default(0)
+  // Durable brute-force counter for the login throttle (requested by a06 in
+  // the 2026-09-28 P1 wave). The in-process limiter in lib/rate-limit.ts lives
+  // in a module-level Map, so on Vercel it resets on every cold start and is
+  // not shared between concurrent lambdas — an attacker gets a fresh quota per
+  // instance, which is most of the protection gone. These two columns give the
+  // throttle one counter per account that survives both.
+  //
+  // Additive and cheap on a populated table: an `Int NOT NULL DEFAULT 0` is a
+  // metadata-only ALTER in Postgres 11+ (no rewrite), and the timestamp is
+  // nullable, so neither needs a back-fill. No index either — every read is by
+  // the existing unique `email` or by `id`.
+  //
+  // Two things for whoever uses them, neither of them schema problems: the
+  // increment is a WRITE on an unauthenticated path, so it row-locks the
+  // account an attacker is hammering; and a per-account counter is a lockout
+  // vector against a victim, so the throttle it feeds should delay rather than
+  // hard-block, and must not leak whether the account exists.
+  failedLoginCount           Int       @default(0)
+  failedLoginWindowStartedAt DateTime?
   // Tier 3 soft-delete sentinel. NULL = live row. Any timestamp = soft
   // deleted; the row survives until the nightly purge cron hard-deletes
   // it after 90 days. Auth + queries filter `deletedAt: null` so a
   // soft-deleted user can't sign in and their data isn't rendered, but
   // ops can restore with `UPDATE "User" SET "deletedAt" = NULL`.
-  deletedAt       DateTime?
+  deletedAt                  DateTime?
 
   company            Company                  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   ownedCompany       Company?                 @relation("CompanyOwner")
@@ -264,6 +283,22 @@ model Transaction {
   user     User      @relation(fields: [addedBy], references: [id], onDelete: Cascade)
   comments Comment[]
 
+  // THE IDEMPOTENCY KEY FOR RECURRING SPEND (cron-003, added 2026-09-28).
+  // Materialization used to be a read-then-write with nothing behind it: two
+  // overlapping runs of /api/cron/materialize-recurring both read a stale
+  // `lastMaterializedAt` and both inserted, so a customer's books showed a rent
+  // charge twice — and every derived figure the product sells (burn, runway,
+  // budget alerts, reports, CSV export) was wrong with nothing flagging it.
+  // The route now claims each rule with a conditional UPDATE, and this is the
+  // second line of defence: one rule can hold at most one transaction per
+  // occurrence date, enforced by Postgres rather than by timing.
+  //
+  // Two things make it safe on the live table. (a) `date` is now the UTC
+  // midnight of the occurrence, not the instant the job ran, so the pair is
+  // stable across reruns — see MaterializedTransaction.date. (b) A composite
+  // unique treats rows as distinct when any column is NULL, so every
+  // hand-entered transaction (ruleId IS NULL) is outside the constraint.
+  @@unique([ruleId, date])
   @@index([companyId, date])
   @@index([companyId, type])
   @@index([addedBy])
@@ -304,12 +339,27 @@ model RecurringRule {
   lastMaterializedAt DateTime?
   createdAt          DateTime  @default(now())
 
+  // Optional project attribution, carried onto every materialized Transaction
+  // (money-005, added 2026-09-28). Without it recurring spend — rent, salaries,
+  // subscriptions, the outgoings a founder most wants capped — could not trip a
+  // budget alert even once: every Budget belongs to a project, and
+  // `checkBudgetThresholdAfterExpense` (lib/budgets/check.ts) returns early when
+  // the transaction has no projectId. So /budgets showed red while the alerting
+  // stayed silent. SetNull, matching Transaction.projectId: deleting a project
+  // must not delete the rule that funds it.
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
   company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   user         User          @relation(fields: [addedBy], references: [id], onDelete: Cascade)
   transactions Transaction[] // materialized children — survives rule deletion
 
   @@index([companyId, active])
   @@index([active, frequency])
+  // The SetNull above has to find these rows when a project is hard-deleted by
+  // the nightly purge, and /projects/[id] reads a project's rules. Same reason
+  // as Notification_projectId_idx (perf-005).
+  @@index([projectId])
 }
 
 model Task {
@@ -410,6 +460,17 @@ model Notification {
   // table scan — Notification was the one company-scoped table with no
   // companyId-leading index. Matches the pattern on Transaction/Comment/etc.
   @@index([companyId, createdAt])
+  // perf-005. `project` above is onDelete: SetNull, and Postgres resolves a
+  // referential action by querying the referencing table — with no index that
+  // is a sequential scan of Notification, the fastest-growing table here, ONCE
+  // PER PURGED PROJECT. The nightly purge deletes overdue projects inside a
+  // route capped at maxDuration = 60, so ten projects against a 500k-row
+  // Notification table timed the stage out and it reported a failure for ever
+  // while tombstones piled up past their retention promise. Every sibling
+  // project-referencing table was already indexed
+  // (Transaction_projectId_date_idx, TimeEntry_projectId_clockInAt_idx,
+  // Activity_projectId_createdAt_idx) — this was an omission, not a policy.
+  @@index([projectId])
 }
 
 // Closes audit flaw #7: admins no longer set temp passwords directly. The
@@ -627,12 +688,13 @@ model Project {
   supervisor User    @relation("ProjectSupervisor", fields: [supervisorId], references: [id])
   creator    User    @relation("ProjectCreator", fields: [createdBy], references: [id])
 
-  tasks         Task[]
-  budgets       Budget[]
-  timeEntries   TimeEntry[]
-  transactions  Transaction[]
-  activities    Activity[]
-  notifications Notification[]
+  tasks          Task[]
+  budgets        Budget[]
+  timeEntries    TimeEntry[]
+  transactions   Transaction[]
+  activities     Activity[]
+  notifications  Notification[]
+  recurringRules RecurringRule[]
 
   @@index([companyId, status])
   @@index([supervisorId])
@@ -722,7 +784,7 @@ model ChannelMember {
 }
 
 model Message {
-  id           String    @id @default(cuid())
+  id           String                   @id @default(cuid())
   // Denormalized company scope. Every read path is already company-scoped, and
   // carrying it here means the workspace-wide sweeps (purge, export) don't have
   // to join through Channel.
@@ -732,7 +794,7 @@ model Message {
   authorName   String // denormalized — survives a rename, exactly like Comment
   authorAvatar String? // denormalized
   // "text" | "card" — MESSAGE_KINDS in lib/schemas/chat.ts.
-  kind         String    @default("text")
+  kind         String                   @default("text")
   body         String
   // JSON, versioned — the structured payload for kind "card" (e.g. a Runway
   // snapshot). NULL for plain text. String, not Json, so the column stays
@@ -744,11 +806,11 @@ model Message {
   // Denormalized count of direct replies, so a root row renders "5 replies"
   // without an aggregate per row. Maintained by the send/delete paths in
   // lib/actions/chat.ts.
-  replyCount   Int       @default(0)
+  replyCount   Int                      @default(0)
   // JSON array of resolved userIds — `["cuid1","cuid2"]`. Same shape and same
   // reasoning as Comment.mentions.
-  mentions     String    @default("[]")
-  createdAt    DateTime  @default(now())
+  mentions     String                   @default("[]")
+  createdAt    DateTime                 @default(now())
   editedAt     DateTime?
   // Tombstone — see User.deletedAt for semantics. Message is the SEVENTH
   // soft-delete table. A deleted message must not silently rewrite history:
@@ -789,6 +851,13 @@ model Message {
   parent    Message?          @relation("MessageThread", fields: [parentId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   replies   Message[]         @relation("MessageThread")
   reactions MessageReaction[]
+  // The GIN index over searchVector — "Message_searchVector_idx" — is NOT
+  // listed here and cannot be: Prisma has no syntax for a GIN index, nor for
+  // any index on an Unsupported column. It lives in SQL only, created by
+  // 20260925120000_add_message_search. Its absence from this block is not an
+  // oversight, and `prisma migrate` will not propose to drop it (it ignores
+  // indexes on columns it cannot model). Anything that changes it is a
+  // hand-written migration.
 
   // The channel timeline.
   @@index([channelId, createdAt])
@@ -798,13 +867,6 @@ model Message {
   @@index([companyId, createdAt])
   @@index([authorId])
   @@index([deletedAt])
-  // The GIN index over searchVector — "Message_searchVector_idx" — is NOT
-  // listed here and cannot be: Prisma has no syntax for a GIN index, nor for
-  // any index on an Unsupported column. It lives in SQL only, created by
-  // 20260925120000_add_message_search. Its absence from this block is not an
-  // oversight, and `prisma migrate` will not propose to drop it (it ignores
-  // indexes on columns it cannot model). Anything that changes it is a
-  // hand-written migration.
 }
 
 model MessageReaction {

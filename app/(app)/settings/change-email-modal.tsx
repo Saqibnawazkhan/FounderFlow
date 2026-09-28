@@ -8,13 +8,14 @@
  */
 
 import { useId, useState } from "react";
+import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import toast from "react-hot-toast";
 import { MailCheck, Send } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { requestEmailChangeAction } from "@/lib/actions/email-change";
-import { RequestEmailChangeSchema, type RequestEmailChangeInput } from "@/lib/schemas/email-change";
+import { RequestEmailChangeSchema } from "@/lib/schemas/email-change";
 import { useT } from "@/lib/i18n/use-t";
 import { cn } from "@/lib/utils";
 
@@ -24,9 +25,17 @@ type Props = {
   currentEmail: string;
 };
 
+// Extends rather than replaces the shared schema, so the server's contract and
+// the form's stay in step if `password` is folded into the shared one later.
+const FormSchema = RequestEmailChangeSchema.extend({
+  password: z.string().min(1, "Enter your current password"),
+});
+type FormValues = z.infer<typeof FormSchema>;
+
 export function ChangeEmailModal({ open, onClose, currentEmail }: Props) {
   const t = useT();
   const emailId = useId();
+  const passwordId = useId();
   const [submitting, setSubmitting] = useState(false);
   const [sentTo, setSentTo] = useState<string | null>(null);
 
@@ -35,18 +44,18 @@ export function ChangeEmailModal({ open, onClose, currentEmail }: Props) {
     handleSubmit,
     reset,
     formState: { errors },
-  } = useForm<RequestEmailChangeInput>({
-    resolver: zodResolver(RequestEmailChangeSchema),
-    defaultValues: { newEmail: "" },
+  } = useForm<FormValues>({
+    resolver: zodResolver(FormSchema),
+    defaultValues: { newEmail: "", password: "" },
   });
 
   function onClosed() {
-    reset({ newEmail: "" });
+    reset({ newEmail: "", password: "" });
     setSentTo(null);
     onClose();
   }
 
-  async function onSubmit(data: RequestEmailChangeInput) {
+  async function onSubmit(data: FormValues) {
     setSubmitting(true);
     const res = await requestEmailChangeAction(data);
     setSubmitting(false);
@@ -104,6 +113,30 @@ export function ChangeEmailModal({ open, onClose, currentEmail }: Props) {
             />
             {errors.newEmail && (
               <p className="mt-1.5 text-xs text-danger">{errors.newEmail.message}</p>
+            )}
+          </div>
+          <div>
+            <label
+              htmlFor={passwordId}
+              className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+            >
+              {t.settings.currentPassword}
+            </label>
+            <input
+              id={passwordId}
+              type="password"
+              autoComplete="current-password"
+              aria-invalid={errors.password ? true : undefined}
+              {...register("password")}
+              className={cn(
+                "w-full rounded-xl border bg-bg px-4 py-2.5 text-sm text-fg placeholder:text-fg-muted/60 focus:bg-surface focus:outline-none",
+                errors.password
+                  ? "border-danger/60 focus:border-danger"
+                  : "border-border focus:border-primary/50"
+              )}
+            />
+            {errors.password && (
+              <p className="mt-1.5 text-xs text-danger">{errors.password.message}</p>
             )}
           </div>
           <div className="flex justify-end gap-2 pt-1">

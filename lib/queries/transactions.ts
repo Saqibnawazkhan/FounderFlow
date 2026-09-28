@@ -38,16 +38,31 @@
  * survived: nobody reviews a perf TODO for wrong money.
  *
  * ── WHAT IS STILL OWED ─────────────────────────────────────────────────────
- * The roll-ups above exist and are correct, but the finance PAGES still hand
- * their client components the whole windowed array and reduce it there. Until
- * each page passes the roll-up it needs (dashboard/page.tsx, expenses/page.tsx,
- * revenue, investments, reports, team, and the runway card in lib/actions/chat.ts),
- * a workspace past the per-type ceiling still sees understated all-time totals —
- * just no longer an EMPTY page, and no longer without a warning in the ops feed.
- * Those page files are owned elsewhere in this wave; wiring them is one prop per
- * surface and is tracked as the money-008 follow-up.
+ * The roll-ups exist and are correct, and NOTHING CALLS THEM YET. Every one of
+ * the seven finance surfaces still calls `getTransactions()` with no type and no
+ * date window, and reduces the windowed array client-side:
  *
- * Tested in tests/lib/queries/transaction-rollups.test.ts.
+ *   app/(app)/dashboard/page.tsx   app/(app)/expenses/page.tsx
+ *   app/(app)/revenue/page.tsx     app/(app)/investments/page.tsx
+ *   app/(app)/reports/page.tsx     app/(app)/team/page.tsx
+ *   lib/actions/chat.ts:1294 (the runway card)
+ *
+ * So a workspace past the per-type ceiling still sees understated all-time
+ * totals — just no longer an EMPTY page, and no longer without a warning in the
+ * ops feed. Worth stating plainly because a correct-and-unreached roll-up looks
+ * exactly like a fix from inside this file: it is the shape of six previous bugs
+ * in this repo (see tests/lib/actions/reachability.test.ts). Wiring is one prop
+ * per surface; those page files are owned elsewhere in this wave.
+ *
+ * `getContributionTotalsByUser` was the last MISSING roll-up, not just an
+ * unwired one: /dashboard's founder-contribution card and /team's per-member
+ * "contributed / spent" cells aggregate PER PERSON, and no per-person aggregate
+ * existed, so neither could be wired at all. It is the figure most likely to be
+ * wrong, because the rows a ceiling drops are the oldest and a startup's oldest
+ * rows are its seed investments.
+ *
+ * Tested in tests/lib/queries/transaction-rollups.test.ts and
+ * tests/lib/queries/transaction-contributions.test.ts.
  */
 
 import { Prisma } from "@prisma/client";
@@ -374,6 +389,52 @@ export async function getExpenseTotalsByCategory(
       amount: r._sum.amount ? r._sum.amount.toNumber() : 0,
     }))
     .sort((a, b) => b.amount - a.amount);
+}
+
+/** Per-type totals for one person. Every type present, so a page can print a
+ *  figure without a `?? 0` at every call site. */
+export type UserContribution = Record<TransactionType, number>;
+
+/**
+ * Money in and money out PER PERSON, in ONE `groupBy` — `userId → { expense,
+ * income, investment }`.
+ *
+ * WHAT IT REPLACES. /dashboard's "founder contributions" card and /team's
+ * per-member "contributed / spent" cells both did this, per user, over the
+ * windowed array:
+ *
+ *     transactions.filter(t => t.addedBy === u.id && t.type === "investment")
+ *                 .reduce((s, t) => s + t.amount, 0)
+ *
+ * which is money-008 at its sharpest. The rows a ceiling drops are the OLDEST,
+ * and a startup's oldest rows are its seed investments — so the founder whose
+ * capital started the company is the one whose contribution figure silently
+ * shrinks as the workspace grows. No `take`, so no row can be excluded from
+ * anyone's total.
+ *
+ * Keyed by `Transaction.addedBy`, which is who RECORDED the row, matching what
+ * both surfaces already display. A user with no rows is absent from the map
+ * rather than present with zeros — the caller iterates its own user list.
+ */
+export async function getContributionTotalsByUser(
+  window: DateWindow = {}
+): Promise<Record<string, UserContribution>> {
+  const { companyId } = await requireScopedSession();
+  const rows = await db.transaction.groupBy({
+    by: ["addedBy", "type"],
+    where: { companyId, deletedAt: null, ...dateFilter(window) },
+    _sum: { amount: true },
+  });
+
+  const byUser: Record<string, UserContribution> = {};
+  for (const r of rows) {
+    // A type outside the enum means a writer invented one; skipping keeps the
+    // rest of the figures right instead of throwing on a finance page.
+    if (!isTransactionType(r.type)) continue;
+    if (!byUser[r.addedBy]) byUser[r.addedBy] = { expense: 0, income: 0, investment: 0 };
+    byUser[r.addedBy][r.type] = r._sum.amount ? r._sum.amount.toNumber() : 0;
+  }
+  return byUser;
 }
 
 /**

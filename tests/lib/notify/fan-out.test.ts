@@ -30,11 +30,21 @@ vi.mock("@/lib/notify/email", () => ({
 
 type Stored = { userId: string; event: string; inApp: boolean; email: boolean; push: boolean };
 
-/** Stand-in for the `Pick<typeof db, "notification" | "notificationPreference">` the helper takes. */
-function fakeClient(stored: Stored[] = []) {
+/**
+ * Stand-in for the `Pick<typeof db, "notification" | "notificationPreference" |
+ * "user">` the helper takes.
+ *
+ * `user.findMany` MODELS THE FILTER rather than ignoring it: ids listed in
+ * `tombstoned` come back only when the query did not ask for
+ * `deletedAt: null`. A fake that returns every id whatever the `where` says
+ * cannot fail for data-integrity-004 — it would agree with the bug.
+ */
+function fakeClient(stored: Stored[] = [], tombstoned: string[] = []) {
   const calls: { data: Record<string, unknown>[] }[] = [];
+  const lookups: Array<Record<string, unknown>> = [];
   return {
     calls,
+    lookups,
     client: {
       notification: {
         createMany: async (args: { data: Record<string, unknown>[] }) => {
@@ -46,9 +56,13 @@ function fakeClient(stored: Stored[] = []) {
         findMany: async () => stored,
       },
       user: {
-        // The fan-out looks addresses up by id; the shape is all it needs.
-        findMany: async (args: { where: { id: { in: string[] } } }) =>
-          args.where.id.in.map((id) => ({ name: `User ${id}`, email: `${id}@nimbus.app` })),
+        findMany: async (args: { where: { id: { in: string[] }; deletedAt?: null } }) => {
+          lookups.push(args.where as Record<string, unknown>);
+          const wantsLiveOnly = args.where.deletedAt === null;
+          return args.where.id.in
+            .filter((id) => !(wantsLiveOnly && tombstoned.indexOf(id) !== -1))
+            .map((id) => ({ id, name: `User ${id}`, email: `${id}@nimbus.app` }));
+        },
       },
     } as never,
   };
@@ -270,27 +284,73 @@ describe("notifyUsers email channel", () => {
     expect(fireNotificationEmails).not.toHaveBeenCalled();
   });
 
-  it("does not look up addresses when nobody is eligible", async () => {
-    // A user lookup per notification would be a wasted round-trip on the
-    // noisiest events, which are exactly the ones that never email.
-    const { client } = fakeClient();
-    let lookups = 0;
-    const spy = {
-      ...(client as unknown as Record<string, unknown>),
-      user: {
-        findMany: async () => {
-          lookups += 1;
-          return [];
-        },
-      },
-    } as never;
-    await notifyUsers({
-      ...base,
-      event: "transaction_logged",
-      category: "finance",
-      userIds: ["u1"],
-      tx: spy,
-    });
-    expect(lookups).toBe(0);
+  it("resolves recipients in ONE query, not one per channel", async () => {
+    // WHAT THIS TEST USED TO SAY, AND WHY IT CHANGED (data-integrity-004). It
+    // asserted ZERO user lookups for an event that emails nobody, on the grounds
+    // that a lookup per notification is a wasted round-trip on the noisiest
+    // events. The round-trip argument still holds — hence "one" — but "zero" was
+    // only achievable by trusting the caller's id list, and the caller's id list
+    // is where tombstoned users come from (Task.assignedTo and stored mentions
+    // both outlive a deactivation). The recipients are now resolved through the
+    // User table once, up front, and that same read serves the email addresses.
+    const { client, lookups } = fakeClient();
+    await notifyUsers({ ...base, userIds: ["u1", "u2"], tx: client });
+    expect(lookups).toHaveLength(1);
+    expect(lookups[0]!.deletedAt, "and it is the live-only read").toBe(null);
+  });
+
+  it("does not look anyone up when every channel is muted", async () => {
+    // Nothing will be delivered, so there is nothing to resolve.
+    const { client, lookups } = fakeClient([
+      { userId: "u1", event: "task_assigned", inApp: false, email: false, push: false },
+    ]);
+    await notifyUsers({ ...base, userIds: ["u1"], tx: client });
+    expect(lookups).toHaveLength(0);
+  });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* data-integrity-004 — a tombstoned recipient receives nothing, on any channel */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+describe("a deactivated teammate is not a recipient (data-integrity-004)", () => {
+  it("writes no in-app row for a tombstoned user", async () => {
+    // This branch was the gap. The EMAIL branch filtered `deletedAt: null` and
+    // said why in a comment; `notification.createMany` two statements above it
+    // wrote a row for whoever it was handed. The rows then pile up for ever and
+    // all flood back if the account is ever reactivated.
+    const { client, calls } = fakeClient([], ["u2"]);
+    const res = await notifyUsers({ ...base, userIds: ["u1", "u2"], tx: client });
+    expect(res.notified, "only the live teammate was notified").toBe(1);
+    expect(calls[0]!.data.map((d) => d.userId)).toEqual(["u1"]);
+  });
+
+  it("raises no push for a tombstoned user", async () => {
+    // sendPushToUsers filters `user: { deletedAt: null }` at the delivery
+    // boundary too — but the fan-out must not even ask. A removed employee's
+    // phone buzzing with "New expense — 2,500,000" is confidential finance data
+    // leaving the tenant after access was revoked.
+    const { client } = fakeClient([], ["u2"]);
+    await notifyUsers({ ...base, userIds: ["u1", "u2"], tx: client });
+    await settlePush();
+    const rows = pushForNotificationRows.mock.calls[0]![0] as { userId: string }[];
+    expect(rows.map((r) => r.userId)).toEqual(["u1"]);
+  });
+
+  it("sends no email to a tombstoned user (the half that already worked)", async () => {
+    const { client } = fakeClient([], ["u2"]);
+    await notifyUsers({ ...base, userIds: ["u1", "u2"], tx: client });
+    const job = fireNotificationEmails.mock.calls[0]![0] as { recipients: { email: string }[] };
+    expect(job.recipients.map((r) => r.email)).toEqual(["u1@nimbus.app"]);
+  });
+
+  it("writes nothing at all when every recipient is tombstoned", async () => {
+    const { client, calls } = fakeClient([], ["u1", "u2"]);
+    const res = await notifyUsers({ ...base, userIds: ["u1", "u2"], tx: client });
+    await settlePush();
+    expect(res.notified).toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(pushForNotificationRows).not.toHaveBeenCalled();
+    expect(fireNotificationEmails).not.toHaveBeenCalled();
   });
 });

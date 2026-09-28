@@ -28,6 +28,7 @@
  * identical discipline for the runway card.
  */
 
+import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requireScopedSession } from "@/lib/queries/session";
 import type { Role } from "@/lib/auth/role-gates";
@@ -37,6 +38,29 @@ import {
   canSeeProjectFinances,
 } from "@/lib/auth/project-permissions";
 import { durationMs } from "@/lib/time/thresholds";
+
+/**
+ * The statuses in which a project no longer takes part in day-to-day work.
+ *
+ * ONE CONSTANT, BECAUSE TWO LITERALS DRIFTED. Finding projects-011.
+ * `listProjectOptions` — the source for every project picker in the task /
+ * budget / transaction / clock-in forms — filtered only
+ * `status: { not: "archived" }`, so a COMPLETED project was still offered. The
+ * global task board filters `project: { status: { notIn: ["completed",
+ * "archived"] } }` (lib/queries/tasks.ts). A task filed into a completed
+ * project therefore existed, counted in that project's own KPIs, and was
+ * invisible on /tasks for admin, cofounder and the assignee alike — while the
+ * `task_assigned` notification deep-linked to `/tasks?taskId=<id>` and landed
+ * on a board with nothing to highlight. That reads to the customer as "your app
+ * lost my work".
+ *
+ * The two rules have to be the same rule, so they are the same array. The one
+ * remaining literal is in lib/queries/tasks.ts's board clause; it should import
+ * this. `tests/lib/queries/projects-scope.test.ts` drives both queries and
+ * compares what each excludes, so the two cannot diverge again silently even
+ * while the literal is still there.
+ */
+export const INACTIVE_PROJECT_STATUSES: readonly string[] = ["completed", "archived"];
 
 export interface ProjectClient {
   id: string;
@@ -114,6 +138,56 @@ function toClient(p: {
 }
 
 /**
+ * One row per project from the tracked-time SUM. `ms` is null for a group with
+ * no finished entries, and `Prisma.Decimal` would be the type if the cast in the
+ * SQL were ever dropped — hence `number | string` and a `Number()` at the use
+ * site rather than trusting the driver.
+ */
+type ClosedTimeSumRow = { projectId: string | null; ms: number | string | null };
+
+/**
+ * TRACKED TIME IS A SUM, AND SUMS BELONG IN SQL. Finding perf-003.
+ *
+ * Both roll-ups here used to run `db.timeEntry.findMany({ where: { projectId:
+ * … } })` with NO `take` and add the durations up in a JavaScript loop. The
+ * sibling roll-ups in the same `Promise.all` (`task.groupBy`,
+ * `transaction.groupBy`) were already done in SQL; the time sum was the one that
+ * was not. A workspace clocking eight entries per person per week reaches ~20k
+ * TimeEntry rows inside a year, and /projects pulled every one of them into the
+ * Node heap on each load to produce one number per card. On a serverless
+ * function that is not a slow page, it is the memory ceiling.
+ *
+ * WHY THE SPLIT INTO TWO READS — deliberate, and not an optimisation that can be
+ * "simplified" into one. A FINISHED entry's duration is a function of two stored
+ * columns, so Postgres can sum it. A RUNNING entry's duration depends on `now`,
+ * and pinning `now` inside the SQL means binding a JavaScript Date against a
+ * Prisma `DateTime` column (`timestamp(3)`, no time zone) and hoping the
+ * implicit cast in `COALESCE("clockOutAt", $1)` means what we think it means —
+ * a timezone bug in a money-adjacent figure, in exchange for nothing. Open
+ * entries are instead read as rows and passed through the same `durationMs`
+ * every other surface uses, and that read is bounded by the number of people
+ * currently clocked in: `clockInAction` enforces one open entry per user, so it
+ * is at most the size of the team, not the size of the history.
+ *
+ * `GREATEST(0, …)` mirrors `durationMs`'s `Math.max(0, …)`: a manually edited
+ * entry whose clock-out precedes its clock-in contributes zero, not a negative.
+ */
+function closedTrackedMsByProject(rows: ClosedTimeSumRow[]): Map<string, number> {
+  const byProject = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.projectId || row.ms === null) continue;
+    byProject.set(row.projectId, Math.round(Number(row.ms)));
+  }
+  return byProject;
+}
+
+/** The single-project form of the same sum. */
+function closedTrackedMs(rows: { ms: number | string | null }[]): number {
+  const total = rows.length > 0 ? rows[0].ms : null;
+  return total === null || total === undefined ? 0 : Math.round(Number(total));
+}
+
+/**
  * Returns every project the current user is allowed to see, oldest-first.
  * Members get the filtered subset; admin/cofounder get all rows.
  */
@@ -181,15 +255,28 @@ export async function listProjectsForUser(): Promise<ProjectListItem[]> {
           _sum: { amount: true },
         });
 
-  const [openCountsRows, spendRows, timeEntryRows] = await Promise.all([
+  const [openCountsRows, spendRows, closedTimeRows, openTimeEntries] = await Promise.all([
     db.task.groupBy({
       by: ["projectId"],
       where: { projectId: { in: projectIds }, deletedAt: null, status: { not: "completed" } },
       _count: { _all: true },
     }),
     spendRowsPromise,
+    // The finished hours, summed BY POSTGRES. See the note on
+    // `closedTrackedMsByProject` below for why this is raw SQL and why the
+    // still-running entries are a separate, bounded read.
+    db.$queryRaw<ClosedTimeSumRow[]>`
+      SELECT "projectId",
+             SUM(GREATEST(0, EXTRACT(EPOCH FROM ("clockOutAt" - "clockInAt")) * 1000))
+               ::double precision AS ms
+        FROM "TimeEntry"
+       WHERE "companyId" = ${companyId}
+         AND "clockOutAt" IS NOT NULL
+         AND "projectId" IN (${Prisma.join(projectIds)})
+       GROUP BY "projectId"
+    `,
     db.timeEntry.findMany({
-      where: { projectId: { in: projectIds } },
+      where: { companyId, projectId: { in: projectIds }, clockOutAt: null },
       select: { projectId: true, clockInAt: true, clockOutAt: true },
     }),
   ]);
@@ -203,8 +290,10 @@ export async function listProjectsForUser(): Promise<ProjectListItem[]> {
     // FaultsAudit.md P0-4: _sum.amount is Prisma.Decimal after the schema change.
     if (r.projectId) spendByProject.set(r.projectId, r._sum.amount ? r._sum.amount.toNumber() : 0);
   }
-  const trackedByProject = new Map<string, number>();
-  for (const e of timeEntryRows) {
+  const trackedByProject = closedTrackedMsByProject(closedTimeRows);
+  // …plus whatever is still on the clock. `durationMs` is reused verbatim so an
+  // open entry accrues to exactly the same `now` the rest of this function uses.
+  for (const e of openTimeEntries) {
     if (!e.projectId) continue;
     const ms = durationMs(e.clockInAt, e.clockOutAt, now);
     trackedByProject.set(e.projectId, (trackedByProject.get(e.projectId) ?? 0) + ms);
@@ -264,7 +353,7 @@ export async function getProjectForUser(projectId: string): Promise<ProjectClien
  * KPI cards need so the RSC paints in one trip.
  */
 export async function getProjectOverview(projectId: string): Promise<ProjectOverview | null> {
-  const { userId, role } = await requireScopedSession();
+  const { userId, companyId, role } = await requireScopedSession();
   const project = await getProjectForUser(projectId);
   if (!project) return null;
 
@@ -282,34 +371,47 @@ export async function getProjectOverview(projectId: string): Promise<ProjectOver
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
 
-  const [openTasks, totalTasks, spendSum, entries, memberIds] = await Promise.all([
-    db.task.count({ where: { projectId, deletedAt: null, status: { not: "completed" } } }),
-    db.task.count({ where: { projectId, deletedAt: null } }),
-    // `null` rather than a resolved zero-sum: the point is that the question is
-    // not asked, and a reader of the recorded queries can see that.
-    financeVisible
-      ? db.transaction.aggregate({
-          _sum: { amount: true },
-          where: {
-            projectId,
-            deletedAt: null,
-            type: "expense",
-            date: { gte: monthStart, lt: nextMonthStart },
-          },
-        })
-      : null,
-    db.timeEntry.findMany({
-      where: { projectId },
-      select: { clockInAt: true, clockOutAt: true },
-    }),
-    db.task.findMany({
-      where: { projectId, deletedAt: null },
-      select: { assignedTo: true },
-      distinct: ["assignedTo"],
-    }),
-  ]);
+  const [openTasks, totalTasks, spendSum, closedTimeRows, openTimeEntries, memberIds] =
+    await Promise.all([
+      db.task.count({ where: { projectId, deletedAt: null, status: { not: "completed" } } }),
+      db.task.count({ where: { projectId, deletedAt: null } }),
+      // `null` rather than a resolved zero-sum: the point is that the question is
+      // not asked, and a reader of the recorded queries can see that.
+      financeVisible
+        ? db.transaction.aggregate({
+            _sum: { amount: true },
+            where: {
+              projectId,
+              deletedAt: null,
+              type: "expense",
+              date: { gte: monthStart, lt: nextMonthStart },
+            },
+          })
+        : null,
+      // Finished hours summed by Postgres; see `closedTrackedMsByProject` above
+      // for why this is raw SQL and why the running entries are read separately.
+      db.$queryRaw<{ ms: number | string | null }[]>`
+        SELECT SUM(GREATEST(0, EXTRACT(EPOCH FROM ("clockOutAt" - "clockInAt")) * 1000))
+                 ::double precision AS ms
+          FROM "TimeEntry"
+         WHERE "companyId" = ${companyId}
+           AND "projectId" = ${projectId}
+           AND "clockOutAt" IS NOT NULL
+      `,
+      db.timeEntry.findMany({
+        where: { companyId, projectId, clockOutAt: null },
+        select: { clockInAt: true, clockOutAt: true },
+      }),
+      db.task.findMany({
+        where: { projectId, deletedAt: null },
+        select: { assignedTo: true },
+        distinct: ["assignedTo"],
+      }),
+    ]);
 
-  const trackedMs = entries.reduce((acc, e) => acc + durationMs(e.clockInAt, e.clockOutAt, now), 0);
+  const trackedMs =
+    closedTrackedMs(closedTimeRows) +
+    openTimeEntries.reduce((acc, e) => acc + durationMs(e.clockInAt, e.clockOutAt, now), 0);
 
   // Count distinct members: task assignees + supervisor (Set dedupes).
   const memberSet = new Set<string>(memberIds.map((m) => m.assignedTo));
@@ -366,11 +468,13 @@ export async function listProjectOptions(): Promise<{ id: string; name: string; 
   const { userId, companyId, role } = await requireScopedSession();
   const projects = await db.project.findMany({
     where: canSeeAllProjects(role as Role)
-      ? { companyId, deletedAt: null, status: { not: "archived" } }
+      ? { companyId, deletedAt: null, status: { notIn: [...INACTIVE_PROJECT_STATUSES] } }
       : {
           companyId,
           deletedAt: null,
-          status: { not: "archived" },
+          // Spread, not the constant itself: Prisma's `notIn` takes a mutable
+          // `string[]` and the constant is `readonly` so nothing can push to it.
+          status: { notIn: [...INACTIVE_PROJECT_STATUSES] },
           OR: [
             { supervisorId: userId },
             { tasks: { some: { assignedTo: userId, deletedAt: null } } },

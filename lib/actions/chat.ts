@@ -34,6 +34,7 @@
  * ──────────────────────────────────────────────────────────────────────────
  */
 
+import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -53,6 +54,7 @@ import { limiters } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
 import {
   canDeleteMessage,
+  canManageChannel,
   canPostInChannel,
   canPostRunwayCard,
   canSeeChannel,
@@ -68,6 +70,33 @@ import type { Role } from "@/lib/auth/role-gates";
 import type { ActionResult } from "@/lib/actions/types";
 import { notifyUsers } from "@/lib/notify/fan-out";
 
+/**
+ * The payload of `addChannelMembersAction`.
+ *
+ * LOCAL, unlike every other chat schema, and the same shape of decision
+ * `lib/actions/appearance.ts` already makes: lib/schemas/chat.ts exists so a
+ * FORM and its action validate identically through `zodResolver`, and this
+ * payload has no form — the picker sends a list of ids it was handed by the
+ * server. Move it there the day a client wants to pre-validate it.
+ *
+ * Ids are `min(1).max(64)` rather than `.cuid()`, for the reason that file's
+ * `IdField` comment gives at length: this system mints at least three id shapes
+ * (`cuid()`, the chat migration's `chmem_…`, and the seed's `demo-ahmed`) and
+ * asserting cuid once broke every DM in the demo workspace. Well-formed is not
+ * authorised; the action re-verifies each id against its own companyId.
+ *
+ * Capped at 50 per call: a workspace-sized invite is a legitimate gesture
+ * ("add the whole team"), an unbounded array is a way to make one request write
+ * a million rows.
+ */
+const AddChannelMembersSchema = z.object({
+  channelId: z.string().trim().min(1, "Pick a channel").max(64, "Pick a channel"),
+  userIds: z
+    .array(z.string().trim().min(1, "Pick a teammate").max(64, "Pick a teammate"))
+    .min(1, "Pick at least one teammate")
+    .max(50, "Add up to 50 people at a time"),
+});
+
 /** The facts `channel-permissions` needs, loaded once per action. */
 type ChannelContext = {
   id: string;
@@ -78,6 +107,14 @@ type ChannelContext = {
   isMember: boolean;
   channelRole: string | null;
   muted: boolean;
+  /**
+   * The denormalized recency `sendMessageAction` maintains. Carried here so
+   * `pollChannelActivityAction` is ONE query — the liveness probe runs every
+   * few seconds per open tab, and a second round trip to fetch a single
+   * timestamp is exactly the cost that probe exists to avoid. Every other
+   * caller ignores it.
+   */
+  lastMessageAt: Date | null;
 };
 
 /**
@@ -107,6 +144,7 @@ async function loadChannelContext(
       name: true,
       kind: true,
       archivedAt: true,
+      lastMessageAt: true,
       members: { where: { userId }, select: { role: true, mutedAt: true } },
     },
   });
@@ -121,6 +159,7 @@ async function loadChannelContext(
     isMember: mine !== null,
     channelRole: mine?.role ?? null,
     muted: mine?.mutedAt != null,
+    lastMessageAt: channel.lastMessageAt,
   };
 }
 
@@ -189,9 +228,20 @@ export async function sendMessageAction(input: unknown): Promise<
 
     const [author, roster] = await Promise.all([
       db.user.findUnique({ where: { id: userId }, select: { name: true, avatar: true } }),
+      // `handle: true` IS LOAD-BEARING (finding tasks-and-comments-001). It
+      // was missing, and `MentionUser.handle` is optional in the TYPE, so this
+      // compiled and failed silently: pass 1 of `buildMentionIndex` indexed
+      // nothing, `@ali` resolved to nobody, `mentions` was stored as "[]" and
+      // zero notifications fanned out — while lib/queries/chat.ts DOES select
+      // handle, so the posted message still rendered a chip reading
+      // "Mentioned Ali Khan". The writer was told the ping landed and it never
+      // did. For a teammate whose display name carries no ASCII letters the
+      // handle is their ONLY address, so they could not be mentioned at all.
+      // tests/lib/comments/mention-roster.test.ts pins this select, and sweeps
+      // every other roster that feeds the parser.
       db.user.findMany({
         where: { companyId, deletedAt: null },
-        select: { id: true, name: true },
+        select: { id: true, name: true, handle: true },
       }),
     ]);
     if (!author) return { success: false, error: "User no longer exists" };
@@ -840,6 +890,192 @@ export async function markChannelReadAction(input: unknown): Promise<ActionResul
   } catch (e) {
     captureServerError(e, { action: "markChannelReadAction" });
     return { success: false, error: "Couldn't update your read position right now." };
+  }
+}
+
+/**
+ * "Has anything been said in here since the watermark I'm holding?" — the cheap
+ * half of making chat live (finding chat-004).
+ *
+ * WHY A PROBE AND NOT A PUSH. Chat had no liveness at all: the only refetch in
+ * the whole surface was the composer's own `onSent`, so two people in a DM each
+ * saw a one-sided conversation until one of them reloaded. The honest options
+ * for this deploy are polling or nothing. This app runs on Vercel serverless
+ * functions, where a WebSocket has nowhere to live and an SSE stream costs a
+ * function invocation held open per reader per channel (and is capped by the
+ * platform's max duration, so it would disconnect on a timer anyway). Both
+ * routes to real push — a hosted realtime service, or Supabase Realtime with a
+ * second client and RLS policies this app does not have — are infrastructure
+ * decisions, not a patch. Polling that works beats realtime that cannot ship.
+ *
+ * WHY IT RETURNS A WATERMARK INSTEAD OF MESSAGES. A poll that returned the page
+ * would cost a full render per tick per reader whether or not anything
+ * happened, and idle is the common case. This is ONE indexed read of ONE column
+ * on a row the caller is already authorised for — `loadChannelContext` selects
+ * `lastMessageAt` for exactly this reason, so there is no second round trip —
+ * and the client only spends a `router.refresh()` when the answer moved. An
+ * idle channel therefore costs a session decode and a single-row select.
+ *
+ * WHAT IT DELIBERATELY DOES NOT SEE. `Channel.lastMessageAt` is bumped by
+ * `sendMessageAction` only (in the same transaction as the message, so it can
+ * never advance past a rolled-back write). A reaction, an edit or a delete does
+ * not move it, so those still land on the reader's next refresh rather than
+ * within a poll interval. That is the trade this cheapness buys, and it is the
+ * right way round: a message nobody saw is the bug customers reported, an emoji
+ * arriving a moment late is not.
+ *
+ * `MarkChannelReadSchema` is reused rather than copied: the payload is one
+ * `channelId` and that schema is already exactly `z.object({ channelId })`. A
+ * second identical schema would be a second place for the id rules to drift.
+ *
+ * `limiters.read`, not `limiters.write` — it writes nothing, and spending the
+ * write budget on a timer would make sending a message fail for a reader who
+ * had simply left a tab open. Same reasoning the bucket's own comment gives.
+ */
+export async function pollChannelActivityAction(
+  input: unknown
+): Promise<ActionResult<{ lastMessageAt: string | null }>> {
+  const session = await auth();
+  if (!session?.user?.companyId || !session.user.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+  const gate = limiters.read.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
+  const parsed = MarkChannelReadSchema.safeParse(input);
+  if (!parsed.success) return { success: false, error: "Invalid request" };
+  const { channelId } = parsed.data;
+  const { id: userId, companyId } = session.user;
+
+  try {
+    const channel = await loadChannelContext(channelId, companyId, userId);
+    // Absent, another workspace's, or one this reader may not see — all one
+    // answer, so the probe cannot be used to discover that a private channel
+    // called #acquisition exists. Same rule as `getChannelBySlug`.
+    if (!channel || !canSeeChannel(channel)) {
+      return { success: false, error: "Channel not found" };
+    }
+    return {
+      success: true,
+      data: { lastMessageAt: channel.lastMessageAt?.toISOString() ?? null },
+    };
+  } catch (e) {
+    captureServerError(e, { action: "pollChannelActivityAction" });
+    return { success: false, error: "Couldn't check for new messages right now." };
+  }
+}
+
+/**
+ * Add teammates to a channel (finding chat-003).
+ *
+ * WHY THIS HAD TO EXIST. `createChannelAction` wrote exactly one
+ * `ChannelMember` — the creator, role `owner` — and a repo-wide grep for
+ * `channelMember.create|createMany|upsert` found only that line, `openDmAction`'s
+ * two-row pair and `lib/chat/bootstrap.ts`'s #general. So a PRIVATE channel
+ * could never hold a second person, while the dialog that creates one promises
+ * "Only people you add can see this channel" and the schema calls the kind
+ * "invite-only; membership IS the permission". A founder picking Private to
+ * discuss a raise with their cofounder got a room the cofounder could not see,
+ * with no error and nothing to click. Compounding it, the mention fan-out
+ * intersects recipients against the member list in a non-public channel, so
+ * @-mentioning anyone in a private channel notified nobody — silently.
+ *
+ * `canManageChannel` is the gate, and this is its FIRST caller: it had twelve
+ * green test cases and nothing invoking it (audit row 5 in
+ * tests/lib/actions/reachability.test.ts). Admin/cofounder or the channel's own
+ * owner, exactly as that predicate says.
+ *
+ * BOTH GATES, because they compose and neither substitutes for the other.
+ * `canManageChannel` says nothing about visibility — an admin manages any
+ * channel in the company, so without `canSeeChannel` an admin could add
+ * themselves to a private channel they were never invited to and read it, which
+ * is precisely the back door `canSeeChannel`'s own comment refuses to open.
+ *
+ * NOT FOR A DM, ever. A DM's identity IS its pair: `dmKeyFor` sorts two ids,
+ * `@@unique([companyId, dmKey])` holds one row per pair, and `dmDisplayName`
+ * resolves the counterpart from the membership rows. A third member would make
+ * the key a lie and the name ambiguous. Adding people to a two-person
+ * conversation is a "start a group channel" feature, not a membership write.
+ *
+ * ARCHIVED IS REFUSED for the reason `canPostInChannel` refuses a post: an
+ * archived channel is closed. Re-opening it is `canManageChannel`'s other,
+ * still-unwired job.
+ *
+ * ONE WRITE, IDEMPOTENT. `skipDuplicates` against `@@unique([channelId,
+ * userId])` means the same person added twice is a no-op rather than a P2002,
+ * so a double-clicked picker cannot fail. Everyone arrives as `member`: handing
+ * out `owner` would let an invitee archive the channel that invited them.
+ *
+ * NO NOTIFICATION, deliberately. `notifyUsers` fans out on a closed set of
+ * event types wired to per-user preferences; "you were added to a channel" is
+ * not one of them, and inventing a type here would ship an event nobody can opt
+ * out of. The channel appears in the invitee's rail on their next load, which
+ * is how #general already arrives. A `channel_invite` preference is a follow-up.
+ */
+export async function addChannelMembersAction(
+  input: unknown
+): Promise<ActionResult<{ added: number }>> {
+  const session = await auth();
+  if (!session?.user?.companyId || !session.user.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
+  const parsed = AddChannelMembersSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.issues[0]?.message ?? "Pick someone to add" };
+  }
+  const { channelId, userIds } = parsed.data;
+  const { id: userId, companyId, role } = session.user;
+
+  try {
+    const channel = await loadChannelContext(channelId, companyId, userId);
+    if (!channel || !canSeeChannel(channel)) {
+      return { success: false, error: "Channel not found" };
+    }
+    if (!canManageChannel({ role: role as Role, channelRole: channel.channelRole })) {
+      return { success: false, error: "Only a channel's owner or an admin can add people" };
+    }
+    if (channel.kind === "dm") {
+      return {
+        success: false,
+        error: "A direct message is between two people — start a channel instead.",
+      };
+    }
+    if (channel.archivedAt) {
+      return { success: false, error: "This channel is archived — un-archive it first." };
+    }
+
+    // Re-verification, the step of the house template this action exists to get
+    // right: every id in `userIds` arrived from the client. Without the
+    // companyId here, a forged cuid would plant a stranger from another
+    // workspace into this channel's member list — which for a private channel
+    // is a read grant. `deletedAt: null` keeps a tombstoned teammate out: their
+    // row still exists for the soft-delete restore, and re-adding them would
+    // resurrect them into a rail they are not supposed to be in.
+    const found = await db.user.findMany({
+      where: { id: { in: userIds }, companyId, deletedAt: null },
+      select: { id: true },
+    });
+    if (found.length === 0) {
+      return { success: false, error: "Nobody on that list is in this workspace" };
+    }
+
+    const result = await db.channelMember.createMany({
+      // `role: "member"` for everyone — see the header.
+      data: found.map((u) => ({ channelId, userId: u.id, role: "member" })),
+      // Already a member → skipped, not a unique-index error. Adding someone
+      // twice is an ordinary double click, not an incident.
+      skipDuplicates: true,
+    });
+
+    revalidatePath("/chat");
+    revalidatePath(`/chat/${channel.slug}`);
+    return { success: true, data: { added: result.count } };
+  } catch (e) {
+    captureServerError(e, { action: "addChannelMembersAction", companyId, userId });
+    return { success: false, error: "Couldn't add anyone to that channel right now." };
   }
 }
 

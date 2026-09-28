@@ -7,22 +7,42 @@
 
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import { getProjectOverview } from "@/lib/queries/projects";
+import { getProjectOverview, getProjectTitleForUser } from "@/lib/queries/projects";
 import { getTasks } from "@/lib/queries/tasks";
 import { getBudgetsWithSpend } from "@/lib/queries/budgets";
 import { getCompanyUsers } from "@/lib/queries/users";
 import { requireScopedSession } from "@/lib/queries/session";
 import { canSeeProjectFinances } from "@/lib/auth/project-permissions";
-import { db } from "@/lib/db";
 import { ProjectDetailClient } from "./project-detail-client";
 
+/**
+ * The title goes through the SCOPED query, like every other read driven by a
+ * client-supplied id. Finding sec-003.
+ *
+ * WHAT WAS WRONG. This ran its own `db.project.findUnique({ where: { id:
+ * params.id }, select: { name: true } })` — no `companyId`, no
+ * `deletedAt: null`, no session check at all — and used the row's name as the
+ * document `<title>`. The page body below 404s correctly via
+ * `getProjectForUser`, but by then the metadata read had already fetched a row
+ * from an arbitrary tenant: a signed-in user who typed another company's
+ * project URL got a page reading "not found" whose browser tab carried the
+ * other company's project name, usually a client or a deal name. It also made
+ * the deliberate 404-rather-than-403 choice pointless, since the title
+ * confirmed both that the id existed and what it was.
+ *
+ * There is now no `db` import in this file, deliberately: a page that cannot
+ * reach the Prisma client cannot reintroduce an unscoped read. Tenancy and
+ * in-tenant visibility come from `getProjectTitleForUser`, which reuses the one
+ * audited predicate rather than a second, drifting copy, and returns null
+ * rather than throwing when there is no session (a throw inside
+ * `generateMetadata` is a 500 on a page that would otherwise render its own
+ * not-found). app/(app)/chat/[slug]/page.tsx does the same thing via
+ * `getChannelBySlug`.
+ */
 export async function generateMetadata({ params }: { params: { id: string } }): Promise<Metadata> {
-  const project = await db.project.findUnique({
-    where: { id: params.id },
-    select: { name: true },
-  });
+  const name = await getProjectTitleForUser(params.id);
   return {
-    title: project ? project.name : "Project",
+    title: name ?? "Project",
     description: "Project overview, tasks, budgets, and time tracked.",
   };
 }

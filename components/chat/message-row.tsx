@@ -43,7 +43,7 @@
  */
 
 import { format } from "date-fns";
-import { MessageSquare } from "lucide-react";
+import { MessageSquare, Reply } from "lucide-react";
 import { ReactionBar } from "@/components/chat/reaction-bar";
 import { RunwayCard } from "@/components/chat/runway-card";
 import { cn } from "@/lib/utils";
@@ -185,8 +185,8 @@ export function MessageRow({
                 disabled={disabled}
               />
               {message.replyCount > 0 && (
-                // The mock renders this as a bare lime label; it is the only
-                // way into a thread, so it has to be a real control.
+                // The mock renders this as a bare lime label; it is how you get
+                // back into a thread that already has replies.
                 <button
                   type="button"
                   onClick={() => onOpenThread?.(message)}
@@ -194,6 +194,45 @@ export function MessageRow({
                 >
                   <MessageSquare className="h-3 w-3" aria-hidden="true" />
                   {message.replyCount === 1 ? "1 reply" : `${message.replyCount} replies`}
+                </button>
+              )}
+              {/* THE WAY IN (finding chat-001). The reply-count label above
+                  cannot be the only entry point: it is drawn `replyCount > 0`,
+                  and replyCount is only ever incremented by a send that
+                  carries a parentId, which only the composer inside
+                  <ThreadPanel> sets. That is a closed loop — replyCount can
+                  never leave 0 — so until this control existed nobody could
+                  start a thread at all, and getThread / loadThreadAction /
+                  ThreadPanel / the one-level re-parenting rule were all
+                  unreachable in the product.
+
+                  Conditions, each for its own reason:
+                   • `onOpenThread` — inside the panel itself there is nowhere
+                     to open a thread, and a button that does nothing is worse
+                     than no button. (The `deleted` branch above already
+                     excludes a tombstone: there is nothing left to reply to,
+                     and sendMessageAction would refuse the parent anyway.)
+                   • `!disabled` — archived, or a channel this reader cannot
+                     post in. Same rule the reaction bar follows: never offer
+                     a write the server is going to refuse. Reading an
+                     existing thread stays available, because archiving closes
+                     posting and not reading.
+
+                  Quiet on a pointer device, permanent on a touch one.
+                  `group-hover` is how the grouped-row timestamp hides, and it
+                  is fine for a timestamp that is merely nice to have — but an
+                  affordance that is the ONLY route into a feature must not be
+                  invisible on a phone, which has no hover. `max-md:opacity-100`
+                  is the floor; `focus-visible` keeps it reachable by keyboard
+                  at every width. */}
+              {!disabled && onOpenThread && (
+                <button
+                  type="button"
+                  onClick={() => onOpenThread(message)}
+                  className="inline-flex items-center gap-1 rounded text-[10px] font-medium text-fg-muted opacity-0 transition-opacity hover:text-fg focus-visible:opacity-100 group-hover:opacity-100 max-md:opacity-100"
+                >
+                  <Reply className="h-3 w-3" aria-hidden="true" />
+                  Reply in thread
                 </button>
               )}
             </div>

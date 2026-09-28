@@ -104,10 +104,45 @@ export async function notifyUsers(input: NotifyInput): Promise<{ notified: numbe
 
   const channels = splitByChannel(input.event, recipients, stored);
 
+  // Nothing is going anywhere on any channel — don't spend a round trip
+  // resolving people we are not about to deliver to.
+  if (channels.inApp.length + channels.push.length + channels.email.length === 0) {
+    return { notified: 0 };
+  }
+
+  // THE TOMBSTONE FILTER, FOR EVERY CHANNEL (data-integrity-004).
+  //
+  // This used to sit on the EMAIL branch alone, with a comment explaining that a
+  // soft-deleted user must not keep receiving mail — while the in-app
+  // `createMany` directly below wrote a row for whoever it was handed, and
+  // `firePush` delivered to their phone. Recipient lists legitimately contain
+  // people who have since been deactivated: a departed teammate is still
+  // `Task.assignedTo` and still named in stored `mentions`, so call sites can and
+  // do pass their id.
+  //
+  // What that cost: a removed employee's phone kept buzzing with "New expense —
+  // Ahmed logged 2,500,000 PKR" from a workspace they had lost access to — a push
+  // payload carries the title and body verbatim, outside the app, where no
+  // session check applies — and their Notification rows piled up for ever, ready
+  // to flood back if the account was ever reactivated.
+  //
+  // Resolved ONCE, here, so no channel can be added later that forgets: the same
+  // read that filters the tombstones also supplies the email addresses. The
+  // delivery boundary (`sendPushToUsers`) filters again on its own, deliberately.
+  const live = await client.user.findMany({
+    where: { id: { in: recipients }, deletedAt: null },
+    select: { id: true, name: true, email: true },
+  });
+  if (live.length === 0) return { notified: 0 };
+  const liveIds = new Set(live.map((u) => u.id));
+  const inAppTo = channels.inApp.filter((id) => liveIds.has(id));
+  const pushTo = channels.push.filter((id) => liveIds.has(id));
+  const emailTo = live.filter((u) => channels.email.indexOf(u.id) !== -1);
+
   let notified = 0;
-  if (channels.inApp.length > 0) {
+  if (inAppTo.length > 0) {
     const { count } = await client.notification.createMany({
-      data: channels.inApp.map((userId) => ({
+      data: inAppTo.map((userId) => ({
         userId,
         companyId: input.companyId,
         projectId: input.projectId ?? null,
@@ -121,24 +156,19 @@ export async function notifyUsers(input: NotifyInput): Promise<{ notified: numbe
     notified = count;
   }
 
-  firePush(channels.push, {
+  firePush(pushTo, {
     title: input.title,
     message: input.message,
     link: input.link ?? null,
     category: input.category,
   });
 
-  if (channels.email.length > 0) {
+  if (emailTo.length > 0) {
     // Addresses are not on the input — the call sites have user ids, not
-    // mailboxes. Tombstoned accounts are excluded: a soft-deleted user must
-    // not keep receiving mail from a workspace they were removed from.
-    const people = await client.user.findMany({
-      where: { id: { in: channels.email }, deletedAt: null },
-      select: { name: true, email: true },
-    });
+    // mailboxes — so they come from the same live-recipient read above.
     fireNotificationEmails({
       event: input.event,
-      recipients: people,
+      recipients: emailTo,
       title: input.title,
       message: input.message,
       link: input.link ?? null,

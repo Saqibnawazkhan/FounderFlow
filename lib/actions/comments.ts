@@ -88,9 +88,24 @@ export async function createCommentAction(input: unknown): Promise<
     // resolution.
     const [author, roster] = await Promise.all([
       db.user.findUnique({ where: { id: userId } }),
+      // `handle: true` IS LOAD-BEARING (finding tasks-and-comments-001). It was
+      // missing here, and because `MentionUser.handle` is optional in the TYPE
+      // — on purpose, so pre-handle roster queries keep compiling — the
+      // omission was neither a type error nor a runtime error. It was SILENCE:
+      // pass 1 of `buildMentionIndex` indexed no handles, `@ali` resolved to
+      // nobody, `Comment.mentions` was stored as "[]", and zero notifications
+      // fanned out. lib/queries/comments.ts DOES select handle, so the posted
+      // comment still rendered a chip titled "Mentioned Ali Khan" — the writer
+      // was told the ping landed and it never did. And for a teammate whose
+      // display name carries no ASCII letters (the Urdu-script case the column
+      // was added for) the handle is their ONLY address, so they could not be
+      // mentioned at all.
+      // tests/lib/comments/mention-delivery.test.ts pins this, with a fake
+      // Prisma that honours `select` — a fake that ignored it would have passed
+      // against the bug.
       db.user.findMany({
         where: { companyId, deletedAt: null },
-        select: { id: true, name: true },
+        select: { id: true, name: true, handle: true },
       }),
     ]);
     if (!author) return { success: false, error: "User no longer exists" };
@@ -118,7 +133,32 @@ export async function createCommentAction(input: unknown): Promise<
     // when the createMany threw — silent overstatement).
     let notifiedCount = 0;
     if (mentionedUserIds.length > 0) {
-      const link = taskId ? `/tasks?comment=${created.id}` : `/expenses?comment=${created.id}`;
+      /* THE TARGET COMES FIRST IN THE LINK (finding tasks-and-comments-003).
+       *
+       * This used to be `/tasks?comment=<commentId>` alone, and NOTHING in the
+       * application reads a `comment` search param — the only `searchParams.get`
+       * under app/(app)/ is `taskId`, in tasks-client.tsx. So the only call to
+       * action an @mention has resolved to a bare board: no modal, no scroll, no
+       * highlight. For a MEMBER it was worse than inert, because `getTasks`
+       * filters their board to `assignedTo: userId`, so a mention on a
+       * teammate's task landed them on a list that provably did not contain it.
+       *
+       * `taskId=` / `transactionId=` FIRST because that is the param the product
+       * already honours: tasks-client scrolls the card into view and flashes it.
+       * `comment=` is kept, and kept SECOND, for two reasons — a client that
+       * learns to read it can open the thread without this link changing again,
+       * and `deleteCommentAction` below sweeps by that substring. Ordering also
+       * matters to `deleteTaskAction`, which sweeps `link contains "taskId=<id>"`:
+       * deleting a task now also clears the mention pings that pointed into it,
+       * which is the behaviour audit row X10 asks for.
+       *
+       * Opening the comment thread itself still needs the two client pages to
+       * read `?comment=` — reported as a follow-up. Landing on the right card
+       * beats landing on the wrong page while that is wired up.
+       */
+      const link = taskId
+        ? `/tasks?taskId=${taskId}&comment=${created.id}`
+        : `/expenses?transactionId=${transactionId}&comment=${created.id}`;
       // A mention rides the category of whatever it's attached to.
       const category = taskId ? "task" : "finance";
       const truncated = body.length > 140 ? body.slice(0, 137) + "…" : body;
@@ -191,7 +231,30 @@ export async function deleteCommentAction(input: unknown): Promise<ActionResult>
       return { success: false, error: "Only the author or an admin can delete this comment" };
     }
 
-    await db.comment.delete({ where: { id: commentId } });
+    /* Sweep the mention pings that deep-link at this comment, in the same
+     * transaction as the delete (audit row X10, applied to comments).
+     *
+     * `deleteTaskAction` already does this for `taskId=` links, for the reason
+     * that applies here verbatim: a notification pointing at something that no
+     * longer exists lands the reader somewhere with nothing to open, and they
+     * cannot tell a deleted comment from a broken app. The match is on the
+     * `comment=<id>` substring every such link carries.
+     *
+     * A HARD delete, like the task sweep and unlike the comment's own row in a
+     * soft-delete world: a notification is a transient ping, not a record, and
+     * nothing promises to restore one. Scoped to `companyId` so one workspace's
+     * delete can never touch another's rows even if a comment id were guessed.
+     *
+     * In a transaction so the two cannot land apart — a swept notification with
+     * the comment still there would delete a live ping, and a deleted comment
+     * with its ping intact is the dead end this exists to close.
+     */
+    await db.$transaction(async (tx) => {
+      await tx.comment.delete({ where: { id: commentId } });
+      await tx.notification.deleteMany({
+        where: { companyId, link: { contains: `comment=${commentId}` } },
+      });
+    });
     if (comment.taskId) revalidatePath("/tasks");
     else if (comment.transactionId) revalidatePath("/expenses");
     return { success: true, data: undefined };

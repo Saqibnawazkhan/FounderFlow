@@ -38,7 +38,11 @@
  * delivered event ids, so replay protection is INFERRED from state already on the
  * Company row rather than enforced. See the header of
  * lib/billing/subscription-write.ts for exactly what that does and does not
- * cover, and the delivery follow-ups for the DDL.
+ * cover, and the delivery follow-ups for the DDL. Two guards here narrow the gap
+ * without a table and neither closes it: `MAX_GRANT_AGE_MS` refuses a delivery
+ * that is too old to be allowed to GRANT the paid plan, and
+ * `enforceFreePlanDowngrade` makes a downgrade take the paid privileges away
+ * (bill-013) instead of only changing a column.
  *
  * Setup: LemonSqueezy dashboard → Settings → Webhooks → add
  *   https://<domain>/api/webhooks/lemonsqueezy
@@ -77,6 +81,7 @@ import {
   type CompanyBillingLookup,
 } from "@/lib/billing/webhook-identity";
 import { decideSubscriptionWrite, readPeriodEnd } from "@/lib/billing/subscription-write";
+import { memberLimitForPlan, normalizePlan, PLAN_LABELS } from "@/lib/billing/plan";
 import { billingAlertForEvent, notifyWorkspaceAdmins } from "@/lib/billing/billing-notify";
 
 export const runtime = "nodejs";
@@ -190,6 +195,42 @@ function attrFlag(attrs: Record<string, unknown>, key: string): boolean | null {
 }
 
 /**
+ * bill-002, the half that needs no new table: HOW OLD MAY A DELIVERY BE AND STILL
+ * GRANT THE PAID PLAN?
+ *
+ * There is still no ledger of delivered event ids (see the file header), and a
+ * LemonSqueezy HMAC signature never expires — so a body captured once was, in
+ * principle, a re-usable licence for ever. `decideSubscriptionWrite` already
+ * refuses a paid status for a subscription recorded as dead, and downgrades one
+ * whose own paid-through date has passed; what neither rule can see is a replay of
+ * a delivery whose dates are still current (an `active` re-POSTed after a
+ * cancellation, which un-cancels the workspace and restores the old renews_at).
+ *
+ * Seven days. LemonSqueezy's own retry budget is hours, not days, so this refuses
+ * nothing a healthy integration produces; it converts "for ever" into a window.
+ *
+ * DIRECTIONAL, and that is the point: the age check applies ONLY to an event that
+ * would GRANT the paid plan. A replay is worth capturing in one direction only, and
+ * refusing a stale DOWNGRADE would leave a workspace paid for free — the failure
+ * that costs money. A payload with no usable timestamp is not refused either: the
+ * other guards still apply, and inventing an age would turn a missing field into a
+ * revenue incident.
+ */
+const MAX_GRANT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Age of this delivery per the subscription's own `updated_at`, or null when the
+ * payload carries no parseable timestamp.
+ */
+function deliveryAgeMs(attrs: Record<string, unknown>, now: Date): number | null {
+  const raw = attrs.updated_at ?? attrs.created_at;
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  const at = new Date(raw);
+  if (Number.isNaN(at.getTime())) return null;
+  return now.getTime() - at.getTime();
+}
+
+/**
  * bill-006. Is this event about our store, our product, and real money?
  *
  * Runs BEFORE identity resolution, deliberately: an event for someone else's
@@ -236,6 +277,59 @@ function scopeEvent(
   }
 
   return verdict;
+}
+
+/**
+ * bill-013. WHAT A DOWNGRADE TAKES AWAY.
+ *
+ * Before this, a downgrade took nothing: `plan` gated exactly one thing in the
+ * whole codebase (`inviteUserAction`), so one paid month bought seats for ever —
+ * subscribe, invite twenty people, cancel, and nothing revoked, suspended, or even
+ * reported the overage while the billing screen went on saying "Up to 2 members".
+ *
+ * TWO OF THE THREE HALVES ARE HERE. (1) Still-pending invites issued while the
+ * workspace was paid are burnt: a token is a credential, and one handed out under
+ * Team must not be redeemable on Solo. A free workspace may of course invite again,
+ * inside its cap, and `inviteUserAction` enforces that at issue time.
+ * (2) `acceptInviteAction` (lib/actions/team.ts) now asks the cap at ACCEPTANCE,
+ * which closes the same hole for a token minted before this shipped.
+ *
+ * THE THIRD HALF IS NOT HERE, and cannot be: suspending the surplus MEMBERS needs
+ * a column to suspend them with (a `seatSuspended` flag on User that `auth()` and
+ * `requireScopedSession()` honour), and adding a column is outside this change.
+ * Deleting or tombstoning teammates to fit a plan change is not an acceptable
+ * substitute — it destroys customer data over a billing event. So the overage is
+ * REPORTED, at error level with the count, which is the difference between an
+ * operator who can see the state and one reading a screen that claims the limit is
+ * being honoured.
+ */
+async function enforceFreePlanDowngrade(companyId: string, eventName: string): Promise<void> {
+  try {
+    const burnt = await db.inviteToken.deleteMany({ where: { companyId, usedAt: null } });
+    const activeMembers = await db.user.count({ where: { companyId, deletedAt: null } });
+    const limit = memberLimitForPlan("free");
+    if (activeMembers > limit) {
+      captureServerError(
+        new Error(
+          `Workspace is over the ${PLAN_LABELS.free} member limit after a downgrade: ` +
+            `${activeMembers} active members, limit ${limit}`
+        ),
+        {
+          action: "lemonSqueezyWebhook.seatOverage",
+          companyId,
+          extra: { eventName, activeMembers, limit, invitesRevoked: burnt.count },
+        }
+      );
+    }
+  } catch (e) {
+    // A downgrade that has already been written must not be turned into a 500 (and
+    // therefore a retry of the whole delivery) by its own follow-up work.
+    captureServerError(e, {
+      action: "lemonSqueezyWebhook.enforceFreePlanDowngrade",
+      companyId,
+      extra: { eventName },
+    });
+  }
 }
 
 /**
@@ -373,6 +467,28 @@ async function handleSubscriptionEvent(
     return NextResponse.json({ received: true, skipped: decision.reason });
   }
 
+  // bill-002. A GRANT — and only a grant — has to be recent. See MAX_GRANT_AGE_MS.
+  const ageMs = deliveryAgeMs(attrs, new Date());
+  if (decision.data.plan === "team" && ageMs !== null && ageMs > MAX_GRANT_AGE_MS) {
+    reportSkippedBillingWrite({
+      eventName,
+      reason: "stale-grant",
+      subscriptionId,
+      customerId,
+      companyId: identity.companyId,
+      extra: {
+        ageDays: Math.round(ageMs / (24 * 60 * 60 * 1000)),
+        updatedAt: attrs.updated_at,
+        incomingStatus: status,
+        storedStatus: stored.subscriptionStatus,
+      },
+    });
+    // 200: a retry of a delivery this old would be refused for the same reason,
+    // and answering 400 would mark a possibly-legitimate delivery as failed in the
+    // LemonSqueezy dashboard without telling the operator anything new.
+    return NextResponse.json({ received: true, skipped: "stale-grant" });
+  }
+
   const result = await db.company.updateMany({
     where: {
       id: identity.companyId,
@@ -420,6 +536,11 @@ async function handleSubscriptionEvent(
       companyId: identity.companyId,
       extra: { incomingStatus: status, incomingPeriodEnd: period.periodEnd },
     });
+  }
+
+  // bill-013. The plan just went from paid to free: take the paid privileges away.
+  if (decision.data.plan === "free" && normalizePlan(stored.plan) === "team") {
+    await enforceFreePlanDowngrade(identity.companyId, eventName);
   }
 
   // bill-018. A cancellation or an expiry is the customer hearing it from us,

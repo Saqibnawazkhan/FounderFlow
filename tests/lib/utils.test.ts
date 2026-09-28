@@ -4,6 +4,9 @@ import {
   formatCurrency,
   formatDate,
   formatRelativeTime,
+  formatUtcDate,
+  formatUtcDay,
+  formatUtcMonthYear,
   generateAvatar,
   getAvatarColor,
 } from "@/lib/utils";
@@ -65,13 +68,60 @@ describe("formatCurrency", () => {
   });
 });
 
-describe("formatDate", () => {
-  it("renders ISO date as MMM dd, yyyy", () => {
-    expect(formatDate("2026-05-24T12:00:00Z")).toMatch(/May 24, 2026/);
+// `formatDate` is LOCAL and stays local — see the argument on it in lib/utils.ts.
+// Half its call sites are real timestamps (`User.createdAt`, an invite's
+// `expiresAt`, a billing period end) where the viewer's clock is the right one.
+//
+// The `/Jan 1[45], 2026/` regex that used to sit in the second case below was
+// this file's second accommodation of a defect: written to pass in EITHER
+// timezone, it silently accepted the wrong day rather than stating which day was
+// correct. `npm test` pins TZ=America/Bogota precisely so date behaviour is a
+// fact and not a coin flip, so these assertions now name the day each function
+// produces — and the pair of them is the whole point, because the UTC-midnight
+// date-only case is exactly where the local formatter is wrong (money-007).
+describe("formatDate (local, for wall-clock timestamps)", () => {
+  it("runs west of UTC, or the split below is invisible", () => {
+    // 300 = UTC-5 = America/Bogota, no DST.
+    expect(new Date("2026-01-15T00:00:00Z").getTimezoneOffset()).toBe(300);
   });
 
-  it("accepts a Date object directly", () => {
-    expect(formatDate(new Date("2026-01-15T00:00:00Z"))).toMatch(/Jan 1[45], 2026/);
+  it("renders ISO date as MMM dd, yyyy", () => {
+    expect(formatDate("2026-05-24T12:00:00Z")).toBe("May 24, 2026");
+  });
+
+  it("renders in the viewer's zone, which shifts a UTC-midnight value back a day", () => {
+    // NOT a bug in `formatDate` — this is what a timestamp formatter must do.
+    // It IS a bug at any call site whose value is a date-only one; those use
+    // `formatUtcDate`, asserted next.
+    expect(formatDate(new Date("2026-01-15T00:00:00Z"))).toBe("Jan 14, 2026");
+  });
+});
+
+describe("formatUtcDate / formatUtcDay / formatUtcMonthYear (date-only values)", () => {
+  it("renders the day the customer typed, not the viewer's", () => {
+    // What `<input type="date">` stores for "2026-01-15": UTC midnight. Every
+    // ledger row, every export row and the /reports range edges read this way.
+    expect(formatUtcDate("2026-01-15T00:00:00Z")).toBe("Jan 15, 2026");
+    expect(formatUtcDate(new Date("2026-01-15T00:00:00Z"))).toBe("Jan 15, 2026");
+  });
+
+  it("matches formatDate's shape exactly, so swapping a call site changes only the day", () => {
+    // Midday UTC: both formatters agree on the calendar day, so this compares
+    // the FORMAT and nothing else.
+    expect(formatUtcDate("2026-05-24T12:00:00Z")).toBe(formatDate("2026-05-24T12:00:00Z"));
+  });
+
+  it("renders an ISO day for a spreadsheet cell", () => {
+    expect(formatUtcDay("2026-01-15T00:00:00Z")).toBe("2026-01-15");
+    expect(formatUtcDay("2026-12-01T00:00:00Z")).toBe("2026-12-01");
+  });
+
+  it("renders a chart bucket label in UTC", () => {
+    expect(formatUtcMonthYear("2026-10-01T00:00:00Z")).toBe("Oct 26");
+    // The off-by-one a UTC bucket with a local label would have printed.
+    expect(
+      new Intl.DateTimeFormat("en-US", { month: "short" }).format(new Date("2026-10-01T00:00:00Z"))
+    ).toBe("Sep");
   });
 });
 

@@ -67,7 +67,12 @@ import {
   createCheckoutSessionAction,
   createBillingPortalSessionAction,
 } from "@/lib/actions/billing";
-import { FREE_MEMBER_LIMIT, PLAN_LABELS } from "@/lib/billing/plan";
+import {
+  describeBillingPeriod,
+  FREE_MEMBER_LIMIT,
+  PLAN_LABELS,
+  type BillingNoticeTone,
+} from "@/lib/billing/plan";
 import { useNumberFormat } from "@/lib/i18n/use-t";
 import { EditProfileModal } from "./edit-profile-modal";
 import { ChangePasswordModal } from "./change-password-modal";
@@ -164,17 +169,37 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
     window.location.href = "/login";
   }
 
+  /**
+   * acct-007. Clears this device's UI preferences — and nothing else, which is
+   * what the copy now says.
+   *
+   * WHAT THIS USED TO BE: the same two statements under a danger-red dialog
+   * titled "Reset workspace data?" promising "All transactions, tasks, activity,
+   * and team members will be wiped. This cannot be undone." It wiped one
+   * localStorage key. The strings are fixed in lib/i18n/strings.ts; the two
+   * changes here are the honest ending.
+   *
+   * NO NAVIGATION TO /login. The session cookie is untouched, so /login bounced
+   * the still-signed-in user straight back into the app and
+   * components/providers.tsx re-hydrated their identity from the session — the
+   * "reset" visibly did nothing. Reloading the page they are on is what makes the
+   * cleared preferences visible (the persisted store is re-read on mount, so the
+   * theme and sidebar return to their defaults) while leaving them signed in,
+   * which is the whole truth about this button.
+   */
   async function handleResetData() {
     const ok = await confirm({
       title: t.settings.resetConfirmTitle,
       description: t.settings.resetConfirmDesc,
       confirmLabel: t.settings.resetConfirmLabel,
-      tone: "danger",
+      // Not "danger": clearing a theme preference is a harmless, repeatable
+      // action, and dressing it in red is what made people back out of it.
+      tone: "primary",
     });
     if (!ok) return;
     if (typeof window !== "undefined") {
       localStorage.removeItem("founderflow-storage");
-      window.location.href = "/login";
+      window.location.reload();
     }
   }
 
@@ -736,9 +761,26 @@ function HandleSection({ name }: { name: string }) {
   );
 }
 
+/** Tone → class for the period sentence. Neutral keeps the muted body colour. */
+function periodNoticeClass(tone: BillingNoticeTone | undefined): string {
+  if (tone === "danger") return "font-medium text-danger";
+  if (tone === "warning") return "font-medium text-warning-strong";
+  return "text-fg-muted";
+}
+
 function BillingSection({ billing }: { billing: BillingSummary }) {
   const [busy, setBusy] = useState<"checkout" | "portal" | null>(null);
   const isTeam = billing.plan === "team";
+  // `status` is this summary's name for `subscriptionStatus`; the notice reads
+  // (plan, status, paid-through date) together — see lib/billing/plan.ts.
+  const period = describeBillingPeriod(
+    {
+      plan: billing.plan,
+      subscriptionStatus: billing.status,
+      currentPeriodEnd: billing.currentPeriodEnd,
+    },
+    formatDate
+  );
 
   async function upgrade() {
     setBusy("checkout");
@@ -775,11 +817,24 @@ function BillingSection({ billing }: { billing: BillingSummary }) {
             </span>
           )}
         </div>
-        <p className="mt-0.5 text-xs text-fg-muted">
-          {isTeam
-            ? billing.currentPeriodEnd
-              ? `Renews ${formatDate(billing.currentPeriodEnd)}`
-              : "Unlimited members + paid features"
+        {/*
+          bill-005. This was one branch for every status: isTeam, then a template
+          literal reading "Renews <date>" whenever a date existed at all.
+          `currentPeriodEnd` is `ends_at ?? renews_at`, and `ends_at` is set
+          PRECISELY WHEN THE
+          SUBSCRIPTION HAS BEEN CANCELLED — so the one case where the date means
+          "your access stops" was the one case guaranteed to read "you will be
+          charged again". It also hid a lapsed workspace behind a cheerful
+          past-dated "Renews".
+
+          The sentence now comes from `describeBillingPeriod`, which lives beside
+          `effectivePlan` so the wording and the entitlement cannot drift apart,
+          and which returns null only for a workspace that has never subscribed —
+          the free-plan pitch below.
+        */}
+        <p className={cn("mt-0.5 text-xs", periodNoticeClass(period?.tone))}>
+          {period
+            ? period.text
             : `Up to ${FREE_MEMBER_LIMIT} members. Upgrade for unlimited co-founders and investor-ready extras.`}
         </p>
       </div>

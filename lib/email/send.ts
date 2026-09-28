@@ -8,9 +8,14 @@
  *
  * Behavior:
  *   • GMAIL_USER + GMAIL_APP_PASSWORD set → real send
- *   • Either missing → logs the full HTML + invite URL to the server
- *     console and returns { delivered: false, devLogged: true } so callers
- *     can show a fallback toast with the URL for manual sharing.
+ *   • Either missing, and NOT a production deployment → logs the full HTML +
+ *     invite URL to the server console and returns
+ *     { delivered: false, devLogged: true } so callers can show a fallback
+ *     toast with the URL for manual sharing.
+ *   • Either missing ON A PRODUCTION DEPLOYMENT → logs that a send was
+ *     DROPPED, without the body, raises a Sentry event, and returns
+ *     { delivered: false, devLogged: false, error } — see
+ *     `describeUnconfiguredSend` below for why the two cases differ.
  *
  * Setup (one time per Google account):
  *   1. Enable 2-Step Verification at https://myaccount.google.com/security
@@ -46,6 +51,102 @@ const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
 const FROM_DISPLAY =
   process.env.EMAIL_FROM ?? (GMAIL_USER ? `FounderFlow <${GMAIL_USER}>` : "FounderFlow");
 
+/**
+ * Is this the live production deployment?
+ *
+ * `VERCEL_ENV` first and `NODE_ENV` only as a fallback, because `next build`
+ * sets NODE_ENV=production for PREVIEW deploys too. Keying off NODE_ENV alone
+ * would raise a Sentry event for every preview deploy that has no Gmail
+ * credentials — which previews legitimately do not have — and that noise is
+ * precisely what gets an alert muted, taking the production signal with it.
+ */
+function isProductionDeployment(): boolean {
+  if (process.env.VERCEL_ENV) return process.env.VERCEL_ENV === "production";
+  return process.env.NODE_ENV === "production";
+}
+
+/** The message on the Sentry event and on the returned result. */
+export const NO_TRANSPORT_ERROR =
+  "No e-mail transport configured (GMAIL_USER / GMAIL_APP_PASSWORD unset). " +
+  "The message was NOT sent and NOT logged.";
+
+export interface UnconfiguredSend {
+  to: string;
+  subject: string;
+  html: string;
+  text?: string;
+  from: string;
+  /** See isProductionDeployment(). Passed in so this stays pure and testable. */
+  isProduction: boolean;
+}
+
+/**
+ * Everything about the "there is no SMTP transport" branch, decided in one pure
+ * place: what to log, whether to raise a Sentry event, and what to return.
+ *
+ * WHY THIS BRANCH IS TREATED DIFFERENTLY IN PRODUCTION (prodready-005).
+ *
+ * The previous version printed the whole message — `to`, `subject`, the plain
+ * text and the full HTML — in every environment, and argued in a comment that
+ * this is not a leak because the branch is only reached when no mail is being
+ * sent to anyone at all, so the only content printed is content that had no
+ * other way of reaching its recipient.
+ *
+ * That argument is exactly right in DEVELOPMENT, and the dev behaviour is
+ * deliberately unchanged: with no Gmail credentials on a laptop, the terminal is
+ * how you get the reset link to click. Hardening the body out everywhere would
+ * break the only local password-reset flow there is.
+ *
+ * It is wrong in production, in two separate ways:
+ *
+ *   • The content is a live one-time credential. A reset e-mail's HTML contains
+ *     the reset URL with its token; an invite's contains the invite URL. Vercel
+ *     function logs are readable by every member of the Vercel team and by any
+ *     configured log drain, and they are retained. "Nobody else could have read
+ *     it" is true of a laptop and false of a shared log.
+ *   • Nobody is reading production logs to hand-deliver a stranger's reset link,
+ *     so the log serves no purpose there — while the ALERT does. This was the
+ *     only failure branch in this file that reported nothing: the SMTP-rejection
+ *     path below calls captureServerError, and this one, the more total failure
+ *     of the two, did not.
+ */
+export function describeUnconfiguredSend(input: UnconfiguredSend): {
+  lines: string[];
+  report: boolean;
+  result: SendEmailResult;
+} {
+  const { to, subject, html, text, from, isProduction } = input;
+
+  if (isProduction) {
+    return {
+      lines: [
+        "[email:no-transport] DROPPED an outbound e-mail — GMAIL_USER / GMAIL_APP_PASSWORD " +
+          "are not set on this production deployment, so nothing was sent.",
+        `  from=${from}`,
+        `  to=${to}`,
+        `  subject="${subject}"`,
+        "  body withheld: it can contain a live password-reset or invite token, and this " +
+          "log is readable by the whole team and by any log drain.",
+      ],
+      report: true,
+      result: { delivered: false, devLogged: false, error: NO_TRANSPORT_ERROR },
+    };
+  }
+
+  return {
+    lines: [
+      "[email:dev-stub] would have sent (set GMAIL_USER + GMAIL_APP_PASSWORD to enable real send)",
+      `  from=${from}`,
+      `  to=${to}`,
+      `  subject="${subject}"`,
+      `  text=${text ?? "(none — html only)"}`,
+      `  html=${html}`,
+    ],
+    report: false,
+    result: { delivered: false, devLogged: true },
+  };
+}
+
 // Module-level transporter — cached across requests so we don't reopen the
 // SMTP connection on every send. Lazy because Node 14+ workers may load
 // this module before env vars are populated; we re-check on first call.
@@ -68,31 +169,31 @@ export async function sendEmail({
 }: SendEmailInput): Promise<SendEmailResult> {
   const t = getTransporter();
   if (!t) {
-    // Dev / unconfigured-prod fallback. Log the whole message, not just its
-    // envelope: the only reason anyone reads this line is to recover the
-    // thing that did NOT get sent — an invite URL, a password-reset link, a
-    // task's deadline — and none of that lives in `to=` + `subject=`. The
-    // header above has promised "the full HTML + invite URL" since this file
-    // was written; until now it printed neither.
-    //
-    // This is NOT a production log leak, and please don't "harden" the body
-    // back out on that reasoning. getTransporter() returns null on exactly
-    // one condition: GMAIL_USER or GMAIL_APP_PASSWORD is unset, i.e. no mail
-    // is being sent to anyone at all. A configured deployment never reaches
-    // this branch, so the only content ever printed here is content that had
-    // no other way of reaching its recipient.
+    // No SMTP transport. On a laptop that is the dev stub and the body is the
+    // point; on the production deployment it is a dropped e-mail that has to
+    // reach Sentry and must not put a live token in a shared log. One pure
+    // decision, both cases — see describeUnconfiguredSend above.
+    const outcome = describeUnconfiguredSend({
+      to,
+      subject,
+      html,
+      text,
+      from: FROM_DISPLAY,
+      isProduction: isProductionDeployment(),
+    });
     // eslint-disable-next-line no-console
-    console.info(
-      [
-        "[email:dev-stub] would have sent (set GMAIL_USER + GMAIL_APP_PASSWORD to enable real send)",
-        `  from=${FROM_DISPLAY}`,
-        `  to=${to}`,
-        `  subject="${subject}"`,
-        `  text=${text ?? "(none — html only)"}`,
-        `  html=${html}`,
-      ].join("\n")
-    );
-    return { delivered: false, devLogged: true };
+    console.info(outcome.lines.join("\n"));
+    if (outcome.report) {
+      // Tagged `action: sendEmail:no-transport` so one Sentry alert rule can
+      // fire on it. Every invite and every password reset is being dropped
+      // while this is true, and password reset is the only self-service
+      // recovery path in the product.
+      captureServerError(new Error(NO_TRANSPORT_ERROR), {
+        action: "sendEmail:no-transport",
+        extra: { to, subjectPrefix: subject.slice(0, 80) },
+      });
+    }
+    return outcome.result;
   }
 
   try {

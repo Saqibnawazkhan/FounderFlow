@@ -80,8 +80,80 @@ export function formatCurrency(amount: number, currency = "PKR"): string {
   return formatted;
 }
 
+/**
+ * A wall-clock instant, rendered in the RUNTIME's timezone.
+ *
+ * Right for a TIMESTAMP — `User.createdAt`, an invite's `expiresAt`, a billing
+ * period end. Wrong for a DATE-ONLY value, and that distinction is not academic:
+ * `Transaction.date` and `Task.deadline` come from `<input type="date">`, so
+ * "2026-01-15" is stored as 2026-01-15T00:00:00.000Z, and rendering that in
+ * Bogota (UTC-5) prints **Jan 14** — the day before the one the customer typed,
+ * on every ledger row and in every export. Use `formatUtcDate` for those.
+ *
+ * Deliberately NOT switched to UTC wholesale: half its ~20 call sites are real
+ * timestamps, and a member who joined at 8pm local on the 14th should not read
+ * "Joined Jan 15". The two cases need two functions, which is why there are now
+ * two. See lib/date-range.ts for the same argument applied to month buckets
+ * (money-007).
+ */
 export function formatDate(date: string | Date): string {
   return format(new Date(date), "MMM dd, yyyy");
+}
+
+/* ------------------------------------------------------------------------- *
+ * UTC date rendering, for DATE-ONLY values (money-007).
+ *
+ * The boundary decision itself lives in lib/date-range.ts — read that file
+ * first; these are its rendering half, kept here next to `formatDate` so the
+ * choice between local and UTC is made by picking a name at the call site
+ * rather than by remembering a rule. date-fns is deliberately not used: every
+ * date-fns formatter renders in the local calendar, which is the trap.
+ *
+ * Constructed once at module scope. `Intl.DateTimeFormat` construction is
+ * expensive and the PDF exporter formats one date per ledger row.
+ * ------------------------------------------------------------------------- */
+
+/** `"MMM dd, yyyy"` in UTC — the twin of `formatDate`, same output shape. */
+const UTC_DATE = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "2-digit",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+/** `"MMM yy"` in UTC — a chart bucket label. */
+const UTC_MONTH_YEAR = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  year: "2-digit",
+  timeZone: "UTC",
+});
+
+/**
+ * The stored calendar day of a date-only value: `"Jan 15, 2026"`.
+ *
+ * ICU emits "Jan 15, 2026" for this option set, matching date-fns'
+ * `"MMM dd, yyyy"` exactly, so swapping a call site changes the DAY when the
+ * viewer is west of UTC and changes nothing else.
+ */
+export function formatUtcDate(date: string | Date): string {
+  return UTC_DATE.format(new Date(date));
+}
+
+/**
+ * `"2026-01-15"` — the ISO day, for a spreadsheet cell that must sort and be
+ * re-parsed. Built from the UTC parts rather than `toISOString().slice(0, 10)`
+ * only because the latter reads as an accident; it is the same value.
+ */
+export function formatUtcDay(date: string | Date): string {
+  const d = new Date(date);
+  const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${month}-${day}`;
+}
+
+/** `"Oct 26"` for a month bucket whose start is UTC midnight on the 1st. */
+export function formatUtcMonthYear(date: string | Date): string {
+  return UTC_MONTH_YEAR.format(new Date(date));
 }
 
 export function formatRelativeTime(date: string | Date): string {

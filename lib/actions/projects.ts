@@ -482,22 +482,95 @@ export async function duplicateProjectAction(
   }
 }
 
+/**
+ * `UpdateProjectSchema` with every mutable field optional — `projectId` stays
+ * required. Same field validators, so an explicitly-sent empty name is still
+ * "Project name is required" and an invented status is still rejected.
+ *
+ * WHY (projects-010). The all-required shape was the lost update. Three header
+ * paths in app/(app)/projects/[id]/project-detail-client.tsx — handleStatusChange,
+ * handleArchive, handleUnarchive — want to set ONE field, but had to express that
+ * as "overwrite the whole row with the snapshot my render was mounted with".
+ * Once a stale echo reaches the server it is indistinguishable from an edit, so
+ * a cofounder clicking "Completed" in a tab opened before a colleague's rename
+ * silently reverted the rename, the description AND the target date, with no
+ * error and no toast. Making absence meaningful is what lets a caller say what
+ * it actually intends.
+ */
+const PartialUpdateProjectSchema = UpdateProjectSchema.partial({
+  name: true,
+  description: true,
+  color: true,
+  status: true,
+  targetEndDate: true,
+});
+
+/**
+ * Did the CALLER mention this field at all?
+ *
+ * Deliberately a question about the raw payload, not about the parsed value.
+ * `DescriptionField` coerces "" to `undefined` (so an empty textarea
+ * round-trips to SQL NULL rather than an empty string), which means the parsed
+ * value cannot tell "the user cleared the description" apart from "the caller
+ * never mentioned it". Those two must do OPPOSITE things — write NULL, or leave
+ * the column alone — so the distinction has to come from key presence.
+ *
+ * `hasOwnProperty` rather than `in` so a prototype key on a forged payload can't
+ * count as a field, and no `Set`/spread because tsconfig has no `target` and so
+ * compiles as ES5.
+ */
+function mentions(input: unknown, key: string): boolean {
+  return (
+    typeof input === "object" && input !== null && Object.prototype.hasOwnProperty.call(input, key)
+  );
+}
+
 export async function updateProjectAction(input: unknown): Promise<ActionResult> {
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
   }
 
-  const parsed = UpdateProjectSchema.safeParse(input);
+  const parsed = PartialUpdateProjectSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid update" };
   }
-  const { projectId, name, description, color, status, targetEndDate } = parsed.data;
+  const { projectId } = parsed.data;
   const { id: userId, companyId, role } = session.user;
 
+  // Only the fields the caller actually asked for. A field the payload does not
+  // mention is absent from `data`, and Prisma leaves the column untouched.
+  const data: {
+    name?: string;
+    description?: string | null;
+    color?: string;
+    status?: string;
+    targetEndDate?: Date | null;
+  } = {};
+  if (mentions(input, "name") && parsed.data.name !== undefined) data.name = parsed.data.name;
+  if (mentions(input, "color") && parsed.data.color !== undefined) data.color = parsed.data.color;
+  if (mentions(input, "status") && parsed.data.status !== undefined) {
+    data.status = parsed.data.status;
+  }
+  // Both columns are nullable, and mentioning them with no value is how the Edit
+  // modal CLEARS them. See `mentions` above for why this is key presence.
+  if (mentions(input, "description")) data.description = parsed.data.description ?? null;
+  if (mentions(input, "targetEndDate")) data.targetEndDate = parsed.data.targetEndDate ?? null;
+
+  if (Object.keys(data).length === 0) {
+    return { success: false, error: "Nothing to update — no project field was provided." };
+  }
+
   try {
-    const project = await db.project.findUnique({ where: { id: projectId } });
-    if (!project || project.companyId !== companyId) {
+    // deletedAt:null (data-integrity-002): deleteProjectAction soft-deletes and
+    // leaves Project.status alone, so without this a tab that was open when the
+    // project was deleted keeps editing — and re-notifying about — a project that
+    // exists on no surface. companyId is in the same query rather than checked
+    // afterwards, so there is one predicate to get right instead of two.
+    const project = await db.project.findFirst({
+      where: { id: projectId, companyId, deletedAt: null },
+    });
+    if (!project) {
       return { success: false, error: "Project not found" };
     }
     if (!canManageProject({ userId, role: role as Role, project })) {
@@ -508,19 +581,17 @@ export async function updateProjectAction(input: unknown): Promise<ActionResult>
     if (!me) return { success: false, error: "User no longer exists" };
 
     const wasArchived = project.status === "archived";
-    const willBeArchived = status === "archived";
+    const willBeArchived = data.status === "archived";
+    // The name to QUOTE in the feed. `data.name` only when this write is a
+    // deliberate rename; otherwise the project's real, current name — a
+    // status-only payload has no name in it, and interpolating the missing one
+    // wrote `updated project "undefined"` into the activity feed.
+    const displayName = data.name ?? project.name;
+    const renamedFrom =
+      data.name !== undefined && data.name !== project.name ? project.name : undefined;
 
     await db.$transaction(async (tx) => {
-      await tx.project.update({
-        where: { id: projectId },
-        data: {
-          name,
-          description: description ?? null,
-          color,
-          status,
-          targetEndDate: targetEndDate ?? null,
-        },
-      });
+      await tx.project.update({ where: { id: projectId }, data });
 
       // Distinct activity type when the status transition is archive — the
       // activity feed reads better than a generic "updated".
@@ -529,20 +600,28 @@ export async function updateProjectAction(input: unknown): Promise<ActionResult>
           companyId,
           projectId,
           type: "project_archived",
-          message: `${me.name} archived project "${name}"`,
+          message: `${me.name} archived project "${displayName}"`,
           userId,
           userName: me.name,
-          metadata: { kind: "project", projectId, projectName: name },
+          metadata: { kind: "project", projectId, projectName: displayName },
         });
       } else {
         await logProjectActivity(tx, {
           companyId,
           projectId,
           type: "project_updated",
-          message: `${me.name} updated project "${name}"`,
+          message: `${me.name} updated project "${displayName}"`,
           userId,
           userName: me.name,
-          metadata: { kind: "project", projectId, projectName: name },
+          metadata: {
+            kind: "project",
+            projectId,
+            projectName: displayName,
+            // "No activity row saying the name changed back" was part of
+            // projects-010. A rename now records what it replaced, so the feed
+            // can be read backwards to recover a name nobody meant to lose.
+            ...(renamedFrom ? { previousName: renamedFrom } : {}),
+          },
         });
       }
     });
@@ -573,8 +652,13 @@ export async function changeSupervisorAction(input: unknown): Promise<ActionResu
   const { id: userId, companyId } = session.user;
 
   try {
-    const project = await db.project.findUnique({ where: { id: projectId } });
-    if (!project || project.companyId !== companyId) {
+    // deletedAt:null — see updateProjectAction (data-integrity-002). Handing a
+    // tombstoned project to somebody, and notifying them about it, is the same
+    // hole in a friendlier shape.
+    const project = await db.project.findFirst({
+      where: { id: projectId, companyId, deletedAt: null },
+    });
+    if (!project) {
       return { success: false, error: "Project not found" };
     }
     const supervisor = await db.user.findFirst({

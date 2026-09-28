@@ -192,7 +192,16 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
         message: `${user.name} added ${noun} of ${amount.toLocaleString()} ${currency} for ${category}`,
         userId,
         userName: user.name,
-        metadata: JSON.stringify({ kind: "transaction", amount, category }),
+        // money-006, the durable half: the `message` above is prose written
+        // once and read forever, so it can only ever be as right as the
+        // currency was on the day it was written. Carrying the raw amount AND
+        // its currency code in the metadata means a renderer can format the
+        // figure at read time and a later currency switch cannot relabel
+        // history. Additive: `ActivityMetadata` (lib/types.ts) does not declare
+        // `currency` yet, so nothing reads it — but rows written from today
+        // carry it, and a follow-up that widens the type has data to work with
+        // instead of a backfill it cannot perform.
+        metadata: JSON.stringify({ kind: "transaction", amount, category, currency }),
       },
     });
 
@@ -305,7 +314,14 @@ export async function bulkImportTransactionsAction(
     return { success: false, error: "No rows had a valid category for this type." };
   }
 
-  const user = await db.user.findUnique({ where: { id: userId } });
+  // `select` narrows to what is used, and pulls the workspace currency along for
+  // the metadata below — the summary MESSAGE quotes no figure, so there is no
+  // money-006 mislabelling here, but the metadata carries an `amount` and a bare
+  // amount with no code is the same hazard one step later.
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: { name: true, company: { select: { currency: true } } },
+  });
   if (!user) return { success: false, error: "User no longer exists" };
 
   try {
@@ -333,7 +349,12 @@ export async function bulkImportTransactionsAction(
           } from CSV`,
           userId,
           userName: user.name,
-          metadata: JSON.stringify({ kind: "transaction", amount: total, category: "CSV import" }),
+          metadata: JSON.stringify({
+            kind: "transaction",
+            amount: total,
+            category: "CSV import",
+            currency: user.company.currency,
+          }),
         },
       });
       return created;
@@ -440,6 +461,8 @@ export async function deleteTransactionAction(id: string): Promise<ActionResult>
           kind: "transaction",
           amount: txn.amount,
           category: txn.category,
+          // See addTransactionAction for why the code travels with the figure.
+          currency: me.company.currency,
         }),
       },
     });

@@ -27,7 +27,7 @@ import { limiters } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendEmail } from "@/lib/email/send";
 import { renderInviteEmail } from "@/lib/email/templates/invite";
-import { memberLimitForPlan, PLAN_LABELS } from "@/lib/billing/plan";
+import { memberLimitForCompany, memberLimitForPlan, PLAN_LABELS } from "@/lib/billing/plan";
 import { joinDefaultChannels } from "@/lib/chat/bootstrap";
 import { deriveHandle, isHandleConflict, uniqueHandle } from "@/lib/user/handle";
 
@@ -460,6 +460,22 @@ export async function removeUserAction(userId: string): Promise<ActionResult> {
       await tx.inviteToken.deleteMany({
         where: { email: target.email, companyId, usedAt: null },
       });
+      // De-register their devices (data-integrity-004 / acct-008). The
+      // /team confirm dialog and the purge cron's header both describe
+      // deactivation as "loses access, keeps their history" — a phone that
+      // keeps buzzing with "New expense — 2,500,000" is not that. Three things
+      // used to compose into the leak: nothing pruned PushSubscription (it has
+      // no tombstone of its own), the purge cron deliberately has no
+      // individual-user stage so the rows lived forever, and recipient lists
+      // upstream forgot the filter. `sendPushToUsers` now filters
+      // `user: { deletedAt: null }` at the delivery boundary; this is the other
+      // half — the registration is REMOVED, not merely skipped, so it cannot
+      // come back through a caller that forgets.
+      //
+      // Reactivation does not restore them, and should not: the browser mints a
+      // fresh subscription on the next visit, and a resurrected endpoint is one
+      // nobody consented to twice.
+      await tx.pushSubscription.deleteMany({ where: { userId } });
       await tx.activity.create({
         data: {
           companyId,
@@ -565,6 +581,17 @@ export async function reactivateUserAction(userId: string): Promise<ActionResult
 const HANDLE_WRITE_ATTEMPTS = 3;
 
 /**
+ * Thrown inside the acceptance transaction when the workspace has no seat left
+ * (bill-013), so the write rolls back and the invitee gets the real reason
+ * instead of the catch-all "couldn't activate your account right now".
+ *
+ * A class rather than a flag because the check has to run INSIDE the transaction
+ * — the roster it counts and the row it would create must share one snapshot, or
+ * two simultaneous acceptances both read "one seat left" and both take it.
+ */
+class SeatLimitReached extends Error {}
+
+/**
  * The /invite/[token] flow: the recipient submits the form, this action
  * re-validates the token (existence + not expired + not used), creates the
  * real User with their chosen password and their @mention handle, marks the
@@ -597,7 +624,20 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
     // to the next code path that claims an invite.
     const invite = await db.inviteToken.findUnique({
       where: { token },
-      include: { company: { select: { deletedAt: true } } },
+      include: {
+        company: {
+          select: {
+            deletedAt: true,
+            // bill-013: the three columns `memberLimitForCompany` needs. Selected
+            // here, in the same round trip, for the same reason `deletedAt` is —
+            // the seat cap is a property of the workspace at ACCEPTANCE time, not
+            // at the time the invite was written.
+            plan: true,
+            subscriptionStatus: true,
+            currentPeriodEnd: true,
+          },
+        },
+      },
     });
     if (!invite) {
       return { success: false, error: "This invite link is invalid" };
@@ -689,6 +729,37 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
 
       try {
         await db.$transaction(async (tx) => {
+          // bill-013. THE SEAT CAP, RE-ASKED AT ACCEPTANCE. `plan` gated exactly
+          // one thing in this codebase — `inviteUserAction` above — so a token
+          // issued while the workspace was on Team still minted a member after the
+          // plan lapsed. That made one paid month buy permanent seats: subscribe,
+          // invite twenty people, cancel, and nothing anywhere revoked, suspended
+          // or even reported the overage while the billing screen went on claiming
+          // "Up to 2 members".
+          //
+          // `memberLimitForCompany`, not `memberLimitForPlan`: entitlement is
+          // (plan, status, paid-through date), so a workspace whose `plan` column
+          // still says "team" because a `subscription_expired` delivery was lost
+          // is capped here anyway (bill-004).
+          //
+          // Counted INSIDE the transaction — see SeatLimitReached — and it counts
+          // members only. Other pending invites are deliberately not counted: they
+          // may never be accepted, and `inviteUserAction` already refuses to queue
+          // past the limit at issue time.
+          const limit = memberLimitForCompany(invite.company);
+          if (Number.isFinite(limit)) {
+            const activeMembers = await tx.user.count({
+              where: { companyId: invite.companyId, deletedAt: null },
+            });
+            if (activeMembers >= limit) {
+              throw new SeatLimitReached(
+                `This workspace is on the ${PLAN_LABELS.free} plan, which is limited to ` +
+                  `${limit} members, and it is already full. Ask an admin to upgrade to ` +
+                  `${PLAN_LABELS.team} and send the invite again.`
+              );
+            }
+          }
+
           // INSIDE the transaction, so the roster we de-duplicate against and
           // the row we write share one snapshot.
           //
@@ -786,6 +857,12 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
         // nothing below can run on an acceptance that never landed.
         break;
       } catch (e) {
+        // The seat cap is a final, explainable refusal, not a retryable race:
+        // returning here (rather than rethrowing into the catch-all below) is what
+        // gets the invitee the actual reason instead of "try again in a moment".
+        if (e instanceof SeatLimitReached) {
+          return { success: false, error: e.message };
+        }
         // `isHandleConflict`, never a bare P2002 check: `User.email` is unique
         // too, and the duplicate-email race — someone completing /signup with
         // this address between the pre-check above and this insert — must keep

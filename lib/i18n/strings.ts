@@ -310,10 +310,18 @@ export const en = {
     // Confirm dialogs
     signOutConfirmTitle: "Sign out?",
     signOutConfirmDesc: "You can sign back in any time.",
-    resetConfirmTitle: "Reset workspace data?",
+    // acct-007. This dialog used to read "Reset workspace data?" / "All
+    // transactions, tasks, activity, and team members will be wiped. This cannot
+    // be undone." / "Reset everything", in danger red — and then removed one
+    // localStorage key. It contradicted the button that opens it ("Reset local
+    // preferences") AND the section's own note four keys up. Both directions hurt:
+    // a user who wanted their data gone believed it was, and a user clearing a
+    // stuck theme was told they were about to destroy the company's books.
+    resetConfirmTitle: "Reset local preferences?",
     resetConfirmDesc:
-      "All transactions, tasks, activity, and team members will be wiped. This cannot be undone.",
-    resetConfirmLabel: "Reset everything",
+      "Theme, language and sidebar state on this device will be cleared. " +
+      "Your workspace data isn't affected, and nothing is removed from the server.",
+    resetConfirmLabel: "Clear preferences",
     signedOutToast: "Signed out",
     // Account stats
     stats: "Activity at a glance",
@@ -369,13 +377,27 @@ export const en = {
       "Permanently remove your user record and everything you own. If you're the only person in this workspace, the workspace goes with you.",
     deleteAccountAction: "Delete account",
     deleteAccountConfirmDesc: "This is permanent. Enter your password below to confirm.",
+    // acct-013. Shown INSTEAD of the line above when the caller is the only member
+    // of their workspace — the case where "Delete my account" runs the identical
+    // whole-workspace cascade that "Delete this workspace" runs. FounderFlow's
+    // target user is the solo founder, so this is not the rare branch: it is the
+    // normal one. `{workspace}` is substituted by the modal.
+    deleteAccountWorkspaceConfirmDesc:
+      "You're the only person in {workspace}, so this deletes the whole workspace — " +
+      "every transaction, task, budget and comment goes with it, and any active Team " +
+      "subscription is cancelled. Type the workspace name exactly, then your password.",
+    deleteAccountAndWorkspaceAction: "Delete account + workspace",
     passwordConfirm: "Enter your password",
     deleteWorkspace: "Delete this workspace",
     deleteWorkspaceDesc:
       "Wipes the workspace, every teammate on it, and every transaction, task, budget, and comment. Not reversible.",
     deleteWorkspaceAction: "Delete workspace",
+    // acct-002: the delete now cancels the LemonSqueezy subscription, and this is
+    // the last screen that can say so — afterwards every user is tombstoned and
+    // "Manage billing" is unreachable.
     deleteWorkspaceConfirmDesc:
-      "Everyone loses access immediately. Type the workspace name exactly, then your password.",
+      "Everyone loses access immediately, and any active Team subscription is cancelled " +
+      "so you stop being charged. Type the workspace name exactly, then your password.",
     workspaceNameConfirm: "Type the workspace name",
     accountDeletedToast: "Account deleted",
     workspaceDeletedToast: "Workspace deleted",
@@ -651,10 +673,14 @@ export const ur: typeof en = {
     teamMemberRole: "ٹیم ممبر",
     signOutConfirmTitle: "سائن آؤٹ کریں؟",
     signOutConfirmDesc: "آپ کسی بھی وقت دوبارہ سائن ان کر سکتے ہیں۔",
-    resetConfirmTitle: "ورک اسپیس ڈیٹا ری سیٹ کریں؟",
+    // acct-007: the Urdu copy carried the same false promise as the English, word
+    // for word ("تمام ٹرانزیکشنز … مٹا دیے جائیں گے"). Corrected in both, because a
+    // dialog that lies only to the Urdu reader is the same bug.
+    resetConfirmTitle: "لوکل ترجیحات ری سیٹ کریں؟",
     resetConfirmDesc:
-      "تمام ٹرانزیکشنز، کام، سرگرمی، اور ٹیم ممبران مٹا دیے جائیں گے۔ یہ واپس نہیں ہو سکتا۔",
-    resetConfirmLabel: "سب کچھ ری سیٹ کریں",
+      "اس ڈیوائس پر تھیم، زبان اور سائیڈبار کی حالت صاف ہو جائے گی۔ " +
+      "آپ کے ورک اسپیس کا ڈیٹا متاثر نہیں ہوگا اور سرور سے کچھ نہیں ہٹایا جائے گا۔",
+    resetConfirmLabel: "ترجیحات صاف کریں",
     signedOutToast: "سائن آؤٹ ہو گیا",
     stats: "ایک نظر میں سرگرمی",
     totalTracked: "ٹریک شدہ وقت",
@@ -707,13 +733,19 @@ export const ur: typeof en = {
       "آپ کا یوزر ریکارڈ اور اس کی سب چیزیں مستقل ختم ہو جائیں گی۔ اگر آپ اس ورک اسپیس کے واحد فرد ہیں تو ورک اسپیس بھی ساتھ چلا جائے گا۔",
     deleteAccountAction: "اکاؤنٹ حذف کریں",
     deleteAccountConfirmDesc: "یہ عمل مستقل ہے۔ تصدیق کے لیے اپنا پاس ورڈ درج کریں۔",
+    deleteAccountWorkspaceConfirmDesc:
+      "آپ {workspace} میں واحد فرد ہیں، اس لیے یہ پورا ورک اسپیس حذف کر دے گا — ہر ٹرانزیکشن، " +
+      "کام، بجٹ اور تبصرہ ساتھ چلا جائے گا، اور کوئی بھی فعال Team سبسکرپشن منسوخ کر دی جائے گی۔ " +
+      "ورک اسپیس کا نام بالکل ویسا ہی ٹائپ کریں، پھر اپنا پاس ورڈ۔",
+    deleteAccountAndWorkspaceAction: "اکاؤنٹ + ورک اسپیس حذف کریں",
     passwordConfirm: "پاس ورڈ درج کریں",
     deleteWorkspace: "یہ ورک اسپیس حذف کریں",
     deleteWorkspaceDesc:
       "ورک اسپیس، اس کے سب ٹیم ممبرز، ٹرانزیکشنز، کام، بجٹ اور تبصرے سب مٹ جائیں گے۔ واپس نہیں ہو گا۔",
     deleteWorkspaceAction: "ورک اسپیس حذف کریں",
     deleteWorkspaceConfirmDesc:
-      "سب کو فوراً رسائی ختم ہو جائے گی۔ ورک اسپیس کا نام بالکل ویسا ہی ٹائپ کریں اور پھر پاس ورڈ درج کریں۔",
+      "سب کو فوراً رسائی ختم ہو جائے گی، اور کوئی بھی فعال Team سبسکرپشن منسوخ کر دی جائے گی تاکہ " +
+      "مزید چارج نہ ہو۔ ورک اسپیس کا نام بالکل ویسا ہی ٹائپ کریں اور پھر پاس ورڈ درج کریں۔",
     workspaceNameConfirm: "ورک اسپیس کا نام ٹائپ کریں",
     accountDeletedToast: "اکاؤنٹ حذف ہو گیا",
     workspaceDeletedToast: "ورک اسپیس حذف ہو گیا",

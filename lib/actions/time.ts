@@ -34,6 +34,29 @@ import type { ActionResult } from "@/lib/actions/types";
  * Thin RSC-bypassing wrapper: the topbar widget is a client component and
  * needs to know on mount whether the user is currently clocked in. Same
  * permission scope as the underlying query (current user, current company).
+ *
+ * THE TASK LIST IT ALSO RETURNS IS A TASK LIST, AND OBEYS THE BOARD'S RULE.
+ * Finding tasks-and-comments-006.
+ *
+ * It used to read `{ companyId, status: { not: "completed" } }` — no
+ * `assignedTo`, no `deletedAt: null`, no role branch — and the result is
+ * rendered as one `<option>` per task in the clock-in modal, which
+ * `<ClockWidget />` mounts in the top bar for every role on every app route a
+ * member can reach. lib/queries/tasks.ts:75-81 states the boundary it was
+ * bypassing: "On the GLOBAL board a member only ever sees tasks assigned to
+ * THEM — never a teammate's, admin's, or co-founder's work. Enforced here at
+ * the data boundary so it can't be unfiltered from the client." The one place
+ * the product promises a member cannot see other people's work was therefore
+ * readable from a control on every screen, and task titles here are things like
+ * "Terminate Ahmed's contract".
+ *
+ * The filter below mirrors `getTasks()`'s global-board clause deliberately,
+ * the same way lib/queries/search.ts mirrors it for the command palette: the
+ * picker's destination is a time entry that shows up on the board, so offering
+ * a task the board will not render is a dead option. It is written out rather
+ * than delegated to `getTasks()` because that query is uncapped and joins
+ * comment counts and project names the picker has no use for; the cost of the
+ * duplication is this comment.
  */
 export async function getOpenEntryAction(): Promise<
   ActionResult<{
@@ -51,7 +74,13 @@ export async function getOpenEntryAction(): Promise<
       db.task.findMany({
         where: {
           companyId: session.user.companyId,
+          deletedAt: null,
           status: { not: "completed" },
+          // Same as the global board: a completed or shelved project's tasks
+          // are not on it, so they are not clock-in targets either.
+          project: { status: { notIn: ["completed", "archived"] } },
+          // And the member scope, which is the finding.
+          ...(session.user.role === "member" ? { assignedTo: session.user.id } : {}),
         },
         select: { id: true, title: true },
         orderBy: { createdAt: "desc" },

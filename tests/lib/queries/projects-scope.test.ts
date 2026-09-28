@@ -27,10 +27,13 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  INACTIVE_PROJECT_STATUSES,
   getProjectOverview,
   getProjectTitleForUser,
+  listProjectOptions,
   listProjectsForUser,
 } from "@/lib/queries/projects";
+import { getTasks } from "@/lib/queries/tasks";
 import type { ScopedSession } from "@/lib/queries/session";
 
 /** One call the query layer made against the (fake) Prisma client. */
@@ -49,6 +52,19 @@ const prisma = vi.hoisted(() => {
     if (answers.has(key)) return Promise.resolve(answers.get(key));
     return Promise.resolve(null);
   }
+
+  // Tagged-template form: `db.$queryRaw`…`` arrives as (strings, ...values).
+  // Present as a real function rather than as another Proxy delegate so that a
+  // roll-up moved into SQL is RECORDED here, with its text and its bound
+  // parameters, instead of failing with "db.$queryRaw is not a function" —
+  // which reads as a broken test rather than as the thing being measured.
+  const queryRaw = vi.fn((...args: unknown[]) => record("$queryRaw", "$queryRaw", args));
+  // Present so a test can prove it is never reached: `$queryRawUnsafe` takes a
+  // finished string, and a fake that simply lacked the method would fail with a
+  // TypeError instead of with the injection finding it would actually be.
+  const queryRawUnsafe = vi.fn((...args: unknown[]) =>
+    record("$queryRawUnsafe", "$queryRawUnsafe", args)
+  );
 
   // A Proxy, not a hand-written `{ project: { findFirst } }` fake: a fake only
   // knows the delegates that existed the day it was written, so a query added
@@ -77,12 +93,14 @@ const prisma = vi.hoisted(() => {
     {
       get(_target, prop) {
         if (typeof prop !== "string") return undefined;
+        if (prop === "$queryRaw") return queryRaw;
+        if (prop === "$queryRawUnsafe") return queryRawUnsafe;
         return delegateFor(prop);
       },
     }
   );
 
-  return { calls, answers, db };
+  return { calls, answers, db, queryRaw, queryRawUnsafe };
 });
 
 const session = vi.hoisted(() => ({
@@ -157,6 +175,8 @@ function asRole(role: ScopedSession["role"], userId = "u_admin", companyId = "c_
 beforeEach(() => {
   prisma.calls.length = 0;
   prisma.answers.clear();
+  prisma.queryRaw.mockClear();
+  prisma.queryRawUnsafe.mockClear();
   prisma.answers.set("project.findFirst", projectRow());
   prisma.answers.set("project.findMany", [projectRow()]);
   prisma.answers.set("task.findFirst", { id: "t1" }); // caller holds a task
@@ -164,6 +184,7 @@ beforeEach(() => {
   prisma.answers.set("task.findMany", [{ assignedTo: MEMBER_ID }]);
   prisma.answers.set("task.groupBy", []);
   prisma.answers.set("timeEntry.findMany", []);
+  prisma.answers.set("$queryRaw.$queryRaw", []);
   prisma.answers.set("transaction.aggregate", { _sum: { amount: decimal(SECRET_SPEND) } });
   prisma.answers.set("transaction.groupBy", [
     { projectId: "p_nimbus", _sum: { amount: decimal(SECRET_SPEND) } },
@@ -173,6 +194,68 @@ beforeEach(() => {
 
 function callsTo(delegate: string, method?: string): RecordedCall[] {
   return prisma.calls.filter((c) => c.delegate === delegate && (!method || c.method === method));
+}
+
+function whereOf(call: RecordedCall): Record<string, unknown> {
+  return ((call.args[0] as { where?: Record<string, unknown> } | undefined)?.where ?? {}) as Record<
+    string,
+    unknown
+  >;
+}
+
+/**
+ * The statuses a `status` filter EXCLUDES, whichever shape it is written in.
+ * Reading both `{ not: "x" }` and `{ notIn: [...] }` is the point: the bug was
+ * one clause saying `not: "archived"` while the other said
+ * `notIn: ["completed","archived"]`, and a test that only understood one shape
+ * could not compare them.
+ */
+function statusExclusions(filter: unknown): string[] {
+  if (filter === null || typeof filter !== "object") return [];
+  const f = filter as { not?: unknown; notIn?: unknown };
+  if (typeof f.not === "string") return [f.not];
+  if (Array.isArray(f.notIn)) return f.notIn.filter((s): s is string => typeof s === "string");
+  return [];
+}
+
+/** Every string anywhere in a value — including Prisma.Sql bound parameters. */
+function stringsIn(value: unknown): string[] {
+  const found: string[] = [];
+  const walk = (v: unknown) => {
+    if (v === null || v === undefined) return;
+    if (Array.isArray(v)) {
+      v.forEach(walk);
+      return;
+    }
+    if (typeof v === "object") {
+      Object.values(v as Record<string, unknown>).forEach(walk);
+      return;
+    }
+    if (typeof v === "string") found.push(v);
+  };
+  walk(value);
+  return found;
+}
+
+/**
+ * The SQL text of a tagged-template call, parameter slots marked `$?`,
+ * including the text of any composed `Prisma.Sql` in the parameter list (which
+ * is where `Prisma.join` puts an `IN (…)` list).
+ */
+function sqlTextOf(call: RecordedCall): string {
+  const chunks = [(call.args[0] as string[]).join(" $? ")];
+  const visit = (value: unknown) => {
+    if (value === null || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const sql = value as { strings?: unknown; values?: unknown };
+    if (Array.isArray(sql.strings)) chunks.push(sql.strings.join(" $? "));
+    if (Array.isArray(sql.values)) sql.values.forEach(visit);
+  };
+  call.args.slice(1).forEach(visit);
+  return chunks.join(" ");
 }
 
 describe("getProjectOverview — the spend aggregate is gated before it is READ", () => {
@@ -292,5 +375,189 @@ describe("getProjectTitleForUser — the scoped name lookup generateMetadata nee
 
     await expect(getProjectTitleForUser("p_nimbus")).resolves.toBeNull();
     expect(prisma.calls).toHaveLength(0);
+  });
+});
+
+/**
+ * WHERE WORK CAN BE FILED vs WHERE WORK IS VISIBLE. Finding projects-011.
+ *
+ * `listProjectOptions` is the source for every project picker in the task /
+ * budget / transaction / clock-in forms, and it filtered only
+ * `status: { not: "archived" }` — so a COMPLETED project was still offered.
+ * `getTasks` on the global board filters
+ * `project: { status: { notIn: ["completed", "archived"] } }`. A task created
+ * against a completed project therefore existed, counted in the project's own
+ * KPIs, and was invisible on /tasks for admin, cofounder and the assignee
+ * alike; the `task_assigned` notification deep-linked to
+ * `/tasks?taskId=<id>`, which landed on a board with nothing to highlight.
+ * That surfaces as "your app lost my work", not as a bug report.
+ *
+ * The tests below do not name the statuses twice. The last one drives BOTH
+ * queries and compares what each excludes, because the contract is not "the
+ * picker excludes completed" — it is "the two clauses state the same rule".
+ */
+describe("listProjectOptions — the picker and the board agree", () => {
+  it("does not offer a completed project to file new work into", async () => {
+    asRole("admin");
+
+    await listProjectOptions();
+
+    const reads = callsTo("project", "findMany");
+    expect(reads).toHaveLength(1);
+    const excluded = statusExclusions(whereOf(reads[0]).status);
+    expect(excluded).toContain("completed");
+    expect(excluded).toContain("archived");
+  });
+
+  it("applies the same rule on the member branch", async () => {
+    // Two branches, one rule. The member branch is a separate literal in the
+    // source, which is exactly how the two drifted apart in the first place.
+    asRole("member", MEMBER_ID);
+
+    await listProjectOptions();
+
+    const excluded = statusExclusions(whereOf(callsTo("project", "findMany")[0]).status);
+    expect(excluded).toContain("completed");
+    expect(excluded).toContain("archived");
+  });
+
+  it("excludes exactly what the global task board excludes", async () => {
+    asRole("admin");
+    prisma.answers.set("task.findMany", []);
+
+    await listProjectOptions();
+    const pickerExcludes = statusExclusions(whereOf(callsTo("project", "findMany")[0]).status);
+
+    prisma.calls.length = 0;
+    await getTasks();
+    const boardProjectFilter = whereOf(callsTo("task", "findMany")[0]).project as {
+      status?: unknown;
+    };
+    const boardExcludes = statusExclusions(boardProjectFilter?.status);
+
+    // Neither list is written out here. If lib/queries/tasks.ts ever hides a
+    // third status from the board, this fails until the picker follows —
+    // which is the only way the two stay in step.
+    expect(boardExcludes.length).toBeGreaterThan(0);
+    expect(pickerExcludes.slice().sort()).toEqual(boardExcludes.slice().sort());
+  });
+
+  it("publishes the rule as one constant rather than two literals", async () => {
+    asRole("admin");
+
+    await listProjectOptions();
+
+    const excluded = statusExclusions(whereOf(callsTo("project", "findMany")[0]).status);
+    expect(excluded.slice().sort()).toEqual(Array.from(INACTIVE_PROJECT_STATUSES).slice().sort());
+  });
+});
+
+/**
+ * THE TIME ROLL-UP IS A SUM, AND SUMS BELONG IN SQL. Finding perf-003.
+ *
+ * Both `listProjectsForUser` and `getProjectOverview` ran
+ * `db.timeEntry.findMany({ where: { projectId: … } })` with NO `take` and then
+ * added the durations up in a JavaScript loop. The sibling roll-ups in the same
+ * `Promise.all` (`task.groupBy`, `transaction.groupBy`) are done in SQL; the
+ * time sum was the one that was not. A workspace clocking 8 entries per person
+ * per week reaches ~20k TimeEntry rows in a year, and /projects pulled all of
+ * them into the Node heap on every load to produce one number per card — on a
+ * serverless function that is a memory ceiling, i.e. an OOM rather than a slow
+ * page.
+ *
+ * What these tests pin is the SHAPE, not a benchmark: the unbounded read is
+ * gone, the total arrives from the database, and the one read that remains is
+ * bounded by "people currently clocked in" (at most one open entry per user,
+ * enforced in clockInAction) rather than by history.
+ */
+describe("the tracked-time roll-up", () => {
+  it("does not read the whole time history to total the project list", async () => {
+    asRole("admin");
+
+    await listProjectsForUser();
+
+    for (const read of callsTo("timeEntry", "findMany")) {
+      // The only per-row read allowed is the bounded open-entry one: an entry
+      // with no clock-out has no duration to compute in SQL without pinning
+      // `now`, and there are at most as many of them as there are people.
+      expect(
+        whereOf(read).clockOutAt,
+        "timeEntry.findMany is not restricted to still-running entries"
+      ).toBeNull();
+    }
+    // And the historical total came from the database.
+    expect(prisma.queryRaw).toHaveBeenCalled();
+    expect(prisma.queryRawUnsafe).not.toHaveBeenCalled();
+  });
+
+  it("does not read the whole time history for one project's overview either", async () => {
+    asRole("admin");
+
+    await getProjectOverview("p_nimbus");
+
+    for (const read of callsTo("timeEntry", "findMany")) {
+      expect(
+        whereOf(read).clockOutAt,
+        "timeEntry.findMany is not restricted to still-running entries"
+      ).toBeNull();
+    }
+    expect(prisma.queryRaw).toHaveBeenCalled();
+  });
+
+  it("scopes the raw sum to the caller's own company", async () => {
+    // Raw SQL has no `where` object for the sweep in this file to read, so the
+    // evidence is the column it compares and the parameter it binds. A raw
+    // query is exactly where a tenancy filter gets forgotten.
+    asRole("admin", "u_admin", "c_nimbus");
+
+    await listProjectsForUser();
+
+    const raws = prisma.calls.filter((c) => c.delegate === "$queryRaw");
+    expect(raws.length).toBeGreaterThan(0);
+    for (const raw of raws) {
+      expect(sqlTextOf(raw)).toContain('"companyId" =');
+      expect(stringsIn(raw.args)).toContain("c_nimbus");
+      expect(stringsIn(raw.args)).not.toContain("c_rival");
+    }
+  });
+
+  it("parameterizes the project ids rather than pasting them into the SQL", async () => {
+    asRole("admin");
+
+    await listProjectsForUser();
+
+    const raw = prisma.calls.find((c) => c.delegate === "$queryRaw")!;
+    // Tagged-template form: the first argument is the template strings array.
+    expect(Array.isArray(raw.args[0])).toBe(true);
+    expect(raw.args[0]).toHaveProperty("raw");
+    expect(stringsIn(raw.args)).toContain("p_nimbus");
+  });
+
+  it("adds the still-running entries to the total the database returned", async () => {
+    // The number on the card has to keep ticking for someone clocked in right
+    // now — that is why the open entries are read at all. An implementation
+    // that summed only the closed rows would pass every test above.
+    asRole("admin");
+    prisma.answers.set("$queryRaw.$queryRaw", [{ projectId: "p_nimbus", ms: 3_600_000 }]);
+    prisma.answers.set("timeEntry.findMany", [
+      { projectId: "p_nimbus", clockInAt: new Date(Date.now() - 60_000), clockOutAt: null },
+    ]);
+
+    const rows = await listProjectsForUser();
+
+    expect(rows[0].trackedMs).toBeGreaterThanOrEqual(3_600_000 + 59_000);
+    expect(rows[0].trackedMs).toBeLessThan(3_600_000 + 120_000);
+  });
+
+  it("reports zero tracked time without inventing a number", async () => {
+    asRole("admin");
+    prisma.answers.set("$queryRaw.$queryRaw", []);
+    prisma.answers.set("timeEntry.findMany", []);
+
+    const rows = await listProjectsForUser();
+    const overview = await getProjectOverview("p_nimbus");
+
+    expect(rows[0].trackedMs).toBe(0);
+    expect(overview?.trackedMs).toBe(0);
   });
 });

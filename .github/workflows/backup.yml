@@ -1,8 +1,35 @@
 ##
 ## Tier 3 nightly backup — pg_dump the production database to an S3-shaped
-## bucket every night at 04:15 UTC.
+## bucket every night at 04:15 UTC, and prove every morning that it happened.
 ##
-## Setup (one-time, in the repo's GitHub Settings → Secrets and variables):
+## THIS FILE IS THE LAST LINE OF DEFENCE behind every other data-loss path in
+## the app, and until 2026-09-28 its failure mode was silence. Three audit rows
+## said the same thing from different angles:
+##
+##   cron-014      No notification of any kind. A scheduled-workflow failure
+##                 e-mails only the last committer of the workflow file, and a
+##                 run that never HAPPENS produces nothing to check at all.
+##   prodready-008 GitHub disables `schedule:` workflows after 60 days of
+##                 repository inactivity, so this was counting down to off.
+##   prodready-010 The key was date-only and `aws s3 cp` overwrites, so a manual
+##                 "back it up before I try this" replaced that morning's dump.
+##
+## So there are now THREE independent ways this tells a human something is
+## wrong, and they fail in different directions on purpose:
+##
+##   1. `if: failure()` opens a GitHub issue. Needs no secret, works today, and
+##      covers "the run happened and broke".
+##   2. The `freshness` job runs on its OWN schedule and asserts the bucket
+##      holds an object younger than MAX_AGE_HOURS. It covers "the dump job
+##      stopped landing objects" and "GitHub silently dropped a scheduled run",
+##      neither of which produces a failed run to notice.
+##   3. A heartbeat ping to BACKUP_HEARTBEAT_URL. This is the only one that
+##      catches the whole workflow being switched off, because the alarm lives
+##      outside GitHub — see SETUP below. Until that secret exists the workflow
+##      warns on every run rather than failing: an unmonitored backup beats no
+##      backup, so a missing monitor must never take the dump down with it.
+##
+## ── SETUP (one-time, repo Settings → Secrets and variables → Actions) ───────
 ##   BACKUP_DATABASE_URL   Supabase SESSION-pooler URL (port 5432, user
 ##                         `postgres.<project-ref>`). The dump step rewrites
 ##                         it to the transaction pooler (6543 +
@@ -21,32 +48,87 @@
 ##   BACKUP_S3_ENDPOINT    (optional) custom S3 endpoint. Leave blank for AWS.
 ##                         Example for R2:
 ##                         https://<account>.r2.cloudflarestorage.com
+##   BACKUP_HEARTBEAT_URL  (STRONGLY RECOMMENDED, and not yet set) a check-in
+##                         URL from any cron-monitoring service — healthchecks.io
+##                         has a free tier, Better Stack and Cronitor work the
+##                         same way. Create a check that expects a ping every
+##                         24h with a few hours of grace, and paste its ping URL
+##                         here. Nothing inside GitHub can detect GitHub
+##                         switching this workflow off; only something outside
+##                         it, noticing the ping stopped, can.
 ##
-## Retention: adjust the bucket's lifecycle policy at the bucket side, not
-## here — S3-standard lifecycle rules give you the same 90-day sliding window
-## the app-side purge cron uses, and they clean up dumps this workflow won't
-## re-touch after upload.
+## ── RETENTION ──────────────────────────────────────────────────────────────
+## Adjust the bucket's lifecycle policy at the bucket side, not here. Note the
+## keys are now timestamped (see below), so a lifecycle rule keyed on the object
+## name rather than its age needs updating.
 ##
-## Restoring: fetch the dump from S3, run
-##   gunzip -c founderflow-YYYY-MM-DD.sql.gz | psql "$RESTORE_DATABASE_URL"
-## There is deliberately no automated restore workflow — that's the kind of
-## "one wrong click nukes a customer's data" button we do not need.
+## ── RESTORING ──────────────────────────────────────────────────────────────
+##   gunzip -c founderflow-YYYY-MM-DDTHHMMSSZ.sql.gz | psql "$RESTORE_DATABASE_URL"
+##
+## This has been EXERCISED, which it had not been when prodready-009 was
+## written. `.github/workflows/verify-backup-restore.yml` restores the newest
+## dump into a throwaway `postgres:17` service container and applies the pending
+## migrations to it. Run 36356799147 (2026-09-27, dump founderflow-2026-09-27):
+## 0 psql errors, 14 `public` tables, all core tables present, 29 users and 5
+## companies restored, 19 → 25 migrations applied, the add_user_handle backfill
+## clean (0 null handles, 0 per-company duplicates). Re-run it from the Actions
+## tab after any change to the dump command here.
+##
+## Two things that verification does NOT prove, so do not read it as more than
+## it is. (a) The dump is not `--schema`-scoped, so it still carries Supabase's
+## managed `auth` / `storage` / `realtime` / `vault` objects; restoring into a
+## REAL Supabase project will therefore collide with the managed objects already
+## there. It restores cleanly into a vanilla Postgres, which is what was tested.
+## (b) No recovery TIME has been measured against a production-sized target, so
+## the RTO is still unknown.
+##
+## There is still no workflow that restores into anything a customer could be
+## using — the verify job's target is a hardcoded localhost service container,
+## and that is deliberate.
 ##
 
 name: Nightly database backup
 
 on:
   schedule:
-    # 04:15 UTC daily. Runs an hour after the purge cron so the dump captures
-    # today's post-purge state — the tombstoned rows past 90 days are gone
-    # by the time we snapshot.
+    # 04:15 UTC daily — the dump. An hour after the purge cron so the snapshot
+    # captures today's post-purge state.
     - cron: "15 4 * * *"
+    # 13:45 UTC daily — the freshness audit. Deliberately a SEPARATE schedule
+    # and a separate job: a step inside the dump run cannot notice that the dump
+    # run never happened. By this hour a healthy bucket holds an object ~9.5h
+    # old, and a single skipped night makes the newest ~33.5h old.
+    - cron: "45 13 * * *"
   workflow_dispatch:
-    # Manual "back it up now" button in the Actions tab. Useful before a
-    # scary migration or a schema-change deploy.
+    inputs:
+      mode:
+        description: "backup = take a dump now (safe before a scary migration). audit = only check the bucket for a recent dump."
+        type: choice
+        options:
+          - backup
+          - audit
+        default: backup
+
+# Least privilege, and `issues: write` is load-bearing: opening an issue is the
+# only alert channel that needs no secret, so it is the one that works today.
+# `contents` stays read — nothing here commits, and a pushable token in a
+# scheduled job is a scheduled production deploy waiting to happen.
+permissions:
+  contents: read
+  issues: write
+
+# Never two at once against the same prefix, and never cancel one in flight: a
+# killed upload leaves a truncated object behind, and a late backup beats a
+# corrupt one.
+concurrency:
+  group: nightly-backup
+  cancel-in-progress: false
 
 jobs:
   backup:
+    if: >-
+      github.event.schedule == '15 4 * * *' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'backup')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -80,11 +162,23 @@ jobs:
       - name: Compute filename
         id: filename
         run: |
-          echo "path=founderflow-$(date -u +%Y-%m-%d).sql.gz" >> "$GITHUB_OUTPUT"
+          # prodready-010. This used to be the date alone, and `aws s3 cp`
+          # overwrites: the nightly dump and a manual "back it up before I try
+          # this" on the same day wrote the same key, so clicking the manual
+          # button AFTER something went wrong destroyed that morning's
+          # pre-incident snapshot — the single most likely way to lose the one
+          # copy you needed. A second-resolution stamp makes every dump a
+          # distinct object; the upload step additionally refuses to write a key
+          # that already exists.
+          #
+          # Still ISO-ordered, so lexical sort is still chronological and
+          # "newest object" is still `sort | tail -1`.
+          echo "path=founderflow-$(date -u +%Y-%m-%dT%H%M%SZ).sql.gz" >> "$GITHUB_OUTPUT"
 
       - name: Dump database
         env:
           BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          KEY: ${{ steps.filename.outputs.path }}
         run: |
           # set -e alone doesn't catch failures on the LEFT side of a pipe;
           # pipefail promotes them so a pg_dump error kills the step even
@@ -133,7 +227,7 @@ jobs:
           # failure without pipefail gymnastics, and — more importantly —
           # a gzip'd stream can't be content-checked before upload. Writing
           # the raw .sql lets us assert the dump actually contains data.
-          RAW="${{ steps.filename.outputs.path }}.raw.sql"
+          RAW="${KEY}.raw.sql"
           "$PG_DUMP" "$PGDUMP_URL" \
             --no-owner \
             --no-privileges \
@@ -141,41 +235,83 @@ jobs:
             > "$RAW"
 
           # ── Content validation ────────────────────────────────────────
-          # The old check was byte-size only. A size floor proves the file
-          # is non-empty; it does NOT prove the dump contains our data. A
-          # schema-only dump, or one that lost rows mid-COPY but still exited
-          # 0, would sail past a size gate. That's the same class of
-          # "green but wrong" that burned us on 2026-07-03 — so assert
-          # actual content: core-table DDL, a COPY data block, and a
-          # plausible table count. Any failure aborts before upload.
-          if ! grep -qE 'CREATE TABLE (public\.)?"?User"?' "$RAW"; then
-            echo "::error::Dump is missing the User table DDL — refusing to upload a broken backup." >&2
-            exit 1
-          fi
-          # plain-format pg_dump emits data as COPY (not INSERT, since we
-          # don't pass --inserts). A dump with schema but zero data would
-          # miss this — catches the schema-only failure mode.
-          if ! grep -qE 'COPY (public\.)?"?User"? ' "$RAW"; then
-            echo "::error::Dump has no COPY data block for User — likely schema-only or data lost mid-dump. Refusing to upload." >&2
-            exit 1
-          fi
-          table_count=$(grep -cE '^CREATE TABLE ' "$RAW" || true)
+          # A size floor proves the file is non-empty; it does NOT prove the
+          # dump contains our data. What follows asserts the properties a
+          # restore actually needs, and each one exists because the weaker
+          # version of it passed something broken.
+          #
+          # Every core table by name, DDL *and* data block. The old gate named
+          # only `User`, so a dump that lost Transaction — the table holding
+          # customers' money — uploaded green.
+          #
+          # NOT derived from prisma/schema.prisma on purpose, even though that
+          # would look tidier: production is routinely several migrations behind
+          # the schema file (it was six behind on 2026-09-27), so a derived list
+          # would fail every night for tables that do not exist in production
+          # yet. This list is the long-standing core; add to it only when the
+          # table has existed in production for a while.
+          CORE_TABLES="User Company Transaction Project Task Budget"
+          for t in $CORE_TABLES; do
+            if ! grep -qE "^CREATE TABLE (public\.)?\"?${t}\"? " "$RAW"; then
+              echo "::error title=Broken dump::Dump is missing the ${t} table DDL — refusing to upload a broken backup." >&2
+              exit 1
+            fi
+            # plain-format pg_dump emits data as COPY (not INSERT, since we
+            # don't pass --inserts), and emits the statement even for an empty
+            # table — so this catches a dropped table, not an empty one. The
+            # empty case is USER_ROWS below.
+            if ! grep -qE "^COPY (public\.)?\"?${t}\"? " "$RAW"; then
+              echo "::error title=Broken dump::Dump has no COPY data block for ${t} — likely schema-only or data lost mid-dump. Refusing to upload." >&2
+              exit 1
+            fi
+          done
+
+          # Scoped to `public.` — this is the fix for the half of prodready-009
+          # the restore verification does not cover. The dump is not
+          # --schema-scoped, so it carries Supabase's managed `auth`, `storage`,
+          # `realtime` and `vault` schemas: an unscoped `CREATE TABLE` count of
+          # 12 was satisfied by those ALONE, with not one application table in
+          # the file.
+          table_count=$(grep -cE '^CREATE TABLE public\.' "$RAW" || true)
           if [ "${table_count:-0}" -lt 12 ]; then
-            echo "::error::Dump has only ${table_count} CREATE TABLE statements, expected >= 12 app tables. Refusing to upload." >&2
+            echo "::error title=Broken dump::Dump has only ${table_count} CREATE TABLE statements in the public schema, expected >= 12 app tables. Refusing to upload." >&2
             exit 1
           fi
 
-          gzip -9 -c "$RAW" > "${{ steps.filename.outputs.path }}"
+          # Does it contain ROWS? Everything above is satisfied by a dump of a
+          # completely empty database, because pg_dump writes `COPY ... FROM
+          # stdin;` followed immediately by `\.` for a table with no rows. Count
+          # the data lines inside User's COPY block: there is no state of this
+          # product in which zero users is a correct backup.
+          #
+          # `sprintf("%c.", 92)` builds the `\.` terminator from a character
+          # code rather than writing it. This is not cleverness for its own
+          # sake: the obvious spellings (`/^\\.$/`, `$0 == "\\."`) are eaten by
+          # awk's own escape processing and silently match a bare `.` instead,
+          # so the block never terminates and the counter returns "every line to
+          # end of file" — a number that is always >= 1 and therefore a check
+          # that can never fail. That is exactly how the previous version of
+          # this gate would have passed an empty database; verified against a
+          # synthetic dump before this landed.
+          USER_ROWS=$(awk 'BEGIN {TERM = sprintf("%c.", 92)} /^COPY (public\.)?"?User"? \(/ {inblk = 1; next} inblk && $0 == TERM {inblk = 0; next} inblk {n++} END {print n + 0}' "$RAW")
+          if [ "${USER_ROWS:-0}" -lt 1 ]; then
+            echo "::error title=Empty dump::User's COPY block contains no rows. The dump restored would be an empty product. Refusing to upload." >&2
+            exit 1
+          fi
+
+          gzip -9 -c "$RAW" > "$KEY"
           rm -f "$RAW"
 
-          # Final belt: a real gzipped dump of this schema is tens of KB.
-          file_size=$(stat -c%s "${{ steps.filename.outputs.path }}")
-          if [ "$file_size" -lt 512 ]; then
-            echo "::error::Gzipped dump is only ${file_size} bytes — refusing to upload." >&2
+          # Final belt. Raised from 512 bytes, which was ~180x below a real
+          # dump and could not have failed on anything the checks above let
+          # through.
+          file_size=$(stat -c%s "$KEY")
+          if [ "$file_size" -lt 4096 ]; then
+            echo "::error title=Tiny dump::Gzipped dump is only ${file_size} bytes — refusing to upload." >&2
             exit 1
           fi
-          ls -lh "${{ steps.filename.outputs.path }}"
-          echo "Content check passed: ${table_count} tables, User DDL + COPY data present. Gzip size: ${file_size} bytes"
+          ls -lh "$KEY"
+          echo "Content check passed: ${table_count} public tables, ${USER_ROWS} user rows, all of ${CORE_TABLES} present with data blocks. Gzip size: ${file_size} bytes"
 
       - name: Upload to S3-compatible bucket
         env:
@@ -184,14 +320,310 @@ jobs:
           AWS_DEFAULT_REGION: ${{ secrets.BACKUP_S3_REGION }}
           BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
           BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+          KEY: ${{ steps.filename.outputs.path }}
         run: |
-          # --endpoint-url is optional; awscli accepts an empty flag gracefully
-          # if we don't pass it, so branch on whether BACKUP_S3_ENDPOINT is set.
-          if [ -n "$BACKUP_S3_ENDPOINT" ]; then
-            aws s3 cp "${{ steps.filename.outputs.path }}" \
-              "s3://$BACKUP_S3_BUCKET/nightly/${{ steps.filename.outputs.path }}" \
-              --endpoint-url "$BACKUP_S3_ENDPOINT"
+          set -euo pipefail
+          if [ -z "${BACKUP_S3_BUCKET:-}" ]; then
+            echo "::error title=No bucket::BACKUP_S3_BUCKET is not set, so the dump has nowhere to go." >&2
+            exit 1
+          fi
+
+          # --endpoint-url is optional (blank for AWS, set for R2 and friends).
+          # An array keeps the two call sites below from needing an if/else each.
+          ENDPOINT_ARGS=()
+          if [ -n "${BACKUP_S3_ENDPOINT:-}" ]; then
+            ENDPOINT_ARGS=(--endpoint-url "$BACKUP_S3_ENDPOINT")
+          fi
+
+          # prodready-010, the second half. The timestamped key makes a
+          # collision essentially impossible, so if one happens something is
+          # wrong in a way we do not understand — and the correct response to
+          # that is never "overwrite the other copy".
+          if aws s3api head-object --bucket "$BACKUP_S3_BUCKET" --key "nightly/$KEY" \
+              "${ENDPOINT_ARGS[@]}" > /dev/null 2>&1; then
+            echo "::error title=Key already taken::nightly/$KEY already exists in the bucket. Refusing to overwrite an existing dump." >&2
+            exit 1
+          fi
+
+          aws s3 cp "$KEY" "s3://$BACKUP_S3_BUCKET/nightly/$KEY" "${ENDPOINT_ARGS[@]}"
+
+          # Read it back. A green `aws s3 cp` is not evidence that an object of
+          # the right size is in the bucket — a credential that lost write
+          # access, a bucket policy, or a provider quietly truncating all
+          # produce a successful-looking upload and nothing to restore.
+          LOCAL_BYTES=$(stat -c%s "$KEY")
+          REMOTE_BYTES=$(aws s3api head-object --bucket "$BACKUP_S3_BUCKET" --key "nightly/$KEY" \
+            "${ENDPOINT_ARGS[@]}" --query ContentLength --output text)
+          echo "uploaded nightly/$KEY — local ${LOCAL_BYTES} bytes, remote ${REMOTE_BYTES} bytes"
+          if [ "$REMOTE_BYTES" != "$LOCAL_BYTES" ]; then
+            echo "::error title=Upload mismatch::nightly/$KEY is ${REMOTE_BYTES} bytes in the bucket but ${LOCAL_BYTES} bytes locally." >&2
+            exit 1
+          fi
+
+      - name: Open an issue if the backup failed
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = "[backup-alert]";
+            const title = `${marker} Nightly database backup FAILED`;
+            const body = [
+              `The nightly database backup failed.`,
+              ``,
+              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `- Triggered by: \`${context.eventName}\``,
+              ``,
+              `This is the only off-platform copy of customers' financial records.`,
+              `Until it is fixed, the most recent restorable state is whatever is`,
+              `already in the bucket under \`nightly/\` — check its date before`,
+              `assuming anything.`,
+              ``,
+              `Closing this issue does not fix anything; the next successful run`,
+              `will not close it either. Close it when you have confirmed a fresh`,
+              `object landed in the bucket.`,
+            ].join("\n");
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100,
+            });
+            // listForRepo returns pull requests too; they are not our alerts.
+            const existing = issues.find((i) => !i.pull_request && i.title.startsWith(marker));
+            if (existing) {
+              // One thread per outage rather than one issue per night: a
+              // failing backup that files 30 issues gets muted, and a muted
+              // alert is the state we are trying to leave.
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+              core.warning(`Backup failed; commented on existing issue #${existing.number}`);
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["backup"],
+              });
+              core.warning(`Backup failed; opened issue #${created.number}`);
+            }
+
+      - name: Report to the dead-man's switch
+        # Last, and `always()`, so it reports the real outcome of the job rather
+        # than the outcome of the steps before it.
+        if: always()
+        env:
+          BACKUP_HEARTBEAT_URL: ${{ secrets.BACKUP_HEARTBEAT_URL }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -uo pipefail
+          if [ -z "${BACKUP_HEARTBEAT_URL:-}" ]; then
+            echo "::warning title=No dead-man's switch::BACKUP_HEARTBEAT_URL is not set. Everything else in this workflow can only alert on a run that HAPPENED; nothing inside GitHub can notice GitHub disabling the schedule. Create a 24h check on healthchecks.io (or Better Stack / Cronitor) and add its ping URL as that secret."
+            exit 0
+          fi
+          # Never fail the backup over the monitoring. If the ping does not
+          # arrive the monitor alerts by itself, which is the whole point of it.
+          if [ "${JOB_STATUS}" = "success" ]; then
+            curl -fsS -m 15 --retry 3 "$BACKUP_HEARTBEAT_URL" > /dev/null \
+              || echo "::warning title=Heartbeat not delivered::The backup succeeded but the check-in ping did not go through; expect a false alarm from the monitor."
           else
-            aws s3 cp "${{ steps.filename.outputs.path }}" \
-              "s3://$BACKUP_S3_BUCKET/nightly/${{ steps.filename.outputs.path }}"
+            curl -fsS -m 15 --retry 3 "${BACKUP_HEARTBEAT_URL%/}/fail" > /dev/null \
+              || echo "::warning title=Heartbeat not delivered::The backup failed AND the failure ping did not go through."
+          fi
+
+  # ── The check that is not the thing it checks ────────────────────────────
+  # Runs on its own schedule, needs no database, and does not take a dump — so
+  # it still reports when the dump job is broken, mis-credentialled, or simply
+  # never ran.
+  freshness:
+    if: >-
+      github.event.schedule == '45 13 * * *' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'audit')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Warn before GitHub disables this schedule
+        # prodready-008. GitHub switches `schedule:` workflows off after 60 days
+        # with no repository activity, and the first symptom is an empty bucket
+        # discovered during a restore. This cannot PREVENT it — the only real
+        # prevention is a push, and a workflow that pushes to the default branch
+        # would trigger a production deploy, which is a far worse cure than the
+        # disease. So it warns while there is still time to act.
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const DISABLE_AFTER_DAYS = 60;
+            const WARN_WHEN_DAYS_LEFT = 14;
+
+            const { data: repo } = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const lastPush = new Date(repo.pushed_at);
+            const quietDays = Math.floor((Date.now() - lastPush.getTime()) / 86400000);
+            const daysLeft = DISABLE_AFTER_DAYS - quietDays;
+            core.info(
+              `last push ${repo.pushed_at} (${quietDays} day(s) ago). GitHub disables ` +
+              `scheduled workflows after ${DISABLE_AFTER_DAYS} quiet days, so about ` +
+              `${daysLeft} day(s) of schedule remain.`
+            );
+            if (daysLeft > WARN_WHEN_DAYS_LEFT) return;
+
+            const marker = "[backup-alert]";
+            const title = `${marker} Nightly backup schedule is about to be disabled`;
+            const body = [
+              `The repository has had no push for **${quietDays} days**.`,
+              ``,
+              `GitHub disables \`schedule:\` workflows after ${DISABLE_AFTER_DAYS} quiet`,
+              `days, so the nightly database backup stops in about **${daysLeft} days**`,
+              `and nothing further will be said about it.`,
+              ``,
+              `Any push to any branch resets the clock. The durable fix is to set the`,
+              `\`BACKUP_HEARTBEAT_URL\` secret (see the header of`,
+              `\`.github/workflows/backup.yml\`) so that something OUTSIDE GitHub`,
+              `notices when the pings stop.`,
+            ].join("\n");
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100,
+            });
+            const existing = issues.find((i) => !i.pull_request && i.title === title);
+            if (!existing) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["backup"],
+              });
+            }
+            core.warning(
+              `Scheduled workflows will be disabled in ~${daysLeft} day(s) of further inactivity.`
+            );
+
+      - name: Is there a recent dump in the bucket?
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.BACKUP_S3_REGION }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+        run: |
+          set -euo pipefail
+
+          # Wide enough that ordinary GitHub scheduler drift (runs are
+          # best-effort and can be delayed by an hour or more) never cries wolf,
+          # tight enough that ONE skipped night trips it: at 13:45 the newest
+          # object is ~9.5h old normally and ~33.5h old after a missed night.
+          MAX_AGE_HOURS=30
+          MIN_BYTES=4096
+
+          if [ -z "${BACKUP_S3_BUCKET:-}" ]; then
+            echo "::error title=Backups are not configured::BACKUP_S3_BUCKET is not set, so there is no off-platform copy of customer data at all." >&2
+            exit 1
+          fi
+          ENDPOINT_ARGS=()
+          if [ -n "${BACKUP_S3_ENDPOINT:-}" ]; then
+            ENDPOINT_ARGS=(--endpoint-url "$BACKUP_S3_ENDPOINT")
+          fi
+
+          # Newest by the object's own LastModified rather than by key name, so
+          # this keeps working across the 2026-09-28 key-format change and does
+          # not care what anything is called.
+          NEWEST=$(aws s3 ls "s3://$BACKUP_S3_BUCKET/nightly/" "${ENDPOINT_ARGS[@]}" \
+            | awk 'NF >= 4 && $1 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/ {print $1 "T" $2 "Z\t" $3 "\t" $4}' \
+            | sort | tail -1)
+
+          if [ -z "${NEWEST:-}" ]; then
+            echo "::error title=Bucket is empty::Nothing at all under nightly/ in $BACKUP_S3_BUCKET. There is no backup." >&2
+            exit 1
+          fi
+
+          STAMP=$(printf '%s' "$NEWEST" | cut -f1)
+          BYTES=$(printf '%s' "$NEWEST" | cut -f2)
+          NAME=$(printf '%s' "$NEWEST" | cut -f3)
+          AGE_HOURS=$(( ( $(date +%s) - $(date -d "$STAMP" +%s) ) / 3600 ))
+          echo "newest object: $NAME — ${BYTES} bytes, ${AGE_HOURS}h old (threshold ${MAX_AGE_HOURS}h)"
+
+          if [ "$AGE_HOURS" -gt "$MAX_AGE_HOURS" ]; then
+            echo "::error title=No recent backup::The newest object under nightly/ is ${AGE_HOURS}h old (${NAME}). At least one nightly run did not land. Everything written since then is unbacked." >&2
+            exit 1
+          fi
+          if [ "$BYTES" -lt "$MIN_BYTES" ]; then
+            echo "::error title=Backup is suspiciously small::${NAME} is only ${BYTES} bytes. A real dump of this database is tens of KB compressed." >&2
+            exit 1
+          fi
+          echo "::notice title=Backup is current::${NAME} is ${AGE_HOURS}h old and ${BYTES} bytes."
+
+      - name: Open an issue if the audit failed
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = "[backup-alert]";
+            const title = `${marker} No recent database backup in the bucket`;
+            const body = [
+              `The daily backup audit could not find a recent dump.`,
+              ``,
+              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ``,
+              `This job does not take a dump and does not touch the database, so the`,
+              `problem is one of: the nightly run failed, the nightly run never`,
+              `started, or the upload is no longer landing in the bucket. The run log`,
+              `above says which.`,
+              ``,
+              `Every hour this stays broken is an hour of customer data with no`,
+              `off-platform copy.`,
+            ].join("\n");
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100,
+            });
+            const existing = issues.find((i) => !i.pull_request && i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["backup"],
+              });
+            }
+            core.warning("Backup freshness audit failed; issue opened or updated.");
+
+      - name: Report to the dead-man's switch
+        if: always()
+        env:
+          BACKUP_HEARTBEAT_URL: ${{ secrets.BACKUP_HEARTBEAT_URL }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -uo pipefail
+          if [ -z "${BACKUP_HEARTBEAT_URL:-}" ]; then
+            echo "::warning title=No dead-man's switch::BACKUP_HEARTBEAT_URL is not set, so nothing outside GitHub can notice this workflow being switched off."
+            exit 0
+          fi
+          # The audit only ever reports a FAILURE to the monitor. A successful
+          # audit must not count as a check-in, or the monitor would stay happy
+          # through a month in which no dump was ever taken.
+          if [ "${JOB_STATUS}" != "success" ]; then
+            curl -fsS -m 15 --retry 3 "${BACKUP_HEARTBEAT_URL%/}/fail" > /dev/null \
+              || echo "::warning title=Heartbeat not delivered::The audit failed AND the failure ping did not go through."
           fi

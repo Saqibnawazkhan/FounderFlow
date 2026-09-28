@@ -150,3 +150,48 @@ describe("bill-018 - a declined card reaches a human", () => {
     expect(source()).toContain("subscription_id");
   });
 });
+
+describe("bill-013 - a downgrade actually takes something away", () => {
+  it("burns the workspace's still-pending invites when the plan flips to free", () => {
+    // One paid month used to buy permanent seats: subscribe, invite twenty
+    // people, cancel. `plan` gated exactly one thing in the codebase
+    // (inviteUserAction), so a token issued while paid still created a member
+    // afterwards. acceptInviteAction now asks the cap as well; this is the other
+    // half - the tokens that were handed out on Team do not survive the downgrade.
+    const src = source();
+    expect(src).toContain("inviteToken.deleteMany");
+    const burn = from(src, "inviteToken.deleteMany");
+    expect(burn, "unused tokens only - a used one is the record of a real join").toContain(
+      "usedAt: null"
+    );
+  });
+
+  it("reports a workspace left over the free cap, since nothing can suspend a seat yet", () => {
+    // Suspending the surplus members needs a column on User that this change is
+    // not allowed to add, so the minimum bar is that support can SEE the overage
+    // instead of reading "Up to 2 members" on a workspace holding twenty.
+    expect(source()).toContain("seatOverage");
+  });
+});
+
+describe("bill-002 - a captured delivery is not a permanent licence", () => {
+  it("bounds how old a delivery may be and still GRANT the paid plan", () => {
+    // The signature never expires, so a body captured once (a proxy log, the
+    // ngrok tunnel in .env.local.example, a mis-scoped Sentry breadcrumb, the
+    // dashboard's own "resend" button) could be POSTed for ever. The airtight
+    // fix is a delivered-event ledger keyed on (provider, eventId), which is a
+    // new table; without it, the route can still refuse to let an OLD delivery
+    // grant anything - which is the only direction a replay is worth capturing
+    // for. Downgrades are deliberately never refused on age.
+    const src = source();
+    expect(src).toContain("MAX_GRANT_AGE_MS");
+    expect(src).toContain("updated_at");
+    expect(src, "and the refusal is reported, not silent").toContain("stale-grant");
+  });
+
+  it("still says out loud that it has no delivered-event ledger", () => {
+    // The age window narrows the hole; it does not close it. A file that stops
+    // admitting that is a file the next reader trusts too far.
+    expect(source()).toMatch(/no ledger|ledger of delivered event ids/i);
+  });
+});

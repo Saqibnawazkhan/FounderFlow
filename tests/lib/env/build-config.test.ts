@@ -57,6 +57,7 @@ import {
   isDirectInvocation,
   isLoopbackUrl,
   productionEnvProblems,
+  productionEnvWarnings,
 } from "@/scripts/vercel-build.mjs";
 import { productionAppUrlProblem } from "@/lib/env";
 
@@ -368,6 +369,167 @@ describe("the gate's wiring (a decision nothing calls is not a guard)", () => {
     // And the real invocation this process made must be the non-script one, or
     // the import above would have spawned a build.
     expect(isDirectInvocation(process.argv[1] ?? "")).toBe(false);
+  });
+});
+
+describe("prodready-006 — half-configured Sentry is worse than none", () => {
+  /**
+   * The finding: `sentry.client.config.ts` reads `NEXT_PUBLIC_SENTRY_DSN`, while
+   * `lib/env.ts` validates only `SENTRY_DSN`, `next.config.js` gates on
+   * `SENTRY_DSN`, and CLAUDE.md's Vercel table names neither. So the browser DSN
+   * can be absent from a deploy that looks fully configured, and every
+   * client-side crash a paying customer hits — the whole `(app)` error boundary
+   * and the root fatal boundary, which tells the user "The team has been
+   * notified" — is invisible.
+   *
+   * Confirmed against the live project on 2026-09-28: `vercel env ls production`
+   * lists AUTH_SECRET, DATABASE_URL, DIRECT_URL, CRON_SECRET, GMAIL_USER,
+   * GMAIL_APP_PASSWORD, NEXT_PUBLIC_APP_URL, the VAPID set and the LemonSqueezy
+   * set — and no Sentry variable of any kind, in any scope.
+   *
+   * WHY THIS IS A WARNING AND NOT A REQUIRED VAR. Blind triage is bad; a build
+   * that refuses to deploy because an observability tool is not set up is worse,
+   * and this project is days from taking paying customers with no Sentry
+   * configured at all. So "no Sentry" is a choice the build states out loud, and
+   * only the self-misrepresenting case — half of it configured — is refused.
+   */
+  it("refuses a production build with the server DSN set and the browser DSN missing", () => {
+    const problems = productionEnvProblems(
+      envWith("SENTRY_DSN", "https://abc@o1.ingest.sentry.io/2")
+    );
+    expect(
+      problems.length,
+      "SENTRY_DSN alone builds green. Server errors report, every browser crash is " +
+        "silently dropped, and the error screen still says 'The team has been notified'."
+    ).toBeGreaterThan(0);
+    expect(
+      problems.join("\n"),
+      "the refusal does not name NEXT_PUBLIC_SENTRY_DSN, so nobody reading the build log " +
+        "knows which variable to add"
+    ).toContain("NEXT_PUBLIC_SENTRY_DSN");
+  });
+
+  it("refuses the mirror case too", () => {
+    const problems = productionEnvProblems(
+      envWith("NEXT_PUBLIC_SENTRY_DSN", "https://abc@o1.ingest.sentry.io/2")
+    );
+    expect(
+      problems.join("\n"),
+      "the browser DSN alone means every server action, RSC and route handler failure goes " +
+        "unreported while the dashboard looks alive"
+    ).toContain("SENTRY_DSN");
+  });
+
+  it("accepts both set, and accepts neither", () => {
+    const both = envWith("SENTRY_DSN", "https://abc@o1.ingest.sentry.io/2");
+    both.NEXT_PUBLIC_SENTRY_DSN = "https://abc@o1.ingest.sentry.io/2";
+    expect(
+      productionEnvProblems(both),
+      "a correctly configured Sentry pair was rejected; this would block every deploy"
+    ).toEqual([]);
+    // And the current state of the live project must still deploy.
+    expect(
+      productionEnvProblems(HEALTHY_PROD_ENV),
+      "a deploy with no Sentry at all is now refused. Observability is not configured on " +
+        "this project today, so this would block the launch deploy over a warning."
+    ).toEqual([]);
+  });
+
+  it("says out loud that nothing is reporting, rather than saying nothing", () => {
+    const warnings = productionEnvWarnings(HEALTHY_PROD_ENV);
+    expect(
+      warnings.join("\n"),
+      "a production build with no Sentry DSN prints nothing about it. 'The team has been " +
+        "notified' is on the customer-facing error screen; the build log is the one place " +
+        "the truth would be noticed."
+    ).toContain("SENTRY_DSN");
+  });
+
+  it("warns that a DSN without the upload trio reports nothing at all today", () => {
+    // next.config.js only applies withSentryConfig when SENTRY_DSN AND
+    // SENTRY_AUTH_TOKEN AND SENTRY_ORG AND SENTRY_PROJECT are all set, and that
+    // wrapper is what injects sentry.client.config.ts / sentry.server.config.ts
+    // into the build. So a DSN pair on its own produces no SDK at all — the
+    // most misleading possible state, because the dashboard exists and is empty.
+    const env = envWith("SENTRY_DSN", "https://abc@o1.ingest.sentry.io/2");
+    env.NEXT_PUBLIC_SENTRY_DSN = "https://abc@o1.ingest.sentry.io/2";
+    const warnings = productionEnvWarnings(env).join("\n");
+    expect(
+      warnings,
+      "setting only the DSNs gives you a Sentry project that stays empty for ever, because " +
+        "next.config.js does not apply withSentryConfig without the upload variables"
+    ).toContain("SENTRY_AUTH_TOKEN");
+    // And with everything set, nothing to say.
+    env.SENTRY_AUTH_TOKEN = "sntrys_x";
+    env.SENTRY_ORG = "founderflow";
+    env.SENTRY_PROJECT = "founderflow-web";
+    expect(
+      productionEnvWarnings(env).join("\n"),
+      "a fully configured Sentry still produces a warning, which trains people to ignore them"
+    ).not.toContain("SENTRY");
+  });
+
+  it("prints the warnings on a production build without failing it", () => {
+    const src = buildScriptSource();
+    const prodBranch = src.indexOf("if (IS_PROD_BUILD)");
+    const call = src.indexOf("productionEnvWarnings(process.env)");
+    const elseBranch = src.indexOf("} else {", prodBranch);
+    expect(
+      call,
+      "productionEnvWarnings is never called — the warnings are dead code"
+    ).toBeGreaterThan(-1);
+    expect(
+      call > prodBranch && call < elseBranch,
+      "the warnings are emitted outside the production-only branch, so every preview build " +
+        "prints them too"
+    ).toBe(true);
+    // The whole point is that they do not block. A `process.exit` between the
+    // warning call and the migrate step would turn a warning into a gate.
+    const between = src.slice(call, src.indexOf('"migrate", "deploy"'));
+    expect(
+      /process\.exit/.test(between),
+      "a warning now exits the build. Warnings must never fail a deploy, or the next " +
+        "person deletes the whole mechanism during an incident."
+    ).toBe(false);
+  });
+
+  it("makes lib/env.ts aware the browser DSN exists", () => {
+    // It validated only SENTRY_DSN, so the browser DSN was a variable no part of
+    // the repo had ever named — which is why it could be missing from a deploy
+    // that looked complete.
+    const src = readFileSync(join(ROOT, "lib/env.ts"), "utf8");
+    const schemaAndParse = src.split("NEXT_PUBLIC_SENTRY_DSN").length - 1;
+    expect(
+      schemaAndParse,
+      "lib/env.ts must name NEXT_PUBLIC_SENTRY_DSN twice — once in the schema and once in " +
+        "the safeParse payload. Declaring it in only one of the two is the half-wiring " +
+        "that makes the value silently undefined."
+    ).toBeGreaterThan(1);
+  });
+
+  it("reads the browser DSN from a NEXT_PUBLIC_ variable", () => {
+    // Not stylistic: a non-NEXT_PUBLIC_ variable is not inlined into the client
+    // bundle, so reading SENTRY_DSN here compiles to undefined in the browser and
+    // the SDK never initialises.
+    const src = readFileSync(join(ROOT, "sentry.client.config.ts"), "utf8");
+    expect(
+      /process\.env\.NEXT_PUBLIC_SENTRY_DSN/.test(src),
+      "sentry.client.config.ts reads a server-only variable, which is undefined in the browser"
+    ).toBe(true);
+  });
+
+  it("tags events with the deployment, not with NODE_ENV", () => {
+    // `next build` sets NODE_ENV=production for PREVIEW deploys too, so every
+    // preview crash lands in Sentry's "production" environment and triage cannot
+    // tell a paying customer's error from a pull request's.
+    for (const file of ["sentry.client.config.ts", "sentry.server.config.ts"]) {
+      const src = readFileSync(join(ROOT, file), "utf8");
+      expect(
+        /VERCEL_ENV/.test(src),
+        `${file} sets Sentry's environment from NODE_ENV alone, so preview deploys report ` +
+          "as production and post-launch triage cannot separate them"
+      ).toBe(true);
+    }
   });
 });
 

@@ -30,6 +30,84 @@ import { deriveHandle } from "@/lib/user/handle";
 // Discriminated union so TS narrows `error` to `string` after `if (!success)`.
 import type { ActionResult } from "@/lib/actions/types";
 
+/**
+ * The name the `add_projects` backfill used, and therefore the only name a new
+ * workspace's first project can have without making older ones read
+ * differently. `lib/schemas/task.ts` also documents that the task form
+ * "auto-prefills with 'General' when there's no other context".
+ */
+const GENERAL_PROJECT_NAME = "General";
+
+/**
+ * The workspace's first Project — created WITH the workspace, in the signup
+ * transaction (projects-001 / tasks-and-comments-007).
+ *
+ * WHY THIS EXISTS. `Task.projectId` is NOT NULL and `NewTaskSchema` requires it
+ * ("Pick a project"). Exactly one thing had ever created a project for a
+ * workspace: the one-shot backfill in
+ * `prisma/migrations/20260526151502_add_projects/migration.sql`, which ran once,
+ * against the companies that had tasks or budgets on 2026-05-26, and then never
+ * again. A migration is a statement about the past. So a workspace created today
+ * holds zero projects: `listProjectOptions()` returns [], the task form renders
+ * a single dead `<option value="">No projects yet</option>`, and /tasks invites
+ * the founder to "Create your first task" with a button that opens a form whose
+ * submit cannot pass validation. An invited member hits a harder wall —
+ * `canCreateProject` refuses them, so they wait for an admin. Budgets, which
+ * also require a projectId, have the same hole.
+ *
+ * This is the SAME defect as the missing #general two statements above, and
+ * lib/user/handle.ts already named the lesson: "a backfill without a write path
+ * is a fix with an expiry date".
+ *
+ * IN THE TRANSACTION, for the reason `ensureGeneralChannel` spells out at
+ * length: a workspace that COMMITS without the thing the product immediately
+ * asks it to use is the bug, and there is nothing to lose by refusing to commit
+ * one — the account does not exist yet, so a rollback costs this person a
+ * retryable error page rather than data.
+ *
+ * NOT IDEMPOTENT, unlike `ensureGeneralChannel`, and the asymmetry is
+ * deliberate. `Project` has no `@@unique([companyId, name])` index, so a
+ * lookup-then-create here could not be a guarantee — only a slower way to be
+ * wrong under a race. It does not need to be one either: `company` was created
+ * one statement ago inside this transaction, so its project namespace is
+ * provably empty. (Same argument the handle comment below makes about the email
+ * index.) If this is ever called from a second place, that caller owns the
+ * de-duplication.
+ *
+ * `status` and `color` are left to the schema defaults ("active", "emerald") so
+ * this stays one statement with one decision in it; "active" is what keeps the
+ * project out of `listProjectOptions`' `status: { not: "archived" }` filter.
+ *
+ * NO ACTIVITY ROW, for the same reason the bootstrap channel writes none:
+ * nobody performed this action, and `ACTIVITY_META` is indexed without a
+ * fallback. The signup already emits `company_created`.
+ *
+ * STILL OWED: workspaces created between the add_projects migration and this
+ * fix have no project and nothing here heals them. That repair is a NEW
+ * migration, the way `20260925130000_heal_missing_general_channels` healed the
+ * channel-less ones — never an edit to an applied migration.
+ */
+async function createGeneralProject(
+  tx: Pick<typeof db, "project">,
+  companyId: string,
+  founderId: string
+): Promise<string> {
+  const project = await tx.project.create({
+    data: {
+      companyId,
+      name: GENERAL_PROJECT_NAME,
+      description: "Where your first tasks and budgets live. Rename it or add more any time.",
+      // The founder supervises and created it. `supervisorId` is what
+      // `canSeeProject` reads, so a project supervised by nobody would be
+      // invisible to the only person in the workspace.
+      supervisorId: founderId,
+      createdBy: founderId,
+    },
+    select: { id: true },
+  });
+  return project.id;
+}
+
 export async function signupAction(input: unknown): Promise<ActionResult> {
   // Brute-force / signup-spam guard. 5/min/IP — covers a tab-spam attacker
   // but is well above any human signup rate.
@@ -48,7 +126,39 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
   try {
     // Reject duplicate emails up front so the user sees a useful message
     // instead of a generic Prisma constraint violation.
-    const existing = await db.user.findUnique({ where: { email } });
+    //
+    // `findFirst` + an explicit `select` of the tombstone, because the honest
+    // message depends on WHICH kind of duplicate this is (acct-001 / auth-006).
+    // `User.email` is globally `@unique` and a soft-deleted row keeps its
+    // address, so someone who deleted their own account was told "an account
+    // with this email already exists" — while `authorize()`, which filters
+    // `deletedAt: null`, told them their credentials were wrong. Three closed
+    // doors and not one of them named the real reason.
+    //
+    // AND DELIBERATELY NOT `where: { email, deletedAt: null }`. That is the
+    // one-line version of this fix and it is worse than the bug: the unique
+    // index does not care about tombstones, so the lookup would miss the row,
+    // the INSERT below would fail with P2002, and the catch-all would answer
+    // "Couldn't create your account right now. The team has been notified." —
+    // the same lockout wearing a server error. Releasing the address for reuse
+    // is a real option but it is not this one; it needs a `priorEmail` column
+    // to stay restorable, and it belongs to the delete path, not to signup.
+    const existing = await db.user.findFirst({
+      where: { email },
+      select: { id: true, deletedAt: true },
+    });
+    if (existing?.deletedAt) {
+      // No date in this message on purpose. The tombstone ages out only when
+      // the purge cron runs for real, and `PURGE_ENABLED` is off by default by
+      // documented decision (CLAUDE.md) — so "wait until <date>" would be the
+      // second false promise in this flow rather than the fix for the first.
+      return {
+        success: false,
+        error:
+          "That email belongs to a FounderFlow account that was deleted. " +
+          "Contact support to restore it, or sign up with a different email address.",
+      };
+    }
     if (existing) {
       return { success: false, error: "An account with this email already exists" };
     }
@@ -129,6 +239,9 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
       // ACTIVITY_META record is indexed without a fallback, so an unknown type
       // throws in the /activities UI. See the header of lib/actions/chat.ts.
       await ensureGeneralChannel(tx, company.id, user.id);
+      // The workspace's first project, for the same reason and in the same
+      // transaction — see createGeneralProject below.
+      await createGeneralProject(tx, company.id, user.id);
       return user;
     });
 

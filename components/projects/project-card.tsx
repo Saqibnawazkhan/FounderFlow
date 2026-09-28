@@ -17,6 +17,7 @@ import { AlertCircle, Briefcase } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { formatDuration } from "@/lib/time/thresholds";
 import type { ProjectListItem } from "@/lib/queries/projects";
+import type { ProjectStatus } from "@/lib/schemas/project";
 import { canSeeProjectFinances } from "@/lib/auth/project-permissions";
 import type { Role } from "@/lib/auth/role-gates";
 import { useT } from "@/lib/i18n/use-t";
@@ -54,17 +55,54 @@ const STATUS_CLASSES: Record<string, string> = {
   archived: "border-border bg-bg/40 text-fg-muted",
 };
 
+/**
+ * Project status → the i18n key that labels it (projects-002).
+ *
+ * WHAT THIS REPLACES. Four call sites — this file, projects-client.tsx:101,
+ * project-detail-client.tsx:233 and edit-project-modal.tsx:128 — derived the key
+ * from the slug:
+ *
+ *     `status${s.charAt(0).toUpperCase()}${s.slice(1).replace("_", "")}`
+ *
+ * For `"on_hold"` that produces `"statusOnhold"` — lowercase h, because
+ * `.replace("_", "")` deletes the underscore without capitalising what follows.
+ * lib/i18n/strings.ts defines `statusOnHold` and nothing named `statusOnhold`,
+ * so the lookup was `undefined` and React rendered NOTHING: an empty pill on the
+ * card, a filter chip that was a bare number, and an option with no text at all
+ * in the Edit dialog's status `<select>` — which a user could pick, changing the
+ * project's lifecycle state with no idea what they had chosen. It shipped in both
+ * English and Urdu.
+ *
+ * WHY IT SURVIVED REVIEW, `tsc` AND `next build`. Every site cast the computed
+ * string to the union it was meant to produce (`as "statusActive" | …`). An `as`
+ * on a computed string is an assertion, not a check. Typing the map
+ * `Record<ProjectStatus, keyof …>` instead means a fifth status is a COMPILE
+ * ERROR here rather than a blank badge in production.
+ *
+ * Exported so the other three sites import one source of truth. It lives beside
+ * COLOR_CLASSES because that is already the precedent for shared
+ * project-presentation tables in this file.
+ */
+export const STATUS_LABEL_KEY: Record<
+  ProjectStatus,
+  "statusActive" | "statusOnHold" | "statusCompleted" | "statusArchived"
+> = {
+  active: "statusActive",
+  on_hold: "statusOnHold",
+  completed: "statusCompleted",
+  archived: "statusArchived",
+};
+
 export function ProjectCard({ project, currentUserId, currentUserRole }: Props) {
   const t = useT();
   const money = useMoney();
   const n = useNumberFormat();
   const c = COLOR_CLASSES[project.color] ?? COLOR_CLASSES.emerald;
-  const statusKey =
-    `status${project.status.charAt(0).toUpperCase()}${project.status.slice(1).replace("_", "")}` as
-      | "statusActive"
-      | "statusOnHold"
-      | "statusCompleted"
-      | "statusArchived";
+  // A lookup, not a string built from the slug — see STATUS_LABEL_KEY. The
+  // `?? statusActive` fallback covers a status persisted before it was added to
+  // the union, so the pill is never blank even for a row this build has never
+  // heard of.
+  const statusKey = STATUS_LABEL_KEY[project.status] ?? STATUS_LABEL_KEY.active;
 
   const canSeeMoney = canSeeProjectFinances({
     userId: currentUserId,
