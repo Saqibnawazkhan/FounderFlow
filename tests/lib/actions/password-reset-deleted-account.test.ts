@@ -144,8 +144,12 @@ describe("requestPasswordResetAction — a deleted account gets no reset link", 
     H.row.deletedAt = new Date("2026-09-01T10:00:00Z");
     const result = await requestPasswordResetAction({ email: H.row.email });
     // Same envelope an unknown address gets — the anti-enumeration posture is
-    // the reason this returns success, and it must not change.
-    expect(result).toEqual({ success: true, data: { dispatched: false } });
+    // the reason this returns success, and it must not change. The `dispatched`
+    // flag this used to assert was itself the enumeration oracle (auth-010):
+    // false here, true for a live account on any deployment with SMTP
+    // configured. It is gone from the contract; what the three outcomes have in
+    // common is pinned in tests/lib/actions/password-reset-enumeration.test.ts.
+    expect(result).toEqual({ success: true, data: undefined });
     expect(mail.sendEmail).not.toHaveBeenCalled();
     expect(token.signPasswordResetToken).not.toHaveBeenCalled();
   });
@@ -162,7 +166,14 @@ describe("requestPasswordResetAction — a deleted account gets no reset link", 
 
   it("still emails a live account", async () => {
     const result = await requestPasswordResetAction({ email: H.row.email });
-    expect(result).toEqual({ success: true, data: { dispatched: true } });
+    // Byte-for-byte what the tombstone above gets. That identity is the whole
+    // anti-enumeration guarantee, and until auth-010 this line asserted the
+    // opposite: `{ dispatched: true }` here against `{ dispatched: false }`
+    // there, serialised straight into a response body anyone can read.
+    expect(result).toEqual({ success: true, data: undefined });
+    // The send is dispatched but no longer awaited (the awaited SMTP round trip
+    // was the timing half of the same leak), so this asserts it was HANDED to
+    // the mailer, which is what the action is responsible for.
     expect(mail.sendEmail).toHaveBeenCalledTimes(1);
     const sent = (mail.sendEmail.mock.calls as unknown as unknown[][])[0][0] as {
       to: string;

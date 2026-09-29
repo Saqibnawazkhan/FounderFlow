@@ -162,6 +162,10 @@ vi.mock("@/lib/chat/bootstrap", () => ({ joinDefaultChannels: async () => 1 }));
 vi.mock("@/lib/notify/fan-out", () => ({ notifyUsers: async () => ({ notified: 1 }) }));
 vi.mock("@/lib/email/send", () => ({ sendEmail: async () => ({ delivered: true }) }));
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { revalidatePath } from "next/cache";
+
 import { deleteAccountAction, deleteWorkspaceAction } from "@/lib/actions/account";
 import { acceptInviteAction, removeUserAction } from "@/lib/actions/team";
 
@@ -558,5 +562,254 @@ describe("the free member cap is enforced on the way IN, not only at invite time
 
     const res = await acceptInviteAction({ token: "t".repeat(64), password: "Str0ngPass!" });
     expect(res.success).toBe(true);
+  });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* Source-reading helpers (acct-012 / acct-019)                                 */
+/*                                                                             */
+/* Two of the assertions below are about the SOURCE of lib/actions/account.ts,  */
+/* not about a call it makes, and that is deliberate:                           */
+/*                                                                             */
+/*   • acct-012 is a comment that describes a safety mechanism incorrectly.     */
+/*     A comment cannot be exercised, so the only way to stop it drifting is to */
+/*     check it against the schema it describes — the same technique            */
+/*     tests/lib/db/purge-invariants.test.ts uses on this very function.        */
+/*   • the atomicity half of acct-019 is not observable through the fake        */
+/*     client: `db.$transaction([...])` receives promises that the delegates    */
+/*     have already started, so call order proves nothing about whether the     */
+/*     write is inside the array or merely next to it.                          */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+const ROOT = process.cwd();
+const ACCOUNT_SRC = readFileSync(join(ROOT, "lib", "actions", "account.ts"), "utf8");
+const SCHEMA_SRC = readFileSync(join(ROOT, "prisma", "schema.prisma"), "utf8");
+
+/** Every `model X` in prisma/schema.prisma that carries a `deletedAt` sentinel. */
+function softDeletableModels(): string[] {
+  const out: string[] = [];
+  const model = /^model\s+(\w+)\s*\{([\s\S]*?)^\}/gm;
+  let m: RegExpExecArray | null;
+  while ((m = model.exec(SCHEMA_SRC)) !== null) {
+    if (/^\s*deletedAt\s+DateTime\?/m.test(m[2])) out.push(m[1]);
+  }
+  return out;
+}
+
+/** Comment prose only, JSDoc gutters stripped, so code cannot be mistaken for a claim. */
+function proseOf(source: string): string {
+  const parts: string[] = [];
+  const block = /\/\*[\s\S]*?\*\//g;
+  let m: RegExpExecArray | null;
+  while ((m = block.exec(source)) !== null) parts.push(m[0]);
+  for (const line of source.replace(/\/\*[\s\S]*?\*\//g, "").split(/\r?\n/)) {
+    const i = line.indexOf("//");
+    if (i !== -1) parts.push(line.slice(i));
+  }
+  return parts.join("\n").replace(/^[ \t]*\*[ \t]?/gm, "");
+}
+
+/** Code only — the inverse of `proseOf`, so a brace in a comment cannot skew matching. */
+function codeOf(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const i = line.indexOf("//");
+      return i === -1 ? line : line.slice(0, i);
+    })
+    .join("\n");
+}
+
+/** Does `text` name the model `model`, singular or plural? */
+function names(text: string, model: string): boolean {
+  const alts = [model, model + "s", model + "es"];
+  if (/y$/.test(model)) alts.push(model.replace(/y$/, "ies"));
+  return new RegExp("\\b(?:" + alts.join("|") + ")\\b").test(text);
+}
+
+/** The balanced span opened by the first `open` at or after `marker`. */
+function spanAfter(source: string, marker: string, open: string, close: string): string {
+  const at = source.indexOf(marker);
+  if (at === -1) throw new Error(`marker not found in source: ${marker}`);
+  const start = source.indexOf(open, at);
+  if (start === -1) throw new Error(`no "${open}" after ${marker}`);
+  let depth = 0;
+  for (let i = start; i < source.length; i++) {
+    if (source[i] === open) depth++;
+    else if (source[i] === close) {
+      depth--;
+      if (depth === 0) return source.slice(start + 1, i);
+    }
+  }
+  throw new Error(`unbalanced "${open}" after ${marker}`);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* acct-012 — the sweep's own description of itself must be true                */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+describe("account.ts describes its tombstone sweep truthfully (acct-012)", () => {
+  it("never names a table that HAS a deletedAt column as one that has none", () => {
+    // Why this is a test and not just a careful read: the sentence in question
+    // is a claim about a SAFETY mechanism. "Skipped tables (no `deletedAt`
+    // column): …, Comment, TimeEntry, …" told the next reader that those rows
+    // could not be tombstoned, eleven lines above the code that tombstones
+    // them. The repo's recurrent defect is a stale statement about a guard, and
+    // the only durable cure is to derive the claim from the schema.
+    const prose = proseOf(ACCOUNT_SRC);
+    const needle = "no `deletedAt` column";
+
+    const claims: string[] = [];
+    let from = 0;
+    for (;;) {
+      const at = prose.indexOf(needle, from);
+      if (at === -1) break;
+      const stop = prose.indexOf(".", at);
+      claims.push(prose.slice(at, stop === -1 ? prose.length : stop + 1));
+      from = at + needle.length;
+    }
+    expect(
+      claims.length,
+      "lib/actions/account.ts must keep documenting which tables the sweep cannot " +
+        "tombstone — if that sentence is deleted rather than corrected, this guard " +
+        "silently stops guarding anything"
+    ).toBeGreaterThan(0);
+
+    for (const claim of claims) {
+      for (const model of softDeletableModels()) {
+        expect(
+          names(claim, model),
+          `lib/actions/account.ts claims "${claim.trim().replace(/\s+/g, " ")}" — but ` +
+            `${model} DOES carry a deletedAt column in prisma/schema.prisma, and ` +
+            `softDeleteWorkspace tombstones it. A reader who trusts this sentence will ` +
+            `believe ${model}'s rows are covered by the session filter alone, and the ` +
+            `next person asked to add a tombstone will think there is nothing to add.`
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("never publishes a partial list of the child tables the cascade tombstones", () => {
+    // Company and User are spelled out by every recovery snippet in this file,
+    // so the enumerations this polices are the "repeat for these" lists.
+    const children = softDeletableModels().filter((m) => m !== "Company" && m !== "User");
+    const prose = proseOf(ACCOUNT_SRC);
+    const group = /\(([^()]*)\)/g;
+    let m: RegExpExecArray | null;
+    let checked = 0;
+    while ((m = group.exec(prose)) !== null) {
+      const inside = m[1];
+      const listed = children.filter((c) => names(inside, c));
+      if (listed.length < 3) continue; // not an enumeration of the cascade
+      checked++;
+      for (const child of children) {
+        expect(
+          names(inside, child),
+          `lib/actions/account.ts enumerates the cascade as ` +
+            `"${inside.replace(/\s+/g, " ").trim()}" but omits ${child}, which carries a ` +
+            `deletedAt column and is tombstoned by the same sweep with the same ` +
+            `timestamp. CLAUDE.md's published recovery is "restore the tables in this ` +
+            `list by timestamp range" — an incomplete list restores an incomplete ` +
+            `workspace.`
+        ).toBe(true);
+      }
+    }
+    expect(checked, "the cascade is described somewhere in this file").toBeGreaterThan(0);
+  });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* acct-019 — a self-deleted account leaves a record its teammates can see      */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+describe("deleting your own account is recorded in the workspace feed (acct-019)", () => {
+  it("writes one activity row naming the departure as self-initiated", async () => {
+    signedInAs("cofounder");
+    when("user.findUnique", me({ role: "cofounder" }));
+    when("user.count", 2);
+    when("user.update", me());
+    when("pushSubscription.deleteMany", { count: 1 });
+    when("activity.create", { id: "a1" });
+
+    const res = await deleteAccountAction({ password: "pw" });
+    expect(res.success).toBe(true);
+
+    const logged = callsTo("activity.create");
+    expect(
+      logged.length,
+      "an admin removing a teammate writes a feed row (lib/actions/team.ts), but a " +
+        "teammate removing themselves wrote nothing. The person drops off the active " +
+        "roster and reappears in /team's Deactivated panel with a Reactivate button, " +
+        "indistinguishable from someone an admin deactivated — so an admin can restore " +
+        "an account its owner deliberately closed, with no record that they closed it."
+    ).toBe(1);
+
+    const row = dataOf(logged[0]);
+    expect(row.companyId).toBe("c1");
+    expect(row.type).toBe("user_removed");
+    expect(row.userId, "attributed to the person who left, not to a system actor").toBe("u1");
+    expect(row.userName).toBe("Saqib");
+    expect(
+      String(row.message),
+      "the feed label is the shared 'Member removed' one, so the MESSAGE is the only " +
+        "place the reader learns this was the member's own decision"
+    ).toMatch(/deleted their own account/i);
+    expect(String(row.message)).toContain("Saqib");
+  });
+
+  it("writes that row inside the same transaction as the tombstone", () => {
+    // Atomic or nothing: a feed row without a tombstone accuses someone of
+    // leaving who is still here, and a tombstone without a feed row is the bug.
+    const body = spanAfter(
+      codeOf(ACCOUNT_SRC),
+      "export async function deleteAccountAction",
+      "{",
+      "}"
+    );
+    const tx = spanAfter(body, "db.$transaction(", "[", "]");
+    expect(
+      /db\.activity\.create\s*\(/.test(tx),
+      "the activity write must be an element of deleteAccountAction's " +
+        "db.$transaction([...]) array, not an awaited call beside it"
+    ).toBe(true);
+    expect(/db\.user\.update\s*\(/.test(tx)).toBe(true);
+  });
+
+  it("refreshes the pages teammates would otherwise read from cache", async () => {
+    vi.mocked(revalidatePath).mockClear();
+    signedInAs("cofounder");
+    when("user.findUnique", me({ role: "cofounder" }));
+    when("user.count", 2);
+    when("user.update", me());
+    when("pushSubscription.deleteMany", { count: 1 });
+    when("activity.create", { id: "a1" });
+
+    const res = await deleteAccountAction({ password: "pw" });
+    expect(res.success).toBe(true);
+
+    const paths = vi.mocked(revalidatePath).mock.calls.map((c) => c[0]);
+    expect(
+      paths,
+      "removeUserAction revalidates /team and /activities after the identical writes; " +
+        "without it a teammate's cached roster still lists the person who just left"
+    ).toEqual(expect.arrayContaining(["/team", "/activities"]));
+  });
+
+  it("writes no feed row when the delete takes the whole workspace with it", async () => {
+    signedInAs("admin");
+    when("user.findUnique", me());
+    when("user.count", 0);
+    when("company.findUnique", paidCompany({ billingSubscriptionId: null, plan: "free" }));
+    sweepReturns();
+
+    const res = await deleteAccountAction({ password: "pw", workspaceName: "Nimbus" });
+    expect(res.success).toBe(true);
+    expect(
+      callsTo("activity.create"),
+      "the sole-user branch tombstones every member, so there is no surviving reader " +
+        "for a feed row — and Activity has no tombstone of its own, so a row written " +
+        "here would be the one live thing left in a deleted workspace"
+    ).toHaveLength(0);
   });
 });

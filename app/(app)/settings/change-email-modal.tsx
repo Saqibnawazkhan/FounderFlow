@@ -38,6 +38,19 @@ export function ChangeEmailModal({ open, onClose, currentEmail }: Props) {
   const passwordId = useId();
   const [submitting, setSubmitting] = useState(false);
   const [sentTo, setSentTo] = useState<string | null>(null);
+  /**
+   * acct-016. The server's refusal, kept on the screen.
+   *
+   * A toast was the whole delivery, and the toaster's duration is 3500ms
+   * (components/providers.tsx). That was survivable while every refusal here was
+   * a short verdict; acct-016 replaced the collision message with an
+   * INSTRUCTION — "That email belongs to a FounderFlow account that was deleted.
+   * Contact support to restore it, or use a different address."
+   * (lib/actions/email-change.ts:250) — and an instruction the reader cannot
+   * re-read is an instruction they cannot follow. The toast still fires, because
+   * it is what pulls the eye back; it is no longer the only copy.
+   */
+  const [formError, setFormError] = useState<string | null>(null);
 
   const {
     register,
@@ -52,14 +65,19 @@ export function ChangeEmailModal({ open, onClose, currentEmail }: Props) {
   function onClosed() {
     reset({ newEmail: "", password: "" });
     setSentTo(null);
+    setFormError(null);
     onClose();
   }
 
   async function onSubmit(data: FormValues) {
     setSubmitting(true);
+    // Cleared before the attempt, not after it: a refusal left under a fresh
+    // submission reads as a second failure.
+    setFormError(null);
     const res = await requestEmailChangeAction(data);
     setSubmitting(false);
     if (!res.success) {
+      setFormError(res.error);
       toast.error(res.error);
       return;
     }
@@ -139,6 +157,14 @@ export function ChangeEmailModal({ open, onClose, currentEmail }: Props) {
               <p className="mt-1.5 text-xs text-danger">{errors.password.message}</p>
             )}
           </div>
+          {/* Same shape as app/forgot-password/page.tsx:198 — role="alert" so a
+              screen reader is told, and in the dialog so the instruction is still
+              there after the toast has gone. */}
+          {formError && (
+            <p role="alert" className="text-xs font-medium text-danger">
+              {formError}
+            </p>
+          )}
           <div className="flex justify-end gap-2 pt-1">
             <button
               type="button"

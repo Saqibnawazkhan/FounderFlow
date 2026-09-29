@@ -125,6 +125,13 @@ vi.mock("@/lib/db", () => ({ db: prisma.db }));
 vi.mock("@/lib/notify/fan-out", () => ({ notifyUsers: notify.notifyUsers }));
 vi.mock("@/lib/sentry-server", () => ({ captureServerError: sentry.captureServerError }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+// auth-008 put a `tokenRedeem` gate on acceptInviteAction, which reads the
+// client address through `next/headers`. That throws outside a request scope,
+// so every test touching a rate-limited action mocks this module - see
+// password-reset-deleted-account.test.ts for the same line. A fixed address is
+// right here: this file asserts the FINANCE gate, not the throttle, and a
+// stable key keeps one test from spending another's budget.
+vi.mock("@/lib/client-ip", () => ({ getClientIp: () => Promise.resolve("203.0.113.7") }));
 vi.mock("@/lib/queries/session", () => ({
   requireScopedSession: () => Promise.resolve(session.scoped),
 }));

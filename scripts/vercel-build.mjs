@@ -72,6 +72,17 @@
  * set in the Production scope. A fail-open security switch that can be flipped
  * silently is not a knob, so a production build refuses to proceed with it on.
  *
+ * `PASSWORD_RESET_RESPONSE_FLOOR_MS` is the same shape, found by a verifier
+ * hours after the fix that introduced it. It sets the uniform response latency
+ * that stops /forgot-password answering "is this address registered" on the
+ * clock; `0` in the Production scope switches that off outright. Its only
+ * purpose is to let two unit tests turn the floor back ON, so
+ * `lib/actions/password-reset.ts` now honours it only under vitest AND it is
+ * refused here at ANY value — a var the code silently ignores is its own trap,
+ * because the next reader "fixes" the code to honour it. Note that its dangerous
+ * value is `0`, which no truthiness check catches; that is why entries carry a
+ * `refuse` mode.
+ *
  * ── Env vars this script reads ──────────────────────────────────────────────
  *   VERCEL_ENV — set automatically by Vercel; every gate here keys off it.
  *   Everything else: see REQUIRED_PROD_ENV / RECOMMENDED_PROD_ENV /
@@ -141,24 +152,45 @@ const RECOMMENDED_PROD_ENV = {
   NEXT_PUBLIC_SENTRY_DSN:
     "browser-side error reporting (sentry.client.config.ts). Without it every client " +
     "crash — the whole (app) error boundary and the root fatal boundary — is invisible, " +
-    "while app/error.tsx tells the customer \"The team has been notified\".",
+    'while app/error.tsx tells the customer "The team has been notified".',
 };
 
 /** The three vars @sentry/nextjs needs to upload source maps. */
 const SENTRY_UPLOAD_ENV = ["SENTRY_AUTH_TOKEN", "SENTRY_ORG", "SENTRY_PROJECT"];
 
 /**
- * Vars that must NOT be switched on in a production build, each with the
- * protection they switch off. Adding an entry is one line; that is deliberate,
- * because "which env var can silently disable a control?" should be answerable
- * by reading this object.
+ * Vars that must NOT be set in a production build, each with the protection
+ * they switch off. Adding an entry is two lines; that is deliberate, because
+ * "which env var can silently disable a control?" should be answerable by
+ * reading this object.
+ *
+ * `refuse` says what counts as set:
+ *   "truthy" — only a value a human means as yes (see TRUTHY_VALUES). For a
+ *              flag whose "false" spelling is documented and must still deploy.
+ *   "any"    — the var has no legitimate place in a production scope at all.
+ *              Needed because the dangerous value is not always a truthy one:
+ *              PASSWORD_RESET_RESPONSE_FLOOR_MS does its damage at "0".
  */
 const FORBIDDEN_PROD_ENV = {
-  RATE_LIMIT_DISABLED:
-    "a blanket bypass for every limiter in lib/rate-limit.ts, including the " +
-    "login bucket that is the app's only brute-force threshold. Nothing logs " +
-    'when it is on. Unset it (or set it to "false") in the Production scope; ' +
-    "if you are debugging a limiter, do it on a preview deploy.",
+  RATE_LIMIT_DISABLED: {
+    refuse: "truthy",
+    why:
+      "a blanket bypass for every limiter in lib/rate-limit.ts, including the " +
+      "login bucket that is the app's only brute-force threshold. Nothing logs " +
+      'when it is on. Unset it (or set it to "false") in the Production scope; ' +
+      "if you are debugging a limiter, do it on a preview deploy.",
+  },
+  PASSWORD_RESET_RESPONSE_FLOOR_MS: {
+    refuse: "any",
+    why:
+      "the uniform-latency floor on /forgot-password (lib/actions/password-reset.ts). " +
+      "Every outcome of a reset request is held to the same response time so the CLOCK " +
+      "stops answering the question the response body no longer does — whether that " +
+      "address is registered. Setting this to 0 reopens that enumeration oracle outright " +
+      "and lowering it narrows it, silently, with no runtime signal. It exists only so " +
+      "two unit tests can switch the floor back ON, the action now ignores it outside " +
+      "vitest, and it has no business in a production scope at any value. Unset it.",
+  },
 };
 
 /**
@@ -267,7 +299,7 @@ export function sentryDsnPairProblem(env) {
     return (
       "NEXT_PUBLIC_SENTRY_DSN is not set although SENTRY_DSN is. Server errors would " +
       "report and every browser crash would be dropped, while app/error.tsx keeps telling " +
-      "the customer \"The team has been notified\". Set NEXT_PUBLIC_SENTRY_DSN to the same " +
+      'the customer "The team has been notified". Set NEXT_PUBLIC_SENTRY_DSN to the same ' +
       "DSN in the Production scope (it must carry the NEXT_PUBLIC_ prefix to reach the " +
       "browser bundle), or unset both."
     );
@@ -337,11 +369,13 @@ export function productionEnvProblems(env) {
 
   const forbidden = Object.keys(FORBIDDEN_PROD_ENV);
   for (const name of forbidden) {
-    const value = String(env[name] ?? "")
-      .trim()
-      .toLowerCase();
-    if (TRUTHY_VALUES.indexOf(value) !== -1) {
-      problems.push(`${name} is set to "${env[name]}" — ${FORBIDDEN_PROD_ENV[name]}`);
+    // Blank is unset everywhere in this file, including here: Vercel lets you
+    // save a var with no value, and that is not somebody switching a control off.
+    if (isBlank(env[name])) continue;
+    const rule = FORBIDDEN_PROD_ENV[name];
+    const value = String(env[name]).trim().toLowerCase();
+    if (rule.refuse === "any" || TRUTHY_VALUES.indexOf(value) !== -1) {
+      problems.push(`${name} is set to "${env[name]}" — ${rule.why}`);
     }
   }
 

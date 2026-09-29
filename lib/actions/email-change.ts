@@ -2,12 +2,14 @@
 
 /**
  * Change-email server actions (audit S3; hardened for acct-004 / auth-004 /
- * auth-005 / sec-010).
+ * auth-005 / sec-010, and message-honest for acct-016).
  *
  *   - `requestEmailChangeAction({ newEmail, password })` — session-scoped AND
  *     password-scoped. Re-verifies the current password with bcrypt, validates
- *     the new address isn't taken, then emails a confirmation link TO THE NEW
- *     ADDRESS and a plain heads-up TO THE CURRENT ONE. The email is NOT changed
+ *     the new address isn't taken — naming a tombstoned holder as such rather
+ *     than claiming a live account has it (acct-016) — then emails a
+ *     confirmation link TO THE NEW ADDRESS and a plain heads-up TO THE CURRENT
+ *     ONE. The email is NOT changed
  *     yet — only clicking the link (which proves the user controls the
  *     destination inbox) applies it. Sending the link to the new address is the
  *     whole point: it verifies ownership before the swap, so a typo can't lock
@@ -212,7 +214,44 @@ export async function requestEmailChangeAction(
     if (newEmail === me.email) {
       return { success: false, error: "That's already your email." };
     }
-    const collision = await db.user.findUnique({ where: { email: newEmail } });
+    // WHO HOLDS THE TARGET ADDRESS, and honestly which kind of holder it is
+    // (acct-016). `findFirst` + an explicit `select` of the tombstone, the
+    // same construction lib/actions/auth.ts:216-234 already uses on signup for
+    // acct-001 / auth-006.
+    //
+    // AND DELIBERATELY NOT `where: { email: newEmail, deletedAt: null }`. That
+    // is the one-line version of this finding and it is worse than the bug:
+    // `User.email` carries a PLAIN global unique index
+    // (prisma/migrations/20260523212052_init/migration.sql:92 — no partial
+    // predicate) and a soft-deleted row keeps its address, so the lookup would
+    // miss the row, the UPDATE on the confirm path would fail with P2002, and
+    // the catch-all would answer "Couldn't change your email right now" — the
+    // same refusal wearing a server error. The block is also correct on its
+    // own terms: a deactivated teammate's address must stay reserved or
+    // `reactivateUserAction` (lib/actions/team.ts:521) could not restore them.
+    // Genuinely releasing an address for reuse needs a `priorEmail` column on
+    // the delete path, and belongs there, not here.
+    const collision = await db.user.findFirst({
+      where: { email: newEmail },
+      select: { id: true, deletedAt: true },
+    });
+    if (collision?.deletedAt) {
+      // No date in this message, for the reason auth.ts:221 gives: the
+      // tombstone ages out only when the purge cron runs for real, and
+      // `PURGE_ENABLED` is off by default by documented decision (CLAUDE.md),
+      // so "wait until <date>" would be a promise this product does not keep.
+      //
+      // The extra bit this tells the caller over the old message is "deleted,
+      // not live", and only after bcrypt has already accepted their current
+      // password above — so it is not an oracle anyone can reach without the
+      // account's own credentials.
+      return {
+        success: false,
+        error:
+          "That email belongs to a FounderFlow account that was deleted. " +
+          "Contact support to restore it, or use a different address.",
+      };
+    }
     if (collision) {
       return { success: false, error: "An account with this email already exists." };
     }
@@ -326,9 +365,26 @@ export async function confirmEmailChangeAction(
       };
     }
 
-    // Re-check the target isn't taken in the window since the link was sent.
-    const collision = await db.user.findUnique({ where: { email: verified.newEmail } });
+    // Re-check the target isn't taken in the window since the link was sent —
+    // and say which kind of holder took it (acct-016). Unfiltered by
+    // `deletedAt` on purpose; see the long note on the request path above. Here
+    // the reason is sharper still, because the UPDATE is one statement away: a
+    // filtered lookup would hand a P2002 to the catch below and answer
+    // "Couldn't change your email right now. Try again shortly." about a
+    // permanent refusal.
+    const collision = await db.user.findFirst({
+      where: { email: verified.newEmail },
+      select: { id: true, deletedAt: true },
+    });
     if (collision && collision.id !== user.id) {
+      if (collision.deletedAt) {
+        return {
+          success: false,
+          error:
+            "That email now belongs to a FounderFlow account that was deleted. " +
+            "Contact support to restore it, or request the change again with a different address.",
+        };
+      }
       return { success: false, error: "That email is now in use by another account." };
     }
 

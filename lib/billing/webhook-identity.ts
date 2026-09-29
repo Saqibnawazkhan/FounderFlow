@@ -243,16 +243,27 @@ export type CustomerLookupResult = BillingCompanyRow | null | typeof AMBIGUOUS_C
 /**
  * The three reads the decision needs.
  *
- * Implementations must NOT filter `deletedAt` in the query. Filtering there
- * would make a tombstoned workspace indistinguishable from a non-existent one,
- * and the difference matters twice: it decides whether a refusal is reported as
+ * EVERY LOOKUP MUST STILL RETURN A TOMBSTONED ROW. A tombstoned workspace that
+ * came back as `null` would be indistinguishable from a non-existent one, and
+ * the difference matters twice: it decides whether a refusal is reported as
  * forgery, and it stops a claim from sliding into the gap left by a tombstoned
- * row that a filtered lookup pretended wasn't there. The tombstone is enforced
- * by `decideWebhookCompany`, and again by `deletedAt: null` on the update.
+ * row that a filtered lookup pretended wasn't there. So `byId` and
+ * `bySubscriptionId` must not mention `deletedAt` at all. The tombstone is
+ * enforced by `decideWebhookCompany`, and again by `deletedAt: null` on the
+ * update.
  *
  * `byCustomerId` must also be DETERMINISTIC and must report ambiguity rather
  * than pick a winner: it is the only lookup here whose key has no unique
  * constraint. Return `AMBIGUOUS_CUSTOMER` when two or more workspaces match.
+ *
+ * That ambiguity is judged over LIVE workspaces ONLY — the one place a lookup
+ * here may look at `deletedAt`, and bill-011. A tombstoned workspace is not a
+ * candidate this fallback has to choose between, because nothing may be written
+ * to it either way; counting one towards the ambiguity only refuses the live
+ * workspace beside it (a founder who deleted their first workspace and kept the
+ * second, both behind one card, never gets a plan change applied). So: two or
+ * more LIVE matches is ambiguous; exactly one LIVE match wins; and with no live
+ * match a tombstoned row must still be returned, per the paragraph above.
  */
 export interface CompanyBillingLookup {
   byId(companyId: string): Promise<BillingCompanyRow | null>;

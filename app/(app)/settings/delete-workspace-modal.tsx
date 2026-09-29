@@ -29,6 +29,16 @@ export function DeleteWorkspaceModal({ open, onClose, workspaceName }: Props) {
   const pwId = useId();
   const nameId = useId();
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * The server's refusal, kept on the screen and not only in a 3500ms toast — the
+   * same treatment delete-account-modal.tsx gives its own, because this dialog
+   * receives the same class of message. `deleteWorkspaceAction` refuses a delete
+   * it cannot bill-cancel with a two-step instruction ("Cancel it in LemonSqueezy
+   * first, then delete the workspace", lib/actions/account.ts:376), and an
+   * instruction the reader cannot re-read is an instruction they cannot follow.
+   * The toast still fires; it is what draws the eye back to the dialog.
+   */
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const {
     register,
     handleSubmit,
@@ -43,9 +53,13 @@ export function DeleteWorkspaceModal({ open, onClose, workspaceName }: Props) {
 
   async function onSubmit(data: DeleteWorkspaceInput) {
     setSubmitting(true);
+    // Cleared before the attempt: a refusal left under a fresh submission reads as
+    // a second failure.
+    setDeleteError(null);
     const res = await deleteWorkspaceAction(data);
     setSubmitting(false);
     if (!res.success) {
+      setDeleteError(res.error);
       toast.error(res.error);
       return;
     }
@@ -56,6 +70,7 @@ export function DeleteWorkspaceModal({ open, onClose, workspaceName }: Props) {
 
   function onClosed() {
     reset();
+    setDeleteError(null);
     onClose();
   }
 
@@ -65,6 +80,14 @@ export function DeleteWorkspaceModal({ open, onClose, workspaceName }: Props) {
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-danger" aria-hidden="true" />
         <p className="text-sm text-danger">{t.settings.deleteWorkspaceConfirmDesc}</p>
       </div>
+
+      {/* acct-018. The same warning the sole-founder branch of the account dialog
+          carries, because this destroys the identical rows: "Download my data"
+          (?scope=me) never contains Transaction, Budget or RecurringRule, so the
+          only file that survives this click with the ledger in it is the workspace
+          export. This dialog is admin-only, so that card is always reachable from
+          here. Outside the red alert — taking a copy destroys nothing (acct-007). */}
+      <p className="mb-4 text-xs text-fg-muted">{t.settings.exportBeforeWorkspaceDeleteHint}</p>
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
         <div>
@@ -117,6 +140,13 @@ export function DeleteWorkspaceModal({ open, onClose, workspaceName }: Props) {
             <p className="mt-1.5 text-xs text-danger">{errors.password.message}</p>
           )}
         </div>
+
+        {/* role="alert", same shape as app/forgot-password/page.tsx:198. */}
+        {deleteError && (
+          <p role="alert" className="text-xs font-medium text-danger">
+            {deleteError}
+          </p>
+        )}
 
         <div className="flex justify-end gap-2 pt-1">
           <button

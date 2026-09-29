@@ -3,18 +3,28 @@
 /**
  * /settings profile + password mutations.
  *
- * Both actions are scoped to the signed-in user — there's no "edit another
- * user's profile" path here (admin team management lives in /team via
+ * Every action here is scoped to the signed-in user — there's no "edit another
+ * user's profile" path (admin team management lives in /team via
  * lib/actions/team.ts). The session.user.id is the only ID we trust.
  *
- *   updateProfileAction({ name, email })
- *     • Updates display name and login email.
- *     • Rejects duplicate emails (DB has a unique constraint; we check up
- *       front to surface a clean error instead of the Prisma collision).
+ *   updateProfileAction({ name })
+ *     • Updates the display name. NAME ONLY.
+ *
+ *       This entry used to read "updates display name and login email" and
+ *       "rejects duplicate emails … we check up front", and both halves had
+ *       stopped being true: `UpdateProfileSchema` accepts nothing but `name`
+ *       (lib/schemas/profile.ts:12), and there is no email read or write left
+ *       anywhere in this file. A login email now moves only through
+ *       lib/actions/email-change.ts, which proves control of the destination
+ *       inbox first (audit S3) — so a duplicate-email check here would be a
+ *       check on a path that no longer exists.
  *
  *   changePasswordAction({ currentPassword, newPassword, confirmPassword })
  *     • Re-verifies the current password with bcrypt before writing.
  *     • Hashes the new one at work factor 12 (matches signup).
+ *     • Rate-limited as a current-password ORACLE, not as a write: 5 per user
+ *       per 10 minutes, on the same bucket as delete-account (auth-014). See
+ *       the comment on the gate itself.
  *     • Bumps `sessionVersion`, which signs out every session for this
  *       user — including the current device. The modal redirects to
  *       /login afterwards.
@@ -34,7 +44,7 @@ import {
   UpdateHandleSchema,
   UpdateProfileSchema,
 } from "@/lib/schemas/profile";
-import { limiters, rateLimiter } from "@/lib/rate-limit";
+import { gateAuthAction, limiters, rateLimiter } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendSecurityNotice } from "@/lib/email/templates/security-notice";
 
@@ -55,6 +65,10 @@ export async function updateProfileAction(input: unknown): Promise<ActionResult>
   const session = await auth();
   if (!session?.user?.id) return { success: false, error: "Not authenticated" };
 
+  // Write tier, 60/min/user, and that IS the right tier here — unlike its
+  // sibling below, this action asks for no credential and so verifies nothing
+  // an attacker could be probing for. Saving a display name is an ordinary
+  // write and belongs in the ordinary write budget.
   const gate = limiters.write.consume(session.user.id);
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
@@ -84,9 +98,26 @@ export async function changePasswordAction(input: unknown): Promise<ActionResult
   const session = await auth();
   if (!session?.user?.id) return { success: false, error: "Not authenticated" };
 
-  // Auth-tier limiter — same envelope as login/signup, treats password
-  // change as a sensitive action.
-  const gate = limiters.write.consume(session.user.id);
+  // auth-014. This gate used to be `limiters.write` — 60 per minute — under a
+  // comment that said "Auth-tier limiter — same envelope as login/signup". It
+  // was not: login's envelope is 5/min, and the real rate here was 3,600
+  // current-password guesses an hour, with a fresh budget per victim because
+  // the key is the user id.
+  //
+  // It matters because `ChangePasswordSchema` requires `currentPassword` and
+  // this action says whether it was right, so the endpoint is an ORACLE for the
+  // one secret a borrowed session does not already have — the thing needed to
+  // then move the login email, close the workspace, or reuse the credential
+  // elsewhere.
+  //
+  // `passwordConfirm` is 5 per user per 10 minutes and shares its bucket with
+  // `destructive` (delete-account / delete-workspace), so five guesses is five
+  // in total rather than five per endpoint. It has no address dimension on
+  // purpose: a password change is routine, and an office-NAT bucket would let
+  // colleagues' typos refuse each other. Both decisions are argued in full at
+  // the `passwordConfirm` case in lib/rate-limit.ts — and the locked-out owner's
+  // remedy stays open, because /forgot-password runs on a different budget.
+  const gate = gateAuthAction({ kind: "passwordConfirm", userId: session.user.id });
   if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   const parsed = ChangePasswordSchema.safeParse(input);

@@ -5,11 +5,20 @@
  *   • valid → password form with the invitee's name + workspace prefilled
  *   • expired → "this link is past its 7-day window" empty state
  *   • used → "this invite has already been claimed" empty state
+ *   • workspace deleted → "no longer active", in the action's own words
  *   • not found → generic invalid-link state
+ *   • too many renders from one address → "wait a moment and reload", WITHOUT
+ *     looking anything up (auth-008's GET half; see the gate below)
  *
  * Doing the lookup server-side means the recipient never sees a flash of
- * the form for a dead token, and we don't leak the existence of valid
- * tokens via timing differences.
+ * the form for a dead token.
+ *
+ * NOT a timing-oracle defence, which an earlier version of this comment
+ * claimed: the lookup is an ordinary indexed unique read and the RESPONSE BODY
+ * is the oracle anyway — a miss says "invalid link", a hit prints the invitee's
+ * first name, e-mail, workspace and role. That is only reachable by someone who
+ * already holds a 64-hex-character token (~244 bits, lib/actions/team.ts), so it
+ * discloses nothing about the token space, and timing is not the exposure.
  */
 
 import type { Metadata } from "next";
@@ -17,6 +26,8 @@ import Link from "next/link";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
 import { db } from "@/lib/db";
+import { getClientIp } from "@/lib/client-ip";
+import { gateAuthAction } from "@/lib/rate-limit";
 import { AcceptInviteClient } from "./accept-invite-client";
 
 export const metadata: Metadata = {
@@ -25,6 +36,44 @@ export const metadata: Metadata = {
 };
 
 export default async function InvitePage({ params }: { params: { token: string } }) {
+  // auth-008, THE GET HALF — and the half the first fix for it missed. Metering
+  // `acceptInviteAction` closed the POST and left this line running one indexed
+  // `inviteToken.findUnique` per anonymous GET, unbounded, which is the surface
+  // an attacker would have picked anyway: no Next-Action header, no
+  // server-action encoding, the same unique read, plus a whole RSC render on
+  // top. /invite/* is public in auth.config.ts and middleware wires only
+  // NextAuth, so there is no valve in front of this either.
+  //
+  // ITS OWN BUCKET, NOT `tokenRedeem`'s (lib/rate-limit.ts `invitePageIp`),
+  // so that a flood of renders can never refuse the submit of somebody who
+  // already has the form open. 15/min/address, and it fails OPEN where no
+  // proxy supplies a trustworthy address — off Vercel and without
+  // TRUSTED_PROXY_HEADER this gate is a documented no-op rather than one
+  // shared bucket every visitor in the world can be locked out of.
+  //
+  // BEFORE THE LOOKUP, which is the entire point: a refused render must cost
+  // no database round trip.
+  const gate = gateAuthAction({ kind: "invitePageView", ip: await getClientIp() });
+  if (!gate.allowed) {
+    return (
+      <InviteEmpty
+        title="Too many requests from this connection"
+        // NOT the invalid-link copy, deliberately. The person most likely to
+        // meet this is someone reloading, or a mail client fetching the URL for
+        // a preview — telling them their link is broken would turn a 60-second
+        // valve into a lost signup.
+        //
+        // AND IT DOES NOT PROMISE THE LINK IS GOOD, because we did not look:
+        // the whole point of refusing above the query is that this branch knows
+        // nothing about the token. What it can honestly say is that refusing a
+        // render wrote nothing, so the link is in whatever state it was in.
+        body={`We haven't looked your invite up, so nothing about it has changed — wait a moment and reload this page. ${
+          gate.error ?? "Too many requests."
+        }`}
+      />
+    );
+  }
+
   const invite = await db.inviteToken.findUnique({
     where: { token: params.token },
     include: { company: true },
@@ -52,6 +101,29 @@ export default async function InvitePage({ params }: { params: { token: string }
       <InviteEmpty
         title="This invite has expired"
         body="Invite links are good for 7 days. Ask the admin who invited you to send a new one."
+      />
+    );
+  }
+  // auth-009, the PAGE half of data-integrity-003. `include: { company: true }`
+  // above has always pulled `deletedAt` into scope and nothing read it, so an
+  // invite that outlived its workspace rendered the full welcome — first name,
+  // e-mail, workspace name, role, password field — and failed only on submit, at
+  // lib/actions/team.ts. The security half is closed elsewhere and stays closed:
+  // the action refuses a tombstoned company, and `softDeleteWorkspace` burns
+  // every unused token in the same transaction as the tombstone, so no account
+  // can be created here whatever this page draws. What was broken is that the two
+  // surfaces disagreed about the same token, and that a workspace whose owner
+  // asked us to erase it was still being named to whoever opened a stale link.
+  //
+  // The wording is the action's sentence, split across the title and body on
+  // purpose — tests/app/invite/invite-page-dead-workspace.test.tsx reads the
+  // string out of team.ts and asserts the halves, so rewording either surface
+  // alone fails rather than letting them drift apart again.
+  if (invite.company.deletedAt) {
+    return (
+      <InviteEmpty
+        title="This workspace is no longer active"
+        body="Ask whoever invited you for a new invite."
       />
     );
   }

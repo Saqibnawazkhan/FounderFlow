@@ -24,7 +24,8 @@ import { AuthError } from "next-auth";
 import { signIn } from "@/lib/auth";
 import { DEFAULT_APPEARANCE, writeAppearanceCookies } from "@/lib/appearance/cookies";
 import { AcceptInviteSchema, InviteUserSchema, UpdateRoleSchema } from "@/lib/schemas/user";
-import { limiters } from "@/lib/rate-limit";
+import { gateAuthAction, limiters } from "@/lib/rate-limit";
+import { getClientIp } from "@/lib/client-ip";
 import { appOrigin } from "@/lib/env";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendEmail } from "@/lib/email/send";
@@ -132,8 +133,52 @@ export async function inviteUserAction(
   const { userId: actorId, companyId } = gate;
 
   try {
-    // Refuse if the email already belongs to a real account.
-    const existing = await db.user.findUnique({ where: { email } });
+    // WHO HOLDS THE ADDRESS, and honestly which kind of holder (acct-016). This
+    // answered "An account with this email already exists" for a DEACTIVATED
+    // teammate too — a sentence about a live account, and a dead end: the admin
+    // could not invite the address, and nothing told them why or what to do.
+    // Deactivating Bob and re-inviting him is an ordinary thing to try.
+    //
+    // DELIBERATELY NOT `where: { email, deletedAt: null }`, the one-line version
+    // of this fix: `User.email` carries a plain global unique index
+    // (prisma/migrations/20260523212052_init/migration.sql:92) and a soft-deleted
+    // row keeps its address, so the lookup would miss the row and the invite
+    // would fail later for a reason nobody could read. The reservation is also
+    // correct on its own terms — `reactivateUserAction` below could not restore
+    // anyone if the address were free to re-take. `findUnique` rather than
+    // email-change.ts's `findFirst` only because `email` is unique; the
+    // load-bearing part is the absent filter and the tombstone in the `select`.
+    const existing = await db.user.findUnique({
+      where: { email },
+      select: { id: true, deletedAt: true, companyId: true },
+    });
+    if (existing?.deletedAt) {
+      // TWO MESSAGES, because the admin can act on exactly one of these cases.
+      // In their own workspace the Team page already has a Deactivated section
+      // with a Reactivate button wired to `reactivateUserAction`, so the message
+      // names a control that exists. In someone else's workspace that action
+      // refuses the target (`target.companyId !== companyId`), so pointing there
+      // would be a second false instruction.
+      //
+      // No date in either, for the reason lib/actions/auth.ts:221 gives: the
+      // tombstone ages out only when the purge cron runs for real, and
+      // `PURGE_ENABLED` is off by documented decision (CLAUDE.md).
+      if (existing.companyId === companyId) {
+        return {
+          success: false,
+          error:
+            "That teammate is deactivated, not gone — their address stays reserved while " +
+            "the account exists. Reactivate them in the Deactivated list on the Team page " +
+            "instead of re-inviting them.",
+        };
+      }
+      return {
+        success: false,
+        error:
+          "That email belongs to a FounderFlow account that was deleted. " +
+          "Contact support to restore it, or invite a different address.",
+      };
+    }
     if (existing) {
       return {
         success: false,
@@ -619,6 +664,43 @@ class SeatLimitReached extends Error {}
  * the loop below argues the shape.
  */
 export async function acceptInviteAction(input: unknown): Promise<ActionResult> {
+  // auth-008. A COURTESY VALVE, AND NOT AN ANTI-GUESSING ONE. The token is two
+  // UUIDv4s with the dashes stripped (~244 bits, see inviteUserAction above), so
+  // nothing about the attempt RATE makes guessing it feasible and this is not a
+  // brute-force fix. What it closes is that this was the only pre-auth endpoint
+  // in the codebase that metered nothing at all: /invite/* is public in
+  // auth.config.ts and middleware wires only NextAuth, so an anonymous caller
+  // could drive one indexed `inviteToken.findUnique` per POST, indefinitely,
+  // with no session. The other three redeem endpoints (verify-email,
+  // confirm-email-change, reset-password) have used this exact class since
+  // auth-007; 30 per address per minute costs a real invitee — who submits once
+  // — nothing, and a refusal here would land on somebody holding a good link.
+  //
+  // THIS IS ONE OF THE SURFACE'S TWO HALVES, AND NOT THE ONE AN ATTACKER WOULD
+  // PICK. The paragraph above framed the POST as the exposure; the GET of
+  // /invite/[token] runs the same unique read with no server-action encoding at
+  // all, and for a while it was metered by nothing while this line was metered.
+  // It is now gated in app/invite/[token]/page.tsx on its own bucket
+  // (`invitePageIp`, 15/min/address) — deliberately NOT this one, so that a
+  // flood of page renders can never refuse the submit of somebody who already
+  // has the form open. Both halves, or neither is worth much.
+  //
+  // BEFORE THE PARSE, deliberately, matching password-reset.ts:171: the class
+  // carries no identity (there is no verified account yet), so there is nothing
+  // in the body it needs, and putting it first means a malformed body cannot
+  // reach the database either.
+  //
+  // FAILS OPEN WHERE NO ADDRESS IS TRUSTWORTHY — lib/rate-limit.ts returns
+  // "allowed, uncounted" when `isTrustedIpKey` rejects the key, because pooling
+  // every visitor into one bucket would let one attacker refuse everybody's
+  // invite. Off Vercel and without TRUSTED_PROXY_HEADER set, this gate is
+  // therefore a no-op by design, not by accident.
+  const ip = await getClientIp();
+  const gate = gateAuthAction({ kind: "tokenRedeem", ip });
+  if (!gate.allowed) {
+    return { success: false, error: gate.error ?? "Too many requests" };
+  }
+
   const parsed = AcceptInviteSchema.safeParse(input);
   if (!parsed.success) {
     return {
@@ -685,7 +767,36 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
 
     // Double-check no user with this email exists — could happen if they
     // signed up via the normal /signup flow between invite + accept.
-    const existing = await db.user.findUnique({ where: { email: invite.email } });
+    //
+    // AND SAY WHICH KIND OF HOLDER IT IS (acct-016). This branch answered "an
+    // account with this email already exists — try signing in instead" for a
+    // DEACTIVATED account as well, and that is the worst version of the finding
+    // on this surface: signing in is the one thing that cannot work, because
+    // `authorize()` filters `deletedAt: null` (lib/auth.ts:202). An admin
+    // deactivates Bob and re-invites the same address; Bob sets a password, is
+    // told to sign in, and the sign-in answers "Invalid email or password"
+    // (lib/actions/auth.ts:437). Three closed doors, not one of them naming the
+    // reason.
+    //
+    // Unfiltered by `deletedAt` on purpose — see the long note in
+    // `inviteUserAction` above; the address is reserved while the tombstone
+    // exists, and a filtered lookup would only move the refusal to the
+    // `user.create` below as a P2002 the catch-all reports as a server error.
+    const existing = await db.user.findUnique({
+      where: { email: invite.email },
+      select: { id: true, deletedAt: true },
+    });
+    if (existing?.deletedAt) {
+      // No route for the invitee to fix this themselves, so the message sends
+      // them to the person who CAN: an admin of that workspace has the
+      // Reactivate control, and re-inviting the address never will work.
+      return {
+        success: false,
+        error:
+          "This email belongs to a FounderFlow account that was deactivated. Ask whoever " +
+          "invited you to restore it — a fresh invite to the same address cannot replace it.",
+      };
+    }
     if (existing) {
       return {
         success: false,

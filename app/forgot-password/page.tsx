@@ -96,21 +96,28 @@ export default function ForgotPasswordPage() {
       return;
     }
     /**
-     * `result.data.dispatched` is deliberately NOT read here, and nothing below
-     * branches on it.
+     * `result.data` is deliberately NOT read here, and nothing below branches on
+     * it — there is nothing in it to read.
      *
-     * The action returns `dispatched: false` for three different things: the
-     * address was never registered, the account is tombstoned, and the send
-     * actually failed (lib/actions/password-reset.ts:119-152). On a healthy
-     * deployment the third is rare, so rendering anything differently on that
-     * flag would tell an attacker whether an address has an account — the exact
-     * oracle the whole flow is built to deny.
+     * The action used to return `dispatched`, and this comment used to explain
+     * why the page ignored it: `false` meant three different things (never
+     * registered, tombstoned, send failed) and on a healthy deployment only the
+     * first two are common, so rendering anything differently on it would tell an
+     * attacker whether an address has an account. What the careful reading here
+     * could not fix is that the flag was still IN the POST response body, which
+     * is read with curl and not with eyes. auth-010 removed it from the contract
+     * (`ActionResult<void>`), so all three outcomes now serialise identically.
      *
-     * The real outcome a locked-out customer needs is therefore surfaced
-     * WITHOUT it: the panel stops asserting that an email was sent, and gives
-     * them a retry and an escalation instead. Naming a transport failure out
-     * loud needs a signal that does not depend on the address existing — see
-     * this slice's hand-off for the `deliveryBlocked` follow-up.
+     * This page therefore needs no change and keeps no branch — and
+     * tests/components/forgot-password-outcome.test.tsx pins the rendering as
+     * identical even when it is handed a payload carrying a delivery flag, so
+     * re-introducing one cannot quietly reopen the oracle here.
+     *
+     * The real outcome a locked-out customer needs is surfaced without any of
+     * it: the panel stops asserting that an email was sent, and gives them a
+     * retry and an escalation instead. Naming a transport failure out loud needs
+     * a signal that does not depend on the address existing — see this slice's
+     * hand-off for the `deliveryBlocked` follow-up.
      */
     setSentTo(data.email);
     setResent(false);
@@ -169,9 +176,9 @@ export default function ForgotPasswordPage() {
         {submitted ? (
           /* role="status" + aria-live: the panel replaces the form in place, so
              a screen-reader user otherwise gets no indication anything
-             happened. Nothing inside it varies with `dispatched` — see
-             onSubmit, and tests/components/forgot-password-outcome.test.tsx,
-             which pins the two renderings as byte-identical. */
+             happened. Nothing inside it varies with the outcome of the request —
+             see onSubmit, and tests/components/forgot-password-outcome.test.tsx,
+             which pins the renderings as byte-identical. */
           <div
             role="status"
             aria-live="polite"

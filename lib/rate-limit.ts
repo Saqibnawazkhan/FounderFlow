@@ -393,11 +393,19 @@ export const limiters = {
  * split above was created to prevent, and the rule is the same: a rejection
  * must land on the action that caused it.
  *
- * EVERY CLASS IS TWO-DIMENSIONAL where an identity exists: one bucket per
+ * MOST CLASSES ARE TWO-DIMENSIONAL where an identity exists: one bucket per
  * client address (which prices a burst from one machine) and one per account
  * (which is the only thing that sees a distributed attack on one target, and
  * the only thing that keeps a noisy neighbour from spending a colleague's
  * budget). Both must pass.
+ *
+ * `passwordConfirm` IS THE ONE EXCEPTION — per account only, no address bucket.
+ * This sentence used to read "EVERY class", and an unqualified claim about a
+ * safety mechanism is how auth-014 shipped in the first place, so the exception
+ * is stated here rather than left for a reader to discover in the switch. The
+ * reason is at the `passwordConfirm` case in `gateAuthAction`: for a routine
+ * authenticated action the address dimension costs office NATs real refusals
+ * and adds nothing the per-account bucket does not already cap.
  */
 const authGates = {
   /**
@@ -433,18 +441,60 @@ const authGates = {
    */
   emailSendAccount: rateLimiter("auth-email-send-account", { limit: 5, windowMs: 15 * 60_000 }),
   /**
-   * Redeeming a signed link: verify-email, confirm-email-change,
-   * redeem-password-reset. 30 per minute per address.
+   * Redeeming a token that arrived in a link: verify-email,
+   * confirm-email-change, redeem-password-reset — and, since auth-008,
+   * accept-invite. 30 per minute per address.
    *
-   * Loose on purpose. These tokens are HS256 JWTs signed with AUTH_SECRET
-   * (lib/auth/email-verification-token.ts, lib/auth/password-reset-token.ts),
-   * so the protection against a guessed token is cryptographic, not numeric —
-   * the limiter here is a courtesy valve against a hot loop, and the cost of a
-   * refused attempt is a customer being told their perfectly good link is
-   * "too many requests". That trade should fall heavily on the side of the
-   * customer.
+   * FOUR CONSUMERS, AND THE FOURTH IS NOT A JWT. This paragraph named three and
+   * justified the loose limit with "these tokens are HS256 JWTs signed with
+   * AUTH_SECRET, so the protection against a guessed token is cryptographic" —
+   * a sentence that stopped covering all of its consumers the moment
+   * `acceptInviteAction` started consuming this bucket. The invite token is two
+   * UUIDv4s with the dashes stripped, persisted in an `InviteToken` row
+   * (lib/actions/team.ts), so it is ~244 bits of CSPRNG output and guessing it
+   * is just as infeasible — but the guarantee is ENTROPY, not a signature, and
+   * the difference that matters here is the COST OF A MISS. A bad JWT is
+   * refused by a signature check with no database work at all; a bad invite
+   * token costs one indexed unique read, because a random string that lives in
+   * a row can only be refused by looking for it.
+   *
+   * 30/MIN IS STILL THE RIGHT NUMBER FOR ALL FOUR, and the DB-backed one does
+   * not change it: 30 unique-index lookups a minute from one address is less
+   * work than a single dashboard render, while the cost of a false refusal is a
+   * customer being told their perfectly good link is "too many requests". That
+   * trade should fall heavily on the side of the customer. What the invite
+   * surface actually needed was not a tighter number here but its OTHER half
+   * metered — the page render, see `invitePageIp` below.
    */
   tokenRedeemIp: rateLimiter("auth-token-redeem-ip", { limit: 30, windowMs: 60_000 }),
+  /**
+   * Rendering /invite/[token]: the GET half of the same surface (auth-008).
+   * 15 per minute per address.
+   *
+   * A SEPARATE BUCKET FROM `tokenRedeemIp`, deliberately, for the rule this
+   * file repeats everywhere: a rejection must land on the action that caused
+   * it. Shared, a flood of anonymous page renders could refuse the submit of
+   * somebody who already has the form open and their password typed. The page
+   * valve must never be able to cost an acceptance.
+   *
+   * TIGHTER THAN THE POST even though the POST is the half that writes, because
+   * the two numbers price different events. A real invitee submits once, maybe
+   * twice. A render is what a browser or a mail client does on its own, needs
+   * no Next-Action header and no server-action encoding, and costs a whole RSC
+   * render on top of the same indexed read — so the GET is both the cheaper
+   * request to issue and the dearer one to serve, which is why an attacker
+   * prefers it and why it is metered at least as tightly. 15 leaves room for a
+   * link preview, an impatient reload, and a few rejected passwords (every
+   * server-action response re-renders this page), and still refuses a scripted
+   * sweep inside its first two seconds.
+   *
+   * AND A REFUSAL HERE IS CHEAP, which is what lets the number be lower: the
+   * page's own dead-end state says the link is still good and to reload in a
+   * moment (app/invite/[token]/page.tsx), the token is untouched, and the window
+   * is 60 seconds. Contrast the login throttle, where a refusal shuts the only
+   * door the person has.
+   */
+  invitePageIp: rateLimiter("invite-page-ip", { limit: 15, windowMs: 60_000 }),
   /**
    * Password-confirmed destruction: delete-account, delete-workspace.
    * 10 per 10 minutes per address, 5 per 10 minutes per user.
@@ -454,6 +504,14 @@ const authGates = {
    * sharing one address can never block each other from closing their own
    * accounts — while a hijacked session still gets only 5 password guesses
    * per 10 minutes.
+   *
+   * `destructiveUser` IS ALSO THE BUDGET FOR `passwordConfirm` (auth-014), so
+   * one user's five guesses are five in total and not five per endpoint —
+   * see the `passwordConfirm` case in `gateAuthAction` for the whole argument.
+   * Its name still says "destructive" because the kind `destructive` is what
+   * lib/actions/account.ts passes and what lib/email/templates/security-notice.ts
+   * documents; what it counts is "this session asserted it knows the
+   * account's current password".
    */
   destructiveIp: rateLimiter("auth-destructive-ip", { limit: 10, windowMs: 10 * 60_000 }),
   destructiveUser: rateLimiter("auth-destructive-user", { limit: 5, windowMs: 10 * 60_000 }),
@@ -477,7 +535,20 @@ export type AuthGateRequest =
   | { kind: "emailDispatch"; ip: string; account: string }
   /** No identity: the token has not been verified yet, so there is none. */
   | { kind: "tokenRedeem"; ip: string }
-  | { kind: "destructive"; ip: string; userId: string };
+  /**
+   * A GET of /invite/[token] — the only member of this family that is a PAGE
+   * RENDER rather than a server action (auth-008's GET half). Same shape as
+   * `tokenRedeem`, and deliberately no token field: keying a bucket on the
+   * secret being probed would hand an attacker a fresh budget per guess.
+   */
+  | { kind: "invitePageView"; ip: string }
+  | { kind: "destructive"; ip: string; userId: string }
+  /**
+   * An authenticated action that verifies the caller's CURRENT password without
+   * destroying anything: change-password (auth-014). No `ip`, deliberately —
+   * see the case in `gateAuthAction`.
+   */
+  | { kind: "passwordConfirm"; userId: string };
 
 /**
  * Allowed, and nothing was counted, because there was nothing to count on.
@@ -504,6 +575,12 @@ const ALLOWED_UNCOUNTED: RateLimitResult = {
  * /api/auth/callback/credentials go through.
  *
  * Every other class consumes, because for those the action IS the event.
+ *
+ * `invitePageView` IS NOT AN ACTION AT ALL — it gates a Server Component render
+ * (auth-008's GET half, app/invite/[token]/page.tsx). It lives here rather than
+ * in a module of its own because it defends the same pre-auth token surface as
+ * `tokenRedeem`, because the two numbers have to be read next to each other to
+ * make sense, and because `resetAuthGates()` has to be able to clear it.
  */
 export function gateAuthAction(req: AuthGateRequest): RateLimitResult {
   switch (req.kind) {
@@ -533,11 +610,54 @@ export function gateAuthAction(req: AuthGateRequest): RateLimitResult {
       if (!isTrustedIpKey(req.ip)) return ALLOWED_UNCOUNTED;
       return authGates.tokenRedeemIp.consume(req.ip.trim());
     }
+    case "invitePageView": {
+      // Same fail-open rule as `tokenRedeem`, for the same reason: with no
+      // trusted address there is no identity to fall back on, and a single
+      // shared bucket would let one attacker blank the invite page for every
+      // real invitee at once. Never keyed on the token — see the type above.
+      if (!isTrustedIpKey(req.ip)) return ALLOWED_UNCOUNTED;
+      return authGates.invitePageIp.consume(req.ip.trim());
+    }
     case "destructive": {
       const userId = normalizeIdentity(req.userId);
       const byIp = authGates.destructiveIp.consume(ipBucketKey(req.ip, userId));
       if (!byIp.allowed) return byIp;
       return authGates.destructiveUser.consume(userId);
+    }
+    /**
+     * auth-014 — the current-password ORACLE, priced as one.
+     *
+     * `changePasswordAction` requires `currentPassword` and answers whether it
+     * was right, so it verifies the one secret a borrowed session does not
+     * already hold. It was gated on `limiters.write` (60/min, keyed on the user
+     * id) under a comment claiming the auth envelope, i.e. 3,600 guesses an
+     * hour with a clean budget per victim.
+     *
+     * THE SAME BUCKET AS `destructive`, NOT A NEW ONE. A private bucket here
+     * would mean five guesses from this form plus five more from the
+     * delete-account form about the same password: the budget has to belong to
+     * the CAPABILITY (verifying the credential) rather than to the endpoint, or
+     * the real rate is the sum over however many endpoints ask for a password.
+     *
+     * NO ADDRESS DIMENSION, and that is the one deliberate divergence from
+     * `destructive`. `destructiveIp` earns its place there because account
+     * closure is rare; a password change is routine, and behind one office NAT
+     * a 10-per-10-minutes address bucket would let five colleagues' mistyped
+     * current passwords refuse the sixth person's perfectly good one — the
+     * NAT-sharing defect the `read`/`write` split and auth-007 both exist to
+     * prevent. It buys nothing in exchange: the per-account bucket already caps
+     * the attacker at five, because a session-bound action always knows whose
+     * password is being guessed.
+     *
+     * ACCEPTED TRADEOFF, the same shape as `credentialsEmail` and
+     * `destructive`: whoever holds your session can burn these five and stop
+     * you changing your password for up to 10 minutes. Bounded, self-healing,
+     * no admin unlock — and the better remedy is open throughout, because
+     * /forgot-password runs on `emailDispatch` and bumps `sessionVersion`,
+     * which kills the borrowed session outright.
+     */
+    case "passwordConfirm": {
+      return authGates.destructiveUser.consume(normalizeIdentity(req.userId));
     }
   }
 }

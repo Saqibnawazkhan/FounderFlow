@@ -209,15 +209,37 @@ function buildLookup(flags: LookupFlags): CompanyBillingLookup {
     // Ambiguity is REPORTED, never resolved — guessing right is luck, and the
     // decision refuses and alerts instead. The orderBy makes even the one-row case
     // stable, so two queries during one delivery cannot disagree.
+    //
+    // bill-011: the ambiguity is judged over LIVE workspaces only, and that is the
+    // one place in this file where `deletedAt` belongs in the query. A tombstoned
+    // workspace is not a candidate this fallback has to choose between — the
+    // decision refuses it and the update re-asserts `deletedAt: null` — so
+    // counting one towards the ambiguity refuses the LIVE workspace beside it and
+    // buys nothing. The shape is ordinary: a founder deletes their first
+    // workspace, keeps the second, and both rows carry the one customer id, so
+    // their next plan change (a new subscription id, no custom_data) resolved to
+    // `customer-ambiguous` and never applied.
+    //
+    // The second query is what keeps the CompanyBillingLookup contract: when no
+    // live workspace matches, the tombstone must still come back, or a refusal
+    // that should read `company-deleted` reads `unresolvable` instead and the
+    // difference between "gone" and "never existed" is lost.
     byCustomerId: async (customerId) => {
-      const rows = await db.company.findMany({
-        where: { billingCustomerId: customerId },
+      const live = await db.company.findMany({
+        where: { billingCustomerId: customerId, deletedAt: null },
         select: COMPANY_BILLING_SELECT,
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         take: 2,
       });
-      if (rows.length > 1) return AMBIGUOUS_CUSTOMER;
-      return rows[0] ?? null;
+      if (live.length > 1) return AMBIGUOUS_CUSTOMER;
+      if (live.length === 1) return live[0];
+      const tombstoned = await db.company.findMany({
+        where: { billingCustomerId: customerId, deletedAt: { not: null } },
+        select: COMPANY_BILLING_SELECT,
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take: 1,
+      });
+      return tombstoned[0] ?? null;
     },
   };
 }
@@ -714,6 +736,19 @@ async function handleSubscriptionEvent(
     return NextResponse.json({ received: true, skipped: "stale-grant" });
   }
 
+  // bill-010. A period key we could not read was DROPPED rather than written, so
+  // one malformed date cannot become a delivery LemonSqueezy retries for ever
+  // (that is `readPeriodEnd`'s job, and the reason nothing throws here). What is
+  // left is that the customer's stored paid-through date is now silently stale:
+  // the row below would say `applied` with no reason, which is indistinguishable
+  // from a clean delivery. So the drop is recorded — on the ledger row, which
+  // outlives Sentry and is what a billing dispute is settled from.
+  //
+  // Only on this path, deliberately. A delivery refused or skipped for some other
+  // reason dropped nothing, because it wrote nothing, and overwriting its reason
+  // with this one would hide the reason that mattered.
+  const appliedReason = period.unreadable ? "period-end-unreadable" : null;
+
   // bill-009 + bill-002. THE WRITE AND ITS LEDGER ROW, IN ONE TRANSACTION.
   //
   // The insert is what makes the table an idempotency key rather than a log:
@@ -749,7 +784,7 @@ async function handleSubscriptionEvent(
       await tx.billingEvent.create({
         data: ledgerRow(delivery, {
           outcome: "applied",
-          reason: null,
+          reason: appliedReason,
           companyId: identity.companyId,
           ...ids,
         }),
@@ -793,6 +828,31 @@ async function handleSubscriptionEvent(
     // Anything else is transient: let the outer catch answer 500 so LemonSqueezy
     // retries. No ledger row, so the retry is not swallowed as a replay.
     throw e;
+  }
+
+  if (period.unreadable) {
+    // bill-010. Raised AFTER the write commits, so it reports something that
+    // actually happened, and exactly once per applied delivery. Nobody on this
+    // side can fix it — the sender is producing a date we cannot read — so the
+    // useful output is an operator who knows which workspace is carrying a stale
+    // paid-through date, and what arrived instead of a date.
+    captureServerError(
+      new Error(`Billing event carried an unreadable paid-through date: ${eventName}`),
+      {
+        action: "lemonSqueezyWebhook.unreadablePeriodEnd",
+        companyId: identity.companyId,
+        extra: {
+          eventName,
+          subscriptionId,
+          customerId,
+          endsAt: attrs.ends_at,
+          renewsAt: attrs.renews_at,
+          // What the workspace is still claiming to be paid through, which is
+          // the number support will be asked about.
+          storedPeriodEnd: stored.currentPeriodEnd,
+        },
+      }
+    );
   }
 
   if (decision.lapsed) {
@@ -904,6 +964,40 @@ async function handlePaymentEvent(
   }
   const company = bound[0] ?? null;
   if (!company) {
+    // bill-011. Before calling this a subscription we have never seen, ask whether
+    // we hold the binding on a TOMBSTONED workspace — the query above filters
+    // those out, deliberately, because a tombstoned workspace must never be
+    // written to. But "never written to" and "unidentifiable" are different
+    // answers, and the ledger row for a charge is the one row in the table that
+    // exists to answer "whose money was this?". Recording `unknown-subscription`
+    // with a null companyId for a subscription we can name is the ledger throwing
+    // away the fact it was built to keep.
+    const tombstoned = await db.company.findMany({
+      where: { billingSubscriptionId: subscriptionId, deletedAt: { not: null } },
+      select: { id: true },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: 1,
+    });
+    const deleted = tombstoned[0] ?? null;
+    if (deleted) {
+      reportUnplaceableBillingEvent({
+        eventName,
+        reason: "company-deleted",
+        subscriptionId,
+        customerId,
+        companyId: deleted.id,
+      });
+      // Still no write of any kind: the workspace is inside its Tier 3 recovery
+      // window and ops treat it as gone. Only the record improves.
+      await recordDelivery(delivery, {
+        outcome: "skipped",
+        reason: "company-deleted",
+        companyId: deleted.id,
+        ...ids,
+      });
+      return NextResponse.json({ received: true, ignored: "company-deleted" });
+    }
+
     reportUnplaceableBillingEvent({
       eventName,
       reason: "unknown-subscription",

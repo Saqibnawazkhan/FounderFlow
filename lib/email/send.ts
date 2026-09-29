@@ -147,9 +147,41 @@ export function describeUnconfiguredSend(input: UnconfiguredSend): {
   };
 }
 
-// Module-level transporter — cached across requests so we don't reopen the
-// SMTP connection on every send. Lazy because Node 14+ workers may load
-// this module before env vars are populated; we re-check on first call.
+// Module-level transporter, cached across requests within one instance. Lazy
+// because a worker may load this module before env vars are populated; we
+// re-check on first call. Returns null — never throws — when either credential
+// is missing, which is the branch sendEmail's no-transport handling covers.
+//
+// WHAT THE CACHE DOES NOT DO: reuse the SMTP connection. This comment used to
+// claim it did ("so we don't reopen the SMTP connection on every send"), and
+// that is false. There is no `pool: true` here, and a non-pooled nodemailer
+// SMTPTransport builds a new SMTPConnection inside every `send()`
+// (node_modules/nodemailer/lib/smtp-transport/index.js), so EVERY message pays a
+// fresh TCP + TLS + AUTH handshake to smtp.gmail.com:465. What is cached is the
+// transport OBJECT: option normalisation, the well-known "gmail" lookup and the
+// auth setup, all of which are cheap. The connection cost is per message.
+//
+// Where that bites: `requestPasswordResetAction` does not await its send, and
+// the ~750ms response floor is all the runway it gets, so a cold handshake can
+// outlive it and the reset e-mail is then racing the instance being frozen.
+//
+// `pool: true` is deliberately NOT the answer, and the reasoning is per-caller
+// rather than general:
+//   • It would not save the reset path. That path sends ONE message per
+//     invocation, so the send at risk is always the first in a fresh instance,
+//     and the first send in a pool pays exactly the same TLS + AUTH handshake.
+//   • It WOULD change `lib/notify/email.ts`, which fans out to every recipient
+//     of a notification with `Promise.all` — several messages per invocation
+//     today, each on its own connection. Pooling would cap that concurrency
+//     (nodemailer's default maxConnections is 5) and reuse sockets, which may
+//     well be an improvement, but it is a behaviour change to the transport
+//     every e-mail path in the app shares, for a caller that did not ask for it
+//     and with nothing here testing the fan-out. It also keeps an idle socket
+//     open in a runtime that freezes instances.
+// So it stays unpooled and the reset path's residual risk is made visible
+// instead — see the RESPONSE_FLOOR_MS comment in lib/actions/password-reset.ts
+// for the Sentry signal and for the two things that would actually close it
+// (`after()` from next/server on Next 15, or an outbox row a cron retries).
 let transporter: nodemailer.Transporter | null = null;
 function getTransporter(): nodemailer.Transporter | null {
   if (!GMAIL_USER || !GMAIL_APP_PASSWORD) return null;

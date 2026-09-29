@@ -144,22 +144,33 @@ function when(path: string, value: unknown): void {
 }
 
 /**
- * The live user row, served to whichever single-row read the action reaches
- * for, and honouring a `deletedAt: null` filter if one is present — that
- * filter is itself under test (acct-004 noted the confirm path had none), so a
- * fake that ignored it would report a pass the database would not.
+ * The user rows the fake database holds, served to whichever single-row read
+ * the action reaches for, first match wins. The `where` is honoured rather
+ * than ignored — `deletedAt: null` (that filter is itself under test; acct-004
+ * noted the confirm path had none), `email` and `id` — so a fake that answered
+ * anyway would report a pass the database would not.
+ *
+ * More than one row matters for acct-016: the collision checks need a SECOND
+ * account holding the target address, live or tombstoned, alongside the caller.
  */
-function liveRow(r: Row | null): void {
+function liveRows(rows: Row[]): void {
   const serve = (args: Record<string, unknown>) => {
-    if (!r) return null;
     const where = (args.where ?? {}) as Record<string, unknown>;
-    if ("deletedAt" in where && where.deletedAt === null && r.deletedAt !== null) return null;
-    if (typeof where.email === "string" && where.email !== r.email) return null;
-    if (typeof where.id === "string" && where.id !== r.id) return null;
-    return r;
+    return (
+      rows.find((r) => {
+        if ("deletedAt" in where && where.deletedAt === null && r.deletedAt !== null) return false;
+        if (typeof where.email === "string" && where.email !== r.email) return false;
+        if (typeof where.id === "string" && where.id !== r.id) return false;
+        return true;
+      }) ?? null
+    );
   };
   when("user.findUnique", serve);
   when("user.findFirst", serve);
+}
+
+function liveRow(r: Row | null): void {
+  liveRows(r ? [r] : []);
 }
 
 function callsTo(path: string): Array<Record<string, unknown>> {
@@ -313,6 +324,150 @@ describe("confirmEmailChangeAction (auth-005, sec-010)", () => {
 
     expect(res.success).toBe(false);
     expect(updates()).toEqual([]);
+  });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* acct-016 — the target address is held by a DELETED account                  */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * WHAT THIS IS NOT. The audit row asked for `deletedAt: null` on the two
+ * collision lookups. That fix is refused, and one of the tests below pins the
+ * refusal: `User.email` carries a PLAIN global unique index
+ * (prisma/migrations/20260523212052_init/migration.sql:92 — no partial
+ * predicate), a tombstoned row keeps its address, and
+ * `reactivateUserAction` (lib/actions/team.ts:521) needs it kept so a
+ * deactivated teammate can be restored. Filtering the lookup would therefore
+ * not release the address; it would only hide the row, let the UPDATE fail on
+ * the index with P2002, and turn a clear refusal into the catch-all "Couldn't
+ * change your email right now."
+ *
+ * The bug that IS real is the same one acct-001 / auth-006 closed on the
+ * signup path: the user is told a live account holds an address that is in
+ * fact a tombstone, so every door they are pointed at refuses them too. The
+ * refusal stays; only the sentence changes.
+ */
+
+const DELETED_AT = new Date("2026-09-01T00:00:00.000Z");
+
+/** A tombstoned stranger — or a deactivated teammate — still holding NEW_EMAIL. */
+function tombstonedHolder(over: Partial<Row> = {}): Row {
+  return row({ id: "u_gone", name: "Former", email: NEW_EMAIL, deletedAt: DELETED_AT, ...over });
+}
+
+/** A live stranger holding NEW_EMAIL. */
+function liveHolder(): Row {
+  return row({ id: "u_other", name: "Someone", email: NEW_EMAIL });
+}
+
+describe("an address held by a deleted account (acct-016)", () => {
+  it("request: names the real reason instead of claiming a live account holds it", async () => {
+    signedIn();
+    liveRows([row(), tombstonedHolder()]);
+
+    const res = await requestEmailChangeAction({ newEmail: NEW_EMAIL, password: PASSWORD });
+
+    expect(res.success).toBe(false);
+    const error = res.success ? "" : res.error;
+    expect(error).not.toBe("An account with this email already exists.");
+    expect(error.toLowerCase()).toContain("deleted");
+    expect(error.toLowerCase()).toMatch(/support|restore/);
+    // No date, for the reason lib/actions/auth.ts:221 gives: the tombstone
+    // ages out only when the purge cron runs for real, and `PURGE_ENABLED` is
+    // off by default — "wait until <date>" would be a second false promise.
+    expect(error).not.toMatch(/\b20\d{2}\b/);
+    // Still a refusal, and still silent: the address stays reserved, and the
+    // confirmation mail must not go out to an address that cannot be taken.
+    expect(H.sent).toEqual([]);
+  });
+
+  it("request: still gives a LIVE duplicate the plain message", async () => {
+    signedIn();
+    liveRows([row(), liveHolder()]);
+
+    const res = await requestEmailChangeAction({ newEmail: NEW_EMAIL, password: PASSWORD });
+
+    expect(res).toEqual({ success: false, error: "An account with this email already exists." });
+    expect(H.sent).toEqual([]);
+  });
+
+  it("confirm: names the real reason when the address was taken and then deleted", async () => {
+    signedIn();
+    liveRow(row());
+    const req = await requestEmailChangeAction({ newEmail: NEW_EMAIL, password: PASSWORD });
+    expect(req.success).toBe(true);
+    const link = tokenFromMail();
+    H.calls.length = 0;
+    H.sent.length = 0;
+
+    // In the hour the link was live, someone else claimed the address and then
+    // deleted their account (or an admin deactivated the teammate holding it).
+    liveRows([row(), tombstonedHolder()]);
+
+    const res = await confirmEmailChangeAction({ token: link });
+
+    expect(res.success).toBe(false);
+    const error = res.success ? "" : res.error;
+    expect(error).not.toBe("That email is now in use by another account.");
+    expect(error.toLowerCase()).toContain("deleted");
+    expect(error.toLowerCase()).toMatch(/support|restore/);
+    // Emphatically not the catch-all: keeping the lookup unfiltered is exactly
+    // what stops this arriving as a P2002 wearing a server-error message.
+    expect(error).not.toMatch(/try again shortly/i);
+    expect(error).not.toMatch(/\b20\d{2}\b/);
+    expect(updates()).toEqual([]);
+  });
+
+  it("confirm: still gives a LIVE collision the plain message", async () => {
+    signedIn();
+    liveRow(row());
+    await requestEmailChangeAction({ newEmail: NEW_EMAIL, password: PASSWORD });
+    const link = tokenFromMail();
+    H.calls.length = 0;
+    H.sent.length = 0;
+
+    liveRows([row(), liveHolder()]);
+
+    const res = await confirmEmailChangeAction({ token: link });
+
+    expect(res).toEqual({ success: false, error: "That email is now in use by another account." });
+    expect(updates()).toEqual([]);
+  });
+
+  it("asks a question that CAN see a tombstone — neither lookup may filter it away", async () => {
+    // A forward guard, not a fix: this passes today and must keep passing.
+    // `where: { email, deletedAt: null }` is the one-line version of this
+    // finding, and it would make both messages below unreachable while the
+    // unique index refused the write anyway.
+    signedIn();
+    liveRows([row(), tombstonedHolder()]);
+    await requestEmailChangeAction({ newEmail: NEW_EMAIL, password: PASSWORD });
+
+    const requestLookups = [...callsTo("user.findFirst"), ...callsTo("user.findUnique")]
+      .map((a) => (a.where ?? {}) as Record<string, unknown>)
+      .filter((w) => w.email === NEW_EMAIL);
+    expect(requestLookups).toHaveLength(1);
+    expect(requestLookups[0]).not.toHaveProperty("deletedAt");
+
+    // And the same on the confirm path, where the consequence is worse: the
+    // UPDATE is one statement away.
+    liveRow(row());
+    const res = await requestEmailChangeAction({
+      newEmail: "fresh@nimbus.app",
+      password: PASSWORD,
+    });
+    expect(res.success).toBe(true);
+    const link = tokenFromMail("fresh@nimbus.app");
+    H.calls.length = 0;
+    liveRows([row(), tombstonedHolder({ email: "fresh@nimbus.app" })]);
+    await confirmEmailChangeAction({ token: link });
+
+    const confirmLookups = [...callsTo("user.findFirst"), ...callsTo("user.findUnique")]
+      .map((a) => (a.where ?? {}) as Record<string, unknown>)
+      .filter((w) => w.email === "fresh@nimbus.app");
+    expect(confirmLookups).toHaveLength(1);
+    expect(confirmLookups[0]).not.toHaveProperty("deletedAt");
   });
 });
 

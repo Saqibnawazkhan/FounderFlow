@@ -94,6 +94,19 @@ export const authConfig = {
       // So the gate asks for the two claims every downstream query actually
       // needs. Returning false sends them through the /login flow, which
       // re-mints a whole token instead of patching a broken one.
+      //
+      // WHAT `return false` PROMISES THE LOGIN PAGE (auth-017). next-auth's
+      // middleware wrapper turns this into a redirect to `pages.signIn` and puts
+      // the FULL original href in a `callbackUrl` query parameter
+      // (node_modules/next-auth/lib/index.js:177). `app/login/page.tsx` reads it
+      // back through `safePostLoginPath` so an emailed or bookmarked deep link
+      // survives an expired session — it used to hard-navigate to /dashboard and
+      // drop it. Two consequences worth knowing before editing this line:
+      //   • returning a `NextResponse.redirect` of your own here INSTEAD of
+      //     `false` would skip that entirely and lose the destination again;
+      //   • the parameter is attacker-supplied by the time it reaches the login
+      //     page, so it must never be followed unvalidated. That validation is
+      //     lib/auth/post-login-redirect.ts, and it is the only reader.
       const claims = auth?.user;
       if (!claims?.id || !claims.companyId) return false;
 

@@ -19,13 +19,19 @@
  *    page offers no way to try again.
  *
  * 2. IT MUST STILL NOT SAY WHETHER THE ACCOUNT EXISTS.
- *    `requestPasswordResetAction` returns `{ dispatched: false }` for an address
- *    that was never registered, for a tombstoned one, AND for a send that
- *    failed (lib/actions/password-reset.ts:119-152). So rendering ANYTHING
- *    differently on `dispatched` turns this endpoint into an enumeration
- *    oracle: on a healthy deployment "not dispatched" means "no such account".
- *    The first test below is that guarantee, pinned, so the fix for (1) cannot
- *    quietly cost (2).
+ *    `requestPasswordResetAction` answers every outcome — never registered,
+ *    tombstoned, live, and internally failed — with one envelope carrying no
+ *    payload at all. It used to carry `dispatched`, which was `true` for a live
+ *    account on any deployment with SMTP configured and `false` otherwise: an
+ *    enumeration oracle in the response body, closed in the action by auth-010
+ *    (see tests/lib/actions/password-reset-enumeration.test.ts).
+ *
+ *    That makes the page's half of the guarantee stronger, not redundant, and
+ *    the first test below states it in the form that survives the field coming
+ *    back: the rendering must be identical for the real empty envelope AND for
+ *    one that carries a delivery flag, i.e. the page must read nothing out of
+ *    `result.data` at all. Whoever adds a `deliveryBlocked` signal later — the
+ *    follow-up this slice recorded — has to keep that true or fail here.
  *
  * WHAT IS THEREFORE ASSERTED: identical output for both outcomes, and a panel
  * that gives a locked-out customer somewhere to go — resend, or a different
@@ -70,28 +76,33 @@ beforeEach(() => {
 });
 
 describe("the confirmation cannot be used to probe for accounts", () => {
-  it("renders byte-identically whether or not the email actually went out", async () => {
+  it("renders byte-identically, and ignores any delivery flag it is handed", async () => {
+    // The real contract since auth-010: one payload-free envelope for every
+    // outcome, so the page has nothing to leak.
+    requestPasswordResetAction.mockResolvedValue({ success: true, data: undefined });
+    const uniform = render(<ForgotPasswordPage />);
+    await submit();
+    await screen.findByRole("status");
+    const uniformHtml = uniform.container.innerHTML;
+    uniform.unmount();
+
+    // And the version that matters if the field ever returns: a body that says
+    // outright that the send happened. "Dispatched" means "no such account" when
+    // it is false and "this address is registered" when it is true, so a page
+    // that renders either differently is the oracle the action just stopped
+    // being. This must be the same HTML as above.
     requestPasswordResetAction.mockResolvedValue({ success: true, data: { dispatched: true } });
-    const delivered = render(<ForgotPasswordPage />);
-    await submit();
-    await screen.findByRole("status");
-    const deliveredHtml = delivered.container.innerHTML;
-    delivered.unmount();
-
-    requestPasswordResetAction.mockResolvedValue({ success: true, data: { dispatched: false } });
-    const dropped = render(<ForgotPasswordPage />);
+    const flagged = render(<ForgotPasswordPage />);
     await submit();
     await screen.findByRole("status");
 
-    // `dispatched: false` is "no such account" AND "the mailer is broken". Any
-    // difference here is an oracle for the first.
-    expect(dropped.container.innerHTML).toBe(deliveredHtml);
+    expect(flagged.container.innerHTML).toBe(uniformHtml);
   });
 });
 
 describe("a locked-out customer whose email never arrives has somewhere to go", () => {
   beforeEach(() => {
-    requestPasswordResetAction.mockResolvedValue({ success: true, data: { dispatched: false } });
+    requestPasswordResetAction.mockResolvedValue({ success: true, data: undefined });
   });
 
   it("announces the confirmation to a screen reader instead of only painting it", async () => {
@@ -163,10 +174,7 @@ describe("a refusal stays on the screen", () => {
       success: false,
       error: "Too many reset requests. Try again in 15 minutes.",
     });
-    requestPasswordResetAction.mockResolvedValueOnce({
-      success: true,
-      data: { dispatched: true },
-    });
+    requestPasswordResetAction.mockResolvedValueOnce({ success: true, data: undefined });
 
     render(<ForgotPasswordPage />);
     const user = await submit();

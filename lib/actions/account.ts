@@ -15,7 +15,8 @@
  * Soft-delete cascade:
  *   Instead of `db.company.delete()` we UPDATE a nullable `deletedAt`
  *   sentinel on Company + its child rows that carry the same column
- *   (Users, Projects, Tasks, Budgets, Transactions, Messages). Reads all filter
+ *   (Users, Projects, Tasks, Budgets, Transactions, Messages, Comments,
+ *   TimeEntries — nine models in all, counting Company). Reads all filter
  *   `deletedAt: null`, so tombstoned rows disappear from the UI, the
  *   team list, mention pickers, and auth — but the physical rows stay
  *   for 90 days. `/api/cron/purge-soft-deleted` hard-deletes them after
@@ -31,6 +32,7 @@
  */
 
 import bcrypt from "bcryptjs";
+import { revalidatePath } from "next/cache";
 import { cancelSubscription } from "@lemonsqueezy/lemonsqueezy.js";
 import { auth, signOut } from "@/lib/auth";
 import { clearAppearanceCookies } from "@/lib/appearance/cookies";
@@ -60,9 +62,11 @@ import type { ActionResult } from "@/lib/actions/types";
  * Cascade semantics:
  *   - Sole-user branch (Abdul's solo-founder shape): tombstones the whole
  *     workspace so the recovery is one UPDATE per table.
- *   - Multi-user branch: only tombstones the leaving user. Their tasks +
- *     comments + activity + notifications survive so the workspace history
- *     stays intact for their teammates.
+ *   - Multi-user branch: only tombstones the leaving user, and adds ONE row —
+ *     a `user_removed` activity saying they closed their own account (acct-019),
+ *     written in the same transaction as the tombstone. Their tasks + comments +
+ *     activity + notifications survive so the workspace history stays intact for
+ *     their teammates.
  *
  * Blocked case: sole-admin-with-teammates. Same guardrail as before —
  * promote another admin first, or delete the whole workspace.
@@ -199,13 +203,48 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
     // stage). Someone who exercised their right to delete their account should
     // not keep a FounderFlow subscription alive on their phone, so the
     // registrations go, in the same transaction as the tombstone.
+    //
+    // acct-019. The workspace survives this delete, so the workspace owes itself
+    // a record of it. `removeUserAction` writes a `user_removed` row when an
+    // ADMIN deactivates someone (lib/actions/team.ts); the self-delete path wrote
+    // nothing, and the two outcomes are indistinguishable afterwards: the person
+    // drops off the active roster and reappears in /team's admin-only
+    // "Deactivated" panel, with a "Reactivate" button. So an admin could restore
+    // an account its owner had deliberately closed, and no surface anywhere said
+    // who closed it. The row reuses `user_removed` — its label ("Member removed")
+    // and danger tone already exist, and the cause lives in the message, which is
+    // what /activities actually renders.
+    //
+    // Inside the transaction, not after it: a feed row without a tombstone says
+    // someone left who is still here, and a tombstone without a feed row is this
+    // finding. Note the array form of $transaction — this is a promise in the
+    // array, not an awaited call.
     await db.$transaction([
       db.user.update({
         where: { id: me.id },
         data: { deletedAt: now },
       }),
       db.pushSubscription.deleteMany({ where: { userId: me.id } }),
+      db.activity.create({
+        data: {
+          companyId,
+          type: "user_removed",
+          message: `${me.name} deleted their own account`,
+          userId: me.id,
+          userName: me.name,
+          // Same `kind: "user"` shape team.ts writes, so nothing downstream has
+          // to learn a new variant (lib/types.ts ActivityMetadata).
+          metadata: JSON.stringify({ kind: "user", invitedUser: me.name, role: me.role }),
+        },
+      }),
     ]);
+
+    // The feed row is only worth writing if teammates' cached pages refetch it.
+    // `removeUserAction` revalidates both of these after the identical writes;
+    // this path revalidated nothing, so a teammate's roster could keep listing
+    // the person who just left.
+    revalidatePath("/team");
+    revalidatePath("/activities");
 
     // acct-005. The leaving member's own receipt. The workspace survives, so
     // this notice is deliberately about the ACCOUNT and says nothing about the
@@ -378,7 +417,10 @@ async function cancelWorkspaceSubscription(
 
 /**
  * Tombstone a company + every child row that carries a `deletedAt` sentinel
- * (Users, Projects, Tasks, Budgets, Transactions, Messages). Runs inside a
+ * (Users, Projects, Tasks, Budgets, Transactions, Messages, Comments,
+ * TimeEntries — the full set is derived from prisma/schema.prisma by
+ * tests/lib/db/purge-invariants.test.ts, which fails the day a tenth model
+ * gains the column and this function does not follow). Runs inside a
  * single Prisma $transaction so a partial failure never leaves half the
  * workspace tombstoned. Returns the total row count touched (for the
  * bulk-mutation canary).
@@ -403,9 +445,31 @@ async function cancelWorkspaceSubscription(
  * tombstoned workspace has no session that can reach them. They die for real
  * when /api/cron/purge-soft-deleted hard-purges the Company.
  *
- * Skipped tables (no `deletedAt` column): Activity, Notification, Comment,
- * TimeEntry, RecurringRule, Channel, ChannelMember, MessageReaction. The nightly
- * purge deletes each of them by name when the parent Company is hard-purged.
+ * Skipped tables (no `deletedAt` column, so there is nothing for this sweep to
+ * write): Activity, Notification, RecurringRule, Channel, ChannelMember,
+ * MessageReaction, BillingEvent, NotificationPreference. The nightly purge
+ * deletes the first seven by name when the parent Company is hard-purged, and
+ * NotificationPreference cascades off the user delete in the same transaction.
+ *
+ * acct-012: this list used to name Comment and TimeEntry as well. Both gained a
+ * `deletedAt` column with data-integrity-001 and both are swept by
+ * `softDeleteWorkspace` below, so the sentence was false about a safety
+ * mechanism in exactly the
+ * way this repo keeps being false about one — it told the next reader those rows
+ * COULD not be tombstoned, next to the code that tombstones them. The claim is
+ * now derived from the schema instead of remembered:
+ * tests/lib/actions/workspace-lifecycle.test.ts fails if any table named here
+ * turns out to carry the column.
+ *
+ * Leaving those eight live for the retention window is deliberate, and
+ * deliberately NOT fixed by adding eight more `deletedAt` columns. Every read of
+ * them goes through `requireScopedSession()`, which cannot resolve for a
+ * workspace whose Users are all tombstoned; the one background writer that could
+ * still act on a live RecurringRule already filters
+ * `company: { deletedAt: null }` (app/api/cron/materialize-recurring); and the
+ * one delivery channel that bypasses the session entirely, PushSubscription, is
+ * hard-deleted below rather than skipped. Eight nullable columns would buy
+ * nothing and create eight new places to forget a filter.
  *
  * TWO tables are HARD-deleted here instead, because for those two "leave the row
  * and rely on the session filter" is not safe — they are credentials, not
@@ -531,9 +595,9 @@ async function softDeleteWorkspace(
  *
  *   UPDATE "Company" SET "deletedAt" = NULL WHERE id = '<id>';
  *   UPDATE "User" SET "deletedAt" = NULL WHERE "companyId" = '<id>';
- *   -- (repeat for Transaction/Task/Budget/Project/Message — they share the
- *   -- same tombstone timestamp so a range filter reunites them, and a
- *   -- range filter is what keeps individually-deleted messages deleted)
+ *   -- (repeat for Transaction/Task/Budget/Project/Message/Comment/TimeEntry —
+ *   -- they share the same tombstone timestamp so a range filter reunites them,
+ *   -- and a range filter is what keeps individually-deleted messages deleted)
  *
  * The nightly cron at /api/cron/purge-soft-deleted hard-deletes rows past
  * the 90-day window; nothing is recoverable after that.

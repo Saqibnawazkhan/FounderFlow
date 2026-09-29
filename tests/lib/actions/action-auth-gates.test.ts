@@ -113,8 +113,12 @@ const PRE_AUTH_ENDPOINTS: Record<string, string> = {
     "same UPDATE as the new hash. gateAuthAction tokenRedeem class.",
   "lib/actions/team.ts:acceptInviteAction":
     "Bearer of a single-use invite token — the invitee has no account yet, so " +
-    "there is no session to require. The token row is checked for used/expired " +
-    "before anything is written.",
+    "there is no session to require. The token row is checked for used/expired, " +
+    "and for its workspace's tombstone, before anything is written. The token is " +
+    "two UUIDv4s (~244 bits), so guessing it is infeasible at any rate — but the " +
+    "token was for a while the ONLY defence, which left an anonymous caller free " +
+    "to drive unbounded invite lookups. gateAuthAction tokenRedeem class on top " +
+    "since auth-008, same 30/min/address as the other three redeem endpoints.",
 };
 
 /**
@@ -650,6 +654,46 @@ describe("server-action auth gates (every endpoint is anonymous until it checks)
 
     // And the one exemption from this sub-rule stays deliberate.
     expect(PRE_AUTH_WITHOUT_SECOND_LINE.size).toBe(1);
+  });
+
+  it("meters every pre-auth endpoint, because a single-use token is not a throttle", () => {
+    // WHY THIS IS A SECOND, STRICTER PASS OVER THE SAME LIST. The rule above
+    // accepts a token IN PLACE OF a limiter. That is the right test for "is this
+    // an open, unthrottled WRITE path" and the wrong one for "can a stranger
+    // make us work": an unforgeable token stops them taking a seat, and says
+    // nothing about how many indexed reads they may ask for. Nothing in front of
+    // the action counts either — /invite/* and the reset/verify routes are public
+    // in auth.config.ts, and middleware.ts wires only NextAuth.
+    //
+    // That gap is auth-008. `acceptInviteAction` was the only member of this
+    // family carrying no limiter of any kind, and the `token` branch of the rule
+    // above is precisely what ratified it: the sweep reported it as defended.
+    // A finding this file was supposed to catch, passed by this file.
+    //
+    // The escape hatch is the SAME set as above — logout, which has no secret to
+    // guess and nothing to enumerate — deliberately, so a new pre-auth endpoint
+    // cannot be excused from metering without also being excused from the rule
+    // above, in writing, in the table at the top.
+    const universe = repoUniverse();
+    const byId = new Map<string, Endpoint>();
+    for (const endpoint of allEndpoints(universe)) byId.set(idOf(endpoint), endpoint);
+
+    const unmetered: string[] = [];
+    for (const id of Object.keys(PRE_AUTH_ENDPOINTS)) {
+      if (PRE_AUTH_WITHOUT_SECOND_LINE.has(id)) continue;
+      const body = byId.get(id)?.body ?? "";
+      if (!/limiters\.\w+\.consume\s*\(|gateAuthAction\s*\(/.test(body)) unmetered.push(id);
+    }
+
+    expect(
+      unmetered,
+      "These pre-auth endpoints rely on a token alone. A token is a credential, " +
+        "not a valve: an anonymous caller can still spend our database one " +
+        "round trip per POST, indefinitely, from one address. Add the matching " +
+        "gateAuthAction class — `tokenRedeem` for a redeem endpoint, which is " +
+        "30/min/address and costs a real customer nothing:\n  " +
+        unmetered.join("\n  ")
+    ).toEqual([]);
   });
 
   it("actually traverses delegation rather than trusting a helper's name", () => {

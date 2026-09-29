@@ -58,7 +58,7 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, downloadFile, formatDate } from "@/lib/utils";
 import type { Company, User as UserType } from "@/lib/types";
 import { useDateFormat, useT } from "@/lib/i18n/use-t";
-import type { Locale } from "@/lib/i18n/strings";
+import { splitAroundPlaceholder, type Locale } from "@/lib/i18n/strings";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import { formatDuration } from "@/lib/time/thresholds";
 import type { AccountStats } from "@/lib/queries/stats";
@@ -462,7 +462,8 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
         </div>
       </Section>
 
-      <Section icon={Database} label={t.settings.dataStorage}>
+      {/* id: the anchor the danger zone's acct-018 hint links to. */}
+      <Section icon={Database} label={t.settings.dataStorage} id="data-storage">
         <p className="mb-4 text-sm text-fg-muted">{t.settings.dataNote}</p>
         {canExport && (
           <div className="mb-4 flex flex-col items-start gap-3 rounded-xl border border-border bg-bg/40 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -532,7 +533,14 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
       </Section>
 
       <Section icon={Skull} label={t.settings.dangerZone} tone="danger">
-        <p className="mb-4 text-sm text-fg-muted">{t.settings.dangerZoneNote}</p>
+        <p className="mb-2 text-sm text-fg-muted">{t.settings.dangerZoneNote}</p>
+        {/* acct-018. The offer has to be visible where the decision is made. The
+            export cards are two sections up and were mentioned nowhere here, so
+            "take a copy first" only reached whoever happened to scroll past them.
+            A LINK, not just a sentence, and pointing UP at Data & storage rather
+            than moving the card down here — acct-007 is this page's own record of
+            what dressing a harmless action in danger red cost. */}
+        <DangerZoneExportHint />
         <div className="space-y-3">
           <div className="flex flex-col items-start gap-3 rounded-xl border border-danger/30 bg-danger/[0.04] p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
@@ -598,7 +606,17 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
         />
       )}
 
-      <DeleteAccountModal open={deleteAccountOpen} onClose={() => setDeleteAccountOpen(false)} />
+      <DeleteAccountModal
+        open={deleteAccountOpen}
+        onClose={() => setDeleteAccountOpen(false)}
+        // acct-018. The modal's own hint has to name the right FILE, and only the
+        // workspace export contains the transactions its sole-founder branch
+        // destroys. `deletesWorkspace` is computed from `otherUsers === 0` alone
+        // (lib/actions/account.ts) and never consults the role, so the modal is told
+        // whether this reader can actually reach that card instead of assuming the
+        // last live user is an admin.
+        canExportWorkspace={canExport}
+      />
       {canDeleteWorkspace && (
         <DeleteWorkspaceModal
           open={deleteWorkspaceOpen}
@@ -619,18 +637,23 @@ function Section({
   label,
   tone = "primary",
   action,
+  id,
   children,
 }: {
   icon: LucideIcon;
   label: string;
   tone?: "primary" | "danger";
   action?: React.ReactNode;
+  /** Anchor target, so another part of the page can link to this section. */
+  id?: string;
   children: React.ReactNode;
 }) {
   const toneText = tone === "danger" ? "text-danger" : "text-primary-strong";
   const toneFill = tone === "danger" ? "bg-danger/10" : "bg-primary/10";
   return (
-    <section className="rounded-2xl border border-border bg-surface p-6">
+    // scroll-mt: the app shell has a sticky topbar, so an un-offset anchor jump
+    // lands the section's heading underneath it.
+    <section id={id} className="scroll-mt-24 rounded-2xl border border-border bg-surface p-6">
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className={cn("flex h-9 w-9 items-center justify-center rounded-lg", toneFill)}>
@@ -644,6 +667,50 @@ function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+/**
+ * acct-018. The danger zone's pointer at the two export cards in Data & storage.
+ *
+ * WHY A COMPONENT AND NOT A LINE OF JSX. The copy contains a `{dataSection}`
+ * placeholder where the link goes, so that Urdu can put the section name where
+ * Urdu puts it instead of having an English-shaped sentence with a link bolted on
+ * the end. Rendering that means splitting the string, which is three statements,
+ * not an expression.
+ *
+ * WHAT THIS LINE DELIBERATELY DOES NOT SAY: anything about what the file
+ * contains. At this point the page does not know whether "Delete my account" will
+ * tombstone one user or run the whole-workspace cascade, and `?scope=me` omits
+ * every money table — so the precise version is in the confirmation dialogs,
+ * which do know. See lib/i18n/strings.ts.
+ *
+ * WHY `splitAroundPlaceholder` AND NOT `.split()`. A raw split on a locale that
+ * inlined the section name and lost the token returns ONE element, so `after` is
+ * `undefined` and this rendered the entire sentence followed by a bare
+ * "Data & storage" hyperlink hanging off its end. Both shipped locales carry the
+ * token and every locale in DICTIONARIES is swept for it by
+ * tests/app/settings/danger-zone-export-pointer.test.ts — this branch is the
+ * fallback for the locale that has not been written yet, and it drops the LINK
+ * rather than mangling the sentence.
+ */
+function DangerZoneExportHint() {
+  const t = useT();
+  const parts = splitAroundPlaceholder(t.settings.dangerZoneExportHint, "{dataSection}");
+  if (!parts) {
+    return <p className="mb-4 text-sm text-fg-muted">{t.settings.dangerZoneExportHint}</p>;
+  }
+  return (
+    <p className="mb-4 text-sm text-fg-muted">
+      {parts.before}
+      <a
+        href="#data-storage"
+        className="font-semibold text-primary-strong underline decoration-dotted underline-offset-2 transition-colors hover:text-primary"
+      >
+        {t.settings.dataStorage}
+      </a>
+      {parts.after}
+    </p>
   );
 }
 

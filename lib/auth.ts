@@ -26,6 +26,47 @@ const credentialsSchema = z.object({
   password: z.string().min(1),
 });
 
+/**
+ * A real bcrypt digest at cost 12, held constant, that no account is stored
+ * against. It exists so the "no such address" branch of `authorizeCredentials`
+ * can pay the same ~250ms bcrypt bill the "wrong password" branch pays.
+ *
+ * WHY (audit auth-011). `POST /api/auth/callback/credentials` is public
+ * (auth.config.ts) and needs nothing but a csrfToken from the public
+ * `GET /api/auth/csrf`. While the miss branch returned straight after the
+ * lookup, the response time answered a question the product otherwise refuses
+ * to answer: a registered address cost a bcrypt compare, an unregistered one
+ * cost one indexed SELECT. `/forgot-password` is deliberately
+ * enumeration-proof (lib/actions/password-reset.ts) and `loginAction` returns a
+ * deliberately neutral "Invalid email or password"; both were undone by a
+ * stopwatch. It leaked the tombstone too — the lookup filters
+ * `deletedAt: null`, so a DELETED account took the fast branch and was
+ * distinguishable from a live one.
+ *
+ * THE COST FACTOR IS THE WHOLE POINT and it must track the real one. Every
+ * stored hash in this repo is written at 12 (`bcrypt.hash(password, 12)` in
+ * lib/actions/auth.ts, lib/actions/password-reset.ts, lib/actions/profile.ts,
+ * lib/actions/team.ts). A sentinel at a lower cost would leave a proportional
+ * split still readable; a higher one inverts it. The cost lives inside the
+ * digest string, so it cannot be read off this file's imports —
+ * tests/lib/auth/login-throttle.test.ts parses every `bcrypt.hash` call under
+ * `lib/` and asserts the sentinel's embedded cost equals all of them, so
+ * changing one without the other fails the suite.
+ *
+ * ITS PLAINTEXT IS IRRELEVANT. The comparison's result is discarded, never
+ * branched on, so even if this exact digest's plaintext were published it
+ * unlocks nothing — which is why a hard-coded constant is correct here and
+ * hashing something per request is not: that would cost a hash PLUS a compare,
+ * i.e. double the known-address path, reopening the split with the sign flipped.
+ *
+ * THE COST OF THIS MITIGATION, STATED. An unknown-address guess now burns a
+ * bcrypt(12) where it used to burn a SELECT. What bounds that is the gate
+ * above it: `gateLoginAttempt` refuses before the lookup, so only attempts
+ * already inside the 5-per-IP-per-minute budget buy the work. Pinned by
+ * "buys that bcrypt only for attempts the throttle has already allowed".
+ */
+const ABSENT_ACCOUNT_PASSWORD_HASH = "$2b$12$shPflmLrcgvYvZfMmyYGIe/rYKzyj5QqfazIzrS3dgK17NO4mcDP.";
+
 declare module "next-auth" {
   interface Session {
     user: {
@@ -163,7 +204,16 @@ export async function authorizeCredentials(raw: unknown) {
   if (!user) {
     // Charge the account bucket even for an address with no row — see
     // recordLoginFailure. Guessing addresses must not be the cheap path.
+    // Ordered FIRST so the throttle accounting can never be skipped by
+    // something the comparison below does; it is an in-memory Map write, so
+    // the ordering costs nanoseconds against the ~250ms that follows.
     recordLoginFailure(email);
+    // auth-011: pay the SAME bcrypt bill this function pays on the
+    // wrong-password branch, so the response time stops answering "is this
+    // address registered?". See ABSENT_ACCOUNT_PASSWORD_HASH above for why the
+    // digest is a constant, why its cost factor is load-bearing, and why the
+    // discarded result is safe.
+    await bcrypt.compare(password, ABSENT_ACCOUNT_PASSWORD_HASH);
     return null;
   }
 

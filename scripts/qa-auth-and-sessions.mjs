@@ -43,6 +43,10 @@
  *     all nine agents share ONE limiters.auth bucket of 5/60s fed by nine call
  *     sites. Every probe that deliberately BURNS the auth bucket uses its own
  *     suffixed key, so it can never starve the rest of this run.
+ *   - The same rule applies to the per-ACCOUNT failure bucket, which is the one
+ *     that bites harder: a suffixed x-real-ip does nothing for it, because it is
+ *     keyed on the EMAIL. So a probe that deliberately spends failures spends
+ *     BURN_EMAIL's ten, not the founder's — see the comment on that constant.
  *   - No fixed setTimeout for state; waitUntil() polls a predicate. The only
  *     fixed waits are the 1200-1500ms pre-hydration pauses copied from
  *     scripts/smoke-chat.mjs (FaultsAudit A14) — those wait for React to own
@@ -67,6 +71,30 @@ const COMPANY_NAME = `qa-auth-${STAMP}`;
 const ADMIN_EMAIL = `qa-auth-${STAMP}@founderflow.test`;
 const ADMIN_PW = "QaAudit1Pass";
 const ADMIN_PW_2 = "QaAudit2Reset";
+/**
+ * The address the deliberate per-IP burns in section 4 spend, and nothing else.
+ *
+ * WHY IT EXISTS. `limiters.credentialsEmail` gives each ADDRESS ten failures per
+ * fifteen minutes, and that bucket is CHECKED before bcrypt — so an empty one
+ * refuses the CORRECT password too. Section 4b's throttle probe used to make its
+ * wrong guesses at ADMIN_EMAIL, which put the founder's account at 8 of 10
+ * before section 5 had started; signIn()'s three hydration retries then took it
+ * to the ceiling and sections 5 and 6 reported "new password does not sign in"
+ * and "stuck tab cannot recover" — two failures about the password reset, caused
+ * entirely by a timing probe.
+ *
+ * WHY IT COSTS THE PROBE NOTHING. 4b and 4c assert on the per-IP bucket, and
+ * `ipBucketKey(ip, email)` returns the address verbatim whenever the client
+ * address is trusted (it is here: x-real-ip is set on every context), so the
+ * email does not enter that bucket's key at all. Burning an address with no row
+ * spends exactly the same per-IP budget, down the same authorize() path, and
+ * pays the same bcrypt against ABSENT_ACCOUNT_PASSWORD_HASH.
+ *
+ * Pinned by tests/lib/auth/login-throttle.test.ts, "leaves the founder enough
+ * failure budget for the sign-ins that follow it", which reads the address out
+ * of THIS file and replays the run through the real limiter.
+ */
+const BURN_EMAIL = `qa-auth-burn-${STAMP}@founderflow.test`;
 const MEMBER_EMAIL = `qa-auth-member-${STAMP}@founderflow.test`;
 const MEMBER_PW = "QaAudit1Member";
 const NEW_EMAIL_B = `qa-auth-b-${STAMP}@founderflow.test`;
@@ -200,7 +228,9 @@ async function attemptLogin(page, email, password) {
   const text = await waitUntil(
     async () => {
       const t = await bodyText(page);
-      return /invalid email or password|too many requests|couldn't sign you in/i.test(t) ? t : false;
+      return /invalid email or password|too many requests|couldn't sign you in/i.test(t)
+        ? t
+        : false;
     },
     { timeout: 20000, label: "login rejection toast" }
   );
@@ -286,7 +316,10 @@ const myMember = () => db.user.findUnique({ where: { id: TENANT.memberId } });
 
 async function main() {
   if (!AUTH_SECRET) {
-    fail("AUTH_SECRET readable from .env.local", "every token-path check below is inert without it");
+    fail(
+      "AUTH_SECRET readable from .env.local",
+      "every token-path check below is inert without it"
+    );
   }
 
   const browser = await puppeteer.launch({
@@ -384,7 +417,8 @@ async function main() {
       { timeout: 6000, label: "step-1 validation" }
     );
     if (stillStep1) ok("signup step 1 refuses to advance with empty fields");
-    else fail("signup step-1 validation", "Continue advanced, or surfaced no error, on an empty form");
+    else
+      fail("signup step-1 validation", "Continue advanced, or surfaced no error, on an empty form");
 
     await admin.type('input[name="name"]', `QA Auth ${STAMP}`);
     await admin.type('input[name="email"]', ADMIN_EMAIL);
@@ -394,7 +428,8 @@ async function main() {
       async () => /uppercase|digit|at least 8/i.test(await bodyText(admin)),
       { timeout: 6000, label: "weak-password rejection" }
     );
-    if (weakRejected) ok("signup rejects a password missing uppercase/digit (shared PasswordSchema)");
+    if (weakRejected)
+      ok("signup rejects a password missing uppercase/digit (shared PasswordSchema)");
     else fail("weak password accepted at signup", "no policy error surfaced");
 
     await setInput(admin, 'input[name="password"]', ADMIN_PW);
@@ -440,7 +475,8 @@ async function main() {
     if (founder.email === ADMIN_EMAIL) ok("the founder's email is stored lowercased and intact");
     else fail("founder email", `expected ${ADMIN_EMAIL}, got ${founder.email}`);
     if (founder.handle) ok(`the founder got an @mention handle (@${founder.handle})`);
-    else fail("founder handle is NULL", "the founder is unmentionable in their own workspace (T16)");
+    else
+      fail("founder handle is NULL", "the founder is unmentionable in their own workspace (T16)");
     if (founder.emailVerifiedAt === null) ok("a fresh account starts unverified");
     else fail("fresh verification state", `emailVerifiedAt is ${founder.emailVerifiedAt}`);
     if (founder.sessionVersion === 0) ok("a fresh account starts at sessionVersion 0");
@@ -477,13 +513,44 @@ async function main() {
     );
     const dupCompanies = await db.company.count({ where: { name: `qa-auth-dup-${STAMP}` } });
     if (dupCompanies === 0) ok("a rejected duplicate signup leaves no orphan Company row");
-    else fail("orphan company on duplicate signup", `${dupCompanies} row(s) survived the rejection`);
+    else
+      fail("orphan company on duplicate signup", `${dupCompanies} row(s) survived the rejection`);
 
+    // THE SIGNUP HALF OF auth-011: ACCEPTED, NOT UNNOTICED. This used to fail()
+    // the whole run on the message text, permanently, which trains a reader to
+    // skim past a red line in a security audit. It is a note() now because
+    // re-wording the message DOES NOT CLOSE ANYTHING: a genuine signup ends in
+    // `signIn("credentials")` and a redirect to /dashboard
+    // (lib/actions/auth.ts, pinned by tests/lib/actions/signup-integrity.test.ts),
+    // so "did this address already exist?" is legible from the response SHAPE —
+    // session cookie or no session cookie — whatever words are in the body. And
+    // the duplicate branch returns before the bcrypt(12) a real signup pays, so
+    // it is legible from the latency too. Neutral copy over an unchanged flow
+    // would report as fixed and leak exactly as much, while re-breaking acct-001
+    // (a user who deleted their own account being told it still exists).
+    // Genuinely closing it means signup never granting access until the address
+    // is confirmed by email — a product decision with a conversion cost, a Gmail
+    // quota cost per probe, and a rewrite of app/signup/page.tsx's success path.
+    // Escalated, not silently accepted; see lib/actions/auth.ts at the duplicate
+    // check for the full argument. If that decision is taken, turn this back
+    // into a fail() as the first step.
     if (dupMsg && /an account with this email already exists/i.test(dupMsg)) {
+      note(
+        "signup names the reason: this address is already registered (accepted oracle, auth-011)",
+        "the unauthenticated response says so outright, at 15 probes per IP per 10 min — accepted " +
+          "because the response shape and the latency leak the same fact regardless of wording, so " +
+          "only a confirm-before-access signup flow would actually close it"
+      );
+    } else if (dupMsg && /couldn't create/i.test(dupMsg)) {
+      // Not a pass. The waitUntil predicate above accepts this string too, and
+      // the old `else if` counted it as "rejected without naming the reason" —
+      // a false pass over the exact failure acct-001 warns about: the duplicate
+      // lookup missing the row, the INSERT tripping the unique index, and the
+      // catch-all answering with a server error.
       fail(
-        "signup confirms whether an email is registered (enumeration oracle)",
-        'the unauthenticated response reads "An account with this email already exists" — the exact ' +
-          "fact /forgot-password works hard not to reveal, at 5 probes per IP per minute"
+        "duplicate signup answered with the generic server-error fallback",
+        `the response was "${dupMsg.slice(0, 120)}" — a duplicate address must be recognised by the ` +
+          "lookup in signupAction, not by a P2002 from the unique index landing in the catch-all"
       );
     } else if (dupMsg) {
       ok("duplicate signup is rejected without naming the reason");
@@ -568,13 +635,181 @@ async function main() {
     /* ═══ 4. LOGIN: the brute-force control, and whether it can be walked around ═══ */
     section("4. login rate limiting + the /api/auth/callback/credentials path");
 
+    // 4a. THE TIMING ORACLE (auth-011) — AND IT RUNS FIRST, ON PURPOSE.
+    //
+    //     WHY FIRST. This probe used to sit at the END of this section, on the
+    //     `${IP}-burn` context, AFTER 4c had deliberately spent that IP's whole
+    //     5-per-60s credential budget on 12 guesses. A throttled attempt returns
+    //     from authorize() BEFORE the user lookup — fast for both addresses — so
+    //     the two medians converged and this printed "no usable timing split"
+    //     while the oracle was wide open. It was a guaranteed false pass, which
+    //     is worse than no probe: three fix waves read it as a clean bill.
+    //
+    //     WHY THE SAMPLE COUNTS ARE SO SMALL, AND THE ARITHMETIC THAT SETS THEM.
+    //     One fresh x-real-ip per round, 3 requests each (under the 5/60s per-IP
+    //     budget), 3 rounds. Three samples are ample to tell a bcrypt(12)
+    //     (~250ms here) from an indexed SELECT (~1ms) — and the cap is not
+    //     patience, it is ADMIN_EMAIL's per-ACCOUNT budget, which this probe is
+    //     the only thing in section 4 still allowed to touch:
+    //
+    //       limiters.credentialsEmail = 10 failures / 15 min, CHECKED BEFORE
+    //       bcrypt — so an empty bucket refuses the RIGHT password too.
+    //         4a (here):   3   one registered sample per round; the two fake
+    //                          samples per round go to TIMING_FAKE_EMAIL.
+    //         4b:          0   burns BURN_EMAIL instead (it asserts on the
+    //                          per-IP bucket, whose key holds no email).
+    //         4c:          0   same per-IP key as 4b, already empty, so every
+    //                          guess is refused before the account bucket.
+    //         section 5:   3   signIn() retries the now-wrong pre-reset password
+    //                          up to 3 times (its hydration-race loop).
+    //         ────────────────
+    //         total:       6   leaving 4, and the two sign-ins that MUST succeed
+    //                          — section 5's "the new password signs in" and
+    //                          section 6's "recovers the stuck tab" — are inside
+    //                          it. At 3 + 5 they were not, and both failed.
+    //
+    //     Raising the round count spends that headroom. The arithmetic above is
+    //     replayed through the real limiter by
+    //     tests/lib/auth/login-throttle.test.ts,
+    //     "leaves the founder enough failure budget for the sign-ins that follow
+    //     it", which reads these numbers out of this file.
+    //
+    //     The discarded first sample of each round is the warm-up: on a cold dev
+    //     server the first POST to /api/auth/callback/credentials pays route
+    //     compilation, and charging that to whichever address went first would
+    //     manufacture a split out of nothing. It is spent on the UNREGISTERED
+    //     address, whose budget nothing else in this run wants.
+    //
+    //     WHAT IT VERIFIES: lib/auth.ts compares the submitted password against
+    //     a constant bcrypt(12) digest (ABSENT_ACCOUNT_PASSWORD_HASH) on the
+    //     no-such-user branch, so both answers pay the same bill. The unit half
+    //     is tests/lib/auth/login-throttle.test.ts, "credential timing parity for
+    //     an address with no row" — and it CANNOT measure time, because bcryptjs
+    //     is mocked there. That is the whole reason this probe exists.
+    const TIMING_FAKE_EMAIL = `qa-auth-nobody2-${STAMP}@founderflow.test`;
+    const timingSamples = { real: [], fake: [] };
+    for (let round = 1; round <= 3; round++) {
+      const { ctx: tCtx, page: tPage } = await newCtx(browser, `${IP}-t${round}`);
+      try {
+        await tPage.goto(`${BASE}/login`, { waitUntil: "networkidle0" });
+        const pair = await tPage.evaluate(
+          async (realEmail, fakeEmail) => {
+            const csrf = await (await fetch("/api/auth/csrf")).json();
+            async function sample(email) {
+              const t0 = performance.now();
+              await fetch("/api/auth/callback/credentials", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({
+                  csrfToken: csrf.csrfToken,
+                  email,
+                  password: "timing-probe-Aa1",
+                  callbackUrl: "/",
+                  json: "true",
+                }),
+                redirect: "manual",
+              }).then((r) => r.text().catch(() => ""));
+              return performance.now() - t0;
+            }
+            await sample(fakeEmail); // warm-up, discarded
+            const real = await sample(realEmail);
+            const fake = await sample(fakeEmail);
+            return { real, fake };
+          },
+          ADMIN_EMAIL,
+          TIMING_FAKE_EMAIL
+        );
+        timingSamples.real.push(pair.real);
+        timingSamples.fake.push(pair.fake);
+      } finally {
+        await shut(tPage, tCtx);
+      }
+    }
+
+    const medianMs = (xs) =>
+      Math.round(xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)]);
+    const tReal = medianMs(timingSamples.real);
+    const tFake = medianMs(timingSamples.fake);
+    note(
+      "credentials timing",
+      `registered ${tReal}ms vs unregistered ${tFake}ms (n=${timingSamples.real.length} each)`
+    );
+    // A bcrypt(12) is ~250ms on this box; an indexed SELECT on a miss is ~1ms.
+    // 80ms is the "something expensive happened here" line between them.
+    const BCRYPT_FLOOR_MS = 80;
+    /* TIMING-VERDICT-START
+     * Everything between these two markers is SLICED OUT OF THIS FILE AND
+     * EXECUTED by tests/lib/auth/login-throttle.test.ts ("the live timing
+     * probe's verdict"), which replays a grid of median pairs — including the
+     * unfixed oracle (registered ~250ms, unregistered ~4ms) — through this exact
+     * source. That is the only way to unit-test a verdict that lives in a script
+     * needing a dev server and a browser, and it is here because the first
+     * version of this block reported INCONCLUSIVE on precisely the input it was
+     * built to catch.
+     *
+     * KEEP THE BLOCK SELF-CONTAINED: it may read only `tReal`, `tFake`,
+     * `BCRYPT_FLOOR_MS` and `IP`, and may call only `fail()` and `ok()`. Adding
+     * a reference to anything else breaks the extraction (the test fails with a
+     * ReferenceError naming it, which is the intended signal, not a puzzle).
+     */
+    const tSlower = Math.max(tReal, tFake);
+    const tFaster = Math.min(tReal, tFake);
+    // INCONCLUSIVE means "neither answer ran a bcrypt", so the test is on the
+    // SLOWER median: if even the dearer of the two is under the floor, no bcrypt
+    // happened on either branch and the pair says nothing about parity.
+    //
+    // THIS WAS `tFaster < 80` AND THAT IS THE ONE INPUT THAT MATTERS. In the
+    // unfixed state (registered ~250ms, unregistered ~4ms) the MINIMUM is 4, so
+    // the probe took this branch — reporting INCONCLUSIVE on exactly the oracle
+    // it was built to detect, and printing a message its own two numbers
+    // refuted. A probe that says "inconclusive, go and check something else" on
+    // a live finding is worse than no probe.
+    //
+    // The message cites `tSlower`, the value the condition actually tested, so
+    // it cannot be printed beside a median that contradicts it. Pinned by
+    // tests/lib/auth/login-throttle.test.ts, "never prints a verdict whose own
+    // numbers refute it", which sweeps a grid of median pairs through this
+    // block's real source.
+    if (tSlower < BCRYPT_FLOOR_MS) {
+      fail(
+        "the credentials timing probe is inconclusive — not clean",
+        `the SLOWER of the two medians is ${tSlower}ms, under the ${BCRYPT_FLOOR_MS}ms floor ` +
+          `(registered ${tReal}ms, unregistered ${tFake}ms), so NEITHER answer can have run a ` +
+          "bcrypt(12). Either the throttle refused these attempts before the lookup (check that " +
+          `nothing above spent the 5/60s budget for ${IP}-t1..t3, or ADMIN_EMAIL's 10/15min ` +
+          "per-account budget), or RATE_LIMIT_DISABLED is set. A converged pair of fast answers " +
+          "is NOT evidence of parity."
+      );
+    } else if (tSlower > tFaster * 2 && tSlower - tFaster > 40) {
+      fail(
+        "login timing reveals whether an email is registered",
+        `median ${tReal}ms for a registered address vs ${tFake}ms for an unregistered one — the ` +
+          `${tSlower === tReal ? "registered" : "unregistered"} branch is doing bcrypt work the other is ` +
+          "not. lib/auth.ts must compare against ABSENT_ACCOUNT_PASSWORD_HASH on the no-such-user branch, " +
+          "at the same cost factor bcrypt.hash() uses everywhere else (auth-011)."
+      );
+    } else {
+      ok(
+        `no usable timing split between registered and unregistered addresses (${tReal}ms vs ${tFake}ms, ` +
+          "both paying a bcrypt)"
+      );
+    }
+    /* TIMING-VERDICT-END */
+
     const { ctx: burnCtx, page: burn } = await newCtx(browser, `${IP}-burn`);
 
-    // 4a. Prove the limiter is live on this box at all. If RATE_LIMIT_DISABLED
+    // 4b. Prove the limiter is live on this box at all. If RATE_LIMIT_DISABLED
     //     is "true" nothing below means anything, so say so loudly.
+    //
+    //     BURN_EMAIL, NOT ADMIN_EMAIL, and that is load-bearing rather than
+    //     tidy: this loop's five accepted attempts used to spend HALF the
+    //     founder's per-account failure budget, which sections 5 and 6 need in
+    //     order to sign in at all. See the comment on BURN_EMAIL. The assertion
+    //     is unchanged in meaning — it is the per-IP bucket that refuses attempt
+    //     6, and its key does not contain the email.
     let burnedAt = null;
     for (let i = 1; i <= 7 && burnedAt === null; i++) {
-      const text = await attemptLogin(burn, ADMIN_EMAIL, "definitely-not-the-password-1A");
+      const text = await attemptLogin(burn, BURN_EMAIL, "definitely-not-the-password-1A");
       if (/too many requests/i.test(text)) burnedAt = i;
     }
     if (burnedAt !== null) {
@@ -587,14 +822,29 @@ async function main() {
     }
     await burn.screenshot({ path: `${OUT}/04-login-throttled.png` });
 
-    // 4b. The bypass that WAS here (P0 auth-001 / sec-008), now a regression
+    // 4c. The bypass that WAS here (P0 auth-001 / sec-008), now a regression
     //     guard. /api/auth/* is public in auth.config.ts, so the Credentials
     //     callback endpoint is reachable from the SAME IP just locked out of
     //     the /login form. It used to reach bcrypt directly because
     //     authorize() consumed no limiter; fixed 2026-09-26 by gating
     //     authorize() itself (lib/auth.ts -> lib/auth/login-throttle.ts).
-    //     These 12 guesses spend the per-IP budget; 4b-ii below is what
+    //     These 12 guesses spend the per-IP budget; 4c-ii below is what
     //     actually decides whether the gate is live.
+    //
+    //     ADMIN_EMAIL HERE, unlike 4b, and deliberately: `stillAnon` below has
+    //     to be asked about an address that HAS a row and a password, or "none
+    //     of the wrong-password probes established a session" is true by
+    //     construction and asserts nothing. It costs the founder's account
+    //     budget nothing because 4b has already emptied this per-IP key, so
+    //     every one of these is refused before the account bucket is read. In
+    //     the one world where that is not true — the per-IP window sliding far
+    //     enough for the budget to refill mid-loop — 4c-ii immediately below
+    //     fails loudly, so the overspend cannot happen silently.
+    //
+    //     NOTHING TIMING-SENSITIVE MAY BE ADDED AFTER THIS POINT in section 4:
+    //     from here on this context's budget is deliberately empty, so every
+    //     answer is fast for every address. That is what made the old placement
+    //     of 4a a false pass.
     const attempts = await burn.evaluate(async (email) => {
       const csrf = await (await fetch("/api/auth/csrf")).json();
       const out = [];
@@ -615,7 +865,7 @@ async function main() {
         const text = await r.text().catch(() => "");
         // `throttled` is recorded for the log only. It can never be true now:
         // a denied attempt is deliberately indistinguishable from a rejected
-        // one (see 4b-ii). Do not assert on it.
+        // one (see 4c-ii). Do not assert on it.
         out.push({ status: r.status, throttled: /too many requests/i.test(text) });
       }
       return out;
@@ -629,7 +879,7 @@ async function main() {
     if (stillAnon) ok("none of the wrong-password probes established a session");
     else fail("a brute-force probe signed in", "a wrong password was accepted");
 
-    // ── 4b-ii. Is the endpoint actually throttled? ────────────────────────
+    // ── 4c-ii. Is the endpoint actually throttled? ────────────────────────
     //
     // WHY NOT GREP FOR "Too many requests": it is absent BY DESIGN, and the
     // old version of this check read that absence as the vulnerability.
@@ -699,50 +949,6 @@ async function main() {
       );
     }
 
-    // 4c. The timing oracle on that same unthrottled endpoint: authorize()
-    //     returns BEFORE bcrypt when the address is unknown.
-    const timing = await burn.evaluate(
-      async (realEmail, fakeEmail) => {
-        const csrf = await (await fetch("/api/auth/csrf")).json();
-        async function sample(email) {
-          const body = new URLSearchParams({
-            csrfToken: csrf.csrfToken,
-            email,
-            password: "timing-probe-Aa1",
-            callbackUrl: "/",
-            json: "true",
-          });
-          const t0 = performance.now();
-          await fetch("/api/auth/callback/credentials", {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body,
-            redirect: "manual",
-          }).then((r) => r.text().catch(() => ""));
-          return performance.now() - t0;
-        }
-        const med = (xs) => xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)];
-        const real = [];
-        const fake = [];
-        for (let i = 0; i < 7; i++) {
-          real.push(await sample(realEmail));
-          fake.push(await sample(fakeEmail));
-        }
-        return { real: Math.round(med(real)), fake: Math.round(med(fake)) };
-      },
-      ADMIN_EMAIL,
-      `qa-auth-nobody2-${STAMP}@founderflow.test`
-    );
-    note("credentials timing", `registered ${timing.real}ms vs unregistered ${timing.fake}ms`);
-    if (timing.real > timing.fake * 2 && timing.real - timing.fake > 40) {
-      fail(
-        "login timing reveals whether an email is registered",
-        `median ${timing.real}ms for a registered address vs ${timing.fake}ms for an unregistered one — ` +
-          "bcrypt.compare only runs after the user lookup succeeds, and the endpoint is unthrottled"
-      );
-    } else {
-      ok("no usable timing split between registered and unregistered addresses");
-    }
     await shut(burn, burnCtx);
 
     /* ═══ 5. PASSWORD RESET: TTL, single use, pv binding, cross-purpose ═══ */
@@ -756,9 +962,13 @@ async function main() {
       ADMIN_PW_2,
       `${IP}-r1`
     );
-    if (/expired/i.test(expired.text)) ok("an expired reset link is refused with an expiry message");
+    if (/expired/i.test(expired.text))
+      ok("an expired reset link is refused with an expiry message");
     else
-      fail("expired reset token", `expected an "expired" message, got: ${expired.text.slice(0, 160)}`);
+      fail(
+        "expired reset token",
+        `expected an "expired" message, got: ${expired.text.slice(0, 160)}`
+      );
 
     const forged = await submitReset(
       await mintToken(
@@ -784,7 +994,10 @@ async function main() {
 
     // A stale pv is what an OLD outstanding link looks like after any reset.
     const stalePv = await submitReset(
-      await resetToken(TENANT.adminId, passwordVersion("$2a$12$not.this.accounts.hash.at.all.0000")),
+      await resetToken(
+        TENANT.adminId,
+        passwordVersion("$2a$12$not.this.accounts.hash.at.all.0000")
+      ),
       ADMIN_PW_2,
       `${IP}-r4`
     );
@@ -842,7 +1055,8 @@ async function main() {
 
     // Old password dead, new password alive.
     const { ctx: pw1Ctx, page: pw1 } = await newCtx(browser, `${IP}-pw1`);
-    if (!(await signIn(pw1, ADMIN_EMAIL, ADMIN_PW))) ok("the pre-reset password no longer signs in");
+    if (!(await signIn(pw1, ADMIN_EMAIL, ADMIN_PW)))
+      ok("the pre-reset password no longer signs in");
     else fail("old password still valid after reset", "the reset did not take effect for sign-in");
     await shut(pw1, pw1Ctx);
 
@@ -965,7 +1179,10 @@ async function main() {
           await settings.screenshot({ path: `${OUT}/08-change-email-requested.png` });
         }
       } else {
-        note("no 'Change email' control on /settings", "requesting the change via the UI was skipped");
+        note(
+          "no 'Change email' control on /settings",
+          "requesting the change via the UI was skipped"
+        );
       }
       const afterRequest = await myAdmin();
       if (afterRequest.email === ADMIN_EMAIL) {
@@ -1087,12 +1304,16 @@ async function main() {
         await team.screenshot({ path: `${OUT}/09-invite-created.png` });
 
         if (!invite) {
-          fail("invite was not persisted", `no InviteToken for ${MEMBER_EMAIL} in ${TENANT.companyId}`);
+          fail(
+            "invite was not persisted",
+            `no InviteToken for ${MEMBER_EMAIL} in ${TENANT.companyId}`
+          );
         } else {
           ok("the invite is persisted against this workspace");
           if (invite.role === "member") ok("the chosen role is stored on the token");
           else fail("invite role", `expected "member", got "${invite.role}"`);
-          if (invite.token.length >= 32) ok(`the invite token carries ${invite.token.length} hex chars`);
+          if (invite.token.length >= 32)
+            ok(`the invite token carries ${invite.token.length} hex chars`);
           else fail("weak invite token", `${invite.token.length} chars`);
           const ttlDays = Math.round((invite.expiresAt - invite.createdAt) / 86400000);
           if (ttlDays === 7) ok("the invite expires in 7 days");
@@ -1179,7 +1400,8 @@ async function main() {
               else fail("invited role not honoured", `got "${joined.role}"`);
               if (joined.handle) ok(`the teammate got a handle (@${joined.handle})`);
               else fail("invitee handle is NULL", "they are unmentionable in their own workspace");
-              if (joined.companyId === TENANT.companyId) ok("the teammate lands in the inviting workspace");
+              if (joined.companyId === TENANT.companyId)
+                ok("the teammate lands in the inviting workspace");
               else fail("cross-tenant invite landing", `companyId ${joined.companyId}`);
 
               const membership = generalChannel
@@ -1208,7 +1430,8 @@ async function main() {
             timeout: 60000,
           });
           const replayBody = await bodyText(replayPage);
-          if (/already been used/i.test(replayBody)) ok("a claimed invite link reports itself used");
+          if (/already been used/i.test(replayBody))
+            ok("a claimed invite link reports itself used");
           else fail("burnt invite link replay", replayBody.slice(0, 200));
           await replayPage.screenshot({ path: `${OUT}/09-invite-replay.png` });
           await shut(replayPage, rCtx);
@@ -1291,7 +1514,9 @@ async function main() {
     }
 
     // The deep link the user actually asked for.
-    await anon.goto(`${BASE}/expenses`, { waitUntil: "networkidle0", timeout: 60000 }).catch(() => {});
+    await anon
+      .goto(`${BASE}/expenses`, { waitUntil: "networkidle0", timeout: 60000 })
+      .catch(() => {});
     const cbUrl = anon.url();
     note("the /login bounce URL", cbUrl.replace(BASE, ""));
     if (/callbackUrl/i.test(cbUrl)) {
@@ -1314,7 +1539,9 @@ async function main() {
 
     // /offline must work with no session at all — it is the PWA fallback.
     const { ctx: offCtx, page: off } = await newCtx(browser, `${IP}-off`);
-    await off.goto(`${BASE}/offline`, { waitUntil: "networkidle0", timeout: 60000 }).catch(() => {});
+    await off
+      .goto(`${BASE}/offline`, { waitUntil: "networkidle0", timeout: 60000 })
+      .catch(() => {});
     if (pathOf(off) === "/offline" && /offline/i.test(await bodyText(off))) {
       ok("/offline renders without a session");
     } else {
@@ -1341,7 +1568,10 @@ async function main() {
     if (TENANT.memberId) {
       const { ctx: memCtx, page: member } = await newCtx(browser, `${IP}-mem`);
       if (!(await signIn(member, MEMBER_EMAIL, MEMBER_PW))) {
-        fail("the invited member cannot sign in", "the auto-sign-in on accept left an unusable hash");
+        fail(
+          "the invited member cannot sign in",
+          "the auto-sign-in on accept left an unusable hash"
+        );
       } else {
         ok("the invited member can sign in with the password they set");
 
@@ -1361,14 +1591,16 @@ async function main() {
             .catch(() => {});
           const p = pathOf(member);
           const body = await bodyText(member);
-          if (p !== route || /not found|404/i.test(body)) ok(`a member is kept off ${route} (→ ${p})`);
+          if (p !== route || /not found|404/i.test(body))
+            ok(`a member is kept off ${route} (→ ${p})`);
           else fail(`a member reached ${route}`, "a finance surface is exposed to a member");
         }
         await member.goto(`${BASE}/dashboard?ref=newsletter`, {
           waitUntil: "networkidle0",
           timeout: 60000,
         });
-        if (member.url().includes("ref=newsletter")) ok("the bounce preserves the original querystring");
+        if (member.url().includes("ref=newsletter"))
+          ok("the bounce preserves the original querystring");
         else fail("querystring dropped on the member bounce", member.url().replace(BASE, ""));
         await member.screenshot({ path: `${OUT}/10-member-bounced.png` });
 
@@ -1394,7 +1626,10 @@ async function main() {
               { timeout: 20000, label: "member promoted to cofounder" }
             );
             if (!promoted) {
-              fail("the promotion never landed in the database", "updateUserRoleAction rejected it");
+              fail(
+                "the promotion never landed in the database",
+                "updateUserRoleAction rejected it"
+              );
             } else {
               ok("the admin's promotion is persisted");
               if (promoted.sessionVersion === 0) {
@@ -1481,7 +1716,9 @@ async function main() {
         const returnMsg = await waitUntil(
           async () => {
             const t = await bodyText(dead);
-            return /already exists|couldn't create/i.test(t) || pathOf(dead) !== "/signup" ? t : false;
+            return /already exists|couldn't create/i.test(t) || pathOf(dead) !== "/signup"
+              ? t
+              : false;
           },
           { timeout: 25000, label: "re-signup outcome" }
         );
@@ -1496,7 +1733,9 @@ async function main() {
             .catch(() => {});
           await db.channel.deleteMany({ where: { companyId: remade.id } }).catch(() => {});
           await db.activity.deleteMany({ where: { companyId: remade.id } }).catch(() => {});
-          await db.company.update({ where: { id: remade.id }, data: { ownerId: null } }).catch(() => {});
+          await db.company
+            .update({ where: { id: remade.id }, data: { ownerId: null } })
+            .catch(() => {});
           await db.user.deleteMany({ where: { companyId: remade.id } }).catch(() => {});
           await db.company.delete({ where: { id: remade.id } }).catch(() => {});
         } else {

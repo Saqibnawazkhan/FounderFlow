@@ -230,6 +230,43 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
       };
     }
     if (existing) {
+      // ── auth-011, SIGNUP HALF: THIS IS AN ACCEPTED ORACLE, ON PURPOSE ──
+      //
+      // Yes: an unauthenticated stranger can learn whether an address holds a
+      // FounderFlow account by submitting the signup form, at 15 probes per IP
+      // per 10 minutes (lib/rate-limit.ts `signupIp`). That is the same fact
+      // /forgot-password works hard NOT to reveal, and the asymmetry is
+      // deliberate. Do not "fix" it by neutralising this string.
+      //
+      // WHY NEUTRAL COPY WOULD CLOSE NOTHING. A successful signup ends in
+      // `signIn("credentials")` and the client navigating to /dashboard; a
+      // duplicate cannot. So the answer is readable from the response SHAPE —
+      // a session cookie appears or it does not — no matter what words are in
+      // the body. It is readable from the LATENCY too: a real signup pays a
+      // bcrypt(12) plus a transaction plus an email, and this branch returns
+      // after one indexed SELECT. Rewording would mark the finding closed and
+      // leak exactly as much, while re-breaking acct-001 (see the tombstone
+      // branch above: a user who deleted their own account was told it still
+      // exists, and then told their credentials were wrong). That trade is
+      // strictly worse than the oracle.
+      //
+      // WHAT WOULD ACTUALLY CLOSE IT, and why it is not done here: signup must
+      // stop granting access until the address is confirmed — always answer
+      // "check your inbox", send either the welcome link or a "someone tried to
+      // sign up with your address" notice, and let nothing in the response
+      // distinguish the two. That is a product decision (a confirmation step in
+      // front of every new workspace), it costs a send per probe against a
+      // capped Gmail account (lib/email/send.ts), and it rewrites
+      // app/signup/page.tsx's success path. It is escalated as such, not
+      // forgotten.
+      //
+      // THE TIMING HALF OF auth-011 WAS closed, in the login path where copy
+      // could not paper over it — see ABSENT_ACCOUNT_PASSWORD_HASH in
+      // lib/auth.ts. Signup differs precisely because there the message already
+      // tells you, so equalising the clock would buy nothing.
+      //
+      // Both wordings are pinned by tests/lib/actions/signup-integrity.test.ts,
+      // so neutralising either one fails the suite rather than passing quietly.
       return { success: false, error: "An account with this email already exists" };
     }
 

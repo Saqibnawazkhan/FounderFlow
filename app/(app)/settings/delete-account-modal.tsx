@@ -46,6 +46,14 @@ import { cn } from "@/lib/utils";
 type Props = {
   open: boolean;
   onClose: () => void;
+  /**
+   * acct-018. Whether this reader can reach the WORKSPACE export card in Data &
+   * storage (`canSeeFinances`). Passed in rather than derived here: the finance
+   * gate lives on the settings page, and `deletesWorkspace` below is computed
+   * from the live member count alone and never consults the role, so the two
+   * questions are genuinely independent.
+   */
+  canExportWorkspace: boolean;
 };
 
 /**
@@ -59,7 +67,7 @@ const DeleteAccountFormSchema = DeleteAccountSchema.extend({
 });
 type DeleteAccountFormValues = z.infer<typeof DeleteAccountFormSchema>;
 
-export function DeleteAccountModal({ open, onClose }: Props) {
+export function DeleteAccountModal({ open, onClose, canExportWorkspace }: Props) {
   const t = useT();
   const pwId = useId();
   const nameId = useId();
@@ -69,6 +77,20 @@ export function DeleteAccountModal({ open, onClose }: Props) {
     workspaceName: string;
   } | null>(null);
   const [scopeLoaded, setScopeLoaded] = useState(false);
+  /**
+   * The server's refusal, kept on the screen rather than only in a toast.
+   *
+   * The toaster's duration is 3500ms (components/providers.tsx), and the refusal
+   * this dialog is most likely to receive is the sole-founder gate's — 150
+   * characters that name the workspace and ask the reader to type it
+   * (lib/actions/account.ts:135). That is an instruction, and it is the recovery
+   * route for a failed scope lookup: with the scope unknown there is no name field
+   * on this screen, so the way forward is to read the sentence, close, and reopen
+   * (which re-asks). A sentence that has already faded makes that unguessable.
+   * The toast still fires — it is what pulls the eye back to a dialog the reader
+   * may have scrolled away from.
+   */
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const {
     register,
     handleSubmit,
@@ -102,6 +124,55 @@ export function DeleteAccountModal({ open, onClose }: Props) {
 
   const deletesWorkspace = scope?.deletesWorkspace === true;
 
+  /**
+   * acct-018 — "download your data first", said honestly.
+   *
+   * THE TRAP THIS BRANCH EXISTS FOR. `?scope=me` never queries Transaction,
+   * Budget or RecurringRule in any role (app/api/export/route.ts: money belongs
+   * to the workspace, not to a person), and the sole-founder branch of
+   * `deleteAccountAction` destroys all three. So one undifferentiated "export
+   * first" line would hand a solo founder a file with none of their ledger in it
+   * and tell them it was their data. This modal is the only place that knows
+   * which of the two destructions this is, so it is the only place that can pick
+   * the right file.
+   *
+   * `null` in the remaining case — a whole-workspace delete by someone who cannot
+   * reach the workspace export — is deliberate. Today that case should not arise
+   * (the last live user is always an admin: `removeUserAction` refuses to remove
+   * the last admin or the caller themselves, and the multi-user branch here
+   * refuses a sole admin's self-delete), but the copy must not depend on that
+   * invariant holding. Saying nothing is the pre-existing behaviour; pointing at a
+   * card that is not on their screen, or at a personal file that omits exactly
+   * what is about to be destroyed, would both be worse than silence.
+   *
+   * Nothing at all until `scopeLoaded`, for the same reason the submit button is
+   * disabled until then: `deletesWorkspace` reads false while the answer is in
+   * flight, so an ungated hint would show a solo founder the personal-file line
+   * first and then swap it — one frame of precisely the wrong sentence.
+   *
+   * AND NOTHING WHEN THE LOOKUP FAILED, which is why this reads `scope` and not
+   * `deletesWorkspace`. `scope` is null in two unrelated situations — "not asked
+   * yet" and "asked, and `describeAccountDeletionAction` returned !success" — and
+   * only the first is covered by `scopeLoaded`. On a failure the second branch
+   * used to fall through to the PERSONAL line and state, as fact, the exact lie
+   * the branch above exists to prevent: a sole founder whose lookup failed was
+   * told to take "Download my data", the one file that provably does not contain
+   * the transactions, budgets and recurring rules this click destroys. Silence is
+   * the honest answer to a destruction whose size we do not know; the narrower of
+   * two claims is not. (The delete itself still fails closed — the sole-user
+   * branch re-checks the typed workspace name server-side,
+   * lib/actions/account.ts:132 — so what was at stake here was the reassurance,
+   * not the rows.)
+   */
+  const exportHint =
+    !scopeLoaded || !scope
+      ? null
+      : scope.deletesWorkspace
+        ? canExportWorkspace
+          ? t.settings.exportBeforeWorkspaceDeleteHint
+          : null
+        : t.settings.exportBeforeAccountDeleteHint;
+
   async function onSubmit(data: DeleteAccountFormValues) {
     if (deletesWorkspace && scope) {
       // Checked here for an instant, in-field answer; the action checks it again
@@ -114,6 +185,9 @@ export function DeleteAccountModal({ open, onClose }: Props) {
       }
     }
     setSubmitting(true);
+    // Cleared before the attempt: a refusal left under a fresh submission reads as
+    // a second failure.
+    setDeleteError(null);
     const res = await deleteAccountAction(
       deletesWorkspace
         ? { password: data.password, workspaceName: data.workspaceName }
@@ -121,6 +195,7 @@ export function DeleteAccountModal({ open, onClose }: Props) {
     );
     setSubmitting(false);
     if (!res.success) {
+      setDeleteError(res.error);
       toast.error(res.error);
       return;
     }
@@ -134,6 +209,7 @@ export function DeleteAccountModal({ open, onClose }: Props) {
 
   function onClosed() {
     reset();
+    setDeleteError(null);
     onClose();
   }
 
@@ -150,6 +226,11 @@ export function DeleteAccountModal({ open, onClose }: Props) {
             : t.settings.deleteAccountConfirmDesc}
         </p>
       </div>
+
+      {/* acct-018. Outside the danger-red alert on purpose: taking a copy is the
+          harmless, reversible half of this screen, and acct-007 is this page's own
+          record of what happened when a harmless action was dressed in red. */}
+      {exportHint && <p className="mb-4 text-xs text-fg-muted">{exportHint}</p>}
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
         {deletesWorkspace && scope && (
@@ -204,6 +285,15 @@ export function DeleteAccountModal({ open, onClose }: Props) {
             <p className="mt-1.5 text-xs text-danger">{errors.password.message}</p>
           )}
         </div>
+
+        {/* Same shape as app/forgot-password/page.tsx:198 — role="alert" so a
+            screen reader is told, and inside the dialog so the instruction is
+            still there after the toast has gone. */}
+        {deleteError && (
+          <p role="alert" className="text-xs font-medium text-danger">
+            {deleteError}
+          </p>
+        )}
 
         <div className="flex justify-end gap-2 pt-1">
           <button

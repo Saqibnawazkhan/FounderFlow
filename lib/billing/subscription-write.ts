@@ -130,27 +130,40 @@ export type SubscriptionWriteDecision =
  * Prisma throws, the route's catch answers 500, and LemonSqueezy then retries
  * the same unparseable payload on a backoff for ever. Dropping just the date
  * lets the rest of the event apply.
+ *
+ * bill-010, THE SECOND HALF. "Unreadable" therefore behaves exactly like
+ * "absent" — the stored date is left alone and nothing throws — but it is not
+ * the same EVENT. Absent is the provider saying nothing; unreadable is the
+ * provider saying something we could not understand, which means the customer's
+ * paid-through date is now stale and we are the only ones who know. So the two
+ * are reported separately: `absent` drives the write (bill-007), `unreadable`
+ * drives the record. Collapsing them was why a malformed date could be dropped
+ * with no trace beyond a `currentPeriodEnd` nobody could explain.
  */
 export function readPeriodEnd(attrs: Record<string, unknown>): {
   periodEnd: Date | null;
   absent: boolean;
+  /** A period key WAS present and could not be read as a date. bill-010. */
+  unreadable: boolean;
 } {
   const hasEnds = Object.prototype.hasOwnProperty.call(attrs, "ends_at");
   const hasRenews = Object.prototype.hasOwnProperty.call(attrs, "renews_at");
-  if (!hasEnds && !hasRenews) return { periodEnd: null, absent: true };
+  if (!hasEnds && !hasRenews) return { periodEnd: null, absent: true, unreadable: false };
 
   const raw = hasEnds && attrs.ends_at != null ? attrs.ends_at : attrs.renews_at;
   if (typeof raw !== "string" || raw.length === 0) {
     // Both keys present and empty: a real statement, so not absent.
-    if (raw == null) return { periodEnd: null, absent: false };
+    if (raw == null) return { periodEnd: null, absent: false, unreadable: false };
     // A number or object where a date string belongs — we cannot trust it, and
-    // we must not turn it into 1970 or an Invalid Date.
-    return { periodEnd: null, absent: true };
+    // we must not turn it into 1970 or an Invalid Date. An empty string lands
+    // here too: it is present-but-unusable, which is not the same statement as
+    // an explicit `null`, so it leaves the stored date alone AND gets reported.
+    return { periodEnd: null, absent: true, unreadable: true };
   }
 
   const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return { periodEnd: null, absent: true };
-  return { periodEnd: parsed, absent: false };
+  if (Number.isNaN(parsed.getTime())) return { periodEnd: null, absent: true, unreadable: true };
+  return { periodEnd: parsed, absent: false, unreadable: false };
 }
 
 /**

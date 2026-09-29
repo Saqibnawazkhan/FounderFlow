@@ -213,6 +213,44 @@ describe("production build env gate (a green build that is broken is an outage)"
     }
   });
 
+  it("refuses a production build that sets PASSWORD_RESET_RESPONSE_FLOOR_MS at all", () => {
+    // prodready-002's shape, reintroduced by the auth-010 fix hours ago and found
+    // by a verifier. `lib/actions/password-reset.ts` holds every outcome of
+    // /forgot-password to a 750ms latency floor so the response time stops
+    // answering "is this address registered". The override exists only so two
+    // tests can turn that floor back ON — but it was readable in the Production
+    // scope, and "0" there switches the defence off silently, with no runtime
+    // signal, exactly like RATE_LIMIT_DISABLED above.
+    //
+    // The action now ignores it outside a test environment, so this gate is the
+    // second half: a var that is silently ignored is its own trap, because the
+    // next reader "fixes" the code to honour it. Refused at ANY value, not just a
+    // truthy one — the dangerous value is `0`, which no truthiness test catches.
+    for (const value of ["0", "1", "750", "false"]) {
+      const problems = productionEnvProblems(envWith("PASSWORD_RESET_RESPONSE_FLOOR_MS", value));
+      expect(
+        problems.length,
+        `PASSWORD_RESET_RESPONSE_FLOOR_MS="${value}" was allowed into a production build. ` +
+          "At 0 the /forgot-password response time distinguishes a registered address from " +
+          "an unregistered one again, and nothing anywhere would say so."
+      ).toBeGreaterThan(0);
+      expect(problems.join("\n")).toContain("PASSWORD_RESET_RESPONSE_FLOOR_MS");
+    }
+    // And the message has to name what it switches off, not just the variable.
+    const joined = productionEnvProblems(envWith("PASSWORD_RESET_RESPONSE_FLOOR_MS", "0")).join(
+      "\n"
+    );
+    expect(joined.toLowerCase()).toContain("enumerat");
+  });
+
+  it("leaves PASSWORD_RESET_RESPONSE_FLOOR_MS alone when it is not set", () => {
+    // The default IS the protection. An absent var must never fail a deploy, or
+    // the gate is a gate against the correct configuration.
+    expect(productionEnvProblems(HEALTHY_PROD_ENV)).toEqual([]);
+    expect(productionEnvProblems(envWith("PASSWORD_RESET_RESPONSE_FLOOR_MS", ""))).toEqual([]);
+    expect(productionEnvProblems(envWith("PASSWORD_RESET_RESPONSE_FLOOR_MS", "   "))).toEqual([]);
+  });
+
   it("refuses a loopback or malformed NEXT_PUBLIC_APP_URL", () => {
     // prodready-004's likelier half: not forgotten, but copied out of
     // .env.local.example. A presence check passes and every e-mail link then

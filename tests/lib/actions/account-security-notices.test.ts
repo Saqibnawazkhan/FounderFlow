@@ -67,6 +67,10 @@ const H = vi.hoisted(() => {
     "company",
     "inviteToken",
     "pushSubscription",
+    // acct-019: deleteAccountAction's multi-user branch now writes an Activity
+    // row inside its transaction, so the feed records a self-delete the way it
+    // already records an admin removal.
+    "activity",
   ];
   const OPS = [
     "findUnique",
@@ -77,6 +81,7 @@ const H = vi.hoisted(() => {
     "updateMany",
     "delete",
     "deleteMany",
+    "create",
   ];
 
   type Op = (args?: Record<string, unknown>) => Promise<unknown>;
@@ -288,6 +293,11 @@ describe("acct-005 — deleting an account sends the receipt that carries the de
     when("user.count", 2); // otherUsers AND otherAdmins — both non-zero
     when("user.update", me());
     when("pushSubscription.deleteMany", { count: 0 });
+    // acct-019 added an Activity row to this branch's transaction, so the feed
+    // records a self-delete the way it already records an admin removal. It is
+    // stubbed rather than asserted here because this file is about the EMAIL
+    // receipt; the activity row itself is covered in workspace-lifecycle.
+    when("activity.create", { id: "a1" });
 
     const res = await deleteAccountAction({ password: "pw" });
     expect(res.success).toBe(true);

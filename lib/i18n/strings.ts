@@ -419,6 +419,18 @@ export const en = {
       "These take effect the moment you confirm — access ends immediately. Nothing is erased " +
       "straight away, though: we keep a recoverable copy for 90 days, so contact support right " +
       "away if it was a mistake.",
+    // acct-018. The export card is two sections up, and nobody scrolling towards
+    // "Delete my account" reads it. This line is the pointer, and it deliberately
+    // promises NOTHING about what the file contains: at this point on the page the
+    // app does not yet know whether this account-delete tombstones one user or
+    // runs the whole-workspace cascade, and `?scope=me` omits the money tables.
+    // The precise, branch-aware version lives in the two confirmation dialogs
+    // below, which do know. `{dataSection}` is replaced by a link to the
+    // "Data & storage" section — a placeholder rather than an appended sentence so
+    // Urdu keeps its own word order.
+    dangerZoneExportHint:
+      "Nothing here takes a copy for you. If you want one, download it from {dataSection} " +
+      "above before you confirm — afterwards access ends immediately.",
     deleteAccount: "Delete my account",
     deleteAccountDesc:
       "Removes your user record and everything you own from the app. If you're the only person in this workspace, the workspace goes with you.",
@@ -426,6 +438,13 @@ export const en = {
     deleteAccountConfirmDesc:
       "You'll be signed out and lose access immediately. We keep a recoverable copy for 90 days — " +
       "contact support right away if this is a mistake. Enter your password below to confirm.",
+    // acct-018, the multi-user branch: the workspace survives, so the only file
+    // that matters to the leaver is their own — and `?scope=me` does contain all
+    // of it. Names the card's own label, because that is the text on the button
+    // they are being sent to find.
+    exportBeforeAccountDeleteHint:
+      "Want your own copy first? Cancel, and use “Download my data” under Data & storage — " +
+      "your profile, tasks, tracked time and comments.",
     // acct-013. Shown INSTEAD of the line above when the caller is the only member
     // of their workspace — the case where "Delete my account" runs the identical
     // whole-workspace cascade that "Delete this workspace" runs. FounderFlow's
@@ -436,6 +455,28 @@ export const en = {
       "every transaction, task, budget and comment goes with it, and any active Team " +
       "subscription is cancelled. We keep a recoverable copy for 90 days; contact support " +
       "right away if this is a mistake. Type the workspace name exactly, then your password.",
+    // acct-018, and the reason this key is not one undifferentiated "export first"
+    // line. `personalExport` (app/api/export/route.ts) never queries Transaction,
+    // Budget or RecurringRule in ANY role — money belongs to the workspace, not to
+    // a person — while both whole-workspace branches destroy all three. So telling
+    // a solo founder to "download your data" would hand them a file with none of
+    // their ledger in it and call it their data. Shared by the sole-founder branch
+    // of the account dialog and by the workspace dialog, because they destroy the
+    // identical rows.
+    //
+    // QUOTES THE BUTTON, NOT THE CARD. This line used to send the reader for the
+    // “Export workspace” file — which is the card's HEADING; the button under it
+    // reads “Export JSON” (exportWorkspaceAction), so someone scanning for a
+    // button with that label found none, in the one branch where the file they
+    // are being sent for is the only copy of their ledger. The sibling hint
+    // quotes “Download my data”, which really is button text, so both now name
+    // the same kind of target. tests/app/settings/danger-zone-export-pointer.
+    // test.ts reads both labels out of settings-client.tsx and fails if a button
+    // is renamed without this copy following it.
+    exportBeforeWorkspaceDeleteHint:
+      "This deletes the whole workspace, and “Download my data” does not include its " +
+      "transactions, budgets or recurring rules. To keep those, cancel and press " +
+      "“Export JSON” under Data & storage first.",
     deleteAccountAndWorkspaceAction: "Delete account + workspace",
     passwordConfirm: "Enter your password",
     deleteWorkspace: "Delete this workspace",
@@ -787,6 +828,16 @@ export const ur: typeof en = {
       "تصدیق کرتے ہی یہ کارروائیاں نافذ ہو جاتی ہیں اور رسائی فوراً ختم ہو جاتی ہے۔ لیکن کچھ بھی " +
       "فوری طور پر نہیں مٹایا جاتا: ہم 90 دن تک قابلِ بحالی کاپی محفوظ رکھتے ہیں، اس لیے " +
       "غلطی ہونے کی صورت میں فوراً سپورٹ سے رابطہ کریں۔",
+    // acct-018. See the English key for the argument. «…» rather than “…” around
+    // the Urdu section name: the guillemets mirror correctly in an RTL run, where
+    // curly quotes can land on the wrong side. The English button label is left
+    // unquoted and in Latin script because that is literally what the Urdu reader
+    // sees on the card (FaultsAudit A35 — the three export labels are still
+    // English literals), so quoting a translation they will not find would be a
+    // worse instruction than naming the text on the button.
+    dangerZoneExportHint:
+      "یہاں کوئی چیز آپ کے لیے کاپی نہیں بناتی۔ اگر کاپی چاہیے تو تصدیق سے پہلے اوپر " +
+      "{dataSection} سے ڈاؤن لوڈ کر لیں — اس کے بعد رسائی فوراً ختم ہو جاتی ہے۔",
     deleteAccount: "میرا اکاؤنٹ حذف کریں",
     deleteAccountDesc:
       "آپ کا یوزر ریکارڈ اور اس کی سب چیزیں ایپ سے ہٹا دی جائیں گی۔ اگر آپ اس ورک اسپیس کے واحد فرد ہیں تو ورک اسپیس بھی ساتھ چلا جائے گا۔",
@@ -795,11 +846,30 @@ export const ur: typeof en = {
       "آپ فوراً سائن آؤٹ ہو جائیں گے اور رسائی ختم ہو جائے گی۔ ہم 90 دن تک قابلِ بحالی کاپی " +
       "محفوظ رکھتے ہیں — اگر یہ غلطی سے ہو رہا ہے تو فوراً سپورٹ سے رابطہ کریں۔ " +
       "تصدیق کے لیے نیچے اپنا پاس ورڈ درج کریں۔",
+    exportBeforeAccountDeleteHint:
+      "پہلے اپنے ڈیٹا کی کاپی چاہیے؟ منسوخ کریں اور «ڈیٹا اور اسٹوریج» میں Download my data " +
+      "سے فائل لے لیں — آپ کی پروفائل، کام، ٹریک کیا گیا ٹائم اور تبصرے۔",
     deleteAccountWorkspaceConfirmDesc:
       "آپ {workspace} میں واحد فرد ہیں، اس لیے یہ پورا ورک اسپیس حذف کر دے گا — ہر ٹرانزیکشن، " +
       "کام، بجٹ اور تبصرہ ساتھ چلا جائے گا، اور کوئی بھی فعال Team سبسکرپشن منسوخ کر دی جائے گی۔ " +
       "ہم 90 دن تک قابلِ بحالی کاپی محفوظ رکھتے ہیں؛ غلطی ہونے کی صورت میں فوراً سپورٹ سے رابطہ کریں۔ " +
       "ورک اسپیس کا نام بالکل ویسا ہی ٹائپ کریں، پھر اپنا پاس ورڈ۔",
+    // Must keep ٹرانزیکشنز (transactions) and بجٹ (budgets) by name — that omission
+    // IS the news in this sentence, and a softened translation that dropped the two
+    // words would be the acct-011 failure again, one locale at a time.
+    // tests/app/settings/danger-zone-export-pointer.test.ts holds both.
+    //
+    // The quoted label changed — and ONLY the label. See the English key: the
+    // hint must name the text on the BUTTON, and in Urdu that is
+    // exportWorkspaceAction, «JSON ایکسپورٹ», not the card heading
+    // «ورک اسپیس ایکسپورٹ کریں» that used to stand here. The substitution is
+    // deliberately a swap of one on-screen label for another inside the existing
+    // sentence — the surrounding Urdu is untouched, because rewriting it is a
+    // native reviewer's job and this repo does not ship Urdu it cannot read.
+    exportBeforeWorkspaceDeleteHint:
+      "یہ پورا ورک اسپیس حذف کر دیتا ہے، اور Download my data میں اس کے ٹرانزیکشنز، بجٹ یا " +
+      "تکراری رولز شامل نہیں ہوتے۔ اگر وہ رکھنے ہیں تو منسوخ کریں اور پہلے «ڈیٹا اور اسٹوریج» " +
+      "سے «JSON ایکسپورٹ» فائل حاصل کر لیں۔",
     deleteAccountAndWorkspaceAction: "اکاؤنٹ + ورک اسپیس حذف کریں",
     passwordConfirm: "پاس ورڈ درج کریں",
     deleteWorkspace: "یہ ورک اسپیس حذف کریں",
@@ -823,6 +893,34 @@ export const DICTIONARIES: Record<Locale, Strings> = { en, ur };
 
 export function getDirForLocale(locale: Locale): "ltr" | "rtl" {
   return SUPPORTED_LOCALES.find((l) => l.code === locale)?.dir ?? "ltr";
+}
+
+/**
+ * Split a string around the FIRST occurrence of a `{placeholder}` token, so a
+ * caller can render something of its own — a link, a bold name — in the gap the
+ * translator chose. `null` when the token is absent.
+ *
+ * WHY THIS IS NOT `template.split(token)`. It is, underneath, but the caller has
+ * to be able to tell the missing case apart. `"no token here".split("{x}")`
+ * returns a one-element array, so `const [before, after] = …` hands back
+ * `undefined` for `after` and a component that renders `{before}<a/>{after ?? ""}`
+ * puts its anchor on the end of the whole sentence — a dangling link, in a locale
+ * nobody is reading, from a translation that merely inlined the section name.
+ * Both shipped locales carry the token and a test sweeps every locale in
+ * DICTIONARIES for it, so this answer is the belt to that braces: a future locale
+ * that loses the slot loses the LINK, not the sentence.
+ *
+ * Only the first occurrence is a slot. A second would render to the customer as
+ * literal `{dataSection}`, which is why the sweep in
+ * tests/app/settings/danger-zone-export-pointer.test.ts demands exactly one.
+ */
+export function splitAroundPlaceholder(
+  template: string,
+  token: string
+): { before: string; after: string } | null {
+  const at = template.indexOf(token);
+  if (at < 0) return null;
+  return { before: template.slice(0, at), after: template.slice(at + token.length) };
 }
 
 /** The locale this dictionary is authored in, and the fallback for everything. */

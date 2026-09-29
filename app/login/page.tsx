@@ -10,6 +10,7 @@ import { BrandMark } from "@/components/brand-mark";
 import toast from "react-hot-toast";
 import { useStore } from "@/lib/store";
 import { loginAction } from "@/lib/actions/auth";
+import { safePostLoginPath } from "@/lib/auth/post-login-redirect";
 import { LoginSchema, type LoginInput } from "@/lib/schemas/auth";
 import { SectionLabel } from "@/components/landing/section-label";
 import { display } from "@/components/landing/fonts";
@@ -50,8 +51,36 @@ export default function LoginPage() {
       const result = await loginAction(data);
       if (result.success) {
         toast.success(t.auth.welcomeBackToast);
-        // Full nav so the server middleware re-reads the new session cookie.
-        window.location.href = "/dashboard";
+        // auth-017: go back to the page the bounce came from, not always the
+        // dashboard. Middleware puts the original href in `callbackUrl`
+        // (next-auth/lib/index.js:177) and this line used to hard-code
+        // "/dashboard", so every emailed or bookmarked deep link lost its
+        // destination the moment a session expired.
+        //
+        // `safePostLoginPath` is doing security work, not tidying: a redirect
+        // target taken from a query parameter is an open redirect unless it is
+        // validated same-origin. Never navigate to the raw parameter. The whole
+        // argument, and the attack forms, are in lib/auth/post-login-redirect.ts.
+        //
+        // WHY `window.location.search` AND NOT `useSearchParams()`. That hook
+        // opts the route out of static prerendering and has to sit behind a
+        // Suspense boundary (app/reset-password/page.tsx:21 spells this out) —
+        // and /login is one of the prerendered routes, on the busiest path in
+        // the funnel. This handler only ever runs in the browser, after
+        // hydration, so reading the live location costs nothing and changes
+        // nothing about how the page is built.
+        //
+        // The full page load is deliberate and load-bearing twice over: the Edge
+        // middleware has to re-read the new session cookie, and the inline
+        // pre-paint script in app/layout.tsx reads the `ff_locale` / `ff_theme`
+        // cookies that `seedAppearanceCookies` just wrote — an inline <head>
+        // script only runs on a fresh document, so a client-side router.push
+        // would leave a first-time device on the wrong language until its next
+        // hard reload.
+        window.location.href = safePostLoginPath(
+          new URLSearchParams(window.location.search).get("callbackUrl"),
+          window.location.origin
+        );
         return;
       }
       toast.error(result.error || t.auth.loginFailedToast);

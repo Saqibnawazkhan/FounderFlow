@@ -78,6 +78,11 @@ const envSchema = z.object({
   AUTH_SECRET: z.string().optional(),
   AUTH_URL: optionalUrl,
 
+  // auth-018. RESERVED, AND REFUSED IN THE ON POSITION. Read
+  // `emailVerificationFlagProblem` below before touching this: the name is kept
+  // deliberately, but setting it to "true" stops the boot, because the gate it
+  // names has never existed and a flag that looks like it works is worse than no
+  // flag. The parsed value is therefore always `false`.
   EMAIL_VERIFICATION_REQUIRED: z
     .enum(["true", "false"])
     .default("false")
@@ -159,6 +164,66 @@ export function productionAppUrlProblem(raw: string | undefined): string | null 
   return null;
 }
 
+/**
+ * Why a deploy must not accept `EMAIL_VERIFICATION_REQUIRED=true`, or null if the
+ * flag is off or absent (auth-018).
+ *
+ * THE STATE OF PLAY, measured rather than remembered. The soft gate shipped
+ * 2026-07-04: `User.emailVerifiedAt`, an HMAC-signed link, a `/verify-email`
+ * page, a dismissible banner with a Resend button. The HARD gate never shipped.
+ * Nothing in this repo reads `emailVerifiedAt` as a permission — the only reads
+ * are `lib/actions/email-verification.ts` (report status, stamp the column) and
+ * `lib/actions/email-change.ts` (stamp it on a confirmed change). A sweep for a
+ * code reference to this variable outside this file returns zero hits, and
+ * `tests/lib/env/verification-flag.test.ts` keeps that measurement honest.
+ *
+ * So until today the flag was a switch with nothing on the other end. That is a
+ * specific, expensive failure and not a cosmetic one: an operator sets it,
+ * believes unverified accounts cannot reach the product, and every unverified
+ * account can. A false security belief is worse than a missing feature, because
+ * it stops anyone looking. `prisma/schema.prisma:92`, `FaultsAudit.md:88` and
+ * `CODEBASE-AUDIT.md:189` all record the reservation — and none of them is the
+ * file somebody reads while typing an environment variable into a dashboard.
+ *
+ * WHY REFUSE RATHER THAN IMPLEMENT. Enforcing verification is a product decision
+ * with a customer-visible blast radius, not a bug fix. Every account that has not
+ * clicked its link is unverified, because nothing ever required it — so switching
+ * the gate on locks out paying customers on the next deploy, with no back-fill
+ * and no grace period, on a product days from taking real money. Whoever owns the
+ * product decides that, and it needs at minimum: a deliberate back-fill of
+ * `emailVerifiedAt` for accounts that predate the requirement, a grace window, a
+ * check in `authorize()` plus a `verified` claim on the token so middleware can
+ * act on it without a database read, and a path for an invited teammate — whose
+ * address is already proven by the invite link they clicked — not to be caught by
+ * it. None of that is a configuration change.
+ *
+ * WHY REFUSE RATHER THAN DELETE. Deleting the name would make
+ * `prisma/schema.prisma:92` and the two audit documents point at nothing, which
+ * is the dangling reference the 2026-09-23 audit explicitly declined to create —
+ * and the next person would reinvent the same dead switch. Keeping the name and
+ * refusing the on position preserves the reservation and removes the trap.
+ *
+ * Deliberately unconditional, unlike `productionAppUrlProblem`: an operator who
+ * sets this locally is forming the same false belief as one who sets it in
+ * Vercel, and should learn at the same volume. On a production Vercel build this
+ * throws during `next build`, so the deploy fails and the previous deployment
+ * keeps serving — the fail-closed posture the rest of this layer uses.
+ *
+ * Takes the RAW value so it is unit-testable without mutating `process.env`.
+ */
+export function emailVerificationFlagProblem(raw: string | undefined): string | null {
+  if ((raw === undefined ? "" : raw.trim()) !== "true") return null;
+  return (
+    'EMAIL_VERIFICATION_REQUIRED is set to "true", but the hard gate it names has never been ' +
+    "implemented: nothing in this app reads User.emailVerifiedAt as a permission, so the flag " +
+    "grants no protection whatsoever and believing it does is worse than not having it. Unset " +
+    "it, or set it to false, to boot. Turning verification into a requirement is a product " +
+    "decision, not a configuration change — with no back-fill it would lock out every existing " +
+    "customer who has not clicked their link, on the next deploy, with no grace period. See " +
+    "emailVerificationFlagProblem in lib/env.ts for what a real gate would have to change."
+  );
+}
+
 const parsed = envSchema.safeParse({
   NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
   DATABASE_URL: process.env.DATABASE_URL,
@@ -173,6 +238,18 @@ const parsed = envSchema.safeParse({
 if (!parsed.success) {
   console.error("Invalid environment variables:", parsed.error.flatten().fieldErrors);
   throw new Error("Invalid environment variables — see console");
+}
+
+// Every environment, not just production — see emailVerificationFlagProblem for
+// why an operator who sets this locally needs the same answer as one who sets it
+// in Vercel. Placed before the production block so the more specific complaint
+// wins when a deploy has both problems.
+const verificationFlagProblem = emailVerificationFlagProblem(
+  process.env.EMAIL_VERIFICATION_REQUIRED
+);
+if (verificationFlagProblem) {
+  console.error("Invalid environment:", verificationFlagProblem);
+  throw new Error(`Invalid environment: ${verificationFlagProblem}`);
 }
 
 // Production-only. `robots.ts` and `sitemap.ts` are statically generated, so on
