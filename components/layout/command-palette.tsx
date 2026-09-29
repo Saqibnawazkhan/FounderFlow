@@ -41,11 +41,20 @@
  *
  * Interaction model:
  *  - ⌘K / Ctrl-K anywhere opens the palette (mounted globally in Topbar).
- *  - Escape or backdrop click closes.
- *  - Arrow up/down cycles items, Enter navigates, Tab wraps. Nav hits and
- *    workspace hits are ONE flat sequence — nobody arrowing down thinks in
- *    sections — so the arrow keys walk straight from the last nav row into
- *    the first task hit.
+ *  - Escape or backdrop click closes, and focus goes back to whatever opened it.
+ *  - Arrow up/down cycles items, Enter navigates. Nav hits and workspace hits
+ *    are ONE flat sequence — nobody arrowing down thinks in sections — so the
+ *    arrow keys walk straight from the last nav row into the first task hit.
+ *  - Tab and Shift-Tab WRAP INSIDE THE SHEET and cannot leave it (audit
+ *    a11y-006: they used to walk out into the page behind the backdrop, which
+ *    `aria-modal="true"` had already promised was not there). Because this is an
+ *    `aria-activedescendant` combobox, the rows are deliberately not tab stops
+ *    of their own — DOM focus stays in the search box and the box points at the
+ *    active row, which is the only arrangement a screen reader announces
+ *    correctly. In practice that means Tab keeps focus in the box; ↑ ↓ move and
+ *    ↵ opens, exactly as the footer says.
+ *  - While it is open, everything outside it is `aria-hidden` + `inert` — see
+ *    lib/hooks/use-focus-trap.ts for the whole of that contract.
  *  - Query normalizes to lowercase and matches label OR href tail, so a user
  *    can type "tasks" or "tasks page" or "/tas" and land the same result.
  */
@@ -65,6 +74,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { NAV_ITEMS } from "@/lib/nav";
+import { useFocusTrap } from "@/lib/hooks/use-focus-trap";
 import { useT } from "@/lib/i18n/use-t";
 import { cn } from "@/lib/utils";
 import { isMemberBlockedRoute, type Role } from "@/lib/auth/role-gates";
@@ -127,6 +137,7 @@ export function CommandPalette({ open, onClose }: Props) {
   const [searching, setSearching] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   /**
    * Monotonic request counter. Incremented on every term change (and on open),
    * captured before the await, compared after. See the header comment: this,
@@ -308,6 +319,12 @@ export function CommandPalette({ open, onClose }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, flatHrefs, activeIdx]);
 
+  // Everything `aria-modal="true"` above actually promises: Tab cannot leave the
+  // sheet, the page behind is out of the accessibility tree while it is open,
+  // and focus returns to whatever opened it. The declaration and the behaviour
+  // are now the same thing.
+  useFocusTrap(open, dialogRef);
+
   function navigate(href: string) {
     onClose();
     router.push(href);
@@ -317,15 +334,29 @@ export function CommandPalette({ open, onClose }: Props) {
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label={t.common.search}
       className="fixed inset-0 z-modal flex items-start justify-center px-4 pt-24 md:pt-32"
     >
-      {/* Backdrop */}
+      {/* Backdrop — PRESENTATIONAL, and it stays FIRST in DOM order.
+          It is a full-viewport <button> so that clicking or tapping outside the
+          sheet closes the palette without a div carrying a click handler, but it
+          is `tabIndex={-1}` and `aria-hidden` because it is invisible: as a real
+          tab stop it was where Shift-Tab from the search box landed, an
+          unannounceable full-screen control one keypress from the page behind
+          (audit a11y-006). The keyboard and screen-reader way out is Escape,
+          which the ESC legend in the footer advertises.
+          The auditor suggested moving it AFTER the sheet instead. That would
+          break the palette: both siblings are positioned with `z-index: auto`,
+          so the later one paints on top — the backdrop would cover the sheet and
+          swallow every click meant for a result row. `tabIndex={-1}` fixes the
+          focus order without touching the paint order. */}
       <button
         type="button"
-        aria-label="Close command palette"
+        tabIndex={-1}
+        aria-hidden="true"
         onClick={onClose}
         className="absolute inset-0 bg-bg/70 backdrop-blur-sm"
       />
@@ -380,6 +411,11 @@ export function CommandPalette({ open, onClose }: Props) {
                     id={optionId(i)}
                     type="button"
                     role="option"
+                    // Not a tab stop: DOM focus belongs to the combobox above,
+                    // which names the active row via aria-activedescendant. A
+                    // focusable `role="option"` makes that pointer a lie — a
+                    // screen reader announces the focused button and ignores it.
+                    tabIndex={-1}
                     aria-selected={active}
                     onMouseEnter={() => setActiveIdx(i)}
                     onClick={() => navigate(item.href)}
@@ -419,6 +455,9 @@ export function CommandPalette({ open, onClose }: Props) {
                           id={optionId(index)}
                           type="button"
                           role="option"
+                          // Same reason as the nav rows above: arrow keys move,
+                          // aria-activedescendant announces, focus stays put.
+                          tabIndex={-1}
                           aria-selected={active}
                           onMouseEnter={() => setActiveIdx(index)}
                           onClick={() => navigate(hit.href)}

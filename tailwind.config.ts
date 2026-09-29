@@ -77,6 +77,51 @@ const config: Config = {
           strong: "rgb(var(--info-strong) / <alpha-value>)",
         },
       },
+      // `text-*` deliberately resolves differently from `bg-*` / `border-*` /
+      // `ring-*` (audit a11y-003). Tailwind takes `text-{color}` from
+      // `theme.textColor`, which defaults to `theme.colors`; declaring it here
+      // re-points ONLY the text utility.
+      //
+      // Why it has to be done here and not at the call sites: the four semantic
+      // DEFAULT tokens are tuned for FILLS. `--danger` is red-600 specifically
+      // so that `bg-danger` + `text-white` (the delete-account and
+      // delete-workspace confirm buttons) clears AA — and `.dark` therefore
+      // leaves it alone, which is how dark mode ended up painting red-600
+      // validation text on a #2a3642 card at 2.55:1. The `-strong` ramp exists
+      // for exactly this, is defined per theme, and already clears AA in both;
+      // the 103 `text-danger` / `text-warning` / `text-success` / `text-info`
+      // call sites simply never adopted it. Mapping the utility fixes all of
+      // them at once, keeps the fill ramp intact, and — unlike a
+      // `.dark .text-danger` override in globals.css — automatically covers the
+      // variant spellings too (`hover:text-danger`, 15 sites, compiles to
+      // `.hover\:text-danger:hover` and would out-specify any such override).
+      //
+      // The failing numbers this closes, computed in
+      // tests/lib/a11y/contrast.test.ts: text-danger 2.55:1 on a dark card;
+      // text-warning 2.15:1 on light; text-success 2.54:1 on light; text-info
+      // 3.35:1 dark and 3.68:1 light. `-strong` is 4.5:1+ on every resting
+      // surface in both themes.
+      //
+      // `strong` is respelled alongside each DEFAULT so `text-*-strong` keeps
+      // working without depending on how Tailwind deep-merges `extend`.
+      textColor: {
+        danger: {
+          DEFAULT: "rgb(var(--danger-strong) / <alpha-value>)",
+          strong: "rgb(var(--danger-strong) / <alpha-value>)",
+        },
+        warning: {
+          DEFAULT: "rgb(var(--warning-strong) / <alpha-value>)",
+          strong: "rgb(var(--warning-strong) / <alpha-value>)",
+        },
+        success: {
+          DEFAULT: "rgb(var(--success-strong) / <alpha-value>)",
+          strong: "rgb(var(--success-strong) / <alpha-value>)",
+        },
+        info: {
+          DEFAULT: "rgb(var(--info-strong) / <alpha-value>)",
+          strong: "rgb(var(--info-strong) / <alpha-value>)",
+        },
+      },
       borderRadius: {
         sm: "var(--radius-sm)",
         DEFAULT: "var(--radius)",

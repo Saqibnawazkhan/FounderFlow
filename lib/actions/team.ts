@@ -22,6 +22,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { AuthError } from "next-auth";
 import { signIn } from "@/lib/auth";
+import { DEFAULT_APPEARANCE, writeAppearanceCookies } from "@/lib/appearance/cookies";
 import { AcceptInviteSchema, InviteUserSchema, UpdateRoleSchema } from "@/lib/schemas/user";
 import { limiters } from "@/lib/rate-limit";
 import { appOrigin } from "@/lib/env";
@@ -904,6 +905,13 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
       }
       throw e;
     }
+
+    // i18n-002: this is an invited teammate's FIRST session, on a device that
+    // has never seen the app - the same case as signupAction. Without this the
+    // pre-paint script in app/layout.tsx reads no cookie and their first
+    // authenticated paint is en/ltr regardless of the row. The row was just
+    // created and does not set theme/locale, so it holds the schema defaults.
+    await writeAppearanceCookies(DEFAULT_APPEARANCE);
 
     revalidatePath("/team");
     revalidatePath("/activities");

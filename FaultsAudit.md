@@ -261,3 +261,70 @@ three separate bugs in this codebase, so it gets its own section.
 - [ ] **S22 · 🟡 [OPP] The mention digest was substituted, not built — recorded so the swap is visible.** Phase C's plan called for mentions to batch into an end-of-day digest cron, to keep Gmail's ~500/day free cap from being eaten by notification mail and taking password resets down with it. No digest exists. What shipped instead is `lib/email/quota.ts`: a 300/day budget that degrades notifications to in-app + push once spent. It protects the same failure and is strictly broader — it bounds *every* event rather than only mentions — but it is not the same thing, and mentions still send one email per mention until the budget runs out. A busy workspace will hit the breaker and silently stop emailing rather than batching. Decide whether the digest is still wanted now the breaker exists. → [lib/email/quota.ts](lib/email/quota.ts), [lib/notify/fan-out.ts](lib/notify/fan-out.ts)
 
 - [ ] **X24 · 🔵 [OPP] `listChannelOptions` has no callers.** Written for the Runway card's channel picker and the command palette; the Runway card ended up posting into the channel already open, and search builds its own hrefs. Harmless dead code today — flagged only because it is the same shape as X20 and should either acquire a caller or go. → [lib/queries/chat.ts](lib/queries/chat.ts)
+
+---
+
+## 9. Accessibility wave (2026-09-29) — the first ten P2 rows
+
+> Six agents over one checkout, file-disjoint. **All ten findings closed**, and
+> four of them turned out to be one root cause: the semantic-token layer and
+> Tailwind utility specificity in `app/globals.css`, not sixty-three call sites.
+>
+> **a11y-001 / a11y-002** — the global `:focus-visible` ring at globals.css:177
+> was never missing; it was *outranked*. Tailwind compiles `focus:outline-none`
+> to `.focus\:outline-none:focus`, specificity (0,2,0), against a bare
+> `:focus-visible` at (0,1,0), so the utility won regardless of source order at
+> all 74 sites — and `outline-none` is `outline: 2px solid transparent`, a live
+> declaration rather than an absent one. Focus went from a 1.90:1 border tint to
+> a 2px ring measured at 3.06–5.82:1 in both themes.
+> **a11y-003** — the `.dark` block redefines `--danger-strong` but *not*
+> `--danger`, so dark mode inherited red-600 from `:root` and every validation
+> message read 2.55:1 on a card. Fixed by re-pointing Tailwind's `textColor`
+> theme key (which merely defaults to `theme.colors`), so all 113 `text-*` sites
+> and every variant spelling move to the `-strong` ramp while `bg-*`/`border-*`
+> keep the fill ramp. `--danger-strong` itself was also wrong — 4.45:1 on a
+> card, tuned against the page background — and moved to red-300.
+> **a11y-004** — placeholders measured 2.25:1 worst case across 21 sites.
+> **a11y-006** — `role="dialog" aria-modal="true"` on the command palette was a
+> claim with no mechanism: Shift+Tab landed on an invisible full-viewport
+> backdrop button, one press from leaving. Now a focus trap, `aria-hidden` +
+> `inert` on every non-ancestor subtree with exact prior values restored, and
+> focus returned to the opener.
+> **a11y-007** — both topbar dropdowns claimed `role="menu"` while owning a
+> heading, a scroll region and prose timestamps. Converted to disclosures rather
+> than forced into the menu pattern, which may only own `menuitem`/`group`/
+> `separator` and would have brought first-letter typeahead over notification
+> prose. Keyboard-only, both panels could also be open and overlapping at once.
+> **a11y-008** — the skip link resolved to nothing on ten routes; seven public
+> routes gained a real `<main id="main" tabIndex={-1}>`, and `app/(app)/error.tsx`
+> had its `<main>` demoted because it nested inside the shell's own.
+> **a11y-009** — framer-motion's `MotionConfigContext` default is
+> `reducedMotion: "never"`, so the OS preference was ignored however correct the
+> CSS was; one `<MotionConfig reducedMotion="user">` fixed 6 of 8 animated
+> elements (2 animate opacity only and were already compliant).
+> **i18n-001** — `lang` and `dir` decoupled: `dir` follows the locale, `lang`
+> follows the document's predominant language, so an overwhelmingly-English
+> document is no longer tagged Urdu.
+> **i18n-002** — resolved with a server-written cookie the existing pre-paint
+> script reads, **not** by resolving the locale in the root layout: in Next 14.2
+> that would opt the whole app out of static generation, marketing page included,
+> to fix one attribute. Verified after the fact — `/` and seven other routes are
+> still prerendered.
+>
+> Suite 1891 → **2008 tests over 143 files**; tsc clean, lint 0 errors, format
+> clean, `npm run build` succeeds.
+
+The rows below are what the wave *found* and did not fix. Three of them are the
+same class the previous section is named for.
+
+- [ ] **A25 · 🟠 [BUG] A third dropdown still claims to be a menu and is not.** `app/(app)/projects/[id]/project-detail-client.tsx` carries the identical `aria-haspopup="menu"` (:628) + `role="menu"` (:646) pair with no `role="menuitem"` child that a11y-007 just removed from the two topbar panels — so axe still reports `aria-required-children`, and the trigger still advertises arrow-key navigation and typeahead that do not exist. Deliberately not fixed in the same pass: unlike the topbar panels this one **looks like a genuine command menu** (Edit / Archive / Delete project), which is the one place implementing the real ARIA menu pattern — roving tabindex, Up/Down/Home/End, Escape — is the correct answer rather than demoting it to a disclosure. That makes it a different fix, not a fourth copy of the same one, and it deserves its own decision. → [app/(app)/projects/[id]/project-detail-client.tsx](app/(app)/projects/[id]/project-detail-client.tsx)
+
+- [ ] **A26 · 🔵 [OPP] Fourteen of the seventeen component classes in `globals.css` have no users.** A `className` sweep of `app/` + `components/` returns zero matches for `.btn-primary`, `.btn-secondary`, `.btn-ghost`, `.btn-danger`, `.badge-success`, `.badge-warning`, `.badge-danger`, `.badge-info`, `.badge-default`, `.pill-mono`, `.gradient-text` and `.gradient-bg`. Only `.glass` (53), `.card` (172) and `.glass-card` (1) are live. This is **shipped, tested and unreachable in a stylesheet** — the class this file's section 8 is named for, in a form no reachability test currently looks at. `.input` and `.label` were the other two and were deleted during a11y-001, because `.input` was worse than dead weight: it encoded *both* of that wave's defects (`focus:outline-none focus:ring-primary/30` at 1.6:1 composited, and `placeholder:text-fg-muted/70` at 2.72:1), so whoever finally reached for "the shared input primitive" would have adopted the bugs. The replacement note in `globals.css` records that if that primitive is wanted it should be `components/ui/input.tsx` — a prop surface can be typechecked, and a CSS class cannot stop a call site appending `focus:outline-none` after it. The remaining twelve were left alone because several look like deliberate public API and removing them unasked in a shared tree was not that agent's call. → [app/globals.css](app/globals.css)
+
+- [ ] **A27 · 🟠 [BUG] The brand accent fails contrast as text on light surfaces, at 262 sites.** Measured during a11y-003 with the same helper: `text-primary` is **2.54:1** on a card in light mode across **237 sites**, and `text-mint` is **1.52:1** across **25**. Both fail even the 3:1 non-text floor, so the many icon uses fail too, not just small labels. A `--primary-strong` (5.48:1 on light) already exists and the landing surface already migrated to it — the remaining sites are the app shell, which never did. The one-line mechanism is the same one that closed a11y-003: extend `textColor.primary.DEFAULT` / `textColor.mint.DEFAULT` in `tailwind.config.ts` so the text utility resolves to the `-strong` ramp while fills keep the bare token. Left out of a11y-003 because 262 sites of visible colour change is a design review, not a contrast fix. → [tailwind.config.ts](tailwind.config.ts), [app/globals.css](app/globals.css)
+
+- [ ] **A28 · 🟡 [BUG] A failed preference fetch is never retried, so the user keeps whatever the browser guessed.** `components/layout/preference-hydrator.tsx` sets `seededForRef` **before** awaiting `getMyAppearanceAction()`, so if that call rejects or returns `{ success: false }` it is never attempted again for that user id — the account's real theme and locale never arrive for the life of the tab. Found while fixing i18n-002 and deliberately left, because the harm is bounded while localStorage or the new `ff_*` cookies hold a usable value: it degrades to "the last known preference" rather than to nothing. It becomes visible on exactly the path i18n-002 is about — a device with no stored preference, where a single failed round trip now means the whole session paints in the wrong language and direction. → [components/layout/preference-hydrator.tsx](components/layout/preference-hydrator.tsx)
+
+- [ ] **A29 · 🟡 [OPP] The Urdu locale is 33% of the way there, and now there is a number.** i18n-001 fixed the *lie* (`lang="ur"` on an English document) but not the gap, which was measured rather than estimated: **559 user-visible English literals across 56 files** — 431 JSX text nodes, 45 toasts, 38 `aria-label`s, 29 `title`s, 16 `placeholder`s — against 282 translated dictionary keys in 7 namespaces. By "does this route's own code contain an English literal", **9 of 26 routes are covered** (the six auth screens, `/projects`, `/projects/[id]`, and `/settings` at 6 literals). The audit's own figures — "19 of 25 screens", "~364 nodes across 48 files" — were low because they counted neither attributes nor toasts and followed directories rather than the import graph. **29 literals sit in the shared shell that every one of the 17 authenticated routes pays, and `components/time/clock-widget.tsx` alone is 22 of them** — by far the highest-leverage single file. Then `/tasks` 90, `/expenses` 63, `/chat/[slug]` 54, `/revenue` and `/time` 49 each. Recommended order: the clock widget; then the 83 `aria-label`s and toasts, which are the strings a screen-reader user has no visual fallback for; then the three heaviest routes; then per-part `lang` for WCAG 3.1.2, at which point `LOCALE_TRANSLATION_STATUS.ur` flips to `"complete"` and `lang="ur"` returns on its own. Two smaller truths belong here: the skip-link label in `app/layout.tsx` is one of the 559 and cannot be translated without either resolving the locale server-side (rejected — it costs static rendering app-wide) or moving the anchor into a client component; and the settings disclosure at `strings.ts:284` says "navigation, settings, and sign-in are translated" while settings still holds 6 untranslated literals, which is marginally generous copy in two locales and therefore a product call. → [lib/i18n/strings.ts](lib/i18n/strings.ts), [components/time/clock-widget.tsx](components/time/clock-widget.tsx)
+
+- [ ] **A30 · 🔵 [OPP] Secondary copy dips below AA on a hovered row.** `--fg-muted` against `--surface-hover` measures **4.40:1** in light and **4.37:1** in dark, just under the 4.5:1 floor — so every muted label in a list row fails while the pointer is over it and passes when it is not. Deliberately excluded from a11y-003's assertions, which cover text only against the resting surfaces (`--card`, `--surface`, `--bg`): a test that flags hover states would have gone red on tokens nobody asked to retune, and a contrast test that fails on pairs the product barely renders is one the next person deletes. Recorded so the number is not rediscovered as a finding. → [app/globals.css](app/globals.css)

@@ -15,7 +15,7 @@ export default function Error({
   }, [error]);
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-6">
+    <main id="main" tabIndex={-1} className="flex min-h-screen items-center justify-center px-6">
       <div className="max-w-md space-y-4 text-center">
         <p className="font-mono text-xs uppercase tracking-widest text-slate-500">Error</p>
         <h1 className="text-3xl font-bold">Something went wrong</h1>

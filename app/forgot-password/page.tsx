@@ -157,7 +157,10 @@ export default function ForgotPasswordPage() {
         <MarketingThemeToggle size="sm" />
       </div>
 
-      <div className="w-full max-w-md">
+      {/* <main> rather than <div> (a11y-008): the root layout renders "Skip to
+          main content" here too, and its `#main` target only ever existed in the
+          authenticated shell. `tabIndex={-1}` makes the fragment jump focus it. */}
+      <main id="main" tabIndex={-1} className="w-full max-w-md">
         <Link href="/" className="mb-10 inline-flex items-center gap-2.5">
           <BrandMark className="h-9 w-9" />
           <span className="text-base font-bold tracking-tight">FounderFlow</span>
@@ -298,7 +301,7 @@ export default function ForgotPasswordPage() {
             </p>
           </>
         )}
-      </div>
+      </main>
     </div>
   );
 }

@@ -139,17 +139,86 @@ export const viewport: Viewport = {
  * the sidebar (below) would have made that flash far more violent, not less.
  * Setting it pre-paint is the same trick the theme already relied on.
  *
- * `RTL_LOCALES` is duplicated from SUPPORTED_LOCALES in lib/i18n/strings.ts
- * because an inline <head> script cannot import. tests/lib/layout/rtl.test.ts
- * parses this literal out of the source and fails if the two ever disagree, so
- * adding a third locale can't silently leave it out.
+ * `LOCALES`, `RTL_LOCALES` and `PARTIAL_LOCALES` are duplicated from
+ * lib/i18n/strings.ts (SUPPORTED_LOCALES and LOCALE_TRANSLATION_STATUS) because
+ * an inline <head> script cannot import. tests/lib/layout/rtl.test.ts parses the
+ * RTL literal out of the source, tests/app/shell/prepaint-locale.test.tsx parses
+ * LOCALES and tests/lib/i18n/document-language.test.ts parses PARTIAL_LOCALES,
+ * so adding a third locale can't silently leave the pre-paint path behind.
+ *
+ * ── `dir` AND `lang` ARE TWO DECISIONS, NOT ONE (i18n-001) ─────────────────
+ *
+ * `dir` follows the locale outright: an Urdu user's shell really is Urdu and has
+ * to mirror. `lang` follows the document's PREDOMINANT language, which is still
+ * English — 559 English literals across 56 files are untranslated — because
+ * lang="ur" makes NVDA/JAWS/VoiceOver apply Urdu grapheme-to-phoneme rules to
+ * the whole document AND suppress their own per-utterance script detection, so
+ * the English majority becomes noise. `documentLangForLocale` in
+ * lib/i18n/strings.ts is the canonical form of this rule and
+ * components/providers.tsx applies it post-hydration; PARTIAL_LOCALES below is
+ * the same rule pre-paint, so a screen reader reading the document before
+ * hydration — or a session where hydration never completes — gets the same
+ * answer instead of a stale lang="ur".
+ *
+ * A consequence worth stating: for a partial locale `lang` now never changes
+ * from the server's `lang="en"` at all, so this script rewrites only `dir`. That
+ * REMOVES one of the two attribute mismatches `suppressHydrationWarning` was
+ * covering rather than adding one.
+ *
+ * ── WHY IT ALSO READS A COOKIE (i18n-002) ─────────────────────────────────
+ *
+ * Reading only localStorage made this script useless in exactly the case its
+ * own comment above describes. A new phone, a private window or cleared site
+ * data has no persisted snapshot, so it fell through to en/ltr, and
+ * components/layout/preference-hydrator.tsx then learned the real locale from
+ * the user's row — after hydration, after a server round-trip — and flipped the
+ * whole document. The durable value lives on `User.locale`, so on a first visit
+ * the locale is only knowable SERVER-SIDE, from the session.
+ *
+ * It does not follow that the ROOT LAYOUT should resolve it server-side. <html>
+ * is rendered here and nowhere else, and this is the single root layout for
+ * every route including `/`; calling `cookies()` or `auth()` in it opts the
+ * whole app out of static generation, marketing page included, which is a large
+ * permanent cost for one attribute. The split that avoids it: the value is
+ * PRODUCED server-side (written as a cookie when the session is created, from
+ * `User.locale` / `User.theme`) and CONSUMED here, pre-paint, where the
+ * attributes are already decided. Same guarantee, no rendering cost.
+ *
+ * `ff_locale` / `ff_theme` are deliberately NOT HttpOnly — this script has to
+ * read them — which is also why the value is validated against LOCALES rather
+ * than written onto <html> as-is. They carry a UI language and a colour scheme,
+ * no identity and no secret.
+ *
+ * Storage wins over the cookie when both are present. The reverse would match
+ * what PreferenceHydrator does after hydration, but it would make a language
+ * toggle in THIS browser repaint in the old language on the next load for as
+ * long as the cookie lagged — a regression on a path that works today. With
+ * storage-first, a browser that has a preference behaves exactly as before and
+ * the only case that changes is the empty one, which is the bug.
+ *
+ * The JSON.parse now sits in its own try: a corrupt storage entry used to throw
+ * out of the whole function, leaving `lang` and `dir` UNSET rather than falling
+ * back to anything.
  */
 const shellBootstrap = `
 (function () {
+  function readCookie(name) {
+    try {
+      var all = document.cookie ? document.cookie.split(';') : [];
+      for (var i = 0; i < all.length; i++) {
+        var pair = all[i];
+        var eq = pair.indexOf('=');
+        if (eq < 1) continue;
+        if (pair.slice(0, eq).trim() === name) return decodeURIComponent(pair.slice(eq + 1));
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  var theme = null;
+  var locale = null;
   try {
     var raw = localStorage.getItem('founderflow-storage');
-    var theme = 'dark';
-    var locale = 'en';
     if (raw) {
       var parsed = JSON.parse(raw);
       if (parsed && parsed.state) {
@@ -157,9 +226,28 @@ const shellBootstrap = `
         if (parsed.state.locale) locale = parsed.state.locale;
       }
     }
+  } catch (e) {}
+
+  if (!theme) theme = readCookie('ff_theme');
+  if (!locale) locale = readCookie('ff_locale');
+
+  var LOCALES = ['en', 'ur'];
+  var RTL_LOCALES = ['ur'];
+  // i18n-001: dir follows the locale, lang follows the document's PREDOMINANT
+  // language. PARTIAL_LOCALES mirrors LOCALE_TRANSLATION_STATUS in
+  // lib/i18n/strings.ts (an inline head script cannot import) and a locale
+  // listed here keeps lang="en", because most of the product is still English
+  // and Urdu phonemes over English text are unintelligible. No backticks in
+  // this string, ever: it is a template literal, and one closes it.
+  var PARTIAL_LOCALES = ['ur'];
+  if (LOCALES.indexOf(locale) === -1) locale = 'en';
+  // Same coercion as getMyAppearanceAction: anything that is not 'light' is
+  // dark, which is the store's initial state.
+  if (theme !== 'light') theme = 'dark';
+
+  try {
     if (theme === 'dark') document.documentElement.classList.add('dark');
-    var RTL_LOCALES = ['ur'];
-    document.documentElement.lang = locale;
+    document.documentElement.lang = PARTIAL_LOCALES.indexOf(locale) !== -1 ? 'en' : locale;
     document.documentElement.dir = RTL_LOCALES.indexOf(locale) !== -1 ? 'rtl' : 'ltr';
   } catch (e) {}
 })();
@@ -182,8 +270,21 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body className="min-h-screen bg-bg font-sans text-fg antialiased">
         {/* Skip-to-content: hidden until keyboard-focused, then jumps past
-            the sidebar + topbar chrome. Every /main is tagged with id="main"
-            by the app-shell layout so this lands somewhere useful. */}
+            the sidebar + topbar chrome.
+            This comment used to claim "Every /main is tagged with id=\"main\" by
+            the app-shell layout so this lands somewhere useful". That was true of
+            the app shell and false of everything else (a11y-008): this link is in
+            the ROOT layout, so it also renders on /, /login, /signup,
+            /forgot-password, /reset-password, /verify-email,
+            /verify-email-change, /invite/[token], /offline, /not-found and the
+            error boundaries — and `id="main"` existed in exactly one file, so on
+            all of those `document.getElementById("main")` was null and activating
+            the link moved no focus at all. It only appended `#main` to the URL,
+            which is invisible to sighted QA because the link itself does focus.
+            Every route this agent owns now renders `<main id="main" tabIndex={-1}>`;
+            tests/app/shell/skip-link-target.test.tsx renders each of them and
+            performs the same getElementById the browser does, and sweeps app/ so
+            a new route cannot ship without a target. */}
         <a
           href="#main"
           className="sr-only rounded-md bg-primary px-4 py-2 text-sm font-bold text-primary-fg focus:not-sr-only focus:fixed focus:start-4 focus:top-4 focus:z-modal"

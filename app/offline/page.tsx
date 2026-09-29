@@ -19,7 +19,11 @@ export const metadata: Metadata = {
 
 export default function OfflinePage() {
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-bg px-6 py-12 text-center">
+    <main
+      id="main"
+      tabIndex={-1}
+      className="flex min-h-screen flex-col items-center justify-center bg-bg px-6 py-12 text-center"
+    >
       <Link href="/" className="mb-10 inline-flex items-center gap-2.5">
         <BrandMark className="h-9 w-9" />
         <span className="text-base font-bold tracking-tight">FounderFlow</span>

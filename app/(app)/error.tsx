@@ -34,7 +34,7 @@ export default function AppError({
   }, [error]);
 
   return (
-    <main className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center px-6 text-center">
+    <div className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center px-6 text-center">
       <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-danger/10">
         <AlertTriangle className="h-6 w-6 text-danger" aria-hidden="true" />
       </div>
@@ -97,6 +97,6 @@ export default function AppError({
           )}
         </div>
       )}
-    </main>
+    </div>
   );
 }

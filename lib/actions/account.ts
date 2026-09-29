@@ -33,6 +33,7 @@
 import bcrypt from "bcryptjs";
 import { cancelSubscription } from "@lemonsqueezy/lemonsqueezy.js";
 import { auth, signOut } from "@/lib/auth";
+import { clearAppearanceCookies } from "@/lib/appearance/cookies";
 import { db } from "@/lib/db";
 import { gateAuthAction } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
@@ -152,6 +153,11 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
         extra: { softDeleteExcluded: SOFT_DELETE_EXCLUDED },
       });
       await signOut({ redirect: false });
+      // i18n-002: the account is gone, so its year-long appearance cookies must
+      // go with it - otherwise the next person on a shared browser paints in a
+      // deleted user's language before hydration. Only reached when signOut
+      // resolved, which is also when the session cookie was actually cleared.
+      await clearAppearanceCookies();
       return { success: true, data: undefined };
     }
 
@@ -184,6 +190,11 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
     ]);
 
     await signOut({ redirect: false });
+    // i18n-002: the account is gone, so its year-long appearance cookies must
+    // go with it - otherwise the next person on a shared browser paints in a
+    // deleted user's language before hydration. Only reached when signOut
+    // resolved, which is also when the session cookie was actually cleared.
+    await clearAppearanceCookies();
     return { success: true, data: undefined };
   } catch (e) {
     captureServerError(e, {
@@ -558,6 +569,11 @@ export async function deleteWorkspaceAction(input: unknown): Promise<ActionResul
       extra: { workspaceName: company.name, softDeleteExcluded: SOFT_DELETE_EXCLUDED },
     });
     await signOut({ redirect: false });
+    // i18n-002: the account is gone, so its year-long appearance cookies must
+    // go with it - otherwise the next person on a shared browser paints in a
+    // deleted user's language before hydration. Only reached when signOut
+    // resolved, which is also when the session cookie was actually cleared.
+    await clearAppearanceCookies();
     return { success: true, data: undefined };
   } catch (e) {
     captureServerError(e, {

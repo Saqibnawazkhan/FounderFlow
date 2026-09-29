@@ -76,8 +76,19 @@ export default function LoginPage() {
         "min-h-screen bg-bg text-fg lg:grid lg:grid-cols-[1fr_1.05fr]"
       )}
     >
-      {/* Left: form */}
-      <div className="relative flex flex-col justify-center px-6 py-12 sm:px-10 lg:px-16">
+      {/* Left: form.
+          <main> rather than <div> (a11y-008): the root layout renders "Skip to
+          main content" on this route and its `#main` target existed only in the
+          authenticated shell, so on the busiest page in the funnel the first
+          control a keyboard user meets did nothing. The form column is the main
+          region — the showcase <aside> beside it is complementary by definition.
+          `tabIndex={-1}` makes the fragment jump focus it instead of only
+          moving the focus-navigation start point. */}
+      <main
+        id="main"
+        tabIndex={-1}
+        className="relative flex flex-col justify-center px-6 py-12 sm:px-10 lg:px-16"
+      >
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top_left,rgb(var(--primary)/0.10),transparent_60%)]"
@@ -238,7 +249,7 @@ export default function LoginPage() {
             </Link>
           </p>
         </div>
-      </div>
+      </main>
 
       {/* Right: showcase panel — Stitch hero mini */}
       <aside className="relative hidden overflow-hidden border-l border-border bg-surface lg:flex lg:flex-col lg:justify-center lg:px-16 xl:px-24">

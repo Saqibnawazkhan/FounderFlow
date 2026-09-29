@@ -408,7 +408,12 @@ async function tabAndDescribe(page) {
       tag: el.tagName.toLowerCase(),
       label: (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 48),
       href: el.getAttribute("href") || null,
-      rect: { l: Math.round(r.left), r: Math.round(r.right), w: Math.round(r.width), h: Math.round(r.height) },
+      rect: {
+        l: Math.round(r.left),
+        r: Math.round(r.right),
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+      },
       opacity: cs.opacity,
       visibility: cs.visibility,
       offscreen: r.right <= 0 || r.left >= window.innerWidth,
@@ -584,7 +589,10 @@ async function main() {
       fail(
         "a11y-001 focus indicator below 1.4.11's 3:1 state contrast",
         weakIndicator
-          .map((r) => `${r.tag}#${r.id ?? "-"} ${r.indicator} ${r.borderStateContrast ?? r.bgStateContrast}:1 (border ${r.borderWidth})`)
+          .map(
+            (r) =>
+              `${r.tag}#${r.id ?? "-"} ${r.indicator} ${r.borderStateContrast ?? r.bgStateContrast}:1 (border ${r.borderWidth})`
+          )
           .join("; ")
       );
     }
@@ -616,10 +624,9 @@ async function main() {
       note("a11y-002: could not reach the delete-account modal from /settings");
     } else {
       const reached = await admin
-        .waitForFunction(
-          () => !!document.querySelector('[role="dialog"] input[type="password"]'),
-          { timeout: 10000 }
-        )
+        .waitForFunction(() => !!document.querySelector('[role="dialog"] input[type="password"]'), {
+          timeout: 10000,
+        })
         .then(() => true)
         .catch(() => false);
       if (!reached) {
@@ -729,25 +736,27 @@ async function main() {
         const rows = [];
         // Validation messages + any element whose colour resolves to the
         // un-hardened danger/warning/info tokens.
-        document.querySelectorAll("p, span, button, a, h1, h2, h3, label, td, th, div").forEach((el) => {
-          if (el.children.length > 0) return; // leaf text nodes only
-          const txt = (el.textContent || "").trim();
-          if (!txt) return;
-          const r = tc(el);
-          if (!r) return;
-          if (r.ratio < r.required) {
-            rows.push({
-              text: txt.slice(0, 44),
-              ratio: r.ratio,
-              required: r.required,
-              px: r.px,
-              weight: r.weight,
-              color: r.color,
-              bg: r.bg,
-              cls: String(el.className || "").slice(0, 60),
-            });
-          }
-        });
+        document
+          .querySelectorAll("p, span, button, a, h1, h2, h3, label, td, th, div")
+          .forEach((el) => {
+            if (el.children.length > 0) return; // leaf text nodes only
+            const txt = (el.textContent || "").trim();
+            if (!txt) return;
+            const r = tc(el);
+            if (!r) return;
+            if (r.ratio < r.required) {
+              rows.push({
+                text: txt.slice(0, 44),
+                ratio: r.ratio,
+                required: r.required,
+                px: r.px,
+                weight: r.weight,
+                color: r.color,
+                bg: r.bg,
+                cls: String(el.className || "").slice(0, 60),
+              });
+            }
+          });
         // Placeholders need their own pass: the colour lives in ::placeholder.
         const ph = [];
         document.querySelectorAll("input[placeholder], textarea[placeholder]").forEach((el) => {
@@ -856,10 +865,14 @@ async function main() {
         )
         .then(() => true)
         .catch(() => false);
-      if (closedAndReturned) ok("a11y-005: Escape closed the modal and returned focus to its trigger");
+      if (closedAndReturned)
+        ok("a11y-005: Escape closed the modal and returned focus to its trigger");
       else {
         const where = await admin.evaluate(
-          () => (document.activeElement?.tagName || "?") + ":" + (document.activeElement?.textContent || "").trim().slice(0, 30)
+          () =>
+            (document.activeElement?.tagName || "?") +
+            ":" +
+            (document.activeElement?.textContent || "").trim().slice(0, 30)
         );
         fail("a11y-005 focus return after Escape", `activeElement is ${where}`);
       }
@@ -891,9 +904,9 @@ async function main() {
       const bgReachable = await admin.evaluate(() => {
         const dlg = document.querySelector('[role="dialog"]');
         // Anything outside the dialog that is still exposed to AT.
-        const outside = [...document.querySelectorAll("header button, aside a, main a, main button")].filter(
-          (el) => !dlg?.contains(el) && el.offsetParent !== null
-        );
+        const outside = [
+          ...document.querySelectorAll("header button, aside a, main a, main button"),
+        ].filter((el) => !dlg?.contains(el) && el.offsetParent !== null);
         const hidden = outside.filter(
           (el) => el.closest("[aria-hidden=true]") || el.closest("[inert]")
         );
@@ -903,7 +916,7 @@ async function main() {
         ok("a11y-006: the command palette contains focus and hides the background from AT");
       } else {
         fail(
-          "a11y-006 aria-modal=\"true\" palette is not actually modal",
+          'a11y-006 aria-modal="true" palette is not actually modal',
           `${left ? `Tab escaped to <${left.tag}> "${left.label}"; ` : ""}${bgReachable.outside - bgReachable.hidden} of ${bgReachable.outside} background controls are still exposed (no aria-hidden/inert)`
         );
       }
@@ -915,50 +928,111 @@ async function main() {
     }
 
     /* ═══════════════════════════════════════════════════════════════════
-     * D. ARIA CORRECTNESS on the topbar menus  →  a11y-007
-     * Both dropdowns are role="menu" whose children are plain <a>/<button>
-     * with no role="menuitem", and no arrow-key handling — the two promises
-     * role="menu" makes.
+     * D. ARIA CORRECTNESS on the topbar dropdowns  →  a11y-007
+     *
+     * REWRITTEN when a11y-007 was fixed. This block used to assert the ARIA
+     * MENU contract — role="menu" with role="menuitem" children and arrow-key
+     * navigation. That was the right audit for the old markup and is the wrong
+     * audit for the new: both panels are now DISCLOSURES, because neither is a
+     * list of commands (the notifications panel owns a heading, a scroll region
+     * and prose timestamps; the account panel opens with a name/email block and
+     * two navigation links). See the comment at topbar.tsx:309.
+     *
+     * The dangerous part was not that the old assertions were stale — it is
+     * that every selector here failed SOFTLY. `header button[aria-haspopup=
+     * "menu"]` matched nothing once the attribute was removed, so this section
+     * printed "did not render a role=menu" as a note() and moved on, and
+     * sections G/resp-002 and a11y-009 below silently measured nothing at all.
+     * A QA script that stops testing and still exits 0 is worse than no script.
+     *
+     * The disclosure contract, which is what the fix actually promises:
+     *   - the trigger carries aria-expanded, flipping false → true on open
+     *   - while open, aria-controls resolves to an element that exists
+     *   - the panel claims neither role="menu" nor any role="menuitem" child
+     *   - Escape from inside the panel returns focus to the trigger
      * ═══════════════════════════════════════════════════════════════════ */
-    section("D. topbar dropdown ARIA (a11y-007)");
+    section("D. topbar dropdown ARIA — disclosure contract (a11y-007)");
 
     const menuAudit = await admin.evaluate(async () => {
       const results = [];
-      const triggers = [...document.querySelectorAll('header button[aria-haspopup="menu"]')];
+      // aria-expanded, NOT aria-controls: the fix emits aria-controls only
+      // while the panel is mounted, so selecting on it would find nothing in
+      // the closed state and this audit would go quiet again.
+      const triggers = [...document.querySelectorAll("header button[aria-expanded]")];
       for (const trig of triggers) {
+        const label = trig.getAttribute("aria-label");
+        const expandedClosed = trig.getAttribute("aria-expanded");
+        trig.focus();
         trig.click();
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-        const menu = document.querySelector('[role="menu"]');
-        if (!menu) {
-          results.push({ trigger: trig.getAttribute("aria-label"), menu: false });
+        const controls = trig.getAttribute("aria-controls");
+        const panel = controls ? document.getElementById(controls) : null;
+        if (!panel) {
+          results.push({
+            trigger: label,
+            panel: false,
+            expandedClosed,
+            expandedOpen: trig.getAttribute("aria-expanded"),
+            controls,
+          });
           continue;
         }
-        const focusables = [...menu.querySelectorAll("a[href], button")];
+        // Escape from inside the panel must put focus back on the trigger.
+        const inner = panel.querySelector("a[href], button");
+        if (inner) inner.focus();
+        panel.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         results.push({
-          trigger: trig.getAttribute("aria-label"),
-          menu: true,
-          focusables: focusables.length,
-          menuitems: focusables.filter((el) => el.getAttribute("role") === "menuitem").length,
-          focusMoved: menu.contains(document.activeElement),
-          ariaLabelled: !!(menu.getAttribute("aria-label") || menu.getAttribute("aria-labelledby")),
+          trigger: label,
+          panel: true,
+          expandedClosed,
+          expandedOpen: "true",
+          controls,
+          claimsMenu: panel.getAttribute("role") === "menu",
+          menuitems: panel.querySelectorAll('[role="menuitem"]').length,
+          haspopup: trig.hasAttribute("aria-haspopup"),
+          focusReturned: document.activeElement === trig,
+          closedAfterEscape: trig.getAttribute("aria-expanded") === "false",
         });
-        trig.click();
+        if (trig.getAttribute("aria-expanded") === "true") trig.click();
         await new Promise((r) => requestAnimationFrame(r));
       }
       return results;
     });
+    if (menuAudit.length === 0) {
+      // Hard failure, not a note(). Finding nothing here used to be the silent
+      // path that let three sections stop testing at once.
+      fail(
+        "a11y-007: no topbar disclosure triggers found",
+        "expected the notifications bell and the account button to carry aria-expanded; `header button[aria-expanded]` matched 0 elements. Either the topbar changed again or the page did not render — do not read this as a pass."
+      );
+    }
     menuAudit.forEach((m) => {
-      if (!m.menu) {
-        note(`a11y-007: "${m.trigger}" did not render a role="menu"`);
+      if (!m.panel) {
+        fail(
+          `a11y-007: "${m.trigger}" opened no panel that aria-controls resolves to`,
+          `aria-expanded went ${m.expandedClosed} → ${m.expandedOpen}; aria-controls=${JSON.stringify(m.controls)}; getElementById returned null`
+        );
         return;
       }
-      if (m.menuitems === m.focusables && m.focusables > 0 && m.focusMoved) {
-        ok(`a11y-007: "${m.trigger}" menu has ${m.menuitems} menuitems and takes focus`);
-      } else {
-        fail(
-          `a11y-007 role="menu" without menu semantics ("${m.trigger}")`,
-          `${m.focusables} focusable children, ${m.menuitems} with role="menuitem"; focus moved into the menu: ${m.focusMoved}; labelled: ${m.ariaLabelled}`
+      const problems = [];
+      if (m.expandedClosed !== "false")
+        problems.push(`aria-expanded was ${m.expandedClosed} while closed`);
+      if (m.claimsMenu) problems.push('panel still declares role="menu"');
+      if (m.menuitems > 0)
+        problems.push(`${m.menuitems} descendant(s) still claim role="menuitem"`);
+      if (m.haspopup)
+        problems.push(
+          "trigger still advertises aria-haspopup, promising menu keys that do not exist"
         );
+      if (!m.closedAfterEscape) problems.push("Escape did not close the panel");
+      if (!m.focusReturned) problems.push("Escape did not return focus to the trigger");
+      if (problems.length === 0) {
+        ok(
+          `a11y-007: "${m.trigger}" is a well-formed disclosure (expanded/controls/Escape+focus-return)`
+        );
+      } else {
+        fail(`a11y-007 disclosure contract broken ("${m.trigger}")`, problems.join("; "));
       }
     });
 
@@ -1035,7 +1109,11 @@ async function main() {
     // button whose right edge sits ~307px in, and the shell is overflow-hidden,
     // so the overflow is CLIPPED rather than scrollable.
     const opened = await admin.evaluate(() => {
-      const btn = [...document.querySelectorAll('header button[aria-haspopup="menu"]')].find((b) =>
+      // a11y-007 turned these panels into disclosures: select on aria-expanded,
+      // and reach the panel by id rather than by a [role="menu"] that no longer
+      // exists. A global [role="menu"] query would now also match the project
+      // detail page's own dropdown, so the id is both correct and narrower.
+      const btn = [...document.querySelectorAll("header button[aria-expanded]")].find((b) =>
         /notification/i.test(b.getAttribute("aria-label") || "")
       );
       if (!btn) return false;
@@ -1043,13 +1121,18 @@ async function main() {
       return true;
     });
     if (!opened) {
-      note("resp-002: no notifications trigger in the topbar");
+      fail(
+        "resp-002: no notifications trigger in the topbar",
+        "expected a header button with aria-expanded and an aria-label matching /notification/i. This measurement did not run — do not read it as a pass."
+      );
     } else {
       await admin
-        .waitForFunction(() => !!document.querySelector('[role="menu"]'), { timeout: 8000 })
+        .waitForFunction(() => !!document.getElementById("topbar-notifications-panel"), {
+          timeout: 8000,
+        })
         .catch(() => {});
       const panel = await admin.evaluate(() => {
-        const m = document.querySelector('[role="menu"]');
+        const m = document.getElementById("topbar-notifications-panel");
         if (!m) return null;
         const r = m.getBoundingClientRect();
         return {
@@ -1128,9 +1211,7 @@ async function main() {
         if (t.w >= 24 && t.h >= 24) return;
         // Spacing exception: does any OTHER target's 24px circle intersect?
         const crowded = targets.some(
-          (o) =>
-            o.el !== t.el &&
-            Math.hypot(o.cx - t.cx, o.cy - t.cy) < 24
+          (o) => o.el !== t.el && Math.hypot(o.cx - t.cx, o.cy - t.cy) < 24
         );
         if (crowded) bad.push({ tag: t.tag, label: t.label, w: t.w, h: t.h });
       });
@@ -1167,7 +1248,9 @@ async function main() {
     if (!hoverOnly) {
       note("resp-004: no task cards in this fresh tenant — create one first");
     } else if (Number(hoverOnly.focused) > 0.5) {
-      ok(`resp-004: the task delete button becomes visible on keyboard focus (${hoverOnly.focused})`);
+      ok(
+        `resp-004: the task delete button becomes visible on keyboard focus (${hoverOnly.focused})`
+      );
     } else {
       fail(
         "resp-004 hover-only control stays invisible when focused",
@@ -1187,7 +1270,8 @@ async function main() {
     await admin.setViewport(DESKTOP);
     await admin.goto(`${BASE}/dashboard`, { waitUntil: "networkidle0", timeout: 60000 });
     const motionSample = await admin.evaluate(async () => {
-      const btn = [...document.querySelectorAll('header button[aria-haspopup="menu"]')].find((b) =>
+      // Selectors updated for the a11y-007 disclosure fix — see section D.
+      const btn = [...document.querySelectorAll("header button[aria-expanded]")].find((b) =>
         /notification/i.test(b.getAttribute("aria-label") || "")
       );
       if (!btn) return null;
@@ -1195,14 +1279,17 @@ async function main() {
       // Sample on the very next frame: an honoured reduced-motion preference
       // means the panel is already at its final opacity/transform.
       await new Promise((r) => requestAnimationFrame(r));
-      const m = document.querySelector('[role="menu"]');
+      const m = document.getElementById("topbar-notifications-panel");
       if (!m) return { found: false };
       const cs = getComputedStyle(m);
       return { found: true, opacity: cs.opacity, transform: cs.transform };
     });
     if (!motionSample || !motionSample.found) {
       note("a11y-009: could not sample the animated panel");
-    } else if (Number(motionSample.opacity) >= 0.99 && /none|matrix\(1, 0, 0, 1, 0, 0\)/.test(motionSample.transform)) {
+    } else if (
+      Number(motionSample.opacity) >= 0.99 &&
+      /none|matrix\(1, 0, 0, 1, 0, 0\)/.test(motionSample.transform)
+    ) {
       ok("a11y-009: framer-motion panels skip their entrance under reduce");
     } else {
       fail(
@@ -1221,7 +1308,10 @@ async function main() {
     await admin.goto(`${BASE}/settings`, { waitUntil: "networkidle0", timeout: 60000 });
     const toUrdu = await setLocale(admin, "ur");
     if (!toUrdu) {
-      fail("i18n: could not switch to Urdu from the topbar", "language toggle not found or lang never became 'ur'");
+      fail(
+        "i18n: could not switch to Urdu from the topbar",
+        "language toggle not found or lang never became 'ur'"
+      );
     } else {
       ok("i18n: topbar toggle switched the UI to Urdu");
 
@@ -1229,7 +1319,8 @@ async function main() {
         lang: document.documentElement.getAttribute("lang"),
         dir: document.documentElement.getAttribute("dir"),
       }));
-      if (htmlAttrs.dir === "rtl") ok(`i18n: <html dir="${htmlAttrs.dir}" lang="${htmlAttrs.lang}">`);
+      if (htmlAttrs.dir === "rtl")
+        ok(`i18n: <html dir="${htmlAttrs.dir}" lang="${htmlAttrs.lang}">`);
       else fail("i18n: html dir did not flip", JSON.stringify(htmlAttrs));
 
       // PERSISTENCE, scoped to MY tenant. Another agent's user row must not
@@ -1256,7 +1347,9 @@ async function main() {
         await admin.goto(`${BASE}${route}`, { waitUntil: "networkidle0", timeout: 60000 });
         await inject(admin);
         const r = await admin.evaluate(() => {
-          const texts = window.__ffA11y.visibleText(document.querySelector("main") || document.body);
+          const texts = window.__ffA11y.visibleText(
+            document.querySelector("main") || document.body
+          );
           let latin = 0,
             arabic = 0;
           const latinSamples = [];
@@ -1272,7 +1365,13 @@ async function main() {
           const labels = [...document.querySelectorAll("[aria-label]")]
             .map((el) => el.getAttribute("aria-label"))
             .filter((l) => /[A-Za-z]{3}/.test(l) && !/[\u0600-\u06FF]/.test(l));
-          return { latin, arabic, latinSamples, latinAriaLabels: labels.length, lang: document.documentElement.lang };
+          return {
+            latin,
+            arabic,
+            latinSamples,
+            latinAriaLabels: labels.length,
+            lang: document.documentElement.lang,
+          };
         });
         coverage.push({ route, ...r });
         if (r.latin === 0) {
@@ -1287,7 +1386,12 @@ async function main() {
       const totalLatin = coverage.reduce((a, c) => a + c.latin, 0);
       const totalArabic = coverage.reduce((a, c) => a + c.arabic, 0);
       note(
-        `i18n-001 summary: ${totalLatin} Latin vs ${totalArabic} Urdu strings across ${ADMIN_ROUTES.length} routes; untranslated routes: ${coverage.filter((c) => c.arabic === 0).map((c) => c.route).join(", ") || "none"}`
+        `i18n-001 summary: ${totalLatin} Latin vs ${totalArabic} Urdu strings across ${ADMIN_ROUTES.length} routes; untranslated routes: ${
+          coverage
+            .filter((c) => c.arabic === 0)
+            .map((c) => c.route)
+            .join(", ") || "none"
+        }`
       );
 
       /* i18n-003 — RTL mirroring of PAGE BODIES. tests/lib/layout/rtl.test.ts
@@ -1335,7 +1439,10 @@ async function main() {
         const r = aside.getBoundingClientRect();
         return { left: Math.round(r.left), right: Math.round(r.right), vw: window.innerWidth };
       });
-      if (rail && rail.right >= rail.vw - 2) ok(`i18n-003: the sidebar rail mirrors to the right in Urdu (x=${rail.left}..${rail.right})`);
+      if (rail && rail.right >= rail.vw - 2)
+        ok(
+          `i18n-003: the sidebar rail mirrors to the right in Urdu (x=${rail.left}..${rail.right})`
+        );
       else fail("i18n-003 sidebar did not mirror", JSON.stringify(rail));
       await admin.screenshot({ path: `${OUT}/i18n-01-urdu-desktop.png`, fullPage: true });
       await admin.setViewport(PHONE);
@@ -1368,7 +1475,9 @@ async function main() {
           `date-fns format() gets no locale: ${[...dates.monthly, ...dates.relative].map((s) => `"${s}"`).join(", ")}`
         );
       }
-      note(`i18n-004: Latin digits are a documented decision (lib/i18n/numbering.ts) — samples: ${dates.digits.map((d) => `"${d}"`).join(", ")}`);
+      note(
+        `i18n-004: Latin digits are a documented decision (lib/i18n/numbering.ts) — samples: ${dates.digits.map((d) => `"${d}"`).join(", ")}`
+      );
 
       /* i18n-005 — lang on the locale picker cards. `LocaleChoice` puts
        * lang={code} on the whole <button>, so the English card claims lang="en"
@@ -1421,7 +1530,10 @@ async function main() {
       const early = await fresh.evaluate(() => window.__ffEarly ?? []);
       const firstPaint = early.find((e) => e.phase === "domcontentloaded");
       if (!settled) {
-        fail("i18n-002 Urdu never applied on a fresh profile", `early samples: ${JSON.stringify(early)}`);
+        fail(
+          "i18n-002 Urdu never applied on a fresh profile",
+          `early samples: ${JSON.stringify(early)}`
+        );
       } else if (firstPaint && firstPaint.dir === "rtl") {
         ok("i18n-002: dir=rtl was already set at first paint on a fresh profile");
       } else {
@@ -1527,7 +1639,9 @@ async function main() {
       if (skeletonWidth == null || settledWidth == null) {
         note(`resp-005: could not measure ${route}`);
       } else if (Math.abs(skeletonWidth - settledWidth) <= 2) {
-        ok(`resp-005: ${route} skeleton and page are the same width (${Math.round(settledWidth)}px)`);
+        ok(
+          `resp-005: ${route} skeleton and page are the same width (${Math.round(settledWidth)}px)`
+        );
       } else {
         fail(
           `resp-005 content width jumps when ${route} settles`,
@@ -1586,7 +1700,8 @@ async function main() {
       return { before, after: s.value, changed: s.value !== before };
     });
     if (!arrowWorks) note("a11y-010: #expense-category has fewer than 2 options in a fresh tenant");
-    else if (arrowWorks.changed) ok(`a11y-010: keyboard selection commits (${arrowWorks.before} → ${arrowWorks.after})`);
+    else if (arrowWorks.changed)
+      ok(`a11y-010: keyboard selection commits (${arrowWorks.before} → ${arrowWorks.after})`);
     else fail("a11y-010 keyboard selection did not commit", JSON.stringify(arrowWorks));
 
     /* ═══════════════════════════════════════════════════════════════════

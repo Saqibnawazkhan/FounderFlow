@@ -136,7 +136,13 @@
   /* Semantic text-safe foregrounds — bright shades that read clearly on dark. */
   --success-strong: 52 211 153; /* emerald-400 */
   --warning-strong: 251 191 36; /* amber-400 */
-  --danger-strong: 248 113 113; /* red-400 */
+  /* red-300. Was red-400 (#f87171), which clears AA on --bg (#1f2933, 5.33:1)
+     but NOT on the card/modal surface (#2a3642, 4.45:1) — and a card or a
+     modal is exactly where validation errors are rendered. red-300 is 6.49:1
+     on the card and 5.18:1 even on --surface-hover, and matches how the rest
+     of this block re-lights (--slate-strong is slate-300, --forest-strong is
+     emerald-300). Checked by tests/lib/a11y/contrast.test.ts. */
+  --danger-strong: 252 165 165;
   --info-strong: 96 165 250; /* blue-400 */
 }
 
@@ -173,10 +179,64 @@ optgroup {
  * its own radius down to a near-square on focus (most obvious tabbing through
  * the auth forms, where fields are 16px). Modern browsers already draw the
  * outline following the element's own border-radius, so the ring is correct
- * without it. */
+ * without it.
+ *
+ * WHY `!important` (audit a11y-001 / a11y-002) — this is deliberate, and it is
+ * the one thing that makes the rule above do anything at all.
+ *
+ * This rule read as correct for months and rendered nothing. 74 className
+ * strings across 39 files carry `focus:outline-none` or
+ * `focus-visible:outline-none`; Tailwind compiles those to
+ * `.focus\:outline-none:focus` — one class plus one pseudo-class, specificity
+ * (0,2,0) — against a bare `:focus-visible` at (0,1,0). The utility therefore
+ * wins REGARDLESS of source order, and Tailwind 3's `@layer` directives are
+ * compile-time bucketing rather than real CSS cascade layers, so moving this
+ * rule into a layer does not change the outcome either. What is worse,
+ * Tailwind's `outline-none` is not `outline: none` but
+ * `outline: 2px solid transparent`, i.e. a live declaration that paints an
+ * invisible ring over ours. Result before this change: keyboard focus on every
+ * form control in the product — signup, login, reset-password, both
+ * delete-confirmation password boxes, the task filter bar, the command palette
+ * — was signalled only by a 1px border tint at ~1.9:1, or by nothing at all.
+ *
+ * So: a global accessibility floor that no component may override, which is
+ * the textbook legitimate use of `!important`. Both properties are marked,
+ * because `outline-none` sets both. KNOWN AND ACCEPTED CONSEQUENCE: the seven
+ * sites that pair `focus-visible:outline-none` with their own
+ * `focus-visible:ring-2 ring-primary/40|50` now render BOTH their ring and this
+ * outline. Their ring composites to 1.6–1.9:1 against the dark surface, so it
+ * was never a sufficient indicator on its own; two cues is the better failure
+ * mode. If you want a bespoke indicator, make it clear 3:1 and change THIS
+ * rule — do not reach for `outline-none` at the call site.
+ *
+ * Guarded by tests/lib/a11y/focus-visible.test.ts, which computes both
+ * specificities and fails if the utilities win again. */
 :focus-visible {
-  outline: 2px solid rgb(var(--ring));
-  outline-offset: 2px;
+  outline: 2px solid rgb(var(--ring)) !important;
+  outline-offset: 2px !important;
+}
+
+/* Placeholder floor (audit a11y-004).
+ *
+ * Placeholder text IS text, so WCAG 1.4.3 wants 4.5:1. The undimmed
+ * `--fg-muted` token clears it in both themes (4.76:1 light, 5.47:1 dark on a
+ * card). But 21 call sites asked for `placeholder:text-fg-muted/60` or `/70`,
+ * and Tailwind's alpha modifier does not fade the glyph — it emits
+ * `rgb(var(--fg-muted) / 0.6)`, which the compositor blends against the field.
+ * The blend measures 2.30:1 on white and 2.98:1 on charcoal: below even the
+ * 3:1 large-text floor, on the fields whose placeholder is the only format hint
+ * ("8+ chars, mixed case & a number", the amount and day-of-month hints).
+ *
+ * `!important` for the same reason as the focus ring: the call-site utility
+ * (`.placeholder\:text-fg-muted\/60::placeholder`) matches at equal
+ * specificity from a file this rule cannot edit, and a dimmed placeholder has
+ * no legitimate use. Guarded by tests/lib/a11y/contrast.test.ts, which
+ * composites every alpha actually used in app/ + components/ and computes the
+ * real ratio. `opacity` is pinned too because Firefox's UA sheet fades
+ * placeholders on its own. */
+::placeholder {
+  color: rgb(var(--fg-muted)) !important;
+  opacity: 1 !important;
 }
 
 /* Reduced motion — kills animation for users who request it */
@@ -232,14 +292,22 @@ optgroup {
     @apply inline-flex items-center justify-center gap-2 rounded-full bg-danger px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all duration-200 hover:bg-danger/90 active:scale-95;
   }
 
-  /* ---------- Inputs ---------- */
-  .input {
-    @apply w-full rounded-xl border border-border bg-surface px-4 py-2.5 text-sm text-fg transition-all duration-200 placeholder:text-fg-muted/70 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30;
-  }
-
-  .label {
-    @apply mb-1.5 block text-sm font-medium text-fg;
-  }
+  /* ---------- Inputs ----------
+   * `.input` and `.label` used to live here. Both were removed (audit rule 18):
+   * a className sweep of app/ + components/ for a bare `input` class returned
+   * zero users, and so did `label` — dead CSS that had shipped and been
+   * maintained for months. Worse, `.input` encoded both defects this
+   * stylesheet was just fixed for (`focus:outline-none` plus a
+   * `focus:ring-primary/30` that composites to 1.6:1, and
+   * `placeholder:text-fg-muted/70` at 2.72:1), so anyone who finally reached
+   * for the "shared primitive" would have adopted the bugs.
+   *
+   * If one input primitive is wanted — and it is worth it, it would fix ~20 of
+   * the 74 `focus:outline-none` sites in a single edit — build it as
+   * `components/ui/input.tsx`, not as a class here: this repo's convention is
+   * component-level primitives (components/ui/*), a React prop surface can be
+   * typechecked, and a CSS class cannot stop a call site appending
+   * `focus:outline-none` after it. */
 
   /* ---------- Cards ---------- */
   .card {

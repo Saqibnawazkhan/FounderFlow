@@ -759,3 +759,57 @@ export const DICTIONARIES: Record<Locale, Strings> = { en, ur };
 export function getDirForLocale(locale: Locale): "ltr" | "rtl" {
   return SUPPORTED_LOCALES.find((l) => l.code === locale)?.dir ?? "ltr";
 }
+
+/** The locale this dictionary is authored in, and the fallback for everything. */
+export const SOURCE_LOCALE: Locale = "en";
+
+/**
+ * Is the PRODUCT — not this dictionary — translated end to end for a locale?
+ *
+ * "complete" is a claim about the rendered app, which is why it cannot be derived
+ * from the dictionary: `Strings = typeof en` already guarantees every key here
+ * exists in both locales, so a purely dictionary-based check would report 100%
+ * while most of the product is still hardcoded English JSX. Flip an entry to
+ * "complete" only when its routes genuinely have no untranslated literal left;
+ * `tests/lib/i18n/document-language.test.ts` pins what each value means.
+ */
+export const LOCALE_TRANSLATION_STATUS: Record<Locale, "complete" | "partial"> = {
+  en: "complete",
+  ur: "partial",
+};
+
+/**
+ * The value for `<html lang>` — audit i18n-001.
+ *
+ * NOT the same decision as `getDirForLocale`, and conflating the two was the
+ * bug. Direction is presentation: the user asked for Urdu, the shell (nav,
+ * topbar, breadcrumbs, command palette, settings, auth) really is Urdu, and it
+ * has to mirror. `lang` is a factual claim about the text a screen reader is
+ * about to pronounce, and on a partially translated locale that claim was false
+ * for most of the document.
+ *
+ * What the false claim cost: `lang="ur"` makes NVDA, JAWS and VoiceOver apply
+ * Urdu grapheme-to-phoneme rules to the WHOLE document and suppresses their own
+ * language auto-detection. English orthography under Urdu phoneme rules is not
+ * accented English; it is unintelligible. That covered every untranslated screen
+ * plus every hardcoded aria-label and toast — i.e. precisely the strings a
+ * screen-reader user has no visual fallback for. Choosing Urdu in Settings made
+ * the product worse than never translating it, and `User.locale` persists that
+ * choice across devices.
+ *
+ * Under `SOURCE_LOCALE` all of that English is pronounced correctly, and the
+ * translated Urdu strings are Arabic-script code points an English voice has no
+ * rules for at all — so screen readers fall back to their own per-utterance
+ * script detection there instead of being actively misdirected. Bounded, visible
+ * degradation on the translated minority beats silent noise over the English
+ * majority.
+ *
+ * This is the honest floor, not WCAG 3.1.2 compliance. Full compliance needs
+ * `lang` on the parts that differ from the document language, which is the
+ * follow-up tracked with the coverage numbers in the i18n-001 report. When a
+ * locale's `LOCALE_TRANSLATION_STATUS` reaches "complete" this returns it
+ * directly and the whole question goes away.
+ */
+export function documentLangForLocale(locale: Locale): Locale {
+  return LOCALE_TRANSLATION_STATUS[locale] === "complete" ? locale : SOURCE_LOCALE;
+}

@@ -2,16 +2,57 @@
 
 import { useEffect, useRef } from "react";
 import { SessionProvider, useSession } from "next-auth/react";
+import { MotionConfig } from "framer-motion";
 import { Toaster } from "react-hot-toast";
 import { useStore } from "@/lib/store";
-import { getDirForLocale } from "@/lib/i18n/strings";
+import { documentLangForLocale, getDirForLocale } from "@/lib/i18n/strings";
 import { ConfirmDialogHost } from "@/components/ui/confirm-dialog";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
-    <SessionProvider>
-      <Inner>{children}</Inner>
-    </SessionProvider>
+    /* reducedMotion="user" — WCAG 2.3.3, audit a11y-009.
+     *
+     * app/globals.css already has a `@media (prefers-reduced-motion: reduce)`
+     * block pinning animation/transition duration to 0.01ms, and it is correct:
+     * it neutralises every CSS-driven animation in the product (Radix
+     * `data-state` cross-fades, the `animate-pulse` skeletons, the `.reveal`
+     * landing stagger). It cannot reach framer-motion, which rewrites inline
+     * `transform` and `opacity` from JS on every frame — a stylesheet cannot win
+     * against a style being reassigned 60 times a second.
+     *
+     * framer-motion's own switch is MotionConfigContext.reducedMotion, and its
+     * DEFAULT IS "never" — meaning *never reduce*, i.e. ignore the OS. So with no
+     * MotionConfig in the tree, six of the eight <motion.div>s in the product
+     * travelled for users who had explicitly asked their OS not to do that: the
+     * topbar notification and account panels (y + scale), both theme-toggle icons
+     * (rotate ±90°), the project-detail status popover (y + scale) and every
+     * empty state (y). The other two — the mobile-drawer backdrop and the clock
+     * widget — animate opacity alone and were always fine. (The drawer panel
+     * itself slides via a CSS `transition-[transform,width]` class on the
+     * <aside>, so globals.css already covered it.)
+     *
+     * "user" follows the media query. NOT "always": framer only snaps
+     * `positionalKeys` (width/height/top/left/right/bottom + every transform)
+     * under reduced motion and lets opacity keep animating, which is the right
+     * reading of 2.3.3 — a cross-fade is not a vestibular trigger — and
+     * "always" would strip motion from people who never asked.
+     *
+     * Outermost so it covers `children` (the whole route tree, since
+     * app/layout.tsx renders <Providers>{children}</Providers>), the toasts and
+     * the confirm-dialog host, and any future motion usage, without touching a
+     * single component file. framer-motion declares `sideEffects: false`, so
+     * importing just MotionConfig here adds the context provider and nothing
+     * else to the shared bundle.
+     *
+     * Covered by tests/components/providers.test.tsx, which has to override the
+     * global `window.matchMedia` stub in tests/setup.ts — that stub answers
+     * `matches: false` for every query, so a reduced-motion test written against
+     * it passes no matter what this line says. */
+    <MotionConfig reducedMotion="user">
+      <SessionProvider>
+        <Inner>{children}</Inner>
+      </SessionProvider>
+    </MotionConfig>
   );
 }
 
@@ -52,11 +93,23 @@ function Inner({ children }: { children: React.ReactNode }) {
     }
   }, [theme]);
 
-  // Sync <html lang + dir> with the active locale so RTL flips text + flow
-  // automatically (and screen readers + spell-check pick the right language).
+  // Sync <html lang + dir> with the active locale. TWO SEPARATE DECISIONS, and
+  // this line used to make one decision serve both (audit i18n-001).
+  //
+  //   dir  — presentation. Follows the locale outright: the user picked Urdu,
+  //          the shell really is Urdu, and it has to mirror.
+  //   lang — a factual claim about the text a screen reader is about to
+  //          pronounce. It follows `documentLangForLocale`, which keeps the
+  //          document tagged as its PREDOMINANT language while a locale's
+  //          coverage is still partial. `lang = locale` told assistive tech to
+  //          read the whole product — including every hardcoded English
+  //          aria-label and toast — with Urdu phonemes.
+  //
+  // See lib/i18n/strings.ts for the full reasoning and for the one-line switch
+  // that turns lang="ur" back on when Urdu coverage lands.
   useEffect(() => {
     if (typeof document === "undefined") return;
-    document.documentElement.lang = locale;
+    document.documentElement.lang = documentLangForLocale(locale);
     document.documentElement.dir = getDirForLocale(locale);
   }, [locale]);
 

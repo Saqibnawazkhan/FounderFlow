@@ -142,17 +142,26 @@ export default function LandingPage() {
 
       <LandingJsonLd />
       <Nav />
-      <Hero />
-      <TrustStrip />
-      <StackBand />
-      <Pillars />
-      <Features />
-      <HowItWorks />
-      <Showcase />
-      <Testimonial />
-      <Pricing />
-      <FAQ />
-      <CTA />
+      {/* a11y-008. This page had a <header>, a <nav aria-label="Sections">,
+          twelve <section>s and a <footer> — and no <main> at all, so the root
+          layout's "Skip to main content" resolved to nothing on the one route
+          strangers arrive on, and there was no main landmark to jump to either.
+          <Nav> and <Footer> stay outside it: they are the chrome being skipped.
+          `tabIndex={-1}` is what makes the fragment jump actually focus this
+          region rather than only nudging the focus-navigation start point. */}
+      <main id="main" tabIndex={-1}>
+        <Hero />
+        <TrustStrip />
+        <StackBand />
+        <Pillars />
+        <Features />
+        <HowItWorks />
+        <Showcase />
+        <Testimonial />
+        <Pricing />
+        <FAQ />
+        <CTA />
+      </main>
       <Footer />
     </div>
   );

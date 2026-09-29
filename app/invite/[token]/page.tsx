@@ -57,7 +57,7 @@ export default async function InvitePage({ params }: { params: { token: string }
   }
 
   return (
-    <main className="min-h-screen bg-bg text-fg">
+    <main id="main" tabIndex={-1} className="min-h-screen bg-bg text-fg">
       <div className="mx-auto flex min-h-screen max-w-lg flex-col justify-center px-6 py-12">
         <Link href="/" className="mb-10 inline-flex w-fit items-center gap-2.5">
           <BrandMark className="h-9 w-9" />
@@ -108,7 +108,7 @@ function InviteEmpty({
   cta?: { href: string; label: string };
 }) {
   return (
-    <main className="min-h-screen bg-bg text-fg">
+    <main id="main" tabIndex={-1} className="min-h-screen bg-bg text-fg">
       <div className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center px-6 py-12 text-center">
         <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-warning/10">
           <AlertTriangle className="h-6 w-6 text-warning" aria-hidden="true" />

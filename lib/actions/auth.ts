@@ -26,6 +26,11 @@ import { captureServerError } from "@/lib/sentry-server";
 import { sendVerificationEmail } from "@/lib/email/verification";
 import { ensureGeneralChannel } from "@/lib/chat/bootstrap";
 import { deriveHandle } from "@/lib/user/handle";
+import {
+  DEFAULT_APPEARANCE,
+  clearAppearanceCookies,
+  writeAppearanceCookies,
+} from "@/lib/appearance/cookies";
 
 // Discriminated union so TS narrows `error` to `string` after `if (!success)`.
 import type { ActionResult } from "@/lib/actions/types";
@@ -106,6 +111,38 @@ async function createGeneralProject(
     select: { id: true },
   });
   return project.id;
+}
+
+/**
+ * Publish the account's appearance to the pre-paint cookies right after a
+ * session is minted (i18n-002).
+ *
+ * WHY HERE AND NOT FROM THE SESSION. `auth()` cannot answer this: `signIn` has
+ * only put the session cookie on the RESPONSE, so there is nothing for it to
+ * read on the way out of this request. The row is therefore looked up the way
+ * `authorizeCredentials` does — lowercased address, `deletedAt: null` — so a
+ * tombstoned account (which cannot have got this far) could not reach it either.
+ *
+ * ONE EXTRA INDEXED READ PER SIGN-IN, which is the whole cost of the fix, and it
+ * is paid on the one request where a round-trip is already unavoidable. The
+ * alternative — carrying theme/locale through the JWT — means widening the token
+ * and re-reading it on every request in the `jwt` callback instead of once here.
+ *
+ * SWALLOWS EVERYTHING. The user is already signed in by the time this runs;
+ * answering "Couldn't sign you in right now" because a preference lookup blipped
+ * would be a far worse bug than the flash of the wrong language this prevents.
+ */
+async function seedAppearanceCookies(email: string): Promise<void> {
+  try {
+    const user = await db.user.findFirst({
+      where: { email: email.toLowerCase(), deletedAt: null },
+      select: { theme: true, locale: true },
+    });
+    if (!user) return;
+    await writeAppearanceCookies(user);
+  } catch (e) {
+    captureServerError(e, { action: "seedAppearanceCookies" });
+  }
 }
 
 export async function signupAction(input: unknown): Promise<ActionResult> {
@@ -301,6 +338,15 @@ export async function signupAction(input: unknown): Promise<ActionResult> {
       throw e;
     }
 
+    // Seed the pre-paint cookies from the schema defaults rather than re-reading
+    // the row we just wrote: `theme` and `locale` were not part of the insert, so
+    // the row holds exactly `DEFAULT_APPEARANCE`. Writing them here — instead of
+    // leaving the cookie to appear at the first RE-login — means the <head>
+    // script has an answer from the very first navigation of the first session,
+    // which is also the session in which a founder is most likely to be moving
+    // between devices. Never throws; see the module header.
+    await writeAppearanceCookies(DEFAULT_APPEARANCE);
+
     return { success: true, data: undefined };
   } catch (e) {
     // Catch-all so the client never sees an unhandled rejection (which would
@@ -343,6 +389,11 @@ export async function loginAction(input: unknown): Promise<ActionResult> {
 
   try {
     await signIn("credentials", { email, password, redirect: false });
+    // The one moment a brand-new device can learn this account's language: the
+    // session now exists, localStorage on this device does not, and the next
+    // document's <head> script has nothing else to read. See
+    // seedAppearanceCookies — it cannot fail this sign-in.
+    await seedAppearanceCookies(email);
     return { success: true, data: undefined };
   } catch (e) {
     if (e instanceof AuthError) {
@@ -356,6 +407,13 @@ export async function loginAction(input: unknown): Promise<ActionResult> {
 export async function logoutAction(): Promise<ActionResult> {
   try {
     await signOut({ redirect: false });
+    // AFTER signOut, and only on its success. The appearance cookies outlive the
+    // session by a year, so without this the next person to open a shared browser
+    // gets the previous user's language and colour scheme painted before
+    // hydration — on the login page, while signed out. If signOut threw, the
+    // session cookie was NOT cleared and this user is still authenticated, so
+    // their preference has to stay. Never throws; see the module header.
+    await clearAppearanceCookies();
     return { success: true, data: undefined };
   } catch (e) {
     // signOut throws on session-cookie-write failure (e.g., Auth.js DB

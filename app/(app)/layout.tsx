@@ -90,8 +90,15 @@ function AppShell({ children }: { children: React.ReactNode }) {
         {/* The one scrollport in the app shell. `min-h-0` lets it shrink
             below its content inside the flex column; `overflow-y-auto` is
             what makes a child's `h-full` mean "the visible page". */}
+        {/* `tabIndex={-1}` is what makes the root layout's "Skip to main
+            content" actually move focus (a11y-008). A fragment jump to a
+            non-focusable element only moves the sequential focus navigation
+            starting point — `document.activeElement` stays on <body>, so
+            nothing is announced and a screen reader is not taken anywhere.
+            -1 keeps it out of the Tab order. */}
         <main
           id="main"
+          tabIndex={-1}
           className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6 lg:p-8"
         >
           {children}

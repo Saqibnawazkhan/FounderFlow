@@ -9,7 +9,11 @@ import { CheckSquare, LayoutDashboard, Search } from "lucide-react";
  */
 export default function NotFound() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-bg px-6 text-fg">
+    <main
+      id="main"
+      tabIndex={-1}
+      className="flex min-h-screen items-center justify-center bg-bg px-6 text-fg"
+    >
       <div className="max-w-md space-y-4 text-center">
         <p className="font-mono text-xs uppercase tracking-widest text-fg-muted">404</p>
         <h1 className="text-3xl font-bold">Page not found</h1>

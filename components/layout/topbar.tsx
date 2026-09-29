@@ -106,6 +106,26 @@ export function Topbar() {
   }, []);
   const notifRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
+  // a11y-007: Escape has to hand focus back to the control the panel came from,
+  // so each trigger needs a ref of its own (the wrapper refs above are for
+  // outside-click detection and contain the panel too).
+  const notifButtonRef = useRef<HTMLButtonElement>(null);
+  const profileButtonRef = useRef<HTMLButtonElement>(null);
+
+  // a11y-007: these two panels are DISCLOSURES, not ARIA menus — see the long
+  // comment on the notifications panel below. A disclosure's trigger points at
+  // the region it reveals, so both need stable ids.
+  const NOTIF_PANEL_ID = "topbar-notifications-panel";
+  const PROFILE_PANEL_ID = "topbar-account-panel";
+
+  // Only ever one panel open at a time. The outside-`mousedown` handler already
+  // achieved this for pointer users; a keyboard user pressing Enter on the
+  // second trigger fires no mousedown, so both used to open at once — they
+  // overlap visually, and Escape then has two triggers to choose between.
+  function openOnly(which: "notif" | "profile" | null) {
+    setNotifOpen(which === "notif");
+    setProfileOpen(which === "profile");
+  }
 
   useEffect(() => {
     function handler(e: MouseEvent) {
@@ -117,9 +137,26 @@ export function Topbar() {
       }
     }
     function escHandler(e: KeyboardEvent) {
-      if (e.key === "Escape") {
+      if (e.key !== "Escape") return;
+      // This listener is document-level, so it sees every Escape on the page.
+      // Guarding on "is this panel actually open" matters twice over: it stops
+      // us re-rendering for an Escape meant for someone else, and — since we
+      // now restore focus — it stops us teleporting focus out of whatever the
+      // user was really using.
+      //
+      // Focus only returns to the trigger when focus was INSIDE the disclosure.
+      // Tabbing out of an open panel is legal (it is not a modal); closing it
+      // from out there must not drag the user backwards to the topbar.
+      const active = document.activeElement;
+      if (notifOpen) {
+        const wasInside = notifRef.current?.contains(active) ?? false;
         setNotifOpen(false);
+        if (wasInside) notifButtonRef.current?.focus();
+      }
+      if (profileOpen) {
+        const wasInside = profileRef.current?.contains(active) ?? false;
         setProfileOpen(false);
+        if (wasInside) profileButtonRef.current?.focus();
       }
     }
     document.addEventListener("mousedown", handler);
@@ -128,7 +165,7 @@ export function Topbar() {
       document.removeEventListener("mousedown", handler);
       document.removeEventListener("keydown", escHandler);
     };
-  }, []);
+  }, [notifOpen, profileOpen]);
 
   async function handleLogout() {
     // Server action clears the Auth.js cookie. Only clear local Zustand
@@ -235,14 +272,19 @@ export function Topbar() {
           {/* Notifications */}
           <div ref={notifRef} className="relative">
             <button
-              onClick={() => setNotifOpen(!notifOpen)}
+              ref={notifButtonRef}
+              onClick={() => openOnly(notifOpen ? null : "notif")}
               aria-label={
                 unreadCount > 0
                   ? `${t.topbar.notificationsLabel}, ${unreadCount}`
                   : t.topbar.notificationsLabel
               }
               aria-expanded={notifOpen}
-              aria-haspopup="menu"
+              // No `aria-haspopup`: this is a disclosure button, not a menu
+              // button. `aria-controls` is emitted only while the panel exists,
+              // because the panel is unmounted when closed and a dangling
+              // IDREF is its own accessibility defect.
+              aria-controls={notifOpen ? NOTIF_PANEL_ID : undefined}
               className="relative flex h-9 w-9 items-center justify-center rounded-xl text-fg-muted transition hover:bg-surface-hover"
             >
               <Bell className="h-4 w-4" aria-hidden="true" />
@@ -262,11 +304,25 @@ export function Topbar() {
             {/* Anchored with `end-0`, not `right-0`: these panels are wider
                 than the 36px button they hang from, so in RTL a physical
                 right-anchor would push them off the trailing edge of the
-                viewport instead of opening inward. */}
+                viewport instead of opening inward.
+
+                a11y-007: this used to be `role="menu"`. It is not a menu and it
+                cannot be one. ARIA's menu role may only own menuitem /
+                menuitemradio / menuitemcheckbox / group / separator children,
+                and this panel owns an <h3>, a "Mark all read" button and a
+                scrolling list of links whose text is a title, a prose message
+                and a timestamp. Declaring a menu made that <h3> an invalid
+                child (axe `aria-required-children`), cost it its heading
+                semantics, and — via `aria-haspopup="menu"` on the trigger —
+                promised arrow-key navigation and first-letter typeahead that
+                nothing here implements. As an ordinary disclosure region the
+                heading is a heading again, the links are links, and Tab
+                already walks them in visual order because the panel follows
+                the trigger in the DOM. */}
             <AnimatePresence>
               {notifOpen && (
                 <motion.div
-                  role="menu"
+                  id={NOTIF_PANEL_ID}
                   initial={{ opacity: 0, y: -8, scale: 0.95 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -8, scale: 0.95 }}
@@ -343,10 +399,12 @@ export function Topbar() {
           {/* Profile */}
           <div ref={profileRef} className="relative">
             <button
-              onClick={() => setProfileOpen(!profileOpen)}
+              ref={profileButtonRef}
+              onClick={() => openOnly(profileOpen ? null : "profile")}
               aria-label={t.topbar.accountMenu}
               aria-expanded={profileOpen}
-              aria-haspopup="menu"
+              // Disclosure, not a menu button — see the notifications panel.
+              aria-controls={profileOpen ? PROFILE_PANEL_ID : undefined}
               className="flex items-center gap-2 rounded-xl px-2 py-1.5 transition hover:bg-surface-hover"
             >
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-forest text-xs font-semibold text-primary-fg">
@@ -358,10 +416,15 @@ export function Topbar() {
               />
             </button>
 
+            {/* a11y-007: also a disclosure, not a menu. Two of its three
+                controls are navigation links, and ARIA's own guidance is not to
+                model site navigation as a menu; the panel additionally opens
+                with a non-interactive name/email block, which has no legal
+                place inside a menu at all. */}
             <AnimatePresence>
               {profileOpen && (
                 <motion.div
-                  role="menu"
+                  id={PROFILE_PANEL_ID}
                   initial={{ opacity: 0, y: -8, scale: 0.95 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -8, scale: 0.95 }}

@@ -102,7 +102,8 @@ function ResetPasswordInner() {
         <MarketingThemeToggle size="sm" />
       </div>
 
-      <div className="w-full max-w-md">
+      {/* <main> rather than <div> (a11y-008) — see app/forgot-password/page.tsx. */}
+      <main id="main" tabIndex={-1} className="w-full max-w-md">
         <Link href="/" className="mb-10 inline-flex items-center gap-2.5">
           <BrandMark className="h-9 w-9" />
           <span className="text-base font-bold tracking-tight">FounderFlow</span>
@@ -201,7 +202,7 @@ function ResetPasswordInner() {
             </form>
           </>
         )}
-      </div>
+      </main>
     </div>
   );
 }

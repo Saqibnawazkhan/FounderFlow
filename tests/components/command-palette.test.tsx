@@ -16,7 +16,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { CommandPalette } from "@/components/layout/command-palette";
 import type { SearchGroup } from "@/lib/schemas/search";
 import type { SearchHit, SearchResults } from "@/lib/queries/search";
@@ -281,5 +283,136 @@ describe("CommandPalette (nav and workspace search on two clocks)", () => {
       expect(row.textContent).not.toContain("/budgets");
       expect(row.textContent).not.toContain("/expenses");
     }
+  });
+});
+
+/**
+ * a11y-006 — the palette declares `role="dialog" aria-modal="true"`, which is a
+ * promise that nothing outside it is reachable. These are that promise stated
+ * in the four terms a user actually feels: Tab cannot walk out of the sheet,
+ * Shift-Tab cannot leave by the back door of the invisible full-viewport
+ * backdrop, the page behind is gone from the accessibility tree while the
+ * palette is open, and whatever opened the palette has focus again once it
+ * closes.
+ *
+ * REAL TIMERS IN THIS BLOCK. `userEvent` schedules its own work on setTimeout,
+ * so the fake clock the rest of this file needs would hang `user.tab()`.
+ * Nothing here types, so the 200ms debounce never arms and there is no clock to
+ * control.
+ */
+describe("CommandPalette (the modal dialog contract)", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * The app shell the palette opens over: the control that opened it and a
+   * background link, standing in for the sidebar's seventeen.
+   */
+  function Shell({ open }: { open: boolean }) {
+    return (
+      <>
+        <div data-testid="shell">
+          <button type="button" data-testid="trigger">
+            Search
+          </button>
+          <a href="/dashboard">Dashboard</a>
+        </div>
+        <CommandPalette open={open} onClose={onClose} />
+      </>
+    );
+  }
+
+  it("keeps Tab inside the palette instead of walking into the page behind it", async () => {
+    const user = userEvent.setup();
+    render(<Shell open />);
+    const dialog = screen.getByRole("dialog");
+    screen.getByRole("combobox").focus();
+
+    // Two presses more than there are rows: enough to walk off the end of the
+    // list whatever the row count is, which is where focus used to escape.
+    const presses = options().length + 2;
+    for (let i = 0; i < presses; i++) {
+      await user.tab();
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    }
+  });
+
+  it("wraps Shift+Tab inside the sheet instead of onto the invisible backdrop", async () => {
+    const user = userEvent.setup();
+    render(<Shell open />);
+    const input = screen.getByRole("combobox");
+    input.focus();
+    // Asserted, not assumed: from anywhere else — `document.body` included —
+    // Shift-Tab reaches the input by the ordinary route and the assertion below
+    // would pass without a trap existing at all.
+    expect(input).toHaveFocus();
+
+    await user.tab({ shift: true });
+
+    // The backdrop is a full-viewport <button> that sits BEFORE the sheet in DOM
+    // order, so an untrapped palette lands focus there: a control the user
+    // cannot see, one more Shift-Tab from the page behind.
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("hides the page behind it from assistive tech, and gives it back on close", () => {
+    const { rerender } = render(<Shell open />);
+    const shell = screen.getByTestId("shell");
+
+    expect(shell).toHaveAttribute("aria-hidden", "true");
+    // The contract, not merely the attribute: role queries walk the
+    // accessibility tree, so the link behind the overlay is gone from it while
+    // the palette owns the screen.
+    expect(screen.queryByRole("link", { name: "Dashboard" })).toBeNull();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    rerender(<Shell open={false} />);
+    expect(shell).not.toHaveAttribute("aria-hidden");
+    expect(screen.getByRole("link", { name: "Dashboard" })).toBeInTheDocument();
+  });
+
+  it("returns focus to whatever opened it when Escape closes it", async () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" data-testid="trigger" onClick={() => setOpen(true)}>
+            Search
+          </button>
+          <CommandPalette open={open} onClose={() => setOpen(false)} />
+        </>
+      );
+    }
+
+    render(<Harness />);
+    const trigger = screen.getByTestId("trigger");
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    // Waited for on purpose: the palette focuses its input on the next frame,
+    // and without this the assertion below would also pass on a palette that
+    // never moved focus anywhere in the first place.
+    await waitFor(() => expect(screen.getByRole("combobox")).toHaveFocus());
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(trigger).toHaveFocus();
+  });
+
+  it("keeps the result rows out of the tab order and announces them instead", () => {
+    render(<Shell open />);
+    const input = screen.getByRole("combobox");
+    const rows = options();
+
+    // A combobox with `aria-activedescendant` keeps DOM focus in the input and
+    // points at the active row; rows that are their own tab stops make the
+    // pointer a lie, because a screen reader announces the focused row instead.
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) {
+      expect(row).toHaveAttribute("tabindex", "-1");
+    }
+    expect(input).toHaveAttribute("aria-activedescendant", rows[0].id);
   });
 });

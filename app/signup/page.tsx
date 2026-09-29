@@ -157,8 +157,14 @@ export default function SignupPage() {
         </div>
       </aside>
 
-      {/* Right: form */}
-      <div className="relative flex flex-col justify-center px-6 py-12 sm:px-10 lg:px-16">
+      {/* Right: form.
+          <main> rather than <div> (a11y-008) — see app/login/page.tsx for the
+          argument. The stats showcase is the <aside>; this column is the page. */}
+      <main
+        id="main"
+        tabIndex={-1}
+        className="relative flex flex-col justify-center px-6 py-12 sm:px-10 lg:px-16"
+      >
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_top_right,rgb(var(--primary)/0.10),transparent_60%)]"
@@ -422,7 +428,7 @@ export default function SignupPage() {
             </Link>
           </p>
         </div>
-      </div>
+      </main>
     </div>
   );
 }
