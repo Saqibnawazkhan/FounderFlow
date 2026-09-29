@@ -174,7 +174,7 @@ export function CommentThread({
                       type="button"
                       onClick={() => handleDelete(c.id)}
                       aria-label={`Delete comment by ${c.authorName}`}
-                      className="rounded-md p-1 text-fg-muted opacity-0 transition-all hover:bg-danger/10 hover:text-danger group-hover:opacity-100"
+                      className="rounded-md p-1.5 text-fg-muted opacity-0 transition-all hover:bg-danger/10 hover:text-danger focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 max-md:opacity-100 [@media(hover:none)]:opacity-100"
                     >
                       <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                     </button>
@@ -244,7 +244,7 @@ export function CommentThread({
               // not be submitted by clicking — the click hit a listbox option
               // instead. Above the composer is the comment list, which nobody
               // needs to click mid-compose. The chat composer does the same.
-              className="absolute bottom-full left-1 right-1 z-30 mb-1 max-h-56 overflow-auto rounded-xl border border-border bg-surface p-1 shadow-card"
+              className="absolute inset-x-1 bottom-full z-30 mb-1 max-h-56 overflow-auto rounded-xl border border-border bg-surface p-1 shadow-card"
             >
               {mentions.candidates.map((u, i) => {
                 const selected = i === mentions.activeIndex;
@@ -254,7 +254,7 @@ export function CommentThread({
                       type="button"
                       {...mentions.getOptionButtonProps(u, i)}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
+                        "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-start transition-colors",
                         selected ? "bg-primary/10" : "hover:bg-glass/[0.06]"
                       )}
                     >

@@ -56,7 +56,7 @@ function Inner() {
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgb(var(--primary)/0.10),transparent_60%)]"
       />
-      <div className="absolute right-6 top-6">
+      <div className="absolute end-6 top-6">
         <ThemeToggle size="sm" />
       </div>
       {/* <main> rather than <div> (a11y-008) — see app/forgot-password/page.tsx. */}
@@ -89,7 +89,7 @@ function Inner() {
               className="mt-8 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg transition-transform hover:scale-[1.02] active:scale-95"
             >
               {t.auth.verifiedCta}
-              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              <ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
             </Link>
           </div>
         )}
@@ -108,7 +108,7 @@ function Inner() {
               className="mt-8 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg transition-transform hover:scale-[1.02] active:scale-95"
             >
               {t.nav.settings}
-              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              <ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
             </Link>
           </div>
         )}

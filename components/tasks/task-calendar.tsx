@@ -133,7 +133,7 @@ export function TaskCalendar({
               aria-label="Previous month"
               className="rounded-full p-1.5 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
             >
-              <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+              <ChevronLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
             </button>
             <span className="min-w-[9.5rem] text-center font-mono text-xs font-semibold tabular-nums text-fg">
               {format(month, "MMMM yyyy")}
@@ -144,7 +144,7 @@ export function TaskCalendar({
               aria-label="Next month"
               className="rounded-full p-1.5 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
             >
-              <ChevronRight className="h-4 w-4" aria-hidden="true" />
+              <ChevronRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
             </button>
           </div>
 
@@ -189,7 +189,7 @@ export function TaskCalendar({
                   // — the one thing the jsdom tests cannot prove.
                   data-date={format(cell.date, "yyyy-MM-dd")}
                   className={cn(
-                    "min-h-[7.5rem] border-b border-r border-border p-1.5",
+                    "min-h-[7.5rem] border-b border-e border-border p-1.5",
                     !cell.inMonth && "bg-bg/40"
                   )}
                 >
@@ -226,7 +226,7 @@ export function TaskCalendar({
                     <button
                       type="button"
                       onClick={() => setExpandedKey(key)}
-                      className="mt-1 w-full rounded-md px-1.5 py-0.5 text-left text-[11px] font-medium text-primary-strong transition-colors hover:bg-surface-hover"
+                      className="mt-1 w-full rounded-md px-1.5 py-0.5 text-start text-[11px] font-medium text-primary-strong transition-colors hover:bg-surface-hover"
                     >
                       +{hidden} more
                     </button>
@@ -267,7 +267,7 @@ export function TaskCalendar({
                     {format(cell.date, "EEEE")}
                   </span>
                   {cell.isToday && (
-                    <span className="ml-auto rounded-full bg-primary px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-primary-fg">
+                    <span className="ms-auto rounded-full bg-primary px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-primary-fg">
                       Today
                     </span>
                   )}
@@ -318,7 +318,7 @@ function TaskChip({
       onClick={() => onOpen(task)}
       title={task.title}
       className={cn(
-        "flex w-full items-center gap-1.5 rounded-md border border-border bg-bg px-1.5 py-1 text-left text-[11px] transition-colors hover:border-primary/40 hover:bg-surface-hover",
+        "flex w-full items-center gap-1.5 rounded-md border border-border bg-bg px-1.5 py-1 text-start text-[11px] transition-colors hover:border-primary/40 hover:bg-surface-hover",
         done && "opacity-60",
         highlighted && "border-primary/60 bg-primary/[0.08] ring-2 ring-primary/50"
       )}

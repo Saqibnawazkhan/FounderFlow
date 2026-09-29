@@ -40,6 +40,7 @@ import { getClientIp } from "@/lib/client-ip";
 import { captureServerError } from "@/lib/sentry-server";
 import { DeleteAccountSchema, DeleteWorkspaceSchema } from "@/lib/schemas/account";
 import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
+import { sendSecurityNotice, sendSecurityNotices } from "@/lib/email/templates/security-notice";
 // Importing from the config module (rather than reading process.env here) is
 // also what runs `lemonSqueezySetup()` — the SDK is configured at that module's
 // load, exactly as lib/actions/billing.ts relies on.
@@ -152,6 +153,23 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
         // file. Empty today.
         extra: { softDeleteExcluded: SOFT_DELETE_EXCLUDED },
       });
+
+      // acct-005. The receipt — and for this branch it is a WORKSPACE receipt,
+      // not an account one, because that is what just happened (acct-013 is the
+      // same observation about the confirmation copy). It carries the 90-day
+      // recovery deadline and how to ask for a restore, which is the thing a
+      // customer needs and the thing no channel was delivering. One recipient by
+      // construction: this branch only runs when `otherUsers === 0`, so `me` IS
+      // the workspace's only live member.
+      await sendSecurityNotice({
+        kind: "workspace-deleted",
+        to: me.email,
+        recipientName: me.name,
+        accountEmail: me.email,
+        workspaceName: company.name,
+        deletedAt: now,
+      });
+
       await signOut({ redirect: false });
       // i18n-002: the account is gone, so its year-long appearance cookies must
       // go with it - otherwise the next person on a shared browser paints in a
@@ -188,6 +206,18 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
       }),
       db.pushSubscription.deleteMany({ where: { userId: me.id } }),
     ]);
+
+    // acct-005. The leaving member's own receipt. The workspace survives, so
+    // this notice is deliberately about the ACCOUNT and says nothing about the
+    // workspace's data — but it carries the same 90-day deadline, because the
+    // tombstone this branch writes is what the purge cron counts from.
+    await sendSecurityNotice({
+      kind: "account-deleted",
+      to: me.email,
+      recipientName: me.name,
+      accountEmail: me.email,
+      deletedAt: now,
+    });
 
     await signOut({ redirect: false });
     // i18n-002: the account is gone, so its year-long appearance cookies must
@@ -560,6 +590,18 @@ export async function deleteWorkspaceAction(input: unknown): Promise<ActionResul
     const teardown = await cancelWorkspaceSubscription(company);
     if (!teardown.ok) return { success: false, error: teardown.error };
 
+    // acct-005. READ THE RECIPIENTS BEFORE THE SWEEP, and after the teardown
+    // check so a refused delete mails nobody. One line later every one of these
+    // rows carries a tombstone, and `deletedAt: null` matches nobody — so the
+    // same query run afterwards returns an empty list and the notice goes
+    // nowhere, silently, which is the exact shape of the bug being fixed.
+    // Everyone here loses their workspace, not just the admin who pressed the
+    // button, so everyone gets the deadline and the way to ask for a restore.
+    const members = await db.user.findMany({
+      where: { companyId: me.companyId, deletedAt: null },
+      select: { name: true, email: true },
+    });
+
     const now = new Date();
     const rowsTouched = await softDeleteWorkspace(me.companyId, now, teardown.billingWrite);
     warnBulkMutation(rowsTouched, {
@@ -568,6 +610,13 @@ export async function deleteWorkspaceAction(input: unknown): Promise<ActionResul
       companyId: me.companyId,
       extra: { workspaceName: company.name, softDeleteExcluded: SOFT_DELETE_EXCLUDED },
     });
+
+    await sendSecurityNotices(members, {
+      kind: "workspace-deleted",
+      workspaceName: company.name,
+      deletedAt: now,
+    });
+
     await signOut({ redirect: false });
     // i18n-002: the account is gone, so its year-long appearance cookies must
     // go with it - otherwise the next person on a shared browser paints in a

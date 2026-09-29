@@ -67,7 +67,7 @@ export function TableSkeleton({ rows = 6 }: { rows?: number }) {
         <Skeleton className="h-3 w-24" />
         <Skeleton className="h-3 w-32" />
         <Skeleton className="h-3 w-20" />
-        <Skeleton className="ml-auto h-3 w-16" />
+        <Skeleton className="ms-auto h-3 w-16" />
       </div>
       <div className="divide-y divide-border">
         {Array.from({ length: rows }).map((_, i) => (

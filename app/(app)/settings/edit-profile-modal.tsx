@@ -10,6 +10,7 @@ import { useId, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import toast from "react-hot-toast";
+import { useSession } from "next-auth/react";
 import { Save } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { updateProfileAction } from "@/lib/actions/profile";
@@ -26,6 +27,12 @@ type Props = {
 };
 
 export function EditProfileModal({ open, onClose, defaultName, defaultEmail, onSaved }: Props) {
+  // acct-006: `update()` re-runs the jwt callback, which re-reads the user
+  // row - so the new name reaches the sidebar and top bar now rather than on
+  // the next session refetch. Deliberately takes no argument: the server
+  // stays the single source of truth for the value, rather than this modal
+  // becoming a second one.
+  const { update } = useSession();
   const t = useT();
   const nameId = useId();
   const [submitting, setSubmitting] = useState(false);
@@ -56,6 +63,7 @@ export function EditProfileModal({ open, onClose, defaultName, defaultEmail, onS
       return;
     }
     toast.success(t.settings.profileSaved);
+    await update();
     onSaved();
   }
 

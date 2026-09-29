@@ -440,7 +440,7 @@ export function ChatClient({
         // no useful empty copy for "you have no colleagues yet".
         onNewDm={dmCandidates.length > 0 ? () => setNewDmOpen(true) : undefined}
         className={cn(
-          "w-full border-border md:block md:w-[220px] md:shrink-0 md:border-r",
+          "w-full border-border md:block md:w-[220px] md:shrink-0 md:border-e",
           railOpen ? "block" : "hidden"
         )}
       />

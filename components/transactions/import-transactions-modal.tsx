@@ -302,14 +302,14 @@ export function ImportTransactionsModal({
               <button
                 type="button"
                 onClick={reset}
-                className="ml-auto text-xs font-semibold text-fg-muted hover:text-fg"
+                className="ms-auto text-xs font-semibold text-fg-muted hover:text-fg"
               >
                 Choose another file
               </button>
             </div>
 
             <div className="max-h-72 overflow-auto rounded-xl border border-border">
-              <table className="w-full text-left text-xs">
+              <table className="w-full text-start text-xs">
                 <thead className="sticky top-0 bg-surface">
                   <tr className="border-b border-border">
                     <th className="px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-fg-muted">

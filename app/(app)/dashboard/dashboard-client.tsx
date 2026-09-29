@@ -24,9 +24,9 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Activity, Task, Transaction, User } from "@/lib/types";
-import { formatRelativeTime, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { useMoney } from "@/lib/hooks/useMoney";
-import { useNumberFormat } from "@/lib/i18n/use-t";
+import { useDateFormat, useNumberFormat } from "@/lib/i18n/use-t";
 // Only the deadline predicates come from date-fns now. Month bucketing lives in
 // lib/date-range.ts: every date-fns month helper works in the LOCAL calendar,
 // and `Transaction.date` is a date-only value stored at UTC midnight, so a local
@@ -317,6 +317,7 @@ export function DashboardClient({
 }: Props) {
   const money = useMoney();
   const n = useNumberFormat();
+  const d = useDateFormat();
 
   // EVERY money figure below goes through the pure functions above, which prefer
   // the server-side aggregate and fall back to the row array (money-008). The
@@ -624,7 +625,7 @@ export function DashboardClient({
                       </div>
                       <p className="font-mono text-sm font-bold tabular-nums">{money(f.amount)}</p>
                     </div>
-                    <div className="ml-10 h-1.5 overflow-hidden rounded-full bg-glass/[0.06]">
+                    <div className="ms-10 h-1.5 overflow-hidden rounded-full bg-glass/[0.06]">
                       <div
                         className="h-full rounded-full bg-primary transition-[width] duration-700"
                         style={{ width: `${pct}%` }}
@@ -649,7 +650,7 @@ export function DashboardClient({
               href="/activities"
               className="inline-flex items-center gap-1 font-mono text-[10px] font-bold uppercase tracking-widest text-primary-strong hover:underline"
             >
-              View all <ArrowRight className="h-3 w-3" aria-hidden="true" />
+              View all <ArrowRight className="h-3 w-3 rtl:rotate-180" aria-hidden="true" />
             </Link>
           </div>
           <div className="space-y-4">
@@ -662,7 +663,7 @@ export function DashboardClient({
                   <div className="min-w-0 flex-1">
                     <p className="text-sm leading-snug text-fg">{activity.message}</p>
                     <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
-                      {formatRelativeTime(activity.createdAt)}
+                      {d.relative(activity.createdAt)}
                     </p>
                   </div>
                 </div>
@@ -723,7 +724,7 @@ function PulseCard({
       >
         <Icon className="h-5 w-5" aria-hidden="true" />
         {live && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-3 w-3" aria-hidden="true">
+          <span className="absolute -end-0.5 -top-0.5 flex h-3 w-3" aria-hidden="true">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-70" />
             <span className="relative inline-flex h-3 w-3 rounded-full bg-primary ring-2 ring-surface" />
           </span>
@@ -735,7 +736,7 @@ function PulseCard({
         {sub && <p className="mt-0.5 truncate text-xs text-fg-muted">{sub}</p>}
       </div>
       <ArrowRight
-        className="h-4 w-4 shrink-0 text-fg-muted transition-transform group-hover:translate-x-0.5"
+        className="h-4 w-4 shrink-0 text-fg-muted transition-transform group-hover:translate-x-0.5 rtl:rotate-180 rtl:group-hover:-translate-x-0.5"
         aria-hidden="true"
       />
     </Link>
@@ -845,7 +846,7 @@ function GettingStarted({
             </div>
             {!step.done && (
               <ArrowRight
-                className="ml-auto mt-1 h-3.5 w-3.5 shrink-0 text-fg-muted transition-transform group-hover:translate-x-0.5"
+                className="ms-auto mt-1 h-3.5 w-3.5 shrink-0 text-fg-muted transition-transform group-hover:translate-x-0.5 rtl:rotate-180 rtl:group-hover:-translate-x-0.5"
                 aria-hidden="true"
               />
             )}

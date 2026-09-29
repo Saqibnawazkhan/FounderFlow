@@ -217,6 +217,14 @@ export const useStore = create<AppState>()(
         // and an unconditional set was looping subscribers (React #185).
         const sameIdentity =
           current?.id === user?.id &&
+          // acct-006: `name` belongs in this comparison and was missing, so a
+          // display-name change early-returned here and the sidebar and top bar
+          // kept the old name until the next sign-in. Adding a clause makes the
+          // guard STRICTER, i.e. it sets more often, so it cannot reintroduce
+          // the React #185 loop the guard exists to prevent - that loop needed
+          // an UNCONDITIONAL set, and the Providers effect does not depend on
+          // `currentUser`.
+          current?.name === user?.name &&
           current?.email === user?.email &&
           current?.companyId === user?.companyId &&
           current?.role === user?.role;

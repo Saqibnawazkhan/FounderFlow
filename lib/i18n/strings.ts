@@ -284,6 +284,11 @@ export const en = {
       "Change the interface language. Urdu is in beta — navigation, settings, and sign-in are translated; some pages are still in English while we finish coverage.",
     english: "English",
     urdu: "اردو",
+    // "left-to-right" here is prose, not a Tailwind utility. The RTL sweep in
+    // tests/lib/layout/rtl.test.ts used to scan this file and matched it as
+    // one; the file has been removed from that scan instead, because a copy
+    // file cannot contain a class and rewording correct customer-facing copy to
+    // satisfy a regex is the wrong repair. Leave this sentence as it reads.
     englishDesc: "Default left-to-right layout",
     urduDesc: "Right-to-left · Beta (some pages still English)",
     dataStorage: "Data & storage",
@@ -370,13 +375,57 @@ export const en = {
     // Sections only admin / cofounder see
     companyEditNoteAdmin: "Founders and co-founders can update these details.",
     // Danger zone — S2, GDPR/CCPA
+    //
+    // ## acct-011: none of this is permanent, and saying so cost us restores
+    //
+    // Every string below used to promise irreversibility — "there is no undo",
+    // "This is permanent", "Permanently remove", "Not reversible." What the code
+    // does instead: `deleteAccountAction` and `deleteWorkspaceAction` write a
+    // `deletedAt` tombstone (lib/actions/account.ts, whose own header carries the
+    // recovery SQL), the purge cron keeps tombstoned rows for RETENTION_DAYS = 90,
+    // and that purge is DRY-RUN unless `PURGE_ENABLED === "true"` — which it is
+    // not — so today nothing is erased at all. The one customer who most needs to
+    // know there is a window was the one told, in the danger colour, that there
+    // was nothing worth asking for.
+    //
+    // ## What these strings may and may not promise
+    //
+    //  • "access ends immediately" is TRUE and stays: auth and every scoped query
+    //    filter `deletedAt: null`, and `sessionVersion` kills the live session, so
+    //    the workspace is unreachable from the moment of the click.
+    //  • "a recoverable copy for 90 days" is TRUE UNDER BOTH `PURGE_ENABLED`
+    //    settings, because it is a FLOOR. With the purge off, rows outlive the
+    //    window; with it on, the window is exactly what the cron enforces. That is
+    //    the only reason a number may appear here at all.
+    //  • Nothing here claims what happens on day 91. That sentence is the one
+    //    whose truth depends on an env var nobody has set, and it is not the
+    //    question being asked at click time. The security-notice email
+    //    (lib/email/templates/security-notice.ts) carries the concrete deadline
+    //    date instead — it is sent at the real `deletedAt`, is read at the START
+    //    of the clock, and is the surface the customer will still have in 80 days.
+    //    A date computed HERE, before the click, could not be the same instant the
+    //    email will quote, and two surfaces naming two deadlines is a worse bug
+    //    than the one being fixed.
+    //  • Recovery is a manual SQL UPDATE by an operator, not a self-service
+    //    button, so the copy points at support rather than at a control that does
+    //    not exist.
+    //
+    // The "90" is held against the cron's own RETENTION_DAYS by
+    // tests/lib/i18n/delete-copy.test.ts, in both locales. Latin digits in the
+    // Urdu copy are the pinned decision, not an oversight — see the argument in
+    // lib/i18n/numbering.ts.
     dangerZone: "Danger zone",
-    dangerZoneNote: "Irreversible operations. Take a moment before clicking — there is no undo.",
+    dangerZoneNote:
+      "These take effect the moment you confirm — access ends immediately. Nothing is erased " +
+      "straight away, though: we keep a recoverable copy for 90 days, so contact support right " +
+      "away if it was a mistake.",
     deleteAccount: "Delete my account",
     deleteAccountDesc:
-      "Permanently remove your user record and everything you own. If you're the only person in this workspace, the workspace goes with you.",
+      "Removes your user record and everything you own from the app. If you're the only person in this workspace, the workspace goes with you.",
     deleteAccountAction: "Delete account",
-    deleteAccountConfirmDesc: "This is permanent. Enter your password below to confirm.",
+    deleteAccountConfirmDesc:
+      "You'll be signed out and lose access immediately. We keep a recoverable copy for 90 days — " +
+      "contact support right away if this is a mistake. Enter your password below to confirm.",
     // acct-013. Shown INSTEAD of the line above when the caller is the only member
     // of their workspace — the case where "Delete my account" runs the identical
     // whole-workspace cascade that "Delete this workspace" runs. FounderFlow's
@@ -385,19 +434,21 @@ export const en = {
     deleteAccountWorkspaceConfirmDesc:
       "You're the only person in {workspace}, so this deletes the whole workspace — " +
       "every transaction, task, budget and comment goes with it, and any active Team " +
-      "subscription is cancelled. Type the workspace name exactly, then your password.",
+      "subscription is cancelled. We keep a recoverable copy for 90 days; contact support " +
+      "right away if this is a mistake. Type the workspace name exactly, then your password.",
     deleteAccountAndWorkspaceAction: "Delete account + workspace",
     passwordConfirm: "Enter your password",
     deleteWorkspace: "Delete this workspace",
     deleteWorkspaceDesc:
-      "Wipes the workspace, every teammate on it, and every transaction, task, budget, and comment. Not reversible.",
+      "Ends access for the workspace and everyone on it — every transaction, task, budget and comment goes with it.",
     deleteWorkspaceAction: "Delete workspace",
     // acct-002: the delete now cancels the LemonSqueezy subscription, and this is
     // the last screen that can say so — afterwards every user is tombstoned and
     // "Manage billing" is unreachable.
     deleteWorkspaceConfirmDesc:
       "Everyone loses access immediately, and any active Team subscription is cancelled " +
-      "so you stop being charged. Type the workspace name exactly, then your password.",
+      "so you stop being charged. We keep a recoverable copy for 90 days — contact support " +
+      "right away if this is a mistake. Type the workspace name exactly, then your password.",
     workspaceNameConfirm: "Type the workspace name",
     accountDeletedToast: "Account deleted",
     workspaceDeletedToast: "Workspace deleted",
@@ -727,25 +778,39 @@ export const ur: typeof en = {
     companyEditNoteAdmin: "فاؤنڈرز اور کو فاؤنڈرز یہ تفصیلات اپ ڈیٹ کر سکتے ہیں۔",
     // Danger zone
     dangerZone: "خطرناک زون",
-    dangerZoneNote: "ناقابلِ واپسی کارروائیاں۔ کلک کرنے سے پہلے سوچ لیں — واپس نہیں کیا جا سکتا۔",
+    // See the English block above for the acct-011 argument. The Urdu carried
+    // the same two promises word for word: "ناقابلِ واپسی" (irreversible) and
+    // "واپس نہیں کیا جا سکتا" (cannot be undone), so the Urdu reader was told the
+    // identical untruth. "90" stays in Latin digits: lib/i18n/numbering.ts pins
+    // every locale to `latn` on purpose.
+    dangerZoneNote:
+      "تصدیق کرتے ہی یہ کارروائیاں نافذ ہو جاتی ہیں اور رسائی فوراً ختم ہو جاتی ہے۔ لیکن کچھ بھی " +
+      "فوری طور پر نہیں مٹایا جاتا: ہم 90 دن تک قابلِ بحالی کاپی محفوظ رکھتے ہیں، اس لیے " +
+      "غلطی ہونے کی صورت میں فوراً سپورٹ سے رابطہ کریں۔",
     deleteAccount: "میرا اکاؤنٹ حذف کریں",
     deleteAccountDesc:
-      "آپ کا یوزر ریکارڈ اور اس کی سب چیزیں مستقل ختم ہو جائیں گی۔ اگر آپ اس ورک اسپیس کے واحد فرد ہیں تو ورک اسپیس بھی ساتھ چلا جائے گا۔",
+      "آپ کا یوزر ریکارڈ اور اس کی سب چیزیں ایپ سے ہٹا دی جائیں گی۔ اگر آپ اس ورک اسپیس کے واحد فرد ہیں تو ورک اسپیس بھی ساتھ چلا جائے گا۔",
     deleteAccountAction: "اکاؤنٹ حذف کریں",
-    deleteAccountConfirmDesc: "یہ عمل مستقل ہے۔ تصدیق کے لیے اپنا پاس ورڈ درج کریں۔",
+    deleteAccountConfirmDesc:
+      "آپ فوراً سائن آؤٹ ہو جائیں گے اور رسائی ختم ہو جائے گی۔ ہم 90 دن تک قابلِ بحالی کاپی " +
+      "محفوظ رکھتے ہیں — اگر یہ غلطی سے ہو رہا ہے تو فوراً سپورٹ سے رابطہ کریں۔ " +
+      "تصدیق کے لیے نیچے اپنا پاس ورڈ درج کریں۔",
     deleteAccountWorkspaceConfirmDesc:
       "آپ {workspace} میں واحد فرد ہیں، اس لیے یہ پورا ورک اسپیس حذف کر دے گا — ہر ٹرانزیکشن، " +
       "کام، بجٹ اور تبصرہ ساتھ چلا جائے گا، اور کوئی بھی فعال Team سبسکرپشن منسوخ کر دی جائے گی۔ " +
+      "ہم 90 دن تک قابلِ بحالی کاپی محفوظ رکھتے ہیں؛ غلطی ہونے کی صورت میں فوراً سپورٹ سے رابطہ کریں۔ " +
       "ورک اسپیس کا نام بالکل ویسا ہی ٹائپ کریں، پھر اپنا پاس ورڈ۔",
     deleteAccountAndWorkspaceAction: "اکاؤنٹ + ورک اسپیس حذف کریں",
     passwordConfirm: "پاس ورڈ درج کریں",
     deleteWorkspace: "یہ ورک اسپیس حذف کریں",
     deleteWorkspaceDesc:
-      "ورک اسپیس، اس کے سب ٹیم ممبرز، ٹرانزیکشنز، کام، بجٹ اور تبصرے سب مٹ جائیں گے۔ واپس نہیں ہو گا۔",
+      "ورک اسپیس اور اس کے تمام ٹیم ممبرز کی رسائی ختم ہو جائے گی، اور ہر ٹرانزیکشن، کام، بجٹ اور تبصرہ ساتھ چلا جائے گا۔",
     deleteWorkspaceAction: "ورک اسپیس حذف کریں",
     deleteWorkspaceConfirmDesc:
       "سب کو فوراً رسائی ختم ہو جائے گی، اور کوئی بھی فعال Team سبسکرپشن منسوخ کر دی جائے گی تاکہ " +
-      "مزید چارج نہ ہو۔ ورک اسپیس کا نام بالکل ویسا ہی ٹائپ کریں اور پھر پاس ورڈ درج کریں۔",
+      "مزید چارج نہ ہو۔ ہم 90 دن تک قابلِ بحالی کاپی محفوظ رکھتے ہیں — اگر یہ غلطی سے " +
+      "ہو رہا ہے تو فوراً سپورٹ سے رابطہ کریں۔ ورک اسپیس کا نام بالکل ویسا ہی ٹائپ کریں اور پھر " +
+      "پاس ورڈ درج کریں۔",
     workspaceNameConfirm: "ورک اسپیس کا نام ٹائپ کریں",
     accountDeletedToast: "اکاؤنٹ حذف ہو گیا",
     workspaceDeletedToast: "ورک اسپیس حذف ہو گیا",

@@ -422,7 +422,7 @@ export function ExpensesClient({
       >
         <div className="relative flex-1">
           <Search
-            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+            className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
             aria-hidden="true"
           />
           <label htmlFor="expense-search" className="sr-only">
@@ -433,12 +433,12 @@ export function ExpensesClient({
             placeholder="Search description, category, or person…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-xl border border-border bg-bg py-2.5 pl-10 pr-4 text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:border-primary/50 focus:bg-surface focus:outline-none"
+            className="w-full rounded-xl border border-border bg-bg py-2.5 pe-4 ps-10 text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:border-primary/50 focus:bg-surface focus:outline-none"
           />
         </div>
         <div className="relative">
           <Filter
-            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+            className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
             aria-hidden="true"
           />
           <label htmlFor="expense-category" className="sr-only">
@@ -448,7 +448,7 @@ export function ExpensesClient({
             id="expense-category"
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
-            className="w-full min-w-[200px] appearance-none rounded-xl border border-border bg-bg py-2.5 pl-10 pr-4 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
+            className="w-full min-w-[200px] appearance-none rounded-xl border border-border bg-bg py-2.5 pe-4 ps-10 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
           >
             <option value="all">All categories</option>
             {EXPENSE_CATEGORIES.map((c) => (
@@ -490,31 +490,31 @@ export function ExpensesClient({
                 <tr className="border-b border-border">
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Description
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Category
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Added by
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Date
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-right font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-end font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Amount
                   </th>
@@ -550,13 +550,13 @@ export function ExpensesClient({
                     <td className="px-6 py-4 font-mono text-xs uppercase tracking-wider text-fg-muted">
                       {formatUtcDate(t.date)}
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-6 py-4 text-end">
                       <span className="inline-flex items-center gap-1 font-mono text-sm font-bold tabular-nums text-mint-strong">
                         <ArrowDown className="h-3 w-3" aria-hidden="true" />
                         {money(t.amount)}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-6 py-4 text-end">
                       <div className="inline-flex items-center gap-1">
                         <button
                           onClick={() => setCommentingTxn(t)}
@@ -625,7 +625,7 @@ export function ExpensesClient({
                   <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
                     {formatUtcDate(t.date)}
                   </span>
-                  <div className="ml-auto flex items-center gap-1">
+                  <div className="ms-auto flex items-center gap-1">
                     <button
                       onClick={() => setCommentingTxn(t)}
                       aria-label={

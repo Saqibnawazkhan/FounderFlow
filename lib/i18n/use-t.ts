@@ -14,6 +14,7 @@
 import { useCallback } from "react";
 import { useStore } from "@/lib/store";
 import { formatCompact, formatNumber, formatPercent, type FractionDigits } from "@/lib/format";
+import { formatDate, formatRelativeTime } from "@/lib/utils";
 import { DICTIONARIES, type Locale, type Strings } from "./strings";
 
 export function useT(): Strings {
@@ -63,5 +64,44 @@ export function useNumberFormat(): {
       [locale]
     ),
     compact: useCallback((value: number) => formatCompact(value, locale), [locale]),
+  };
+}
+
+/**
+ * Date formatters bound to the active locale — `useNumberFormat()`'s twin, in
+ * the same shape and for the same reason.
+ *
+ *   const d = useDateFormat();
+ *   <span>{d.relative(n.createdAt)}</span>
+ *   <span>{d.date(user.createdAt)}</span>
+ *
+ * ## Why this exists (i18n-004, the reachability half)
+ *
+ * `formatDate` and `formatRelativeTime` in lib/utils.ts take an OPTIONAL
+ * `locale` that defaults to English — deliberately, because one server caller
+ * (lib/billing/billing-notify.ts) persists and mails its output and must keep
+ * getting English. Optional meant that for a while not one of the fifteen
+ * rendered call sites passed anything, so the helpers were correct, tested, and
+ * invisible: an Urdu workspace still read "Sep 26, 2026" on every screen. The
+ * helper was never the bug; the un-passed argument was.
+ *
+ * Threading `useLocale()` through each component by hand would have left the
+ * same hole open for the sixteenth call site. Binding it here closes it the way
+ * `useNumberFormat` closes the numbering-system decision: no component names a
+ * locale tag, so none can get it wrong and none can forget. The invariant is
+ * enforced rather than remembered — tests/lib/i18n/date-locale-reachability
+ * fails if anything under app/ or components/ imports the bare helpers again.
+ *
+ * No import cycle: lib/utils.ts reaches only lib/format.ts, lib/i18n/numbering
+ * and lib/i18n/strings, none of which import this module.
+ */
+export function useDateFormat(): {
+  date: (value: string | Date) => string;
+  relative: (value: string | Date) => string;
+} {
+  const locale = useLocale();
+  return {
+    date: useCallback((value: string | Date) => formatDate(value, locale), [locale]),
+    relative: useCallback((value: string | Date) => formatRelativeTime(value, locale), [locale]),
   };
 }

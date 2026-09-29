@@ -14,7 +14,7 @@ export default function ChatLoading() {
   return (
     <div className="flex h-full">
       {/* Channel rail — hidden on phones, same as the real surface will be. */}
-      <div className="hidden w-64 shrink-0 flex-col gap-2 border-r border-border p-4 md:flex">
+      <div className="hidden w-64 shrink-0 flex-col gap-2 border-e border-border p-4 md:flex">
         <Skeleton className="mb-2 h-5 w-24" />
         {Array.from({ length: 6 }).map((_, i) => (
           <Skeleton key={i} className="h-9 rounded-xl" />

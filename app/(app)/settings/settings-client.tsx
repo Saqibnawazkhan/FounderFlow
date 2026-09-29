@@ -57,7 +57,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn, downloadFile, formatDate } from "@/lib/utils";
 import type { Company, User as UserType } from "@/lib/types";
-import { useT } from "@/lib/i18n/use-t";
+import { useDateFormat, useT } from "@/lib/i18n/use-t";
 import type { Locale } from "@/lib/i18n/strings";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import { formatDuration } from "@/lib/time/thresholds";
@@ -99,6 +99,7 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
   const confirm = useConfirm();
   const t = useT();
   const n = useNumberFormat();
+  const d = useDateFormat();
   const [, startTransition] = useTransition();
 
   const canEditCompany = canSeeFinances(user.role as Role);
@@ -121,11 +122,20 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
   const [companyOpen, setCompanyOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [deleteWorkspaceOpen, setDeleteWorkspaceOpen] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  // Which export is in flight, so the two buttons don't both say "Preparing…".
+  const [exporting, setExporting] = useState<null | "workspace" | "me">(null);
   const canDeleteWorkspace = user.role === "admin";
   // Same gate the /api/export route enforces server-side: only finance-
-  // seeing roles can pull a full-workspace JSON (a member export would
+  // seeing roles can pull a full-WORKSPACE JSON (a member export would
   // leak every transaction past the app's finance wall).
+  //
+  // The PERSONAL export below is deliberately NOT gated — acct-009. Until
+  // 2026-09-29 this flag decided whether the Data & storage section offered
+  // anything at all, so a member's only data operation on this page was
+  // "Delete my account". The route now answers ?scope=me for every role and
+  // builds a different payload from different queries, so widening who may
+  // export did not widen what a member sees; this gate still guards only the
+  // workspace file.
   const canExport = canSeeFinances(user.role as Role);
 
   function refresh() {
@@ -203,13 +213,21 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
     }
   }
 
-  async function handleExport() {
+  /**
+   * Both exports go through here; the server decides what each one contains.
+   *
+   * `scope` is passed to the route, never used to shape the payload on this
+   * side — a UI that filtered an over-broad response would be the security bug
+   * this finding is about. /api/export?scope=me never reads the money tables at
+   * all for a caller who may not see them.
+   */
+  async function handleExport(scope: "workspace" | "me") {
     // Fetch-then-blob (rather than a bare <a href>) so a 403/500 surfaces
     // as a toast instead of navigating the user to a raw JSON error page.
-    setExporting(true);
+    setExporting(scope);
     try {
-      const res = await fetch("/api/export");
-      // An expired session gets a 302 → /login (public, returns 200 HTML).
+      const res = await fetch(`/api/export?scope=${scope}`);
+      // An expired session gets a 307 → /login (public, returns 200 HTML).
       // fetch follows it, so res.ok would be true — guard on redirect +
       // content-type so we don't hand the user login HTML named .json with
       // a success toast. (Adversarial review finding, 2026-07-04.)
@@ -219,12 +237,14 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
       }
       const blob = await res.blob();
       const stamp = new Date().toISOString().slice(0, 10);
-      downloadFile(blob, `founderflow-export-${stamp}.json`, "application/json");
+      const name =
+        scope === "me" ? `founderflow-my-data-${stamp}.json` : `founderflow-export-${stamp}.json`;
+      downloadFile(blob, name, "application/json");
       toast.success(t.settings.exportReadyToast);
     } catch {
       toast.error(t.settings.exportFailedToast);
     } finally {
-      setExporting(false);
+      setExporting(null);
     }
   }
 
@@ -265,7 +285,7 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
         <StatCard
           icon={CalendarDays}
           label={t.settings.memberSince}
-          value={formatDate(stats.memberSince)}
+          value={d.date(stats.memberSince)}
           desc={formatDistanceToNow(new Date(stats.memberSince), { addSuffix: true })}
           tone="mint"
         />
@@ -306,7 +326,7 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
             <p className="truncate text-lg font-bold text-fg">{user.name}</p>
             <p className="truncate text-sm text-fg-muted">{user.email}</p>
             <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
-              {t.settings.joined} {formatDate(user.createdAt)}
+              {t.settings.joined} {d.date(user.createdAt)}
             </p>
           </div>
         </div>
@@ -370,7 +390,7 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
             </DataCell>
             <DataCell label={t.settings.created}>
               <p className="font-mono text-xs uppercase tracking-wider text-fg">
-                {formatDate(company.createdAt)}
+                {d.date(company.createdAt)}
               </p>
             </DataCell>
           </div>
@@ -451,15 +471,46 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
               <p className="mt-0.5 text-xs text-fg-muted">{t.settings.exportWorkspaceDesc}</p>
             </div>
             <button
-              onClick={handleExport}
-              disabled={exporting}
+              onClick={() => handleExport("workspace")}
+              disabled={exporting !== null}
               className="inline-flex shrink-0 items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-4 py-2 text-sm font-bold text-primary-strong transition-colors hover:bg-primary/20 active:scale-95 disabled:opacity-60"
             >
               <Download className="h-4 w-4" aria-hidden="true" />
-              {exporting ? t.settings.exportPreparing : t.settings.exportWorkspaceAction}
+              {exporting === "workspace"
+                ? t.settings.exportPreparing
+                : t.settings.exportWorkspaceAction}
             </button>
           </div>
         )}
+        {/* acct-009 — every role, including a member, can take a copy of their
+            own data. NOT inside the danger zone (where the audit suggested it):
+            a download destroys nothing, and acct-007 is this page's own record
+            of what dressing a harmless action in danger red costs. It sits with
+            the workspace export because "Data & storage" is the section a
+            person looks in for exactly this.
+
+            i18n debt, deliberate: lib/i18n/strings.ts belongs to another agent
+            this batch, so these three labels are English literals for now —
+            the same shape HandleSection below already ships. The keys to add
+            are settings.exportMine / exportMineDesc / exportMineAction. */}
+        <div className="mb-4 flex flex-col items-start gap-3 rounded-xl border border-border bg-bg/40 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-fg">Export my data</p>
+            <p className="mt-0.5 text-xs text-fg-muted">
+              A JSON copy of everything this workspace holds about you — your profile, your tasks,
+              your tracked time, your comments and your notification settings. Take it before you
+              delete your account.
+            </p>
+          </div>
+          <button
+            onClick={() => handleExport("me")}
+            disabled={exporting !== null}
+            className="inline-flex shrink-0 items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-4 py-2 text-sm font-bold text-primary-strong transition-colors hover:bg-primary/20 active:scale-95 disabled:opacity-60"
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />
+            {exporting === "me" ? t.settings.exportPreparing : "Download my data"}
+          </button>
+        </div>
         <button
           onClick={handleResetData}
           className="inline-flex items-center gap-2 rounded-full border border-danger/30 bg-danger/10 px-5 py-2.5 text-sm font-medium text-danger transition-colors hover:bg-danger/15"
@@ -698,7 +749,7 @@ function HandleSection({ name }: { name: string }) {
         <div className="relative flex-1">
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 font-mono text-sm text-fg-muted"
+            className="pointer-events-none absolute start-4 top-1/2 -translate-y-1/2 font-mono text-sm text-fg-muted"
           >
             @
           </span>
@@ -718,7 +769,7 @@ function HandleSection({ name }: { name: string }) {
             aria-invalid={error ? true : undefined}
             aria-describedby={error ? `${inputId}-help ${inputId}-err` : `${inputId}-help`}
             className={cn(
-              "w-full rounded-xl border bg-bg py-2.5 pl-8 pr-4 font-mono text-sm text-fg focus:bg-surface focus:outline-none disabled:opacity-60",
+              "w-full rounded-xl border bg-bg py-2.5 pe-4 ps-8 font-mono text-sm text-fg focus:bg-surface focus:outline-none disabled:opacity-60",
               error
                 ? "border-danger/60 focus:border-danger"
                 : "border-border focus:border-primary/50"
@@ -779,6 +830,11 @@ function BillingSection({ billing }: { billing: BillingSummary }) {
       subscriptionStatus: billing.status,
       currentPeriodEnd: billing.currentPeriodEnd,
     },
+    // locale-free-date-ok: the bare helper, not `useDateFormat()`. The sentence
+    // this date lands in ("Renews …", "Payment failed - update your card by
+    // …") is hardcoded English in lib/billing/plan.ts, so localising only the
+    // date would half-translate it — the same argument `formatAmountForMessage`
+    // in lib/utils.ts is built on. Localise the sentence first, then this.
     formatDate
   );
 
@@ -932,7 +988,7 @@ function ThemeChoice({
       onClick={onSelect}
       aria-pressed={active}
       className={cn(
-        "rounded-xl border p-4 text-left transition-all",
+        "rounded-xl border p-4 text-start transition-all",
         active
           ? "border-primary/50 bg-primary/[0.06] ring-2 ring-primary/20"
           : "border-border hover:border-primary/30"
@@ -970,7 +1026,7 @@ function LocaleChoice({
       aria-pressed={active}
       lang={code}
       className={cn(
-        "rounded-xl border p-4 text-left transition-all",
+        "rounded-xl border p-4 text-start transition-all",
         active
           ? "border-primary/50 bg-primary/[0.06] ring-2 ring-primary/20"
           : "border-border hover:border-primary/30"

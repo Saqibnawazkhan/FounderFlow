@@ -13,8 +13,8 @@ import {
 import { EmptyState } from "@/components/ui/empty-state";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { cn, formatRelativeTime } from "@/lib/utils";
-import { useNumberFormat } from "@/lib/i18n/use-t";
+import { cn } from "@/lib/utils";
+import { useDateFormat, useNumberFormat } from "@/lib/i18n/use-t";
 import {
   NOTIFICATION_CATEGORY_LABELS,
   type Notification,
@@ -35,6 +35,7 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
   const fmt = useNumberFormat();
+  const d = useDateFormat();
   const unreadCount = notifications.filter((n) => !n.read).length;
 
   // Category + unread filters (X4). Client-side over the loaded list (the
@@ -166,7 +167,7 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
             onClick={() => setUnreadOnly((v) => !v)}
             aria-pressed={unreadOnly}
             className={cn(
-              "ml-auto inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors",
+              "ms-auto inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors",
               unreadOnly
                 ? "border-primary/50 bg-primary/10 text-primary-strong"
                 : "border-border bg-bg text-fg-muted hover:text-fg"
@@ -202,7 +203,7 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
                 onClick={() => handleMarkRead(n.id)}
                 className={cn(
                   "group block rounded-2xl border border-border bg-surface p-4 transition-colors hover:border-primary/30",
-                  !n.read && "border-l-2 border-l-primary"
+                  !n.read && "border-s-2 border-s-primary"
                 )}
               >
                 <div className="flex items-start gap-4">
@@ -228,7 +229,7 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
                       )}
                     </div>
                     <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
-                      {formatRelativeTime(n.createdAt)}
+                      {d.relative(n.createdAt)}
                     </p>
                   </div>
                 </div>

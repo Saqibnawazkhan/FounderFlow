@@ -113,19 +113,34 @@ function Inner({ children }: { children: React.ReactNode }) {
     document.documentElement.dir = getDirForLocale(locale);
   }, [locale]);
 
-  // Hydrate Zustand `currentUser` once per session id. The previous
+  // Hydrate Zustand `currentUser` from the session. The original
   // implementation included `users` in the dep array and constructed a fresh
   // object with `createdAt: new Date()` each run, which made the effect
   // re-fire on every state change and triggered React error #185 (max update
-  // depth) in production. We now track the hydrated user id in a ref and
-  // bail out if we've already adopted that identity.
-  const hydratedUserIdRef = useRef<string | null>(null);
+  // depth) in production. The fix was a ref, and the ref held the user ID.
+  //
+  // THE ID WAS THE WRONG KEY (acct-006). A rename does not change the id, so a
+  // session carrying a fresh display name was read, compared, and thrown away —
+  // "even a router.refresh() cannot move it", as the audit row puts it. The
+  // sidebar and top bar render `currentUser.name`, so the app went on
+  // displaying the old name until the next sign-in, on the very screen where
+  // the user had just corrected it.
+  //
+  // So the ref now holds the identity's CONTENT, not its id. That is still one
+  // bail-out per unchanged session — the loop protection is intact, and the
+  // last case in tests/lib/actions/session-name-hydration.test.tsx pins it —
+  // but a change to any field the chrome renders now gets through. The key is
+  // a string rather than an object so the comparison stays a cheap `===` with
+  // no identity trap of its own.
+  const hydratedIdentityRef = useRef<string | null>(null);
   useEffect(() => {
     if (status === "loading") return;
     try {
       const sUser = session?.user;
-      const newId = sUser?.id ?? null;
-      if (hydratedUserIdRef.current === newId) return;
+      const identity = sUser
+        ? [sUser.id, sUser.name, sUser.email, sUser.role, sUser.companyId].join("\u0000")
+        : null;
+      if (hydratedIdentityRef.current === identity) return;
 
       if (sUser) {
         // Read users via getState() so Zustand subscriptions don't pull this
@@ -134,22 +149,24 @@ function Inner({ children }: { children: React.ReactNode }) {
         const local = localUsers.find(
           (u) => u.email.toLowerCase() === (sUser.email ?? "").toLowerCase()
         );
-        hydrateUser(
-          local ?? {
-            id: sUser.id ?? "",
-            name: sUser.name ?? "",
-            email: sUser.email ?? "",
-            password: "",
-            role: sUser.role ?? "member",
-            companyId: sUser.companyId ?? "",
-            createdAt: new Date().toISOString(),
-          }
-        );
+        // THE SESSION WINS on every field it owns, and the local row supplies
+        // only what it alone knows (`createdAt`). Spreading `local` wholesale
+        // was the second half of the same bug: that array is seeded roster
+        // data with no idea a rename happened, so a matching local row put the
+        // stale name straight back after the session had been fixed.
+        hydrateUser({
+          ...(local ?? { password: "", createdAt: new Date().toISOString() }),
+          id: sUser.id ?? local?.id ?? "",
+          name: sUser.name ?? local?.name ?? "",
+          email: sUser.email ?? local?.email ?? "",
+          role: sUser.role ?? local?.role ?? "member",
+          companyId: sUser.companyId ?? local?.companyId ?? "",
+        });
       } else {
         // Genuinely unauthenticated — wipe any stale local identity.
         hydrateUser(null);
       }
-      hydratedUserIdRef.current = newId;
+      hydratedIdentityRef.current = identity;
     } catch (e) {
       console.error("session hydration failed:", e);
     }

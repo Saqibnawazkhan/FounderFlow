@@ -155,7 +155,7 @@ export function TimeClient({
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <PillBadge tone="forest">
-            <Clock className="mr-1 inline h-3 w-3" aria-hidden="true" /> Time tracking
+            <Clock className="me-1 inline h-3 w-3" aria-hidden="true" /> Time tracking
           </PillBadge>
           <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">Time</h1>
           <p className="mt-2 text-sm text-fg-muted md:text-base">
@@ -296,38 +296,38 @@ export function TimeClient({
                     {initialScope === "team" && (
                       <th
                         scope="col"
-                        className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                        className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                       >
                         Person
                       </th>
                     )}
                     <th
                       scope="col"
-                      className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                      className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                     >
                       Started
                     </th>
                     <th
                       scope="col"
-                      className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                      className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                     >
                       Ended
                     </th>
                     <th
                       scope="col"
-                      className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                      className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                     >
                       Duration
                     </th>
                     <th
                       scope="col"
-                      className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                      className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                     >
                       Task
                     </th>
                     <th
                       scope="col"
-                      className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                      className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                     >
                       Note
                     </th>
@@ -395,13 +395,13 @@ export function TimeClient({
                               title={`Edited by ${e.editedByName ?? "unknown"} on ${new Date(
                                 e.editedAt
                               ).toLocaleString()}`}
-                              className="ml-1 inline-flex items-center text-forest-strong"
+                              className="ms-1 inline-flex items-center text-forest-strong"
                             >
                               ✎
                             </span>
                           )}
                         </td>
-                        <td className="px-6 py-4 text-right">
+                        <td className="px-6 py-4 text-end">
                           <div className="inline-flex items-center gap-1">
                             {canEdit && (
                               <button

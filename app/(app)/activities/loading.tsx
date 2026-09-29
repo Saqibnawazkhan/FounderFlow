@@ -1,8 +1,12 @@
 import { PageHeaderSkeleton, Skeleton } from "@/components/ui/skeleton";
 
 export default function ActivitiesLoading() {
+  // Container width is PAIRED with the settled page's container
+  // (app/(app)/activities/page.tsx). A skeleton laid out to a different
+  // width jumps sideways the instant data arrives, so the two are not free
+  // to drift: tests/app/loading/skeleton-width.test.ts fails when they do.
   return (
-    <div className="mx-auto max-w-[1280px] space-y-8">
+    <div className="mx-auto max-w-4xl space-y-8">
       <PageHeaderSkeleton />
       <div className="space-y-3">
         {Array.from({ length: 8 }).map((_, i) => (

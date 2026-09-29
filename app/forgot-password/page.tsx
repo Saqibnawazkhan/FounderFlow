@@ -153,7 +153,7 @@ export default function ForgotPasswordPage() {
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgb(var(--primary)/0.10),transparent_60%)]"
       />
 
-      <div className="absolute right-6 top-6">
+      <div className="absolute end-6 top-6">
         <MarketingThemeToggle size="sm" />
       </div>
 
@@ -183,7 +183,7 @@ export default function ForgotPasswordPage() {
             <h1 className="text-2xl font-bold tracking-tight">{t.auth.resetLinkSentTitle}</h1>
             <p className="mt-3 text-sm text-fg-muted">{COPY.requested(sentTo)}</p>
 
-            <div className="mt-6 rounded-xl border border-border bg-bg p-4 text-left">
+            <div className="mt-6 rounded-xl border border-border bg-bg p-4 text-start">
               <p className="text-xs font-bold text-fg">{COPY.notArrivedTitle}</p>
               <p className="mt-1.5 text-xs leading-relaxed text-fg-muted">{COPY.notArrivedBody}</p>
             </div>
@@ -220,7 +220,7 @@ export default function ForgotPasswordPage() {
               className="mt-6 inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg transition-transform hover:scale-[1.02] active:scale-[0.98]"
             >
               {t.auth.backToSignIn}
-              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+              <ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
             </Link>
           </div>
         ) : (
@@ -287,7 +287,7 @@ export default function ForgotPasswordPage() {
               >
                 {isSubmitting ? t.auth.sendingResetLink : t.auth.sendResetLink}
                 <ArrowRight
-                  className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+                  className="h-4 w-4 transition-transform group-hover:translate-x-0.5 rtl:rotate-180 rtl:group-hover:-translate-x-0.5"
                   aria-hidden="true"
                 />
               </button>

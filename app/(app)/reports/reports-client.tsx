@@ -783,7 +783,7 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
                         />
                         <span className="truncate text-fg">{c.name}</span>
                       </div>
-                      <div className="ml-2 shrink-0 text-right">
+                      <div className="ms-2 shrink-0 text-end">
                         <p className="font-mono text-xs font-bold tabular-nums text-fg">
                           {money(c.value)}
                         </p>
@@ -825,31 +825,31 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
               <tr className="border-b border-border">
                 <th
                   scope="col"
-                  className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                  className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                 >
                   Member
                 </th>
                 <th
                   scope="col"
-                  className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                  className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                 >
                   Role
                 </th>
                 <th
                   scope="col"
-                  className="px-6 py-3.5 text-right font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                  className="px-6 py-3.5 text-end font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                 >
                   Investments
                 </th>
                 <th
                   scope="col"
-                  className="px-6 py-3.5 text-right font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                  className="px-6 py-3.5 text-end font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                 >
                   Expenses
                 </th>
                 <th
                   scope="col"
-                  className="px-6 py-3.5 text-right font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                  className="px-6 py-3.5 text-end font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                 >
                   % of capital
                 </th>
@@ -889,17 +889,17 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
                       {roleLabel(r)}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-6 py-4 text-end">
                     <span className="font-mono text-sm font-bold tabular-nums text-primary-strong">
                       {money(r.investments)}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-6 py-4 text-end">
                     <span className="font-mono text-sm font-bold tabular-nums text-mint-strong">
                       {money(r.expenses)}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right">
+                  <td className="px-6 py-4 text-end">
                     {/* 0–1 ratio — the scale `n.percent` takes. See lib/format.ts. */}
                     <span className="font-mono text-sm tabular-nums text-fg">
                       {n.percent(r.capitalRatio)}

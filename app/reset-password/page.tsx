@@ -98,7 +98,7 @@ function ResetPasswordInner() {
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgb(var(--primary)/0.10),transparent_60%)]"
       />
 
-      <div className="absolute right-6 top-6">
+      <div className="absolute end-6 top-6">
         <MarketingThemeToggle size="sm" />
       </div>
 
@@ -156,7 +156,7 @@ function ResetPasswordInner() {
                     aria-describedby={errors.password ? `${pwId}-err` : undefined}
                     {...register("password")}
                     className={cn(
-                      "w-full rounded-2xl border bg-surface px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-surface focus:outline-none",
+                      "w-full rounded-2xl border bg-surface px-4 py-3 pe-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-surface focus:outline-none",
                       errors.password
                         ? "border-danger/60 focus:border-danger"
                         : "border-border focus:border-primary/60"
@@ -166,7 +166,7 @@ function ResetPasswordInner() {
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     aria-label={showPassword ? t.auth.hidePassword : t.auth.showPassword}
-                    className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                    className="absolute end-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                   >
                     {showPassword ? (
                       <EyeOff className="h-4 w-4" aria-hidden="true" />
@@ -195,7 +195,7 @@ function ResetPasswordInner() {
               >
                 {isSubmitting ? t.auth.settingNewPassword : t.auth.setNewPassword}
                 <ArrowRight
-                  className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+                  className="h-4 w-4 transition-transform group-hover:translate-x-0.5 rtl:rotate-180 rtl:group-hover:-translate-x-0.5"
                   aria-hidden="true"
                 />
               </button>
@@ -220,7 +220,7 @@ function MissingTokenNotice({ t }: { t: ReturnType<typeof useT> }) {
         className="mt-8 inline-flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg transition-transform hover:scale-[1.02] active:scale-[0.98]"
       >
         {t.auth.forgotPassword}
-        <ArrowRight className="h-4 w-4" aria-hidden="true" />
+        <ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
       </Link>
     </div>
   );

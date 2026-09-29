@@ -72,7 +72,7 @@ export function NotificationMatrix({ initial }: { initial: NotificationMatrixRow
             <tr className="border-b border-border">
               <th
                 scope="col"
-                className="py-2.5 pr-4 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                className="py-2.5 pe-4 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
               >
                 Notify me about
               </th>
@@ -96,7 +96,7 @@ export function NotificationMatrix({ initial }: { initial: NotificationMatrixRow
           <tbody>
             {rows.map((row) => (
               <tr key={row.event} className="border-b border-border last:border-b-0">
-                <th scope="row" className="py-3.5 pr-4 text-left font-normal">
+                <th scope="row" className="py-3.5 pe-4 text-start font-normal">
                   <span className="block text-sm font-semibold text-fg">
                     {EVENT_COPY[row.event].label}
                   </span>

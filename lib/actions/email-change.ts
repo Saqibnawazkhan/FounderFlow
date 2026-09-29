@@ -152,7 +152,18 @@ async function warnOldAddress(args: {
       </div>
     `;
 
-  await sendEmail({ to: oldEmail, subject, html, text });
+  // acct-005 posture: the warning must never be able to fail the thing it is
+  // warning about. `sendEmail` reports delivery rather than throwing, but
+  // `nodemailer.createTransport` on a malformed credential does not — and on the
+  // confirm path the address has ALREADY been rewritten by the time this runs,
+  // so a propagated throw would hand the user "Couldn't change your email right
+  // now" about a change that landed. Same guarantee as `sendSecurityNotice` in
+  // lib/email/templates/security-notice.ts.
+  try {
+    await sendEmail({ to: oldEmail, subject, html, text });
+  } catch (e) {
+    captureServerError(e, { action: "warnOldAddress", extra: { applied } });
+  }
 }
 
 export async function requestEmailChangeAction(

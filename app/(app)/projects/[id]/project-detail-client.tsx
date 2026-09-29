@@ -42,9 +42,9 @@ import { deleteProjectAction, updateProjectAction } from "@/lib/actions/projects
 import { canManageProject, canReassignSupervisor } from "@/lib/auth/project-permissions";
 import type { ProjectStatus } from "@/lib/schemas/project";
 import type { Role } from "@/lib/auth/role-gates";
-import { formatDate, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/time/thresholds";
-import { useT, useNumberFormat } from "@/lib/i18n/use-t";
+import { useDateFormat, useT, useNumberFormat } from "@/lib/i18n/use-t";
 import { useMoney } from "@/lib/hooks/useMoney";
 import type { ProjectOverview } from "@/lib/queries/projects";
 import type { TaskWithCount } from "@/lib/queries/tasks";
@@ -95,6 +95,7 @@ export function ProjectDetailClient({
   const t = useT();
   const money = useMoney();
   const n = useNumberFormat();
+  const d = useDateFormat();
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
@@ -250,7 +251,7 @@ export function ProjectDetailClient({
           <div className="min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <PillBadge tone="forest">
-                <Briefcase className="mr-1 inline h-3 w-3" aria-hidden="true" />
+                <Briefcase className="me-1 inline h-3 w-3" aria-hidden="true" />
                 {t.projects.title}
               </PillBadge>
               <span
@@ -392,7 +393,7 @@ export function ProjectDetailClient({
                   type="button"
                   onClick={() => setDetailTask(task)}
                   aria-label={`Open task ${task.title}`}
-                  className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-xl border border-border bg-bg px-4 py-3 text-left transition-colors hover:border-primary/30 hover:bg-surface-hover focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                  className="flex w-full cursor-pointer items-center justify-between gap-3 rounded-xl border border-border bg-bg px-4 py-3 text-start transition-colors hover:border-primary/30 hover:bg-surface-hover focus-visible:border-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
                 >
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold">{task.title}</p>
@@ -401,7 +402,7 @@ export function ProjectDetailClient({
                       <span>·</span>
                       <span className="capitalize">{task.status.replace("_", " ")}</span>
                       <span>·</span>
-                      <span>{formatDate(task.deadline)}</span>
+                      <span>{d.date(task.deadline)}</span>
                     </div>
                   </div>
                   <span
@@ -648,7 +649,7 @@ function StatusMenu({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6, scale: 0.97 }}
             transition={{ duration: 0.14 }}
-            className="absolute left-0 z-popover mt-2 w-44 overflow-hidden rounded-xl border border-border bg-surface p-1 shadow-card-hover"
+            className="absolute start-0 z-popover mt-2 w-44 overflow-hidden rounded-xl border border-border bg-surface p-1 shadow-card-hover"
           >
             {options.map((o) => {
               const active = o.value === current;
@@ -662,7 +663,7 @@ function StatusMenu({
                     onSelect(o.value);
                   }}
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-surface-hover",
+                    "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-start text-sm transition-colors hover:bg-surface-hover",
                     active ? "text-fg" : "text-fg-muted"
                   )}
                 >

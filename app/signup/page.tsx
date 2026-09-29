@@ -130,11 +130,11 @@ export default function SignupPage() {
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -top-40 left-0 h-96 w-96 rounded-full bg-forest/20 blur-3xl"
+          className="pointer-events-none absolute -top-40 start-0 h-96 w-96 rounded-full bg-forest/20 blur-3xl"
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -bottom-40 right-0 h-96 w-96 rounded-full bg-primary/25 blur-3xl"
+          className="pointer-events-none absolute -bottom-40 end-0 h-96 w-96 rounded-full bg-primary/25 blur-3xl"
         />
 
         <div className="relative max-w-md">
@@ -171,7 +171,7 @@ export default function SignupPage() {
         />
 
         {/* Floating theme toggle — top-right of the form pane */}
-        <div className="absolute right-6 top-6 sm:right-10 lg:right-12">
+        <div className="absolute end-6 top-6 sm:end-10 lg:end-12">
           <MarketingThemeToggle size="sm" />
         </div>
 
@@ -267,7 +267,7 @@ export default function SignupPage() {
                     aria-describedby={errors.password ? `${pwId}-err` : undefined}
                     {...register("password")}
                     className={cn(
-                      "w-full rounded-2xl border bg-surface px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-surface focus:outline-none",
+                      "w-full rounded-2xl border bg-surface px-4 py-3 pe-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-surface focus:outline-none",
                       errors.password
                         ? "border-danger/60 focus:border-danger"
                         : "border-border focus:border-primary/60"
@@ -277,7 +277,7 @@ export default function SignupPage() {
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     aria-label={showPassword ? t.auth.hidePassword : t.auth.showPassword}
-                    className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                    className="absolute end-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                   >
                     {showPassword ? (
                       <EyeOff className="h-4 w-4" aria-hidden="true" />
@@ -312,7 +312,7 @@ export default function SignupPage() {
                     aria-invalid={errors.industry ? true : undefined}
                     {...register("industry")}
                     className={cn(
-                      "w-full cursor-pointer appearance-none rounded-2xl border bg-surface px-4 py-3 pr-11 text-sm text-fg transition-colors focus:bg-surface focus:outline-none",
+                      "w-full cursor-pointer appearance-none rounded-2xl border bg-surface px-4 py-3 pe-11 text-sm text-fg transition-colors focus:bg-surface focus:outline-none",
                       errors.industry
                         ? "border-danger/60 focus:border-danger"
                         : "border-border focus:border-primary/60"
@@ -325,7 +325,7 @@ export default function SignupPage() {
                     ))}
                   </select>
                   <ChevronDown
-                    className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+                    className="pointer-events-none absolute end-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
                     aria-hidden="true"
                   />
                 </div>
@@ -344,7 +344,7 @@ export default function SignupPage() {
                     aria-invalid={errors.currency ? true : undefined}
                     {...register("currency")}
                     className={cn(
-                      "w-full cursor-pointer appearance-none rounded-2xl border bg-surface px-4 py-3 pr-11 text-sm text-fg transition-colors focus:bg-surface focus:outline-none",
+                      "w-full cursor-pointer appearance-none rounded-2xl border bg-surface px-4 py-3 pe-11 text-sm text-fg transition-colors focus:bg-surface focus:outline-none",
                       errors.currency
                         ? "border-danger/60 focus:border-danger"
                         : "border-border focus:border-primary/60"
@@ -357,7 +357,7 @@ export default function SignupPage() {
                     ))}
                   </select>
                   <ChevronDown
-                    className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+                    className="pointer-events-none absolute end-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
                     aria-hidden="true"
                   />
                 </div>
@@ -396,7 +396,7 @@ export default function SignupPage() {
                 >
                   {t.auth.continue}
                   <ArrowRight
-                    className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+                    className="h-4 w-4 transition-transform group-hover:translate-x-0.5 rtl:rotate-180 rtl:group-hover:-translate-x-0.5"
                     aria-hidden="true"
                   />
                 </button>
@@ -413,7 +413,7 @@ export default function SignupPage() {
                 >
                   {isSubmitting ? t.auth.creatingLoading : t.auth.createWorkspaceCta}
                   <ArrowRight
-                    className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+                    className="h-4 w-4 transition-transform group-hover:translate-x-0.5 rtl:rotate-180 rtl:group-hover:-translate-x-0.5"
                     aria-hidden="true"
                   />
                 </button>

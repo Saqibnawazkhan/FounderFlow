@@ -1,8 +1,12 @@
 import { PageHeaderSkeleton, Skeleton } from "@/components/ui/skeleton";
 
 export default function NotificationsLoading() {
+  // Container width is PAIRED with the settled page's container
+  // (app/(app)/notifications/notifications-client.tsx). A skeleton laid out to a different
+  // width jumps sideways the instant data arrives, so the two are not free
+  // to drift: tests/app/loading/skeleton-width.test.ts fails when they do.
   return (
-    <div className="mx-auto max-w-[1100px] space-y-8">
+    <div className="mx-auto max-w-3xl space-y-8">
       <PageHeaderSkeleton withCta />
       <div className="space-y-2">
         {Array.from({ length: 6 }).map((_, i) => (

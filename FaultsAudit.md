@@ -328,3 +328,73 @@ same class the previous section is named for.
 - [ ] **A29 · 🟡 [OPP] The Urdu locale is 33% of the way there, and now there is a number.** i18n-001 fixed the *lie* (`lang="ur"` on an English document) but not the gap, which was measured rather than estimated: **559 user-visible English literals across 56 files** — 431 JSX text nodes, 45 toasts, 38 `aria-label`s, 29 `title`s, 16 `placeholder`s — against 282 translated dictionary keys in 7 namespaces. By "does this route's own code contain an English literal", **9 of 26 routes are covered** (the six auth screens, `/projects`, `/projects/[id]`, and `/settings` at 6 literals). The audit's own figures — "19 of 25 screens", "~364 nodes across 48 files" — were low because they counted neither attributes nor toasts and followed directories rather than the import graph. **29 literals sit in the shared shell that every one of the 17 authenticated routes pays, and `components/time/clock-widget.tsx` alone is 22 of them** — by far the highest-leverage single file. Then `/tasks` 90, `/expenses` 63, `/chat/[slug]` 54, `/revenue` and `/time` 49 each. Recommended order: the clock widget; then the 83 `aria-label`s and toasts, which are the strings a screen-reader user has no visual fallback for; then the three heaviest routes; then per-part `lang` for WCAG 3.1.2, at which point `LOCALE_TRANSLATION_STATUS.ur` flips to `"complete"` and `lang="ur"` returns on its own. Two smaller truths belong here: the skip-link label in `app/layout.tsx` is one of the 559 and cannot be translated without either resolving the locale server-side (rejected — it costs static rendering app-wide) or moving the anchor into a client component; and the settings disclosure at `strings.ts:284` says "navigation, settings, and sign-in are translated" while settings still holds 6 untranslated literals, which is marginally generous copy in two locales and therefore a product call. → [lib/i18n/strings.ts](lib/i18n/strings.ts), [components/time/clock-widget.tsx](components/time/clock-widget.tsx)
 
 - [ ] **A30 · 🔵 [OPP] Secondary copy dips below AA on a hovered row.** `--fg-muted` against `--surface-hover` measures **4.40:1** in light and **4.37:1** in dark, just under the 4.5:1 floor — so every muted label in a list row fails while the pointer is over it and passes when it is not. Deliberately excluded from a11y-003's assertions, which cover text only against the resting surfaces (`--card`, `--surface`, `--bg`): a test that flags hover states would have gone red on tokens nobody asked to retune, and a contrast test that fails on pairs the product barely renders is one the next person deletes. Recorded so the number is not rediscovered as a finding. → [app/globals.css](app/globals.css)
+
+---
+
+## 10. Accessibility wave, second batch (2026-09-30) — P2 rows 11-20
+
+> Seven agents, file-disjoint. **All ten findings closed.** Suite 2008 →
+> **2103 tests over 155 files**; tsc clean, lint 0 errors, format clean,
+> `npm run build` succeeds, `/` and seven routes still prerendered.
+>
+> **i18n-003** — the RTL guard only ever scanned `components/layout` and
+> `components/chat`, so page content had never been checked: **170 physical
+> direction utilities across 37 files**. 160 converted, 32 files at zero, plus
+> 19 of 25 horizontal chevrons mirrored. The guard now walks `app/` and
+> `components/` recursively, so a page added next month is covered the day it
+> lands. One pair was deliberately **not** converted: `components/ui/modal.tsx`'s
+> `left-[50%]` + `translate-x-[-50%]` is the centering idiom, and converting
+> half of it puts every modal a full width off-centre in Urdu — a regression
+> invisible in every locale anyone looks at. A line-level `rtl-physical-ok`
+> marker records it, and a second guard fails if a marker ever stops sitting on
+> a real hit.
+> **resp-001** — the closed mobile drawer was only translated off-screen, so
+> ~17 nav links stayed in the tab order and the accessibility tree. Now
+> `max-lg:invisible`, scoped by the same variant as the transform so the two
+> cannot drift; an attribute-based fix would have needed a `matchMedia` listener
+> restating the breakpoint in JS, wrong for a frame on every load.
+> **resp-002** — the notifications panel was wider than the viewport it hung in,
+> inside an `overflow-hidden` shell, so the clipped strip could not be scrolled
+> to. Fixed in the topbar, not the shell: relaxing the shell's overflow would
+> have reintroduced document-level scrolling and "fixed" the panel by letting
+> people scroll sideways to find their notifications.
+> **resp-004** — the delete buttons on a task card and a comment were revealed
+> on hover only, and were also **22×22px**, under the 24×24 minimum. Now
+> revealed on focus, focus-within, `max-md` and `(hover: none)` — the last
+> because a touch tablet above 768px fires no hover either.
+> **resp-005** — six routes laid their skeleton out to a different width than
+> their page, jumping up to 320px when data landed; `/revenue` had **no
+> `loading.tsx` at all**, the one route under `app/(app)` with no Suspense
+> boundary.
+> **i18n-004** — dates and relative times now follow the active locale via
+> `Intl`. date-fns 3.6.0 ships no `ur` locale, so there was no fix that stayed
+> on date-fns. Zero hand-written Urdu: every month name and relative phrase
+> comes from CLDR.
+> **acct-005** — password change, account deletion and workspace deletion now
+> send a security notice, deliberately outside the 300/day email budget, which
+> degrades by silently dropping recipients.
+> **acct-006** — the display name in the shell was stale until sign-out. Fixed
+> in the jwt callback, which already re-reads the user row on every request for
+> the `sessionVersion` check, so it cost two columns on a query that already ran.
+> **acct-009** — a member can now export their own data, as a **per-user
+> download** rather than a member-scoped workspace export: the personal path
+> never calls `db.transaction`, `db.budget` or `db.recurringRule` at all, so the
+> finance wall is structural rather than a filter someone can forget.
+> **acct-011** — both delete confirmations said the operation could not be
+> undone. It can: the rows are tombstoned and kept. The copy now states the
+> 90-day window as a **floor**, which is the only form of the sentence that
+> stays true whether or not `PURGE_ENABLED` is ever set.
+
+Two of these findings were half-true as filed, and one guard was scanning a file
+it should not have. Those corrections are in the commit message. The rows below
+are what this batch found and did not fix.
+
+- [ ] **A31 · 🟠 [BUG] Localised dates were the smallest third of the problem — 49 more sites still render English on an Urdu screen.** i18n-004 fixed `formatDate` / `formatRelativeTime` and all 15 of their render sites, and a guard now fails if anything reaches those helpers without a viewer locale. Three sibling patterns were measured and deliberately left, because each would move **English** output and so needs a product call rather than a sweep: **(1) `formatDistanceToNow` from date-fns at 6 render sites in 5 files** — `settings-client.tsx:274,288`, `project-detail-client.tsx:483`, `chat/thread-panel.tsx:112`, `comments/comment-thread.tsx:169`, `projects/project-card.tsx:181`. This is the identical defect wearing a different helper, and it is now *visibly* inconsistent: "Member since" renders an Urdu date directly above an English "about 2 months ago". `formatRelativeTime` is this repo's own replacement for that call, but swapping it changes English wording ("about 2 months ago" → "2 months ago"). **(2) date-fns `format(…)` at 33 render sites across 10 files** — activities, reports, tasks, time, three chat components, the task calendar, the task detail modal, the weekly timesheet. date-fns ships no `ur`, so no `{ locale }` option exists; these need the same `Intl` treatment `formatDate` received. This is the bulk of the remaining surface. **(3) bare `toLocaleString()` / `toLocaleDateString()` at 10 sites in 9 files** — these resolve to the *runtime's* default locale, which on a server is the ambient `LANG`, the exact non-determinism `formatAmountForMessage`'s docstring condemns for money. → [lib/utils.ts](lib/utils.ts), [lib/i18n/use-t.ts](lib/i18n/use-t.ts)
+
+- [ ] **A32 · 🟠 [BUG] A soft-deleted time entry or comment still ships in the admin's workspace export.** `app/api/export/route.ts`'s `workspaceExport` does not filter `deletedAt` on `timeEntry` or `comment`, although both columns exist and `prisma/schema.prisma`'s `TimeEntry.deletedAt` comment names "the workspace export" **explicitly** as a read that must filter. So a row the product has told the customer is deleted comes back in a file they download — the same shape as the aggregate reads the 2026-07-06 hardening swept, missed because the export was not in that sweep. Found while building the per-user export (acct-009), whose own path does filter both. Scope was acct-009, so the workspace path was deliberately left alone. → [app/api/export/route.ts](app/api/export/route.ts)
+
+- [ ] **A33 · 🟡 [BUG] The mobile drawer still has no focus trap, and the obvious fix would brick the desktop app.** With the drawer open on a phone, Tab past the last nav row walks out into the topbar behind the backdrop. `lib/hooks/use-focus-trap.ts` would supply Tab-cycling and an `inert` background for free — but it keys off a single boolean, and `mobileNavOpen` survives a resize past `lg`, where the drawer becomes the permanent rail. A trap still active there would leave the entire desktop app `inert` and `aria-hidden` with no visible way out, because the backdrop and the close button are both `lg:hidden` and only Escape would work. Closing the drawer on resize needs a viewport listener, which is a second source of truth for a breakpoint the CSS already owns — the same hazard resp-001's fix was written to avoid. Smaller than resp-001 and a genuinely separate decision; the reasoning is recorded in a comment above the focus effect in `sidebar.tsx` so the next reader does not re-open it blind. → [components/layout/sidebar.tsx](components/layout/sidebar.tsx), [lib/hooks/use-focus-trap.ts](lib/hooks/use-focus-trap.ts)
+
+- [ ] **A34 · 🔵 [OPP] `formatUtcDate` is English-only, and two of its eleven call sites are customer-facing.** The date-only twins (`formatUtcDate` / `formatUtcMonthYear` / `formatUtcDay`, for `Transaction.date` and `Task.deadline`, stored at UTC midnight) did not get i18n-004's optional-locale treatment. The split is not clean, which is why it was left: `app/(app)/reports/reports-client.tsx` uses the **same function** for both screen and export. UI, should localise — `expenses-client.tsx:551,626` and `reports-client.tsx:433`. Export, must stay English-pinned — `reports-client.tsx:562,600,608`, whose CSV cells have to sort and re-parse. So the fix is the same optional-locale parameter plus three explicitly non-localised calls, across two files that belonged to different agents. → [lib/utils.ts](lib/utils.ts), [app/(app)/reports/reports-client.tsx](app/(app)/reports/reports-client.tsx)
+
+- [ ] **A35 · 🔵 [OPP] Three labels on the new "Export my data" card are English literals.** `app/(app)/settings/settings-client.tsx` — `exportMine`, `exportMineDesc`, `exportMineAction` were left as literals with an `i18n debt` comment, following the `HandleSection` precedent already in that file, because `Strings = typeof en` makes an English-only key a type error and neither the agent nor I can proofread the Urdu. Part of A29's 559, listed separately only because it is new debt this batch added rather than debt it found. → [app/(app)/settings/settings-client.tsx](app/(app)/settings/settings-client.tsx), [lib/i18n/strings.ts](lib/i18n/strings.ts)

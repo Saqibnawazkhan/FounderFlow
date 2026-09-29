@@ -213,7 +213,7 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
       >
         <div className="relative flex-1">
           <Search
-            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+            className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
             aria-hidden="true"
           />
           <label htmlFor="activity-search" className="sr-only">
@@ -224,12 +224,12 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
             placeholder="Search activity…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-xl border border-border bg-bg py-2.5 pl-10 pr-4 text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:border-primary/50 focus:bg-surface focus:outline-none"
+            className="w-full rounded-xl border border-border bg-bg py-2.5 pe-4 ps-10 text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:border-primary/50 focus:bg-surface focus:outline-none"
           />
         </div>
         <div className="relative">
           <Filter
-            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+            className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
             aria-hidden="true"
           />
           <label htmlFor="activity-type" className="sr-only">
@@ -239,7 +239,7 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
             id="activity-type"
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
-            className="w-full min-w-[200px] appearance-none rounded-xl border border-border bg-bg py-2.5 pl-10 pr-10 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
+            className="w-full min-w-[200px] appearance-none rounded-xl border border-border bg-bg py-2.5 pe-10 ps-10 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
           >
             <option value="all">All activity types</option>
             <option value="expense_added">Expenses</option>
@@ -251,7 +251,7 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
         </div>
         <div className="relative">
           <Users
-            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+            className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
             aria-hidden="true"
           />
           <label htmlFor="activity-user" className="sr-only">
@@ -261,7 +261,7 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
             id="activity-user"
             value={activeUserId}
             onChange={(e) => changeUser(e.target.value)}
-            className="w-full min-w-[180px] appearance-none rounded-xl border border-border bg-bg py-2.5 pl-10 pr-10 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
+            className="w-full min-w-[180px] appearance-none rounded-xl border border-border bg-bg py-2.5 pe-10 ps-10 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
           >
             <option value="all">Everyone</option>
             {users.map((u) => (
@@ -302,8 +302,8 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
                   </span>
                 </div>
               </div>
-              <div className="relative pl-8">
-                <div className="absolute bottom-2 left-[15px] top-2 w-px bg-gradient-to-b from-border via-border to-transparent" />
+              <div className="relative ps-8">
+                <div className="absolute bottom-2 start-[15px] top-2 w-px bg-gradient-to-b from-border via-border to-transparent" />
                 <div className="space-y-3">
                   {dayActivities.map((activity) => {
                     const meta = ACTIVITY_META[activity.type];
@@ -314,7 +314,7 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
                       >
                         <div
                           className={cn(
-                            "absolute -left-[37px] top-4 flex h-7 w-7 items-center justify-center rounded-full border ring-4 ring-bg",
+                            "absolute -start-[37px] top-4 flex h-7 w-7 items-center justify-center rounded-full border ring-4 ring-bg",
                             TONE_FILL[meta.tone]
                           )}
                         >
@@ -328,7 +328,7 @@ export function ActivitiesClient({ initialActivities, initialCursor, users, acti
                               {activity.repeatCount > 1 && (
                                 <span
                                   title={`This event fired ${n.number(activity.repeatCount)} times within a few minutes`}
-                                  className="ml-2 inline-flex items-center rounded-full border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] font-bold text-fg-muted"
+                                  className="ms-2 inline-flex items-center rounded-full border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] font-bold text-fg-muted"
                                 >
                                   ×{n.number(activity.repeatCount)}
                                 </span>

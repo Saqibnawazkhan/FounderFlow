@@ -75,7 +75,7 @@ export function WeeklyTimesheet({
             aria-label="Previous week"
             className="rounded-full p-1.5 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
           >
-            <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+            <ChevronLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
           </button>
           <span className="min-w-[9.5rem] text-center font-mono text-xs font-semibold tabular-nums text-fg">
             {format(weekStart, "MMM d")} – {format(endOfWeek(weekStart, WEEK_OPTS), "MMM d")}
@@ -86,7 +86,7 @@ export function WeeklyTimesheet({
             aria-label="Next week"
             className="rounded-full p-1.5 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg"
           >
-            <ChevronRight className="h-4 w-4" aria-hidden="true" />
+            <ChevronRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
           </button>
         </div>
 
@@ -102,7 +102,7 @@ export function WeeklyTimesheet({
           )}
           <span className="font-mono text-xs text-fg-muted">
             Week total{" "}
-            <span className="ml-1 font-bold tabular-nums text-fg">{formatDuration(weekTotal)}</span>
+            <span className="ms-1 font-bold tabular-nums text-fg">{formatDuration(weekTotal)}</span>
           </span>
         </div>
       </div>

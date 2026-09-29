@@ -33,7 +33,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { cn, formatDate } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { useMoney } from "@/lib/hooks/useMoney";
 import type {
   DeactivatedUser,
@@ -45,7 +45,7 @@ import type {
 } from "@/lib/types";
 import { ROLE_LABELS } from "@/lib/types";
 import { canSeeFinances } from "@/lib/auth/role-gates";
-import { useNumberFormat } from "@/lib/i18n/use-t";
+import { useDateFormat, useNumberFormat } from "@/lib/i18n/use-t";
 
 type Props = {
   users: User[];
@@ -69,6 +69,7 @@ export function TeamClient({
   const router = useRouter();
   const money = useMoney();
   const n = useNumberFormat();
+  const d = useDateFormat();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -249,7 +250,7 @@ export function TeamClient({
               className="relative overflow-hidden rounded-2xl border border-border bg-surface p-6"
             >
               {user.role === "admin" && (
-                <div className="absolute right-4 top-4">
+                <div className="absolute end-4 top-4">
                   <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-primary-strong">
                     <Crown className="h-3 w-3" aria-hidden="true" /> Admin
                   </span>
@@ -271,7 +272,7 @@ export function TeamClient({
                     <Mail className="h-3 w-3" aria-hidden="true" /> {user.email}
                   </p>
                   <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
-                    Joined {formatDate(user.createdAt)}
+                    Joined {d.date(user.createdAt)}
                   </p>
 
                   {isAdmin && user.id !== currentUserId ? (
@@ -333,7 +334,7 @@ export function TeamClient({
                   disabled={pendingUserId === user.id}
                   aria-label={`Deactivate ${user.name}`}
                   title="Deactivate"
-                  className="absolute bottom-4 right-4 rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40"
+                  className="absolute bottom-4 end-4 rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40"
                 >
                   <Trash2 className="h-4 w-4" aria-hidden="true" />
                 </button>
@@ -380,7 +381,7 @@ export function TeamClient({
                       <Mail className="h-3 w-3" aria-hidden="true" /> {invite.email}
                     </p>
                     <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-fg-muted">
-                      {invite.expired ? "Expired" : "Expires"} {formatDate(invite.expiresAt)}
+                      {invite.expired ? "Expired" : "Expires"} {d.date(invite.expiresAt)}
                     </p>
                   </div>
                 </div>
@@ -443,7 +444,7 @@ export function TeamClient({
                       <Mail className="h-3 w-3" aria-hidden="true" /> {du.email}
                     </p>
                     <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-fg-muted">
-                      Deactivated {formatDate(du.deactivatedAt)}
+                      Deactivated {d.date(du.deactivatedAt)}
                     </p>
                   </div>
                 </div>
@@ -605,7 +606,7 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
                 }
                 aria-pressed={active}
                 className={cn(
-                  "rounded-xl border p-3 text-left transition-all",
+                  "rounded-xl border p-3 text-start transition-all",
                   active
                     ? "border-primary/50 bg-primary/[0.06] ring-2 ring-primary/20"
                     : "border-border hover:border-primary/30"

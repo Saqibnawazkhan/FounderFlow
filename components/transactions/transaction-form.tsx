@@ -92,7 +92,7 @@ export function TransactionForm({ type, projects = [], onClose, onSuccess }: Pro
           Amount (PKR)
         </label>
         <div className="relative">
-          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-sm font-medium text-fg-muted">
+          <span className="absolute start-4 top-1/2 -translate-y-1/2 text-sm font-medium text-fg-muted">
             PKR
           </span>
           <input
@@ -108,7 +108,7 @@ export function TransactionForm({ type, projects = [], onClose, onSuccess }: Pro
             autoFocus
             {...register("amount", { valueAsNumber: true })}
             className={cn(
-              "w-full rounded-xl border bg-bg py-3 pl-14 pr-4 text-lg font-semibold text-fg transition-colors placeholder:text-fg-muted/60 focus:bg-surface focus:outline-none",
+              "w-full rounded-xl border bg-bg py-3 pe-4 ps-14 text-lg font-semibold text-fg transition-colors placeholder:text-fg-muted/60 focus:bg-surface focus:outline-none",
               errors.amount
                 ? "border-danger/60 focus:border-danger"
                 : "border-border focus:border-primary/50"

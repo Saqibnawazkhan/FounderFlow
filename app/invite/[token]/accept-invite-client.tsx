@@ -97,7 +97,7 @@ export function AcceptInviteClient({
             aria-describedby={errors.password ? `${pwId}-err` : undefined}
             {...register("password")}
             className={cn(
-              "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-glass/[0.08] focus:outline-none",
+              "w-full rounded-xl border bg-glass/[0.05] px-4 py-3 pe-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-glass/[0.08] focus:outline-none",
               errors.password
                 ? "border-danger/60 focus:border-danger"
                 : "border-glass/[0.10] focus:border-primary/50"
@@ -107,7 +107,7 @@ export function AcceptInviteClient({
             type="button"
             onClick={() => setShowPassword(!showPassword)}
             aria-label={showPassword ? "Hide password" : "Show password"}
-            className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg"
+            className="absolute end-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.05] hover:text-fg"
           >
             {showPassword ? (
               <EyeOff className="h-4 w-4" aria-hidden="true" />
@@ -135,7 +135,7 @@ export function AcceptInviteClient({
       >
         {isSubmitting ? "Activating…" : "Accept & sign in"}
         <ArrowRight
-          className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+          className="h-4 w-4 transition-transform group-hover:translate-x-0.5 rtl:rotate-180 rtl:group-hover:-translate-x-0.5"
           aria-hidden="true"
         />
       </button>

@@ -70,7 +70,7 @@ export default function AppError({
       </button>
 
       {showDetails && (
-        <div className="mt-4 w-full overflow-hidden rounded-xl border border-border bg-surface text-left">
+        <div className="mt-4 w-full overflow-hidden rounded-xl border border-border bg-surface text-start">
           <div className="border-b border-border px-4 py-2.5">
             <p className="font-mono text-[10px] uppercase tracking-[0.15em] text-fg-muted">
               Message

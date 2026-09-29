@@ -648,7 +648,7 @@ export function TasksClient({
             Clear filters
           </button>
         )}
-        <span className="ml-auto font-mono text-[11px] tabular-nums text-fg-muted">
+        <span className="ms-auto font-mono text-[11px] tabular-nums text-fg-muted">
           {n.number(filtered.length)} {filtered.length === 1 ? "task" : "tasks"}
         </span>
       </div>
@@ -745,31 +745,31 @@ export function TasksClient({
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Task
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Status
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Priority
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Assigned
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Deadline
                   </th>
@@ -870,12 +870,12 @@ export function TasksClient({
                           )}
                         >
                           {overdue && (
-                            <AlertCircle className="mr-1 inline h-3 w-3" aria-hidden="true" />
+                            <AlertCircle className="me-1 inline h-3 w-3" aria-hidden="true" />
                           )}
                           {format(new Date(task.deadline), "MMM dd, yyyy")}
                         </span>
                       </td>
-                      <td className="px-6 py-4 text-right">
+                      <td className="px-6 py-4 text-end">
                         <div className="inline-flex items-center gap-1">
                           <button
                             onClick={(e) => {
@@ -928,7 +928,7 @@ export function TasksClient({
           so it stays reachable while scrolling a long list. */}
       {view === "list" && selected.size > 0 && (
         <div className="pointer-events-none fixed inset-x-0 bottom-4 z-sticky flex justify-center px-4">
-          <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-surface/95 p-2 pl-4 shadow-card-hover backdrop-blur-xl">
+          <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-surface/95 p-2 ps-4 shadow-card-hover backdrop-blur-xl">
             <span className="text-sm font-semibold text-fg">{selected.size} selected</span>
             <span className="mx-1 hidden h-4 w-px bg-border sm:block" />
             <label className="sr-only" htmlFor="bulk-status">
@@ -1146,7 +1146,7 @@ function FilterSelect({
   return (
     <label
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border py-1 pl-3 pr-1.5 text-xs transition-colors",
+        "inline-flex items-center gap-1.5 rounded-full border py-1 pe-1.5 ps-3 text-xs transition-colors",
         active ? "border-primary/40 bg-primary/[0.06]" : "border-border bg-bg"
       )}
     >
@@ -1156,7 +1156,7 @@ function FilterSelect({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="max-w-[9rem] cursor-pointer truncate rounded-full bg-transparent py-0.5 pr-1 text-xs font-semibold text-fg focus:outline-none"
+        className="max-w-[9rem] cursor-pointer truncate rounded-full bg-transparent py-0.5 pe-1 text-xs font-semibold text-fg focus:outline-none"
       >
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>
@@ -1426,7 +1426,7 @@ function TaskCardView({
               onDelete(task.id);
             }}
             aria-label={`Delete task ${task.title}`}
-            className="rounded-md p-1 text-fg-muted opacity-0 transition-all hover:bg-danger/10 hover:text-danger group-hover:opacity-100"
+            className="rounded-md p-1.5 text-fg-muted opacity-0 transition-all hover:bg-danger/10 hover:text-danger focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 max-md:opacity-100 [@media(hover:none)]:opacity-100"
           >
             <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
@@ -1453,7 +1453,7 @@ function TaskCardView({
                 : "text-fg-muted"
           )}
         >
-          {overdue && <AlertCircle className="mr-0.5 inline h-3 w-3" aria-hidden="true" />}
+          {overdue && <AlertCircle className="me-0.5 inline h-3 w-3" aria-hidden="true" />}
           {format(deadline, "MMM dd")}
         </span>
       </div>

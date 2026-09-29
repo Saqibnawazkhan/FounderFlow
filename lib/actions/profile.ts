@@ -36,9 +36,21 @@ import {
 } from "@/lib/schemas/profile";
 import { limiters, rateLimiter } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
+import { sendSecurityNotice } from "@/lib/email/templates/security-notice";
 
 import type { ActionResult } from "@/lib/actions/types";
 
+/**
+ * acct-006 note: this action deliberately returns no payload.
+ *
+ * The staleness it used to cause is fixed at the source — `lib/auth.ts`'s jwt
+ * callback now re-reads `name`/`email` from the live row in the lookup it
+ * already performs — so the authority for the new name is the session, not this
+ * return value. The caller's job is simply to make the session refetch
+ * (`useSession().update()`), which re-runs that callback. Handing the name back
+ * as well would create a second, competing source of truth for the value that
+ * had two of them in the first place.
+ */
 export async function updateProfileAction(input: unknown): Promise<ActionResult> {
   const session = await auth();
   if (!session?.user?.id) return { success: false, error: "Not authenticated" };
@@ -98,6 +110,20 @@ export async function changePasswordAction(input: unknown): Promise<ActionResult
       // force-signed-out on its next request. A changed password must not
       // leave a session the user thought they'd just locked out.
       data: { passwordHash, sessionVersion: { increment: 1 } },
+    });
+
+    // acct-005. The address on file learns its credential moved, BEFORE the
+    // cookie is cleared — this is the owner's only out-of-band signal that
+    // somebody with a borrowed session has just locked them out, and the one
+    // place it can be sent is the moment we still know which address was on the
+    // row. `sendSecurityNotice` never throws and never spends notification
+    // budget; see lib/email/templates/security-notice.ts for both reasons. The
+    // notice carries the /forgot-password remedy and never the new password.
+    await sendSecurityNotice({
+      kind: "password-changed",
+      to: me.email,
+      recipientName: me.name,
+      accountEmail: me.email,
     });
 
     // The bump also invalidates THIS session — its JWT still carries the old

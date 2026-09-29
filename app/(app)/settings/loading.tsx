@@ -1,8 +1,12 @@
 import { PageHeaderSkeleton, Skeleton } from "@/components/ui/skeleton";
 
 export default function SettingsLoading() {
+  // Container width is PAIRED with the settled page's container
+  // (app/(app)/settings/settings-client.tsx). A skeleton laid out to a different
+  // width jumps sideways the instant data arrives, so the two are not free
+  // to drift: tests/app/loading/skeleton-width.test.ts fails when they do.
   return (
-    <div className="mx-auto max-w-[900px] space-y-8">
+    <div className="mx-auto max-w-3xl space-y-8">
       <PageHeaderSkeleton />
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
         <Skeleton className="h-64 rounded-2xl md:col-span-1" />

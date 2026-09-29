@@ -95,7 +95,7 @@ export default function LoginPage() {
         />
 
         {/* Floating theme toggle — top-right of the form pane */}
-        <div className="absolute right-6 top-6 sm:right-10 lg:right-12">
+        <div className="absolute end-6 top-6 sm:end-10 lg:end-12">
           <MarketingThemeToggle size="sm" />
         </div>
 
@@ -169,7 +169,7 @@ export default function LoginPage() {
                   aria-describedby={errors.password ? `${pwId}-err` : undefined}
                   {...register("password")}
                   className={cn(
-                    "w-full rounded-2xl border bg-surface px-4 py-3 pr-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-surface focus:outline-none",
+                    "w-full rounded-2xl border bg-surface px-4 py-3 pe-12 text-sm text-fg transition-colors placeholder:text-fg-muted focus:bg-surface focus:outline-none",
                     errors.password
                       ? "border-danger/60 focus:border-danger"
                       : "border-border focus:border-primary/60"
@@ -179,7 +179,7 @@ export default function LoginPage() {
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   aria-label={showPassword ? t.auth.hidePassword : t.auth.showPassword}
-                  className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                  className="absolute end-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                 >
                   {showPassword ? (
                     <EyeOff className="h-4 w-4" aria-hidden="true" />
@@ -193,7 +193,7 @@ export default function LoginPage() {
                   {errors.password.message}
                 </p>
               )}
-              <div className="mt-2 text-right">
+              <div className="mt-2 text-end">
                 <Link
                   href="/forgot-password"
                   className="text-xs font-medium text-fg-muted transition-colors hover:text-primary-strong"
@@ -220,7 +220,7 @@ export default function LoginPage() {
             >
               {isSubmitting ? t.auth.signInLoading : t.auth.signIn}
               <ArrowRight
-                className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+                className="h-4 w-4 transition-transform group-hover:translate-x-0.5 rtl:rotate-180 rtl:group-hover:-translate-x-0.5"
                 aria-hidden="true"
               />
             </button>
@@ -252,18 +252,18 @@ export default function LoginPage() {
       </main>
 
       {/* Right: showcase panel — Stitch hero mini */}
-      <aside className="relative hidden overflow-hidden border-l border-border bg-surface lg:flex lg:flex-col lg:justify-center lg:px-16 xl:px-24">
+      <aside className="relative hidden overflow-hidden border-s border-border bg-surface lg:flex lg:flex-col lg:justify-center lg:px-16 xl:px-24">
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 bg-gradient-mesh opacity-40"
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -top-40 right-0 h-96 w-96 rounded-full bg-primary/20 blur-3xl"
+          className="pointer-events-none absolute -top-40 end-0 h-96 w-96 rounded-full bg-primary/20 blur-3xl"
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -bottom-40 left-0 h-96 w-96 rounded-full bg-forest/20 blur-3xl"
+          className="pointer-events-none absolute -bottom-40 start-0 h-96 w-96 rounded-full bg-forest/20 blur-3xl"
         />
 
         <div className="relative max-w-md">
@@ -280,7 +280,7 @@ export default function LoginPage() {
           <div className="mt-10 grid grid-cols-2 gap-3">
             <StatCard value="PKR 1.5M" label={t.auth.trackedLabel} tone="primary" />
             <StatCard value="84%" label={t.auth.runwayLabel} tone="forest">
-              <MetricRing value={0.84} tone="forest" label="84" className="ml-auto h-14 w-14" />
+              <MetricRing value={0.84} tone="forest" label="84" className="ms-auto h-14 w-14" />
             </StatCard>
           </div>
 

@@ -24,10 +24,10 @@ import {
   markAllNotificationsReadAction,
   markNotificationReadAction,
 } from "@/lib/actions/notifications";
-import { formatRelativeTime, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import toast from "react-hot-toast";
 import type { Notification } from "@/lib/types";
-import { useT } from "@/lib/i18n/use-t";
+import { useDateFormat, useT } from "@/lib/i18n/use-t";
 import { ClockWidget } from "@/components/time/clock-widget";
 import { homeRouteForRole, type Role } from "@/lib/auth/role-gates";
 import { CommandPalette } from "@/components/layout/command-palette";
@@ -61,6 +61,7 @@ export function Topbar() {
   const [notifVersion, setNotifVersion] = useState(0);
   const refreshNotifs = useCallback(() => setNotifVersion((v) => v + 1), []);
   const t = useT();
+  const d = useDateFormat();
 
   // Poll on mount; bumping notifVersion re-fetches after a markRead. Could
   // upgrade to SSE/realtime in a future phase (Supabase has channels).
@@ -270,7 +271,16 @@ export function Topbar() {
           </button>
 
           {/* Notifications */}
-          <div ref={notifRef} className="relative">
+          {/* resp-002: `sm:relative`, not `relative`. Below `sm` this wrapper is
+              deliberately NOT a containing block, so the panel's `absolute`
+              resolves against the <header> — which is `sticky`, spans the
+              viewport, and is therefore the only ancestor wide enough to hang a
+              phone-width sheet from. From `sm` up it becomes the containing
+              block again and the panel goes back to hanging off this 36px
+              button. The two halves are a pair: release the panel's leading
+              inset at one breakpoint and position this wrapper at another and
+              the panel collapses to the width of the button. */}
+          <div ref={notifRef} className="sm:relative">
             <button
               ref={notifButtonRef}
               onClick={() => openOnly(notifOpen ? null : "notif")}
@@ -327,7 +337,28 @@ export function Topbar() {
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -8, scale: 0.95 }}
                   transition={{ duration: 0.15 }}
-                  className="absolute end-0 top-12 z-popover w-80 overflow-hidden rounded-2xl border border-border bg-surface shadow-card-hover md:w-96"
+                  // resp-002: below `sm` this is a viewport-wide sheet with a
+                  // 1rem gutter on both edges, hung from the <header> (see the
+                  // wrapper's comment). It used to be a flat `w-80` anchored at
+                  // `end-0` on the 36px trigger: on a 375px phone the trigger's
+                  // trailing edge is at x≈307 (16px `px-4` + 48px profile
+                  // button + 4px `gap-1`), so a 320px panel started at x≈-13 —
+                  // and every ancestor is `overflow-hidden` (the app-shell root
+                  // is `flex h-dvh overflow-hidden`, <main> is
+                  // `overflow-x-hidden`) with none of them `overflow-x: auto`,
+                  // so the missing strip could not be scrolled to at all. The
+                  // leading dot/timestamp column was simply gone and titles were
+                  // cut mid-word, on the device most users are on.
+                  //
+                  // `start-4 end-4` rather than `inset-x-4` so the pair reads as
+                  // logical and mirrors with the rest of the shell; with no
+                  // width declared the panel stretches between them. `top-16`
+                  // sits it flush under the header's 4rem bottom border. From
+                  // `sm` up the leading inset is released and the old
+                  // trigger-anchored widths take over — both of which now have
+                  // to fit their own breakpoint's floor, which
+                  // tests/components/shell-responsive.test.tsx computes.
+                  className="absolute end-4 start-4 top-16 z-popover overflow-hidden rounded-2xl border border-border bg-surface shadow-card-hover sm:end-0 sm:start-auto sm:top-12 sm:w-80 md:w-96"
                 >
                   <div className="flex items-center justify-between border-b border-border p-4">
                     <h3 className="font-semibold">{t.topbar.notificationsLabel}</h3>
@@ -377,7 +408,7 @@ export function Topbar() {
                             <p className="text-sm font-medium">{n.title}</p>
                             <p className="mt-0.5 text-xs text-fg-muted">{n.message}</p>
                             <p className="mt-1.5 font-mono text-[10px] uppercase tracking-wider text-fg-muted/70">
-                              {formatRelativeTime(n.createdAt)}
+                              {d.relative(n.createdAt)}
                             </p>
                           </div>
                         </Link>
@@ -397,7 +428,14 @@ export function Topbar() {
           </div>
 
           {/* Profile */}
-          <div ref={profileRef} className="relative">
+          {/* Same construction as the notifications wrapper above, and
+              deliberately the same treatment. At `w-64` this panel does still
+              fit a 375px viewport today — the account trigger is last in the
+              cluster, so only 16px of container padding sits between it and the
+              edge — but it is the identical build one width bump away from the
+              identical bug, and two dropdowns each guessing their own mobile
+              behaviour is what produced the first one. */}
+          <div ref={profileRef} className="sm:relative">
             <button
               ref={profileButtonRef}
               onClick={() => openOnly(profileOpen ? null : "profile")}
@@ -429,7 +467,7 @@ export function Topbar() {
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -8, scale: 0.95 }}
                   transition={{ duration: 0.15 }}
-                  className="absolute end-0 top-12 z-popover w-64 overflow-hidden rounded-2xl border border-border bg-surface shadow-card-hover"
+                  className="absolute end-4 start-4 top-16 z-popover overflow-hidden rounded-2xl border border-border bg-surface shadow-card-hover sm:end-0 sm:start-auto sm:top-12 sm:w-64"
                 >
                   <div className="border-b border-border p-4">
                     <p className="text-sm font-semibold">{currentUser?.name}</p>

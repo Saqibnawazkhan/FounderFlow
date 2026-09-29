@@ -168,7 +168,7 @@ function PasswordField({
           aria-describedby={error ? `${id}-err` : undefined}
           {...inputProps}
           className={cn(
-            "w-full rounded-xl border bg-bg px-4 py-2.5 pr-11 text-sm text-fg focus:bg-surface focus:outline-none",
+            "w-full rounded-xl border bg-bg px-4 py-2.5 pe-11 text-sm text-fg focus:bg-surface focus:outline-none",
             error ? "border-danger/60 focus:border-danger" : "border-border focus:border-primary/50"
           )}
         />
@@ -176,7 +176,7 @@ function PasswordField({
           type="button"
           onClick={onToggleShow}
           aria-label={show ? hideLabel : showLabel}
-          className="absolute right-2.5 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.06] hover:text-fg"
+          className="absolute end-2.5 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-glass/[0.06] hover:text-fg"
         >
           {show ? (
             <EyeOff className="h-4 w-4" aria-hidden="true" />

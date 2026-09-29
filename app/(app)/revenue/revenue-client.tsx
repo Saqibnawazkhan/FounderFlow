@@ -23,10 +23,9 @@ import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { formatDate } from "@/lib/utils";
 import { REVENUE_CATEGORIES, type Transaction } from "@/lib/types";
 import { useMoney } from "@/lib/hooks/useMoney";
-import { useNumberFormat } from "@/lib/i18n/use-t";
+import { useDateFormat, useNumberFormat } from "@/lib/i18n/use-t";
 
 type Props = {
   transactions: Transaction[];
@@ -41,6 +40,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
   const [, startTransition] = useTransition();
   const money = useMoney();
   const n = useNumberFormat();
+  const d = useDateFormat();
 
   const revenue = useMemo(() => transactions.filter((t) => t.type === "income"), [transactions]);
 
@@ -176,7 +176,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
                 <div key={c.name} className="space-y-2">
                   <div className="flex items-center justify-between gap-3">
                     <p className="font-semibold text-fg">{c.name}</p>
-                    <div className="text-right">
+                    <div className="text-end">
                       <p className="font-mono text-base font-bold tabular-nums text-fg">
                         {money(c.amount)}
                       </p>
@@ -204,7 +204,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
       >
         <div className="relative flex-1">
           <Search
-            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+            className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
             aria-hidden="true"
           />
           <label htmlFor="revenue-search" className="sr-only">
@@ -215,12 +215,12 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
             placeholder="Search description, category, or person…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-xl border border-border bg-bg py-2.5 pl-10 pr-4 text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:border-primary/50 focus:bg-surface focus:outline-none"
+            className="w-full rounded-xl border border-border bg-bg py-2.5 pe-4 ps-10 text-sm text-fg transition-colors placeholder:text-fg-muted/70 focus:border-primary/50 focus:bg-surface focus:outline-none"
           />
         </div>
         <div className="relative">
           <Filter
-            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
+            className="absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted"
             aria-hidden="true"
           />
           <label htmlFor="revenue-category" className="sr-only">
@@ -230,7 +230,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
             id="revenue-category"
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
-            className="w-full min-w-[200px] appearance-none rounded-xl border border-border bg-bg py-2.5 pl-10 pr-4 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
+            className="w-full min-w-[200px] appearance-none rounded-xl border border-border bg-bg py-2.5 pe-4 ps-10 text-sm text-fg transition-colors focus:border-primary/50 focus:bg-surface focus:outline-none"
           >
             <option value="all">All categories</option>
             {REVENUE_CATEGORIES.map((c) => (
@@ -270,31 +270,31 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
                 <tr className="border-b border-border">
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Description
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Category
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Added by
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-left font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-start font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Date
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-right font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+                    className="px-6 py-3.5 text-end font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
                   >
                     Amount
                   </th>
@@ -324,15 +324,15 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
                       </div>
                     </td>
                     <td className="px-6 py-4 font-mono text-xs uppercase tracking-wider text-fg-muted">
-                      {formatDate(t.date)}
+                      {d.date(t.date)}
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-6 py-4 text-end">
                       <span className="inline-flex items-center gap-1 font-mono text-sm font-bold tabular-nums text-primary-strong">
                         <ArrowUp className="h-3 w-3" aria-hidden="true" />
                         {money(t.amount)}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-6 py-4 text-end">
                       {(currentUserId === t.addedBy || currentUserRole === "admin") && (
                         <button
                           onClick={() => handleDelete(t.id)}
@@ -370,13 +370,13 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
                     <Avatar name={t.addedByName} size="xs" /> {t.addedByName}
                   </span>
                   <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
-                    {formatDate(t.date)}
+                    {d.date(t.date)}
                   </span>
                   {(currentUserId === t.addedBy || currentUserRole === "admin") && (
                     <button
                       onClick={() => handleDelete(t.id)}
                       aria-label={`Delete revenue ${t.description}`}
-                      className="ml-auto rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                      className="ms-auto rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
                     >
                       <Trash2 className="h-4 w-4" aria-hidden="true" />
                     </button>

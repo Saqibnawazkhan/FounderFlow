@@ -1,7 +1,9 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { format, formatDistanceToNow, isToday, isYesterday } from "date-fns";
+import { isToday, isYesterday } from "date-fns";
 import { currencyMinorUnits, sanitizeNumericOutput } from "@/lib/format";
+import { numberingLocale } from "@/lib/i18n/numbering";
+import type { Locale } from "@/lib/i18n/strings";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -150,10 +152,170 @@ export function formatAmountForMessage(amount: number, currency: string): string
  * "Joined Jan 15". The two cases need two functions, which is why there are now
  * two. See lib/date-range.ts for the same argument applied to month buckets
  * (money-007).
+ *
+ * ## The locale argument (i18n-004)
+ *
+ * This used to be `format(d, "MMM dd, yyyy")` with no date-fns `locale` option,
+ * so the month name came from date-fns' built-in English locale and an Urdu
+ * workspace read "Sep 26, 2026" on every translated screen. It now routes
+ * through `Intl`, which already knows Urdu, via `numberingLocale()` so the
+ * DIGIT family stays the one lib/i18n/numbering.ts argues for (`latn`) rather
+ * than whatever CLDR defaults to for a locale added later.
+ *
+ * NOT date-fns' own `locale` option, and not by preference: date-fns 3.6.0
+ * ships 180-odd locales and `ur` is not among them (it has `ar`, `ar-*`, `hi`,
+ * `fa-IR` — no Urdu at all). There was no version of this fix that stayed on
+ * date-fns. `Intl` is also where the numbering-system pin already lives, so the
+ * digit decision keeps its one address.
+ *
+ * `locale` is OPTIONAL and defaults to English, and that is a decision rather
+ * than convenience:
+ *
+ *  • There is no server-reachable locale. Every rendering call site is a client
+ *    component reading the Zustand store (`useLocale()`); the ONE server caller
+ *    is lib/billing/billing-notify.ts, which feeds `formatDate` into
+ *    lib/billing/plan.ts to build a string that is PERSISTED and mailed. That is
+ *    the `formatAmountForMessage` case above, word for word: a row written once
+ *    and read by everybody has no single viewer whose locale applies, and
+ *    localising the date inside an English sentence half-translates it. It must
+ *    keep getting English, so English is what an un-passed locale means.
+ *  • A required parameter would have made every one of those call sites a
+ *    compile error at once, in a shared tree, which is how the wrong one gets
+ *    "fixed" by passing `"en"` to silence it.
+ *
+ * `en` output is byte-identical to the date-fns pattern it replaces —
+ * `formatUtcDate` below has asserted that equivalence since money-007, and
+ * tests/lib/utils.test.ts holds the two against each other.
  */
-export function formatDate(date: string | Date): string {
-  return format(new Date(date), "MMM dd, yyyy");
+export function formatDate(date: string | Date, locale: Locale = "en"): string {
+  return dateFormatter(locale).format(new Date(date));
 }
+
+/* ------------------------------------------------------------------------- *
+ * Locale-aware date/time machinery (i18n-004).
+ *
+ * `Intl.*Format` construction is expensive and these render once per ledger
+ * row, notification and activity entry, so every formatter is built once per
+ * locale and cached. Keyed by `Locale`, not by tag string, because the tag is
+ * derived and the locale is the input.
+ * ------------------------------------------------------------------------- */
+
+const DATE_FORMATTERS = new Map<Locale, Intl.DateTimeFormat>();
+const TIME_FORMATTERS = new Map<Locale, Intl.DateTimeFormat>();
+const NAMED_DAY_FORMATTERS = new Map<Locale, Intl.RelativeTimeFormat>();
+const DISTANCE_FORMATTERS = new Map<Locale, Intl.RelativeTimeFormat>();
+
+function dateFormatter(locale: Locale): Intl.DateTimeFormat {
+  let fmt = DATE_FORMATTERS.get(locale);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat(numberingLocale(locale), {
+      month: "short",
+      day: "2-digit",
+      year: "numeric",
+    });
+    DATE_FORMATTERS.set(locale, fmt);
+  }
+  return fmt;
+}
+
+function timeFormatter(locale: Locale): Intl.DateTimeFormat {
+  let fmt = TIME_FORMATTERS.get(locale);
+  if (!fmt) {
+    // No `hour12` override. CLDR's `ur` data is 12-hour with AM/PM markers,
+    // which is what Pakistani software shows; forcing `hour12: false` here
+    // would be this file overruling the locale data on the strength of nobody's
+    // research. If a 24-hour clock is wanted it is a product preference and
+    // belongs beside the theme and language pickers, not hardcoded here.
+    fmt = new Intl.DateTimeFormat(numberingLocale(locale), {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+    TIME_FORMATTERS.set(locale, fmt);
+  }
+  return fmt;
+}
+
+/** `numeric: "auto"` — the only setting that turns 0 and -1 days into words. */
+function namedDayFormatter(locale: Locale): Intl.RelativeTimeFormat {
+  let fmt = NAMED_DAY_FORMATTERS.get(locale);
+  if (!fmt) {
+    fmt = new Intl.RelativeTimeFormat(numberingLocale(locale), { numeric: "auto" });
+    NAMED_DAY_FORMATTERS.set(locale, fmt);
+  }
+  return fmt;
+}
+
+/**
+ * `numeric: "always"` — the distance branch must never emit a bare "yesterday",
+ * because the today/yesterday branch above pairs that word with a clock time and
+ * this one does not. Rounding 30-odd hours down to -1 day would otherwise print
+ * a word the reader has been taught carries a time.
+ */
+function distanceFormatter(locale: Locale): Intl.RelativeTimeFormat {
+  let fmt = DISTANCE_FORMATTERS.get(locale);
+  if (!fmt) {
+    fmt = new Intl.RelativeTimeFormat(numberingLocale(locale), { numeric: "always" });
+    DISTANCE_FORMATTERS.set(locale, fmt);
+  }
+  return fmt;
+}
+
+/**
+ * How a named day and a clock time are joined: `"Today at 3:45 PM"`.
+ *
+ * THE ONLY HAND-WRITTEN PER-LOCALE THING IN THIS FILE, AND IT CONTAINS NO
+ * TRANSLATED WORDS. Everything the reader actually sees — the month name, the
+ * word for "today", "10 days ago", the AM/PM marker — comes from ICU/CLDR, so
+ * no unverified translation is shipped by this module. What ICU does not expose
+ * is a pattern combining a RELATIVE day with a time; `Intl` has no such API, so
+ * the join has to be made here.
+ *
+ * CLDR's own date-time glue is reachable (`{dateStyle, timeStyle}` +
+ * `formatToParts` yields " at " for `en` and " کو " for `ur`) and using it was
+ * the obvious move — but it is wrong for this input. Urdu's "کو" is a
+ * postposition that attaches to a DATE ("پیر کو" — on Monday); "آج" is already
+ * adverbial and takes none, so "آج کو 3:45 PM" is not a sentence. CLDR is
+ * right about joining a full date to a time and simply is not being asked that
+ * question here. Urdu therefore juxtaposes, which is the idiomatic form.
+ *
+ * `Record<Locale, …>` on purpose, the same shape and for the same reason as
+ * `NUMBERING_SYSTEMS` in lib/i18n/numbering.ts: adding a locale without
+ * deciding this fails `npm run typecheck` at the decision instead of silently
+ * inheriting English's " at ".
+ */
+const NAMED_DAY_AT_TIME: Record<Locale, string> = {
+  en: "{day} at {time}",
+  ur: "{day} {time}",
+};
+
+/** Sentence case for the CLDR day word. A no-op in scripts without case. */
+function capitalizeForLocale(word: string, locale: Locale): string {
+  if (!word) return word;
+  return word.charAt(0).toLocaleUpperCase(locale) + word.slice(1);
+}
+
+function namedDayAtTime(d: Date, locale: Locale, dayOffset: number): string {
+  const day = capitalizeForLocale(namedDayFormatter(locale).format(dayOffset, "day"), locale);
+  return NAMED_DAY_AT_TIME[locale]
+    .replace("{day}", day)
+    .replace("{time}", timeFormatter(locale).format(d));
+}
+
+/**
+ * Coarsest-first unit ladder for the distance branch.
+ *
+ * Weeks are deliberately absent: date-fns' `formatDistanceToNow`, which this
+ * replaces, says "10 days ago" rather than "1 week ago", and the notification
+ * and activity feeds have shipped that wording for months. Including "week"
+ * would have been a silent copy change dressed as an i18n fix.
+ */
+const RELATIVE_LADDER: { unit: Intl.RelativeTimeFormatUnit; ms: number }[] = [
+  { unit: "year", ms: 365 * 24 * 60 * 60 * 1000 },
+  { unit: "month", ms: 30 * 24 * 60 * 60 * 1000 },
+  { unit: "day", ms: 24 * 60 * 60 * 1000 },
+  { unit: "hour", ms: 60 * 60 * 1000 },
+  { unit: "minute", ms: 60 * 1000 },
+];
 
 /* ------------------------------------------------------------------------- *
  * UTC date rendering, for DATE-ONLY values (money-007).
@@ -211,16 +373,49 @@ export function formatUtcMonthYear(date: string | Date): string {
   return UTC_MONTH_YEAR.format(new Date(date));
 }
 
-export function formatRelativeTime(date: string | Date): string {
+/**
+ * A timestamp as a human would say it: `"Today at 3:45 PM"`, `"10 days ago"`.
+ *
+ * ## What it used to be, and why that was the bug (i18n-004)
+ *
+ * Two hardcoded English templates and `formatDistanceToNow(d, { addSuffix:
+ * true })`, which also has no locale option wired. The notifications dropdown,
+ * the activity feed, chat, comments and /team therefore read English on a fully
+ * translated Urdu screen.
+ *
+ * Every visible token now comes from ICU: `Intl.RelativeTimeFormat` for the
+ * word, `Intl.DateTimeFormat` for the clock. `locale` defaults to English for
+ * the reasons set out on `formatDate` above — there is no server-reachable
+ * locale, and the one server caller persists its output.
+ *
+ * `isToday` / `isYesterday` stay date-fns: they are CALENDAR predicates in the
+ * viewer's zone, which is the right question ("is this the same day the reader
+ * is having?") and has no locale in it. Only the WORDS were ever the problem.
+ */
+export function formatRelativeTime(date: string | Date, locale: Locale = "en"): string {
   const d = new Date(date);
   if (isToday(d)) {
-    return `Today at ${format(d, "h:mm a")}`;
+    return namedDayAtTime(d, locale, 0);
   }
   if (isYesterday(d)) {
-    return `Yesterday at ${format(d, "h:mm a")}`;
+    return namedDayAtTime(d, locale, -1);
   }
-  const distance = formatDistanceToNow(d, { addSuffix: true });
-  return distance;
+
+  // Signed, so a future timestamp (an invite's expiry, a renewal date) reads
+  // "in 3 days" instead of silently rendering as though it had already passed.
+  const diff = d.getTime() - Date.now();
+  const magnitude = Math.abs(diff);
+  const fmt = distanceFormatter(locale);
+  // Indexed loop rather than for…of / .find(): tsconfig sets `lib` but no
+  // `target`, so tsc emits ES5 and the fancier forms are this repo's standing
+  // trap (see CLAUDE.md).
+  for (let i = 0; i < RELATIVE_LADDER.length; i++) {
+    const step = RELATIVE_LADDER[i];
+    if (magnitude >= step.ms) {
+      return fmt.format(Math.round(diff / step.ms), step.unit);
+    }
+  }
+  return fmt.format(Math.round(diff / 1000), "second");
 }
 
 export function generateAvatar(name: string): string {

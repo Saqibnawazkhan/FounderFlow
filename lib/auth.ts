@@ -73,7 +73,21 @@ const nodeAuthConfig: NextAuthConfig = {
       try {
         const current = await db.user.findUnique({
           where: { id: token.id },
-          select: { deletedAt: true, sessionVersion: true, role: true, companyId: true },
+          // `name` and `email` joined this select for acct-006. They cost
+          // nothing — this lookup already runs on every auth() call, for the
+          // tombstone/version check below — and without them the two fields
+          // were stamped once at sign-in and never read again, so a display-name
+          // change reached the /settings body and nothing else: not the sidebar,
+          // not the top bar, and not requireScopedSession().userName/.email on
+          // the server.
+          select: {
+            deletedAt: true,
+            sessionVersion: true,
+            role: true,
+            companyId: true,
+            name: true,
+            email: true,
+          },
         });
         // Gone, tombstoned, or version bumped → kill the session now instead
         // of waiting for the cookie to expire.
@@ -83,6 +97,13 @@ const nodeAuthConfig: NextAuthConfig = {
         // Keep role/company fresh so a role change also takes effect at once.
         token.role = current.role as "admin" | "cofounder" | "member";
         token.companyId = current.companyId;
+        // Same reasoning, one finding later (acct-006): the identity the app
+        // renders has to be the identity in the database. Written only on this
+        // path, AFTER the validity check and inside the try, so the fail-open
+        // branch below still returns the token exactly as it arrived rather
+        // than one whose name has been overwritten with `undefined`.
+        token.name = current.name;
+        token.email = current.email;
         return token;
       } catch (e) {
         // Fail OPEN on a transient DB error: the token is still

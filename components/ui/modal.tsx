@@ -75,6 +75,12 @@ export function Modal({
             // Mobile: full-height bottom sheet with rounded top corners.
             "inset-x-0 bottom-0 max-h-[92vh] rounded-b-none rounded-t-2xl",
             // Desktop (sm+): centered card with max-height and standard rounding.
+            // rtl-physical-ok: left-[50%] + translate-x-[-50%] is the centering
+            // idiom, not a reading-direction offset. Both halves are physical
+            // and cancel, so it already centres in Urdu. Converting only the
+            // left- half gives `right: 50%` against an unchanged leftward
+            // translate and lands the dialog a full width off-centre — in the
+            // one locale nobody looks at. Replace the pair or leave it alone.
             "sm:inset-x-auto sm:bottom-auto sm:left-[50%] sm:top-[50%] sm:max-h-[90vh] sm:w-[calc(100%-2rem)] sm:translate-x-[-50%] sm:translate-y-[-50%] sm:rounded-2xl",
             "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:slide-in-from-bottom-2",
             "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",

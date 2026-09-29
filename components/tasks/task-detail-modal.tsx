@@ -194,7 +194,7 @@ export function TaskDetailModal({
             id={`detail-status-${task.id}`}
             value={task.status}
             onChange={(e) => onStatusChange(task.id, e.target.value as TaskStatus)}
-            className="ml-auto cursor-pointer rounded-full border border-border bg-bg px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors hover:bg-surface-hover focus:border-primary/50 focus:outline-none"
+            className="ms-auto cursor-pointer rounded-full border border-border bg-bg px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors hover:bg-surface-hover focus:border-primary/50 focus:outline-none"
           >
             <option value="pending">Pending</option>
             <option value="in_progress">In progress</option>

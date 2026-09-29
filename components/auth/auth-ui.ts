@@ -48,5 +48,5 @@ export const authSecondaryButton =
 
 /** The showcase column beside the form. */
 export const authAside =
-  "relative hidden overflow-hidden border-l border-border bg-surface " +
+  "relative hidden overflow-hidden border-s border-border bg-surface " +
   "lg:flex lg:flex-col lg:justify-center lg:px-16 xl:px-24";

@@ -122,7 +122,7 @@ export function ProjectCard({ project, currentUserId, currentUserRole }: Props) 
       className="group relative flex flex-col gap-4 overflow-hidden rounded-2xl border border-border bg-surface p-5 transition-colors hover:border-primary/40"
     >
       {/* Color stripe — pure decoration, marks the project family. */}
-      <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${c.stripe}`} />
+      <span aria-hidden="true" className={`absolute inset-y-0 start-0 w-1 ${c.stripe}`} />
 
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">

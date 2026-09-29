@@ -73,7 +73,7 @@ export function ProjectsClient({ projects, users, currentUserId, currentUserRole
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <PillBadge tone="primary">
-            <Briefcase className="mr-1 inline h-3 w-3" aria-hidden="true" />
+            <Briefcase className="me-1 inline h-3 w-3" aria-hidden="true" />
             {t.projects.badge}
           </PillBadge>
           <h1 className="mt-4 text-balance text-4xl font-bold tracking-tight md:text-5xl">
@@ -164,7 +164,7 @@ export function ProjectsClient({ projects, users, currentUserId, currentUserRole
                   onClick={() => setDuplicating(p)}
                   title={t.projects.duplicateProject}
                   aria-label={`${t.projects.duplicateProject}: ${p.name}`}
-                  className="absolute right-3 top-3 z-10 rounded-full border border-border bg-surface/90 p-1.5 text-fg-muted backdrop-blur transition-colors hover:border-primary/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                  className="absolute end-3 top-3 z-10 rounded-full border border-border bg-surface/90 p-1.5 text-fg-muted backdrop-blur transition-colors hover:border-primary/40 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                 >
                   <Copy className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>

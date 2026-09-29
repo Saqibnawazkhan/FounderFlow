@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -68,6 +68,42 @@ export function Sidebar() {
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [mobileOpen, setMobileOpen]);
+
+  // resp-001, second half. The drawer precedes the topbar in the DOM, so
+  // opening it from the burger leaves the caret AFTER every link it contains:
+  // Tab walks away from the panel that just appeared and the only route in is
+  // seventeen Shift-Tabs. And now that a closed drawer is genuinely
+  // `visibility: hidden` below lg, focus sitting on a nav row when it closes is
+  // focus on an element the browser has just made unfocusable — it falls back
+  // to <body> and the next Tab restarts from the top of the document.
+  //
+  // So: remember what was focused when it opened, move focus to the drawer's
+  // own close button, and hand focus back on close. `returnFocusRef` is only
+  // populated by an open, so the mount-time run (closed, nothing captured) is a
+  // no-op and this never steals focus on first paint.
+  //
+  // This deliberately stops short of a full focus trap. `lib/hooks/use-focus-trap.ts`
+  // would give Tab-cycling and an `inert` background for free, but it keys off a
+  // single boolean, and `mobileNavOpen` survives a resize past `lg` — where the
+  // drawer becomes the permanent rail and a trap would leave the whole desktop
+  // app `inert` with no visible control to escape it (the backdrop and the close
+  // button are both `lg:hidden`). Closing the drawer on a resize needs a
+  // viewport listener, which is a second source of truth for a breakpoint the
+  // CSS below already owns. See the report: it is a follow-up, not an omission.
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (mobileOpen) {
+      returnFocusRef.current = document.activeElement as HTMLElement | null;
+      closeButtonRef.current?.focus();
+      return;
+    }
+    const returnTo = returnFocusRef.current;
+    returnFocusRef.current = null;
+    if (returnTo && typeof returnTo.focus === "function" && document.contains(returnTo)) {
+      returnTo.focus();
+    }
+  }, [mobileOpen]);
 
   // Just the unread count for the nav badge — the full notification list lives
   // in the topbar dropdown + /notifications page.
@@ -177,7 +213,9 @@ export function Sidebar() {
           // Urdu gets the sidebar on the right with its divider facing the
           // content — the physical `left-0`/`border-r` this replaces left the
           // whole shell unmirrored (audit S20).
-          "fixed start-0 top-0 z-modal flex h-[100dvh] w-64 flex-col border-e border-border bg-surface transition-[transform,width] duration-300",
+          // `visibility` is in the transition list on purpose — see the
+          // `max-lg:invisible` note below.
+          "fixed start-0 top-0 z-modal flex h-[100dvh] w-64 flex-col border-e border-border bg-surface transition-[transform,width,visibility] duration-300",
           // Tailwind has no logical translate, so the drawer's off-screen
           // parking spot has to be flipped by hand: past the right edge in
           // RTL, not the left.
@@ -189,7 +227,39 @@ export function Sidebar() {
           // width — sliding the DESKTOP sidebar off-screen in Urdu, where it
           // is supposed to be permanent. Confining both to below-lg means no
           // transform exists at desktop at all, so there is nothing to lose.
-          mobileOpen ? "translate-x-0" : "max-lg:-translate-x-full max-lg:rtl:translate-x-full",
+          //
+          // resp-001: `max-lg:invisible` is the half that makes the closed
+          // drawer actually gone. A `transform` moves where a box is PAINTED
+          // and nothing else — the subtree keeps its place in the tab order and
+          // in the accessibility tree — so at 375px Tab walked the brand link,
+          // the close button, fourteen nav rows, the collapse toggle and the
+          // settings link, all painting their focus ring off the side of the
+          // screen, before reaching anything the user could see.
+          //
+          // `visibility: hidden` is the mechanism rather than `inert` or
+          // `aria-hidden` because the condition is "closed AND below lg", and
+          // only CSS knows the second half. An attribute would need a
+          // matchMedia listener restating `1024px` in JavaScript — a second
+          // source of truth for a breakpoint, wrong for a frame on every load
+          // and wrong until the listener fires on every resize. It also removes
+          // the subtree from the a11y tree and from focus in every engine,
+          // which is more than `inert` can claim.
+          //
+          // It is scoped `max-lg:` for the same reason the transform is: at lg
+          // and up this aside is the permanent rail, and hiding it there would
+          // delete the navigation. The two must name the SAME breakpoint;
+          // tests/components/shell-responsive.test.tsx fails if they drift.
+          //
+          // `visibility` is in the transition list above so this does not cut
+          // the slide-out short: it interpolates discretely, staying `visible`
+          // for the whole duration and flipping at the end, so the drawer
+          // slides away and only then stops existing. Opening is unaffected —
+          // the same rule makes it visible on the first frame. The
+          // reduced-motion block in globals.css collapses the duration to
+          // 0.01ms, which degrades to an instant hide, which is correct.
+          mobileOpen
+            ? "translate-x-0"
+            : "max-lg:invisible max-lg:-translate-x-full max-lg:rtl:translate-x-full",
           collapsed && "lg:w-16"
         )}
       >
@@ -217,6 +287,7 @@ export function Sidebar() {
             )}
           </Link>
           <button
+            ref={closeButtonRef}
             onClick={() => setMobileOpen(false)}
             aria-label="Close navigation menu"
             className={cn(
