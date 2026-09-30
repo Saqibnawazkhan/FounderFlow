@@ -870,6 +870,28 @@ async function handleSubscriptionEvent(
     });
   }
 
+  if (decision.unrecognisedStatus) {
+    // bill-020. The status is neither on the paid list nor terminal, so the plan
+    // column was HELD rather than decided. That is the safe outcome and it is
+    // also a fact about US, not about the customer: our vocabulary has fallen
+    // behind LemonSqueezy's. Nobody is harmed today, which is exactly why this
+    // needs a breadcrumb — the alternative is discovering it when a status that
+    // should have revoked access never did. `paused` lands here on purpose.
+    reportSkippedBillingWrite({
+      eventName,
+      reason: "status-not-in-vocabulary",
+      subscriptionId,
+      customerId,
+      companyId: identity.companyId,
+      extra: {
+        incomingStatus: status,
+        incomingPeriodEnd: period.periodEnd,
+        heldPlan: decision.data.plan,
+        storedStatus: stored.subscriptionStatus,
+      },
+    });
+  }
+
   // bill-013. The plan just went from paid to free: take the paid privileges away.
   if (decision.data.plan === "free" && normalizePlan(stored.plan) === "team") {
     await enforceFreePlanDowngrade(identity.companyId, eventName);

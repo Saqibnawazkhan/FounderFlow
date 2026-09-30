@@ -175,10 +175,46 @@ and prodready-005):
 because a syntactically present but wrong value produced the same broken emails
 as a missing one.
 
-`RATE_LIMIT_DISABLED` is the inverse — a production build **refuses to proceed
-if it is SET**. Nothing prevented it before, and setting it in the Production
-scope switches off every limiter in `lib/rate-limit.ts`, including the login
-throttle added to close a P0 brute-force hole.
+Two vars are the inverse — a production build **refuses to proceed if either is
+set**. `FORBIDDEN_PROD_ENV` in `scripts/vercel-build.mjs` is the list, and it is
+two entries long, not one:
+
+| Var | Refused at | What setting it switches off |
+|---|---|---|
+| `RATE_LIMIT_DISABLED` | any **truthy** value — `true`, `1`, `yes`, `on` | every limiter in `lib/rate-limit.ts`, including the login throttle added to close a P0 brute-force hole. `false` still deploys: that spelling is documented, and refusing it would make the documented "off" switch undeployable. |
+| `PASSWORD_RESET_RESPONSE_FLOOR_MS` | **any value at all, `0` included** | the uniform response latency on `/forgot-password` (`lib/actions/password-reset.ts`). Every outcome of a reset request is held to the same response time, so the *clock* stops answering the question the response body no longer does — whether that address is registered. `0` reopens that enumeration oracle outright; a smaller number narrows it. |
+
+Neither has any runtime signal of any kind, which is the whole argument for
+catching them at build time rather than logging a warning somewhere. The floor is
+also why the entries carry a `refuse` mode (`"truthy"` vs `"any"`): **its
+dangerous value is `0`**, which a truthiness check waves straight through. It
+exists only so two unit tests can switch the floor back ON — the action ignores
+it outside vitest — so there is no value it should ever hold in a Production
+scope.
+
+**Sentry is the one member of this family that only warns** — except when it is
+half-configured. Neither `SENTRY_DSN` (server, `sentry.server.config.ts`) nor
+`NEXT_PUBLIC_SENTRY_DSN` (browser, `sentry.client.config.ts`) is required: no
+Sentry at all is a choice this project has actually made, and a build that
+refuses to ship because an observability tool is unconfigured is its own kind of
+outage. So both absent → a loud warning on every production build and nothing
+more. **Exactly one of the two set → the build FAILS.** A deploy that reports
+server errors, drops every browser crash, and still tells the customer "The team
+has been notified" misrepresents itself, and nobody goes looking for a gap that
+looks healthy.
+
+The upload trio `SENTRY_AUTH_TOKEN` / `SENTRY_ORG` / `SENTRY_PROJECT` is a third
+rule, and it is enforced in `next.config.js`, not in the build script — three
+outcomes, not two:
+
+- **all three absent** → `vercel-build.mjs` warns (only if a DSN is set) and the
+  build proceeds. But `withSentryConfig` is applied **only** when `SENTRY_DSN`
+  **and** all three are present, and that wrapper is what bundles the SDK at all
+  — so this state reports *nothing*, rather than merely losing readable stack
+  traces. That is today's state in production.
+- **some but not all three** → `next.config.js:107` **throws**, so `next build`
+  fails outright. Not a warning.
+- **all three plus `SENTRY_DSN`** → source maps upload and the SDK is bundled.
 
 If `DIRECT_URL` is missing, the build script exits with an explicit error
 message (never falls back to the transaction pooler — pgbouncer doesn't
@@ -204,21 +240,45 @@ for a one-off inspection.
 
 ### Tier 3 recovery layer — landed 2026-07-03
 
-- **Soft delete** on User, Company, Project, Task, Budget, Transaction and
-  Message (chat, added 2026-09-24). A
+- **Soft delete** on User, Company, Project, Task, Budget, Transaction,
+  Message (chat, added 2026-09-24), Comment and TimeEntry. A
   nullable `deletedAt` timestamp on each. Auth + every scoped query
   filter `deletedAt: null`. `deleteAccountAction` and
   `deleteWorkspaceAction` write the sentinel instead of hard-deleting;
-  recovery within the retention window is one SQL UPDATE per table:
+  recovery within the retention window is one SQL UPDATE per table.
+
+  **The runbook printed here was itself a cross-tenant write until 2026-09-30,
+  and it is the third place that was true (data-integrity-005).** It said to
+  reunite child rows by the tombstone timestamp *alone*, within a ±1s window.
+  `softDeleteWorkspace` stamps one `now` across every table in one transaction —
+  so two customers who delete inside the same second share that stamp, and
+  following these steps for one of them un-deleted the other's transactions into
+  a workspace whose `Company` row stays tombstoned: live rows, invisible to every
+  scoped query, in someone else's ledger. Only the `Company` and `User` lines
+  were ever scoped.
+
+  **Every line needs BOTH the tenant and the instant.** The timestamp stays —
+  dropping it and restoring by `companyId` alone would resurrect rows that were
+  individually deleted earlier (a message someone removed on purpose), which is a
+  different kind of wrong. And it is `=` the exact stamp, not a range: one
+  transaction wrote one value, so a window only widens the blast radius.
 
   ```sql
+  -- Read the exact stamp first; every UPDATE below uses this value verbatim.
+  SELECT "deletedAt" FROM "Company" WHERE id = '<companyId>';
+
   UPDATE "Company" SET "deletedAt" = NULL WHERE id = '<companyId>';
   UPDATE "User" SET "deletedAt" = NULL WHERE "companyId" = '<companyId>';
-  -- repeat for Project / Task / Budget / Transaction — they share the
-  -- same tombstone timestamp so a range filter reunites them:
+  -- …and one of these per child table: Project, Task, Budget, Transaction,
+  -- Comment, TimeEntry, Message. TENANT AND INSTANT, never one alone:
   UPDATE "Transaction" SET "deletedAt" = NULL
-    WHERE "deletedAt" BETWEEN '<t - 1s>' AND '<t + 1s>';
+    WHERE "companyId" = '<companyId>' AND "deletedAt" = '<exact t>';
   ```
+
+  `tests/lib/db/restore-runbook.test.ts` parses every copy of this runbook —
+  here and in `lib/actions/account.ts` — and fails on any restore statement that
+  filters by timestamp without a `companyId` clause. It has no exemption for this
+  file, so the version above cannot silently regress.
 
 - **Nightly purge cron** at `/api/cron/purge-soft-deleted` runs at 03:15
   UTC. **DRY-RUN by default** (`PURGE_ENABLED` gate): it counts what *would*

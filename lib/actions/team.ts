@@ -30,7 +30,7 @@ import { appOrigin } from "@/lib/env";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendEmail } from "@/lib/email/send";
 import { renderInviteEmail } from "@/lib/email/templates/invite";
-import { memberLimitForCompany, memberLimitForPlan, PLAN_LABELS } from "@/lib/billing/plan";
+import { memberLimitForCompany, PLAN_LABELS } from "@/lib/billing/plan";
 import { joinDefaultChannels } from "@/lib/chat/bootstrap";
 import { deriveHandle, isHandleConflict, uniqueHandle } from "@/lib/user/handle";
 
@@ -40,6 +40,29 @@ import { notifyUsers } from "@/lib/notify/fan-out";
 function roleLabel(role: string): string {
   return role === "cofounder" ? "Co-Founder" : "Team Member";
 }
+
+/**
+ * Thrown by a seat gate INSIDE its write transaction, so the write rolls back
+ * and the caller gets the real reason instead of a catch-all "couldn't do that
+ * right now". Three throw sites, one per path that can take a seat:
+ * `inviteUserAction` (bill-014), `reactivateUserAction` (bill-014's
+ * deterministic sibling) and `acceptInviteAction` (bill-013).
+ *
+ * A thrown class rather than an early `return` because the check has to run
+ * inside the transaction: it is the only way the refusal and the write cannot
+ * diverge — no half-burnt invite token, no tombstone cleared next to a refusal —
+ * and each catch turns it back into the plan sentence the UI shows.
+ *
+ * WHAT IT IS NOT. Being inside the transaction does NOT serialise two callers.
+ * This comment used to say the count and the insert "share one snapshot", which
+ * is false at Prisma's default isolation: on Postgres that is READ COMMITTED,
+ * where every statement takes a fresh snapshot and neither transaction sees the
+ * other's uncommitted rows. Two simultaneous acceptances can therefore still
+ * both read "one seat left" — the very thing the old sentence claimed was fixed.
+ * The long comment at the invite gate in `inviteUserAction` above carries the
+ * options for closing that properly, and the bound on what it costs meanwhile.
+ */
+class SeatLimitReached extends Error {}
 
 /**
  * Render + send the invite email for a token. Shared by inviteUserAction
@@ -186,39 +209,108 @@ export async function inviteUserAction(
       };
     }
 
-    // If a still-pending invite exists for this email + company, invalidate
-    // it before issuing a fresh one (so resending the invite always works).
-    await db.inviteToken.deleteMany({
-      where: { email, companyId, usedAt: null },
-    });
-
+    // The address's own pending invite is invalidated inside the transaction
+    // below, NOT here. See the comment at the delete for why that matters.
     const actor = await db.user.findUnique({ where: { id: actorId } });
     if (!actor) return { success: false, error: "User no longer exists" };
     const company = await db.company.findUnique({ where: { id: companyId } });
     if (!company) return { success: false, error: "Company no longer exists" };
 
-    // Free-plan member cap (pricing: "up to 2 co-founders"). Count active
-    // members + still-pending invites so you can't queue past the limit. The
-    // current email's pending invite was just deleted above, so a resend never
-    // counts itself. Team plan is unlimited.
-    const limit = memberLimitForPlan(company.plan);
-    if (Number.isFinite(limit)) {
-      const [activeMembers, pendingInvites] = await Promise.all([
-        db.user.count({ where: { companyId, deletedAt: null } }),
-        db.inviteToken.count({ where: { companyId, usedAt: null } }),
-      ]);
-      if (activeMembers + pendingInvites >= limit) {
-        return {
-          success: false,
-          error: `Your ${PLAN_LABELS.free} plan is limited to ${limit} members. Upgrade to ${PLAN_LABELS.team} in Settings for unlimited co-founders.`,
-        };
-      }
-    }
+    // Free-plan member cap (pricing: "up to 2 co-founders"). Counted inside the
+    // write transaction below — see the block there — rather than here.
+    //
+    // `memberLimitForCompany`, not `memberLimitForPlan`: this action holds the
+    // whole Company row, and entitlement is (plan, subscriptionStatus,
+    // paid-through date). Asking only the `plan` string is the gate bill-004's
+    // revenue leak flowed through — a workspace still carrying plan="team"
+    // because a `subscription_expired` delivery was lost kept issuing unlimited
+    // invites for free, while `acceptInviteAction` below had already been asking
+    // the stricter question since bill-013. Two gates on one cap that disagreed
+    // about who is entitled to a seat.
+    const limit = memberLimitForCompany(company);
 
     const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
     await db.$transaction(async (tx) => {
+      // INVALIDATING THE ADDRESS'S OWN PENDING INVITE, AND WHY IT IS IN HERE
+      // (A44). Resending an invite has to replace the outstanding token rather
+      // than collide with it, and the count below must not see the row it is
+      // replacing — otherwise a resend at exactly the limit counts itself out of
+      // a seat. Both of those were already true when this ran before the
+      // transaction opened. What was NOT true is the part the old comment did
+      // not mention: the delete was committed, so when the seat check below
+      // threw, the rollback restored nothing. The invitee's valid token was
+      // destroyed and the admin was told the invite had not been sent.
+      //
+      // That path got easier to reach while closing bill-014, which is why it is
+      // fixed here rather than filed: a lapsed plan="team" workspace used to get
+      // `memberLimitForPlan` -> Infinity and always succeed, and
+      // `memberLimitForCompany` now correctly answers 2 — so re-inviting an
+      // address that still holds an invite issued under Team (never burnt,
+      // because the `subscription_expired` delivery is exactly what bill-004
+      // says can be lost) landed on the refusal instead.
+      //
+      // In here, the delete is part of the same transaction as the counts, so
+      // `pendingInvites` still excludes it and the resend behaviour is
+      // unchanged — and a throw takes the delete with it.
+      await tx.inviteToken.deleteMany({
+        where: { email, companyId, usedAt: null },
+      });
+
+      // THE SEAT DECISION, TAKEN WHERE THE ROW IS WRITTEN (bill-014). Active
+      // members + still-pending invites, so you cannot queue past the limit.
+      // Team plan is unlimited, and pays for no count at all.
+      //
+      // IT USED TO BE DECIDED OUT HERE, before the transaction, and then never
+      // asked again. That is the half of bill-014 that is not a race at all: any
+      // seat COMMITTED by anyone else in the window — a second invite, an
+      // acceptance, a reactivation — was simply invisible, so the invite landed
+      // regardless and the admin was told it had succeeded.
+      //
+      // WHAT THIS DOES NOT DO, stated plainly because the comment on
+      // `SeatLimitReached` used to claim otherwise. Prisma runs at the connector
+      // default, READ COMMITTED on Postgres, where every statement takes its own
+      // snapshot and neither transaction sees the other's uncommitted rows. So
+      // two invites genuinely in flight at the same instant can still both count
+      // "one seat left" and both write; the window is now the couple of
+      // statements between this count and COMMIT rather than four round trips,
+      // but it is a window. What this buys for certain is that the refusal and
+      // the write cannot diverge, that a committed change is seen, and — since
+      // A44 moved the delete in here — that a refusal leaves the address's
+      // existing invite exactly as it found it.
+      //
+      // CLOSING IT NEEDS AN ARBITER THE DATABASE OWNS, and both candidates were
+      // weighed and declined for now:
+      //   - `isolationLevel: "Serializable"` on this transaction. Postgres SSI
+      //     would catch it, but only against OTHER serializable transactions —
+      //     `reactivateUserAction` below and anything else that takes a seat
+      //     would have to opt in too — and it introduces a 40001/P2034 failure
+      //     that cannot be exercised without a live database, on the two paths
+      //     (invite, accept) a new customer meets first.
+      //   - A `Company.seatsUsed` counter, incremented by a conditional
+      //     `UPDATE … WHERE "seatsUsed" < <limit>` and decremented on removal,
+      //     which arbitrates at READ COMMITTED with no retries and no isolation
+      //     change. This is the right answer and it is a schema change, so it is
+      //     filed rather than half-built.
+      // The bound that makes waiting defensible: the overage is one extra seat
+      // on the Free plan, whose cap is an upgrade prompt rather than a security
+      // boundary or a metered charge — and `acceptInviteAction` re-asks the cap
+      // at acceptance, so an extra PENDING invite costs nobody a seat at all.
+      if (Number.isFinite(limit)) {
+        // Sequential, not `Promise.all`: two queries issued concurrently on one
+        // interactive-transaction client share a single connection, and the
+        // round trip saved is not worth reasoning about that.
+        const activeMembers = await tx.user.count({ where: { companyId, deletedAt: null } });
+        const pendingInvites = await tx.inviteToken.count({
+          where: { companyId, usedAt: null },
+        });
+        if (activeMembers + pendingInvites >= limit) {
+          throw new SeatLimitReached(
+            `Your ${PLAN_LABELS.free} plan is limited to ${limit} members. Upgrade to ${PLAN_LABELS.team} in Settings for unlimited co-founders.`
+          );
+        }
+      }
       await tx.inviteToken.create({
         data: { token, email, name, role, companyId, invitedBy: actorId, expiresAt },
       });
@@ -254,6 +346,13 @@ export async function inviteUserAction(
       data: { email, emailSent, inviteUrl },
     };
   } catch (e) {
+    // The plan cap is a product answer, not a fault: returned here so the admin
+    // reads the sentence about their plan (team-client.tsx toasts `res.error`
+    // verbatim) instead of the catch-all's "couldn't invite right now", and so
+    // Sentry is not paged for a refusal that worked exactly as designed.
+    if (e instanceof SeatLimitReached) {
+      return { success: false, error: e.message };
+    }
     captureServerError(e, { action: "inviteUserAction" });
     return {
       success: false,
@@ -583,6 +682,43 @@ export async function reactivateUserAction(userId: string): Promise<ActionResult
     if (!actor) return { success: false, error: "User no longer exists" };
 
     await db.$transaction(async (tx) => {
+      // RESTORING A TEAMMATE TAKES A SEAT, and until bill-014 nothing here said
+      // so. This is not the filed race — there is no timing in it at all.
+      // Deactivate Bilal (1 active member of 2), invite and onboard his
+      // replacement (2 of 2, which both other gates allow), then press
+      // Reactivate on Bilal: three active members on a two-member plan, every
+      // time, repeatably, with no concurrency. It is the same cap
+      // `inviteUserAction` above and `acceptInviteAction` below both enforce, and
+      // it was the one seat-taking path with no gate.
+      //
+      // `memberLimitForCompany`, not `memberLimitForPlan`, for bill-004's reason:
+      // entitlement is (plan, status, paid-through date), so a workspace whose
+      // `plan` column still says "team" because a `subscription_expired` delivery
+      // was lost is capped here anyway.
+      //
+      // The tombstoned target is not in this count — `deletedAt: null` excludes
+      // them — so the comparison is "is there room for one more", and a workspace
+      // exactly at its cap refuses. The already-active early return above runs
+      // before this, so pressing Reactivate on a live teammate (which the UI does
+      // to refresh) can never be answered with a plan error.
+      const company = await tx.company.findUnique({
+        where: { id: companyId },
+        select: { plan: true, subscriptionStatus: true, currentPeriodEnd: true },
+      });
+      if (!company) throw new Error("Company no longer exists");
+      const limit = memberLimitForCompany(company);
+      if (Number.isFinite(limit)) {
+        const activeMembers = await tx.user.count({
+          where: { companyId, deletedAt: null },
+        });
+        if (activeMembers >= limit) {
+          throw new SeatLimitReached(
+            `Your ${PLAN_LABELS.free} plan is limited to ${limit} members, and it is full. ` +
+              `Upgrade to ${PLAN_LABELS.team} in Settings, or deactivate someone else, to ` +
+              `restore ${target.name}.`
+          );
+        }
+      }
       await tx.user.update({ where: { id: userId }, data: { deletedAt: null } });
       await tx.activity.create({
         data: {
@@ -616,6 +752,11 @@ export async function reactivateUserAction(userId: string): Promise<ActionResult
 
     return { success: true, data: undefined };
   } catch (e) {
+    // Same reasoning as `inviteUserAction`: a full plan is an answer, not a
+    // fault, and the admin needs the sentence rather than "couldn't reactivate".
+    if (e instanceof SeatLimitReached) {
+      return { success: false, error: e.message };
+    }
     captureServerError(e, { action: "reactivateUserAction" });
     return { success: false, error: "Couldn't reactivate right now." };
   }
@@ -634,17 +775,6 @@ export async function reactivateUserAction(userId: string): Promise<ActionResult
  * number, is the guarantee — see `uniqueHandle` in lib/user/handle.ts.
  */
 const HANDLE_WRITE_ATTEMPTS = 3;
-
-/**
- * Thrown inside the acceptance transaction when the workspace has no seat left
- * (bill-013), so the write rolls back and the invitee gets the real reason
- * instead of the catch-all "couldn't activate your account right now".
- *
- * A class rather than a flag because the check has to run INSIDE the transaction
- * — the roster it counts and the row it would create must share one snapshot, or
- * two simultaneous acceptances both read "one seat left" and both take it.
- */
-class SeatLimitReached extends Error {}
 
 /**
  * The /invite/[token] flow: the recipient submits the form, this action
@@ -743,21 +873,34 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
         error: "This invite has expired. Ask your admin to send a new one.",
       };
     }
-    // AN INVITE OUTLIVES THE WORKSPACE IT WAS SENT FOR. softDeleteWorkspace
-    // (lib/actions/account.ts) tombstones Transaction, Budget, Task, Project,
-    // Message, User and Company and never touches InviteToken — although
-    // removeUserAction three functions up deletes a removed user's pending
-    // invites for exactly this reason. Invites live 7 days, so the window is
-    // wide. Accepting one used to mint a LIVE User inside a dead company:
-    // getCurrentCompany throws "Company not found" on some pages while others
-    // render, so the product looks broken in a way nobody can explain — and
-    // every row they then create is live data inside a company the purge cron
-    // hard-deletes after the retention window, so their work vanishes with no
-    // tombstone of its own. Finding data-integrity-003.
+    // AN INVITE OUTLIVES THE WORKSPACE IT WAS SENT FOR. Invites live 7 days, so
+    // the window is wide, and accepting one used to mint a LIVE User inside a
+    // dead company: getCurrentCompany throws "Company not found" on some pages
+    // while others render, so the product looks broken in a way nobody can
+    // explain — and every row they then create is live data inside a company the
+    // purge cron hard-deletes after the retention window, so their work vanishes
+    // with no tombstone of its own. Finding data-integrity-003.
     //
-    // Refused here rather than only at the source, because this is the check
-    // that cannot be bypassed by a delete path that forgets to clean up: the
-    // tokens should ALSO be burnt inside softDeleteWorkspace's transaction.
+    // THE STATE OF THE SOURCE-SIDE CLEANUP, corrected 2026-09-30. This comment
+    // used to say `softDeleteWorkspace` (lib/actions/account.ts) "tombstones
+    // Transaction, Budget, Task, Project, Message, User and Company and never
+    // touches InviteToken", and that the tokens "should ALSO be burnt" there.
+    // Both halves are now false, and one of them was false about a safety
+    // mechanism — the drift this project keeps paying for:
+    //   - the sweep tombstones every workspace-scoped table carrying a
+    //     `deletedAt`, which since data-integrity-001 includes Comment and
+    //     TimeEntry as well; no list is repeated here, because a hand-maintained
+    //     copy of a schema-derived set is what went stale in the first place, and
+    //     tests/lib/db/purge-invariants.test.ts derives the real one;
+    //   - and it HARD-deletes unused InviteToken rows (acct-003), for the reason
+    //     `removeUserAction` a few functions up burns a removed teammate's
+    //     pending invites: an unused token is a live credential, not history.
+    //
+    // So this check is no longer the only thing standing between a dead
+    // workspace and a new member. It stays anyway, and not as belt-and-braces
+    // theatre: tokens written for workspaces deleted BEFORE acct-003 shipped are
+    // still in the database with nothing having burnt them, and this is the check
+    // a future delete path cannot bypass by forgetting to clean up.
     if (invite.company.deletedAt) {
       return {
         success: false,
@@ -882,7 +1025,21 @@ export async function acceptInviteAction(input: unknown): Promise<ActionResult> 
           }
 
           // INSIDE the transaction, so the roster we de-duplicate against and
-          // the row we write share one snapshot.
+          // the row we write are at least in one unit of work.
+          //
+          // THEY DO NOT "SHARE ONE SNAPSHOT", which is what this said until
+          // B-04 — the same sentence the docstring on `SeatLimitReached` (top of
+          // this file) declares false, in this same file and this same audit.
+          // No line number here on purpose: a positional reference is how the
+          // acct-012 comment came to claim "eleven lines below" about something
+          // sixty-eight lines away. Prisma
+          // runs at the connector default, READ COMMITTED on Postgres, where
+          // every STATEMENT takes its own snapshot; a concurrent insert
+          // committed between these two reads is visible to the second and not
+          // the first. What actually guarantees handle uniqueness is
+          // `@@unique([companyId, handle])` plus the retry loop below, which is
+          // why the consequence here is small — but a false mechanism is how
+          // this file already lost one seat gate, so it is worth the words.
           //
           // DELIBERATELY NOT FILTERED BY `deletedAt: null`, which is the one
           // place this query departs from the house rule that every scoped

@@ -43,6 +43,7 @@ import { NextResponse } from "next/server";
 // endpoint (cron-001). This route's CRON_SECRET check below is the sweeper's
 // only gate, which only works while the function has no action id of its own.
 import { sweepAutoCloseEntries } from "@/lib/time/sweep";
+import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
 import { captureServerError } from "@/lib/sentry-server";
 import { withCronCheckIn } from "@/lib/cron/monitor";
 import { safeEqual } from "@/lib/safe-compare";
@@ -84,6 +85,17 @@ async function sweepRun(): Promise<NextResponse> {
     // 2xx that Vercel's cron view reads as a clean run. `withCronCheckIn`
     // turns this same status into a Sentry monitor error as well.
     const status = result.failed.length > 0 ? 500 : 200;
+    // cron-011. This job writes across EVERY tenant with no row cap, and the
+    // 100-row canary it belongs behind had nine call sites and not this one. A
+    // `lastActivityAt` regression, or a cutoff arithmetic slip, could close every
+    // open timer in the product in a single night with no signal anywhere — and
+    // an auto-closed entry looks like a legitimate one, so nobody would report
+    // it. Counted on `closed`, not `attempted`: the canary is about rows that
+    // actually changed, and per-entry failures already reach Sentry individually.
+    warnBulkMutation(result.closed.length, {
+      action: "sweepTimeEntries",
+      extra: { attempted: result.attempted, failed: result.failed.length },
+    });
     return NextResponse.json(
       {
         ok: result.failed.length === 0,

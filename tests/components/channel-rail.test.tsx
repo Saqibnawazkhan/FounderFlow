@@ -249,4 +249,38 @@ describe("ChannelRail (direct messages and the create controls)", () => {
     // And nothing links out of a conversation from outside that one landmark.
     expect(anchors).toHaveLength(document.querySelectorAll("a").length);
   });
+  /* ── THE REPORTED BUG ──────────────────────────────────────────────────────
+   * "The chat sidebar shows a CHANNELS heading with a + button and nothing
+   * else. No DM section, no way to message a person."
+   *
+   * Reported from the running product. Before this fix, a reader with no DMs
+   * yet got a Direct section consisting of a 9px mono label and a 12px
+   * icon-only "+" — no words anywhere that say you can message a person. The
+   * rail's OWN comment already conceded the point for the Channels section:
+   * "the header's '+' is a 12px icon in the corner of an otherwise blank rail,
+   * which is precisely the reader least likely to find it." The Direct section
+   * never got the same treatment.
+   * ─────────────────────────────────────────────────────────────────────────── */
+  it("offers a labelled way to start a DM when there are no DMs yet", () => {
+    render(<ChannelRail activeSlug={null} channels={[ROOM]} onNewDm={vi.fn()} />);
+    // Words, not a bare glyph. `getByRole` here matches on the ACCESSIBLE NAME,
+    // so this passes only if a human-readable label is actually rendered.
+    expect(screen.getByRole("button", { name: /message a teammate/i })).toBeInTheDocument();
+  });
+
+  it("does not repeat that labelled control once a DM exists", () => {
+    // Once the section has rows in it, the row IS the affordance and the "+"
+    // in the header is enough. A permanent button below the list would be a
+    // second thing to scan past on every render.
+    render(<ChannelRail activeSlug={null} channels={[ROOM, DM]} onNewDm={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /message a teammate/i })).toBeNull();
+  });
+
+  it("clicking the labelled control asks the host to open the picker", async () => {
+    const onNewDm = vi.fn();
+    const user = userEvent.setup();
+    render(<ChannelRail activeSlug={null} channels={[ROOM]} onNewDm={onNewDm} />);
+    await user.click(screen.getByRole("button", { name: /message a teammate/i }));
+    expect(onNewDm).toHaveBeenCalled();
+  });
 });

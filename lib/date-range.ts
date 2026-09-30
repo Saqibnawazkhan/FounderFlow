@@ -52,6 +52,45 @@ export interface UtcMonthWindow {
   endExclusive: Date;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────── *
+ * FAIL LOUDLY, AT THE MISTAKE.
+ *
+ * Every function here previously returned an Invalid Date for invalid input,
+ * silently. That is how the /dashboard crash became hard to read: `page.tsx`
+ * passed a value that was `{}` at runtime (a client-reference proxy — see
+ * app/(app)/dashboard/windows.ts), `utcMonthsAgo` did the arithmetic on it, got
+ * NaN, and handed back `new Date(NaN)`. The error the product owner saw was
+ * three layers away and named neither the function nor the argument:
+ *
+ *   Invalid `prisma.transaction.groupBy()` invocation:
+ *     where: { date: { gte: new Date("Invalid Date") } }
+ *
+ * Prisma at least refuses. The worse case is a caller that does not: these
+ * windows filter money, and a silently-shifted `{ gte, lt }` pair produces a
+ * plausible wrong total that nobody ever questions.
+ *
+ * So: programmer input (the reference date, the offset) is asserted. DATA — the
+ * `value` argument to `isInUtcMonth`, which may be a row's own unparseable
+ * string — is NOT: a bad row must not take a page down, and the comparison
+ * against an Invalid Date is already `false`.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+function assertValidRef(fn: string, ref: Date): void {
+  if (!(ref instanceof Date) || Number.isNaN(ref.getTime())) {
+    throw new TypeError(`${fn}: \`ref\` must be a valid Date, received ${String(ref)}`);
+  }
+}
+
+function assertWholeNumber(fn: string, name: string, value: number): void {
+  // `Number.isInteger` rejects NaN, ±Infinity, a non-number, and 2.5 in one
+  // test. A fractional month offset is as meaningless as NaN here.
+  if (!Number.isInteger(value)) {
+    throw new TypeError(
+      `${fn}: \`${name}\` must be a whole number, received ${typeof value} ${String(value)}`
+    );
+  }
+}
+
 /**
  * UTC midnight on the 1st of `ref`'s month, shifted by `monthOffset` months.
  *
@@ -59,11 +98,15 @@ export interface UtcMonthWindow {
  * and a month without any year/month bookkeeping at the call site.
  */
 export function startOfUtcMonth(ref: Date, monthOffset = 0): Date {
+  assertValidRef("startOfUtcMonth", ref);
+  assertWholeNumber("startOfUtcMonth", "monthOffset", monthOffset);
   return new Date(Date.UTC(ref.getUTCFullYear(), ref.getUTCMonth() + monthOffset, 1));
 }
 
 /** The half-open UTC month containing `ref`, shifted by `monthOffset`. */
 export function utcMonthWindow(ref: Date, monthOffset = 0): UtcMonthWindow {
+  assertValidRef("utcMonthWindow", ref);
+  assertWholeNumber("utcMonthWindow", "monthOffset", monthOffset);
   return {
     start: startOfUtcMonth(ref, monthOffset),
     endExclusive: startOfUtcMonth(ref, monthOffset + 1),
@@ -77,6 +120,8 @@ export function utcMonthWindow(ref: Date, monthOffset = 0): UtcMonthWindow {
  * wrap its own `new Date(...)`.
  */
 export function isInUtcMonth(value: Date | string, ref: Date, monthOffset = 0): boolean {
+  // `ref`/`monthOffset` are asserted by utcMonthWindow; `value` deliberately is
+  // not — see the note above the assertion helpers.
   const window = utcMonthWindow(ref, monthOffset);
   const at = typeof value === "string" ? new Date(value) : value;
   return at >= window.start && at < window.endExclusive;
@@ -114,6 +159,8 @@ export function utcMonthShortLabel(at: Date): string {
  * without anyone noticing; date-fns `subMonths` clamps to Feb 28, and so do we.
  */
 export function utcMonthsAgo(ref: Date, months: number): Date {
+  assertValidRef("utcMonthsAgo", ref);
+  assertWholeNumber("utcMonthsAgo", "months", months);
   const year = ref.getUTCFullYear();
   const month = ref.getUTCMonth() - months;
   // Day 0 of the FOLLOWING month is the last day of the target month.

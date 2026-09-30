@@ -33,6 +33,7 @@ function renderComposer(props: Partial<React.ComponentProps<typeof MessageCompos
   const utils = render(
     <MessageComposer
       channelId="c1"
+      channelKind="public"
       channelName="general"
       users={USERS}
       onSent={onSent}
@@ -186,5 +187,32 @@ describe("MessageComposer (the chat send box)", () => {
   it("names the channel in its placeholder", () => {
     const { box } = renderComposer({ channelName: "finance" });
     expect(box).toHaveAttribute("placeholder", "Message #finance");
+  });
+
+  /* ── chat-008 ─────────────────────────────────────────────────────────────
+   * The placeholder was `Message #${channelName}` UNCONDITIONALLY, so a direct
+   * message with Ahmed Khan invited the reader to "Message #Ahmed Khan". The
+   * product owner hit this in the running app. The kind has to reach the
+   * composer for it to know the difference, which is why `channelKind` is a
+   * REQUIRED prop and not an optional one defaulting to "public": a default
+   * would let a future caller reintroduce the hash silently, and the fail-open
+   * direction is the one that shipped this bug.
+   * ───────────────────────────────────────────────────────────────────────── */
+  it("does not hash a direct message in its placeholder", () => {
+    const { box } = renderComposer({ channelKind: "dm", channelName: "Ahmed Khan" });
+    expect(box).toHaveAttribute("placeholder", "Message Ahmed Khan");
+  });
+
+  it("does not hash a direct message in the send box's accessible name", () => {
+    // The <label> is sr-only, so this is the only wording a screen-reader user
+    // ever hears — getByRole matches on the accessible name, so a "#" leaking
+    // back into the label fails here even if the placeholder is right.
+    renderComposer({ channelKind: "dm", channelName: "Ahmed Khan" });
+    expect(screen.getByRole("combobox", { name: "Message Ahmed Khan" })).toBeInTheDocument();
+  });
+
+  it("still hashes a room in the placeholder and the label", () => {
+    renderComposer({ channelKind: "private", channelName: "hiring" });
+    expect(screen.getByRole("combobox", { name: "Message #hiring" })).toBeInTheDocument();
   });
 });

@@ -20,7 +20,14 @@ import { getActivities } from "@/lib/queries/activities";
 import { getCompanyUsers } from "@/lib/queries/users";
 import { getClockedInPeers } from "@/lib/queries/time";
 import { requireScopedSession } from "@/lib/queries/session";
-import { BURN_WINDOW_MONTHS, CASH_FLOW_MONTHS, DashboardClient } from "./dashboard-client";
+import { DashboardClient } from "./dashboard-client";
+// The window sizes come from ./windows, a module with no `"use client"`. They
+// were imported from ./dashboard-client, and because React proxies every export
+// of a client module this Server Component got `{}` instead of `3` — so
+// `utcMonthsAgo(now, BURN_WINDOW_MONTHS)` was an Invalid Date and the
+// `getTransactionTotals` call below threw, taking the whole page to the error
+// boundary. Guarded by tests/app/dashboard/client-boundary.test.ts.
+import { BURN_WINDOW_MONTHS, CASH_FLOW_MONTHS } from "./windows";
 
 export const metadata: Metadata = {
   title: "Dashboard",

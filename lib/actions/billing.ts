@@ -143,6 +143,15 @@ export async function createBillingPortalSessionAction(): Promise<ActionResult<{
   if (!isBillingConfigured()) {
     return { success: false, error: "Billing isn't set up on this deployment yet." };
   }
+  // bill-019 — this action makes an OUTBOUND LemonSqueezy request on every
+  // invocation, and it was the only billing action with no limiter. The `busy`
+  // flag on the settings screen is client state; a direct POST to the server
+  // action ignores it. The quota being spent belongs to the deployment, not to
+  // this workspace, so an unpriced loop here breaks checkout for other tenants.
+  // Same bucket and same key as the checkout action above on purpose: one
+  // budget per admin, so alternating the two buttons buys no extra allowance.
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   try {
     const company = await db.company.findFirst({

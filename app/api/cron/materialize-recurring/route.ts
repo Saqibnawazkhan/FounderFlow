@@ -56,6 +56,8 @@ import { db } from "@/lib/db";
 import { planRecurring, type MaterializedTransaction } from "@/lib/recurring/materialize";
 import { checkBudgetThresholdAfterExpense } from "@/lib/budgets/check";
 import { withCronCheckIn } from "@/lib/cron/monitor";
+import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
+import { LIVE_WORKSPACE_SCOPE } from "@/lib/cron/live-scope";
 import { captureServerError } from "@/lib/sentry-server";
 import { safeEqual } from "@/lib/safe-compare";
 
@@ -116,8 +118,13 @@ async function materializeRun(): Promise<NextResponse> {
     // rules in a soft-deleted workspace are skipped. Without the company filter
     // a tombstoned workspace keeps minting brand-new LIVE transactions every
     // night for the full 90-day retention window, resurrecting "deleted" data.
+    //
+    // cron-010: that reasoning now lives in lib/cron/live-scope.ts, because it
+    // is the rule for EVERY nightly job and this was the only job that had it.
+    // `sweepAutoCloseEntries` had no filter at all. RecurringRule carries no
+    // `deletedAt` of its own, so it takes the workspace-only scope.
     const rules = await db.recurringRule.findMany({
-      where: { active: true, company: { deletedAt: null } },
+      where: { active: true, ...LIVE_WORKSPACE_SCOPE },
     });
     const plans = planRecurring(rules, now);
 
@@ -253,6 +260,23 @@ async function materializeRun(): Promise<NextResponse> {
     // This used to be 206, which is a 2xx — Vercel read it as a clean run, and
     // the "alert externally on a 206" half was never built.
     const status = failed.length > 0 ? 500 : 200;
+    // cron-011. These are REAL MONEY ROWS, written across every tenant, with no
+    // ceiling on the loop above — and the project's own 100-row canary had nine
+    // call sites and not this one. A bad rule set, a clock problem or a bug in
+    // `isRuleDueOn` could post thousands of transactions overnight across every
+    // customer, and the only way anyone would find out is a founder reading
+    // their own ledger. It reports rather than blocks, deliberately: a genuine
+    // catch-up night after an outage IS large, and refusing to post a
+    // customer's rent is worse than posting it loudly.
+    warnBulkMutation(created.length, {
+      action: "materializeRecurring",
+      extra: {
+        rulesChecked: rules.length,
+        rulesWithWork: plans.length,
+        occurrencesDeferred,
+        truncatedRules,
+      },
+    });
     return NextResponse.json(
       {
         ok: failed.length === 0,

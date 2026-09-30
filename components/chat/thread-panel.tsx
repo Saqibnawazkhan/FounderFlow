@@ -42,9 +42,25 @@ type Props = {
    * not carry the channel's name, so a caller that has it should pass it.
    */
   channelName?: string;
+  /**
+   * The conversation's `Channel.kind`, for the same reason (chat-008): without
+   * it the thread composer said "Reply in the thread in #Ahmed Khan" inside a
+   * direct message. Optional to match `channelName` — a caller that knows one
+   * knows both — and defaulted to "public" only because the fallback label
+   * below ("thread") is not a person either way.
+   */
+  channelKind?: string;
 };
 
-export function ThreadPanel({ root, replies, users, open, onClose, channelName }: Props) {
+export function ThreadPanel({
+  root,
+  replies,
+  users,
+  open,
+  onClose,
+  channelName,
+  channelKind,
+}: Props) {
   // The panel is genuinely absent when closed — the signature promises null,
   // and an unmounted Modal is also one fewer focus trap competing for the tab
   // order behind the timeline.
@@ -81,6 +97,7 @@ export function ThreadPanel({ root, replies, users, open, onClose, channelName }
             channel timeline. */}
         <MessageComposer
           channelId={root.channelId}
+          channelKind={channelKind ?? "public"}
           channelName={channel}
           parentId={root.id}
           users={users}

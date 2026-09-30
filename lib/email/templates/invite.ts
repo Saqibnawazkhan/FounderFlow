@@ -5,6 +5,8 @@
  * also lands cleanly in spam-conscious filters.
  */
 
+import { escapeHtml } from "@/lib/email/html";
+
 export interface InviteEmailVars {
   inviteeName: string;
   inviterName: string;
@@ -66,13 +68,4 @@ ${v.acceptUrl}
 This invite expires in 7 days. If you weren't expecting it, ignore this email.`;
 
   return { html, text };
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }

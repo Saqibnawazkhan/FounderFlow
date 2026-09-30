@@ -132,11 +132,17 @@ export async function clockInAction(input: unknown): Promise<ActionResult<{ entr
     // turn the entry into a "Untitled" row in reports.
     let taskTitle: string | null = null;
     if (taskId) {
-      const task = await db.task.findUnique({
-        where: { id: taskId },
-        select: { companyId: true, title: true },
+      // data-integrity-012: `deletedAt: null`, and `companyId` in the same
+      // predicate rather than checked afterwards. Without the tombstone filter a
+      // SOFT-DELETED task could be clocked into from a picker rendered before it
+      // was deleted — producing a time entry that points at work existing on no
+      // surface, with the deleted task's title frozen into the row an
+      // hours-based invoice is built from.
+      const task = await db.task.findFirst({
+        where: { id: taskId, companyId, deletedAt: null },
+        select: { title: true },
       });
-      if (!task || task.companyId !== companyId) {
+      if (!task) {
         return { success: false, error: "Task not found" };
       }
       taskTitle = task.title;
@@ -252,22 +258,57 @@ async function findLiveEntry(entryId: string) {
   return entry && entry.deletedAt === null ? entry : null;
 }
 
-/** Internal helper — owns the close + revalidate path. */
+/**
+ * Internal helper — owns the close + revalidate path.
+ *
+ * Returns TRUE only if this call is the one that closed the entry.
+ *
+ * data-integrity-006. This was `db.timeEntry.update({ where: { id } })` — the id
+ * and nothing else — behind a separate `if (entry.clockOutAt)` read in each
+ * caller. Two statements with no condition on the write, so the guard held for a
+ * person clicking once and did nothing for two requests that interleave between
+ * the read and the update: a double-click, a second tab, or the idle-modal
+ * auto-close landing at the same moment as the button. The later write won, so
+ * `clockOutAt` moved forward and the tracked duration grew — and on the
+ * auto-close path it also set `autoClosed: true`, putting "the system ended this
+ * because you went away" on a session the person ended deliberately. That column
+ * is what an hours-based invoice is defended with.
+ *
+ * `updateMany` with the guard IN the `where` makes the check and the write one
+ * statement, which is the only version of this that is correct under
+ * concurrency. `count === 0` means somebody else got there first, and the two
+ * callers deliberately want opposite things with that: the person pressing the
+ * button is told, the background auto-close stays idempotent.
+ *
+ * `deletedAt: null` belongs in the condition too — `deleteTimeEntryAction`
+ * tombstones rather than hard-deletes (data-integrity-001), so the row is still
+ * physically there for an update to land on.
+ *
+ * The mirror race in `clockInAction` is NOT fixed by this and cannot be fixed
+ * from application code: two interleaved requests both see no open entry and both
+ * insert, and there is no row to lock at READ COMMITTED. It needs
+ * `CREATE UNIQUE INDEX "TimeEntry_one_open_per_user" ON "TimeEntry"("userId")
+ * WHERE "clockOutAt" IS NULL` in a hand-written migration — Prisma has no syntax
+ * for a partial unique index, the same situation as Message's GIN index — plus a
+ * P2002 catch there. Recorded, not done here.
+ */
 async function closeEntry(opts: {
   entryId: string;
   clockOutAt: Date;
   note?: string;
   autoClosed: boolean;
-}) {
-  await db.timeEntry.update({
-    where: { id: opts.entryId },
+}): Promise<boolean> {
+  const { count } = await db.timeEntry.updateMany({
+    where: { id: opts.entryId, clockOutAt: null, deletedAt: null },
     data: {
       clockOutAt: opts.clockOutAt,
       note: opts.note ?? undefined,
       autoClosed: opts.autoClosed,
     },
   });
+  if (count === 0) return false;
   revalidatePath("/time");
+  return true;
 }
 
 export async function clockOutAction(input: unknown): Promise<ActionResult> {
@@ -286,12 +327,15 @@ export async function clockOutAction(input: unknown): Promise<ActionResult> {
     if (entry.userId !== session.user.id) return { success: false, error: "Not authorized" };
     if (entry.clockOutAt) return { success: false, error: "Already clocked out" };
 
-    await closeEntry({
+    const closed = await closeEntry({
       entryId,
       clockOutAt: new Date(),
       note,
       autoClosed: false,
     });
+    // The read above already answered this for the sequential case; this is the
+    // interleaved one, and it is the only answer that cannot be raced.
+    if (!closed) return { success: false, error: "Already clocked out" };
     return { success: true, data: undefined };
   } catch (e) {
     captureServerError(e, { action: "clockOutAction" });
@@ -317,6 +361,10 @@ export async function autoCloseEntryAction(input: unknown): Promise<ActionResult
     if (entry.userId !== session.user.id) return { success: false, error: "Not authorized" };
     if (entry.clockOutAt) return { success: true, data: undefined }; // idempotent
 
+    // Deliberately idempotent, unlike clockOutAction: a background timer whose
+    // job is already done is not an error, and `count === 0` here means the user
+    // closed the entry themselves — in which case NOT writing is the whole point,
+    // because the write would relabel their session `autoClosed`.
     await closeEntry({
       entryId: entry.id,
       clockOutAt: entry.lastActivityAt,

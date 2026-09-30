@@ -69,6 +69,22 @@ export default function SignupPage() {
 
   const [step, setStep] = useState<1 | 2>(1);
   const [showPassword, setShowPassword] = useState(false);
+  /**
+   * acct-016. The server's refusal, kept on the screen.
+   *
+   * A toast was the whole delivery, and the toaster's duration is 3500ms
+   * (components/providers.tsx:186). That was survivable while every refusal here
+   * was a verdict; acct-016 replaced the address-collision message with an
+   * INSTRUCTION — "That email belongs to a FounderFlow account that was deleted.
+   * Contact support to restore it, or sign up with a different email address."
+   * (lib/actions/auth.ts:228) — and this is the one surface in the app where the
+   * reader has nothing else to look at: no session, no bell, no settings page.
+   * An instruction they cannot re-read is an instruction they cannot follow.
+   *
+   * The toast still fires, because it is what catches the eye; it is no longer
+   * the only copy. Same shape as app/forgot-password/page.tsx:277.
+   */
+  const [formError, setFormError] = useState<string | null>(null);
 
   const {
     register,
@@ -96,6 +112,9 @@ export default function SignupPage() {
   }
 
   async function onSubmit(data: SignupInput) {
+    // Cleared before the attempt, not after it: a refusal left sitting under a
+    // fresh submission reads as a second failure for the same reason.
+    setFormError(null);
     try {
       const result = await signupAction(data);
       if (result.success) {
@@ -104,11 +123,19 @@ export default function SignupPage() {
         window.location.href = "/dashboard";
         return;
       }
-      toast.error(result.error || t.auth.signupFailedToast);
+      const message = result.error || t.auth.signupFailedToast;
+      setFormError(message);
+      toast.error(message);
     } catch (err) {
       // Server action threw — usually means a DB / env-var problem on the
       // server. Surface it instead of leaving the user staring at "Creating…"
       console.error("signupAction threw:", err);
+      // Persisted for the same reason as the refusal above: "check your
+      // connection and try again" is an instruction, and the button has already
+      // gone back to reading "Create workspace" by the time the toast expires,
+      // so a toast-only delivery leaves a form that looks like it was never
+      // submitted at all.
+      setFormError(t.auth.networkErrorToast);
       toast.error(t.auth.networkErrorToast);
     }
   }
@@ -377,6 +404,18 @@ export default function SignupPage() {
                 </p>
               </div>
             </div>
+
+            {/* Outside both step wrappers on purpose. The submit lives on step 2,
+                but the remedy for the commonest refusal ("sign up with a
+                different email address") is acted on in the email field back on
+                step 1 — so pressing Back must not take the reason with it.
+                role="alert", matching app/forgot-password/page.tsx:277: this is a
+                failure the reader just caused, so interrupting is correct. */}
+            {formError && (
+              <p role="alert" className="text-sm font-medium text-danger">
+                {formError}
+              </p>
+            )}
 
             <div className="flex gap-3 pt-2">
               {step === 2 && (

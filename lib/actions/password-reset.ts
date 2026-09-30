@@ -82,6 +82,7 @@ import { gateAuthAction } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
 import { appOrigin } from "@/lib/env";
 import { captureServerError } from "@/lib/sentry-server";
+import { escapeHtml } from "@/lib/email/html";
 import { sendEmail } from "@/lib/email/send";
 import {
   passwordVersion,
@@ -315,7 +316,7 @@ export async function requestPasswordResetAction(input: unknown): Promise<Action
       const html = `
       <div style="font-family:system-ui,sans-serif;max-width:520px;margin:auto;">
         <h2 style="margin:0 0 12px 0;">Reset your FounderFlow password</h2>
-        <p>Hi ${user.name},</p>
+        <p>Hi ${escapeHtml(user.name)},</p>
         <p>We received a request to reset the password for the account associated with this email address. Click the button below to choose a new password. The link expires in 15 minutes.</p>
         <p style="margin:24px 0;">
           <a href="${url}" style="background:#10B981;color:#1F2933;padding:12px 20px;border-radius:8px;font-weight:700;text-decoration:none;">

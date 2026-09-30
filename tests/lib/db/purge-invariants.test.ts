@@ -79,6 +79,33 @@ function workspaceScopedModels(): string[] {
     .map(({ name }) => name);
 }
 
+/**
+ * Models whose ONLY route to a workspace is a person: a `userId` column, no
+ * `companyId`, no `deletedAt`. cron-009.
+ *
+ * This is the third derivation and it exists because the two above could not see
+ * `PushSubscription` and `NotificationPreference`. Both hang off User with
+ * `onDelete: Cascade`, so `tx.user.deleteMany` made their rows vanish and
+ * contributed nothing to the returned count — the exact undercount the chat
+ * tables caused in 2026-09-24, still open on two tables, with the two loops
+ * above structurally unable to notice. A guard that cannot see a whole class of
+ * table is worse than no guard, because it is read as coverage.
+ *
+ * `ChannelMember` and `MessageReaction` also land here and are already swept
+ * through their parents, which is the shape this asks for: named explicitly,
+ * scoped through the relation.
+ */
+function userScopedOnlyModels(): string[] {
+  return schemaModels()
+    .filter(
+      ({ body }) =>
+        /^\s*userId\s+String/m.test(body) &&
+        !/^\s*companyId\s+String/m.test(body) &&
+        !/^\s*deletedAt\s+DateTime\?/m.test(body)
+    )
+    .map(({ name }) => name);
+}
+
 /** Prisma's delegate for a model is its name with a lowercased first letter. */
 function delegateFor(model: string): string {
   return model.charAt(0).toLowerCase() + model.slice(1);
@@ -192,6 +219,26 @@ describe("prisma schema parsing (the list nobody is allowed to hardcode)", () =>
     expect(soft.length).toBeGreaterThan(1);
     expect(soft.length).toBeLessThan(all.length);
   });
+
+  it("finds the user-scoped-only models, and not every model", () => {
+    // Guard the guard. The cron-009 loop below iterates this list, so an empty
+    // list would make it pass over nothing and read as coverage — which is
+    // precisely the failure cron-009 IS: two derivations that could not see two
+    // tables, in a file whose whole promise is that nobody has to remember.
+    const all = schemaModels().map((m) => m.name);
+    const userOnly = userScopedOnlyModels();
+    expect(userOnly.length).toBeGreaterThan(1);
+    expect(userOnly.length).toBeLessThan(all.length);
+    // Named, so a schema change that drops the column from one of them is a
+    // visible edit to this test rather than a silently shorter loop.
+    expect(userOnly).toContain("PushSubscription");
+    expect(userOnly).toContain("NotificationPreference");
+    // And it must not overlap the other two derivations, or the loops duplicate.
+    for (const m of userOnly) {
+      expect(workspaceScopedModels()).not.toContain(m);
+      expect(softDeletableModels()).not.toContain(m);
+    }
+  });
 });
 
 describe("purgeCompany (the nightly hard-delete sweep)", () => {
@@ -234,6 +281,36 @@ describe("purgeCompany (the nightly hard-delete sweep)", () => {
         `${model} carries companyId — it is workspace data — but purgeCompany() ` +
           `never deletes tx.${delegate} by name. Add it in dependency order ` +
           `(children before parents), or add "${model}" to PURGE_EXCLUDED with a reason.`
+      ).toBe(true);
+    }
+  });
+
+  it("every model scoped ONLY by userId is named too - cron-009", () => {
+    // The class the other two loops are blind to. PushSubscription and
+    // NotificationPreference carry neither companyId nor deletedAt, so nothing
+    // in this file could see them: their rows went via `onDelete: Cascade` on
+    // `tx.user.deleteMany` and added 0 to the count that warnBulkMutation
+    // thresholds on. Roughly seven preference rows per person plus one per
+    // browser — in a 20-seat workspace easily 150 uncounted rows, which is
+    // enough on its own to hold a real purge under the 100-row canary.
+    //
+    // Note where the same knowledge already existed: scripts/_qa-guard.mjs
+    // lists both tables. The QA harness knew about them and the production
+    // sweep did not.
+    const body = functionBody(PURGE_ROUTE, "purgeCompany");
+    const excluded = declaredExclusions(PURGE_ROUTE, "PURGE_EXCLUDED");
+
+    for (const model of userScopedOnlyModels()) {
+      if (excluded.has(model)) continue;
+      const delegate = delegateFor(model);
+      expect(
+        new RegExp(`\\b(?:tx|db)\\.${delegate}\\.delete(?:Many)?\\s*\\(`).test(body),
+        `${model} reaches a workspace only through User, so purgeCompany() must ` +
+          `delete tx.${delegate} by name and scope it through the parent — ` +
+          `{ where: { user: { companyId } } }. Relying on the Cascade leaves its ` +
+          `rows out of the returned count, and the day that FK becomes Restrict ` +
+          `this transaction jams on a table the file never mentions. Or add ` +
+          `"${model}" to PURGE_EXCLUDED with a reason.`
       ).toBe(true);
     }
   });

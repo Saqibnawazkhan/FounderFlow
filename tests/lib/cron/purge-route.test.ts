@@ -60,6 +60,14 @@ const WORKSPACE_DELEGATES = [
   "notification",
   "inviteToken",
   "project",
+  // cron-009. Neither carries a companyId or a deletedAt — they reach a
+  // workspace only through User, with onDelete: Cascade — so until 2026-09-30
+  // `tx.user.deleteMany` made their rows disappear and they added 0 to the
+  // total the 100-row canary reads. They are listed HERE, before "user",
+  // because that is the order purgeCompany() deletes them in and the drift
+  // guard at the bottom of this file reads the two lists side by side.
+  "pushSubscription",
+  "notificationPreference",
   "user",
 ];
 
@@ -165,9 +173,18 @@ function buildHarness(options: {
   for (const name of WORKSPACE_DELEGATES) db[name] = delegate(name);
   db.company = {
     ...delegate("company"),
-    findMany: vi.fn(async () => {
-      record("company", "findMany", overdueCompanies.length);
-      return overdueCompanies.map((id) => ({ id }));
+    // Honours `take` and `where.id` (cron-012). A fake that returned every
+    // overdue id whatever it was asked would pass with or without the per-run
+    // ceiling and the single-workspace mode — the vacuous shape this repo keeps
+    // re-finding. It does NOT honour the overdue cutoff itself, because
+    // `overdueCompanies` IS the already-overdue set by construction.
+    findMany: vi.fn(async (args?: { take?: number; where?: Record<string, unknown> }) => {
+      let ids = overdueCompanies.slice();
+      const id = args?.where?.id;
+      if (typeof id === "string") ids = ids.filter((c) => c === id);
+      if (typeof args?.take === "number") ids = ids.slice(0, args.take);
+      record("company", "findMany", ids.length);
+      return ids.map((cid) => ({ id: cid }));
     }),
     delete: vi.fn(async (args: { where: { id: string } }) => {
       record("company", "delete", 1);
@@ -215,10 +232,10 @@ const sentry = {
 };
 vi.mock("@sentry/nextjs", () => sentry);
 
-async function run(): Promise<{ status: number; body: Record<string, unknown> }> {
+async function run(query = ""): Promise<{ status: number; body: Record<string, unknown> }> {
   const mod = await import("@/app/api/cron/purge-soft-deleted/route");
   const res = await mod.GET(
-    new Request("https://app.test/api/cron/purge-soft-deleted", {
+    new Request(`https://app.test/api/cron/purge-soft-deleted${query}`, {
       headers: { authorization: `Bearer ${SECRET}` },
     })
   );
@@ -467,6 +484,76 @@ describe("prodready-003 — a missing CRON_SECRET must not fail silently", () =>
   });
 });
 
+/* ── cron-013 ──────────────────────────────────────────────────────────── */
+
+/**
+ * cron-013, the one hole left in it. The finding said no test covers any cron
+ * route's auth gate; by 2026-09-30 the other two routes each had 401 coverage
+ * and THIS one — the multi-tenant erasure endpoint, the highest-consequence URL
+ * in the product — still had none. `grep -n 401 tests/lib/cron/purge-route.test.ts`
+ * returned nothing.
+ *
+ * The rest of cron-013 is closed: `tests/lib/cron/` now holds behavioural tests
+ * for all three routes (the 206→500 contract, the dry-run default, the check-in,
+ * the missing-secret branch) where there were none. What could still regress
+ * unnoticed was the single thing the finding named as most serious.
+ */
+describe("cron-013 — the erasure endpoint refuses an unauthenticated caller", () => {
+  it("answers 401 with no authorization header, and touches nothing", async () => {
+    harness = buildHarness({ overdueCompanies: ["co-a"], counts: { user: 3 } });
+    process.env.PURGE_ENABLED = "true";
+    const mod = await import("@/app/api/cron/purge-soft-deleted/route");
+    const res = await mod.GET(new Request("https://app.test/api/cron/purge-soft-deleted"));
+    expect(res.status).toBe(401);
+    // The load-bearing half: not merely the status, but that the run did not
+    // happen. A gate that answers 401 after doing the work is not a gate.
+    expect(harness.ops).toEqual([]);
+  });
+
+  it("refuses a wrong secret, and does not leak whether one is configured", async () => {
+    harness = buildHarness({ overdueCompanies: ["co-a"], counts: { user: 3 } });
+    const mod = await import("@/app/api/cron/purge-soft-deleted/route");
+    const res = await mod.GET(
+      new Request("https://app.test/api/cron/purge-soft-deleted", {
+        headers: { authorization: "Bearer not-the-secret" },
+      })
+    );
+    expect(res.status).toBe(401);
+    expect(harness.ops).toEqual([]);
+    expect((await res.json()) as Record<string, unknown>).toEqual({ error: "Unauthorized" });
+  });
+
+  it("refuses a bare token without the Bearer scheme", async () => {
+    harness = buildHarness({ overdueCompanies: ["co-a"], counts: { user: 3 } });
+    const mod = await import("@/app/api/cron/purge-soft-deleted/route");
+    const res = await mod.GET(
+      new Request("https://app.test/api/cron/purge-soft-deleted", {
+        headers: { authorization: SECRET },
+      })
+    );
+    expect(res.status).toBe(401);
+    expect(harness.ops).toEqual([]);
+  });
+
+  it("does not open or close the heartbeat for an unauthenticated probe", async () => {
+    // A rejected probe that closed the check-in would mark the night as having
+    // run, and the missed-beat alert would never fire for a job that is broken.
+    harness = buildHarness({ overdueCompanies: [] });
+    const mod = await import("@/app/api/cron/purge-soft-deleted/route");
+    await mod.GET(new Request("https://app.test/api/cron/purge-soft-deleted"));
+    expect(sentry.captureCheckIn).not.toHaveBeenCalled();
+  });
+
+  it("guard-the-guard: the same request WITH the secret does run", async () => {
+    // Without this, every assertion above would pass against a route that
+    // answers 401 to everything, including Vercel.
+    harness = buildHarness({ overdueCompanies: ["co-a"], counts: { user: 3 } });
+    const res = await run();
+    expect(res.status).toBe(200);
+    expect(harness.ops.length).toBeGreaterThan(0);
+  });
+});
+
 /* ── drift guard ───────────────────────────────────────────────────────── */
 
 describe("the dry-run counter and the live purge must not drift apart", () => {
@@ -512,5 +599,142 @@ describe("the dry-run counter and the live purge must not drift apart", () => {
           `canary thresholds on that number. Add it to countCompanyRows().`
       ).toBe(true);
     }
+  });
+});
+
+/* ── cron-012 ──────────────────────────────────────────────────────────── */
+
+/**
+ * cron-012 — an irreversible multi-tenant erasure has to be aimable at ONE
+ * workspace before it is aimed at all of them.
+ *
+ * `dryRun` came from `PURGE_ENABLED` and nothing else, so the first live run was
+ * simultaneously the first measurement and the irreversible one, across every
+ * overdue workspace at once. CLAUDE.md calls the purge "safe to enable" and the
+ * memory note says "exercise the purge"; neither was possible.
+ *
+ * `tests/lib/cron/purge-options.test.ts` owns the decision (15 cases over the
+ * pure function). What these add is the half a structural or unit test cannot
+ * reach: that the ROUTE honours the decision — that `?companyId=` really narrows
+ * the `findMany`, that `?limit=` really bounds it, and above all that `?dryRun=0`
+ * cannot make a live run happen. The company fake honours `take` and `where.id`,
+ * so each assertion discriminates.
+ */
+describe("cron-012 — one run can be aimed at one workspace", () => {
+  it("purges only the named workspace, leaving the other overdue ones", async () => {
+    process.env.PURGE_ENABLED = "true";
+    harness = buildHarness({
+      overdueCompanies: ["co-a", "co-b", "co-c"],
+      counts: { user: 2 },
+    });
+    const res = await run("?companyId=co-b");
+    expect(res.status).toBe(200);
+    expect(resultOf(res.body).companiesPurged).toBe(1);
+    const deleted = harness.ops.filter((o) => o.delegate === "company" && o.kind === "delete");
+    expect(deleted).toHaveLength(1);
+  });
+
+  it("does nothing when the named workspace is not overdue", async () => {
+    // The parameter is ANDed with the 90-day cutoff, so it is not a
+    // delete-by-id endpoint. `overdueCompanies` is the overdue set by
+    // construction, so an id outside it is an id the nightly run would not take.
+    process.env.PURGE_ENABLED = "true";
+    harness = buildHarness({ overdueCompanies: ["co-a"], counts: { user: 2 } });
+    const res = await run("?companyId=co-live");
+    expect(resultOf(res.body).companiesPurged).toBe(0);
+    expect(harness.ops.filter((o) => o.delegate === "company" && o.kind === "delete")).toEqual([]);
+  });
+
+  it("lowers the per-run ceiling when asked", async () => {
+    process.env.PURGE_ENABLED = "true";
+    harness = buildHarness({
+      overdueCompanies: ["co-a", "co-b", "co-c", "co-d"],
+      counts: { user: 1 },
+    });
+    const res = await run("?limit=2");
+    expect(resultOf(res.body).companiesPurged).toBe(2);
+  });
+
+  it("FORCES a dry run on ?dryRun=1 even with PURGE_ENABLED=true", async () => {
+    // The rehearsal this finding exists for: measure one workspace, destroy
+    // nothing, on the deployment where the purge is already live.
+    process.env.PURGE_ENABLED = "true";
+    harness = buildHarness({
+      overdueCompanies: ["co-a"],
+      counts: { user: 3, transaction: 40, message: 200 },
+    });
+    const res = await run("?companyId=co-a&dryRun=1");
+    expect(res.status).toBe(200);
+    expect(harness.ops.filter((o) => o.kind === "delete" || o.kind === "deleteMany")).toEqual([]);
+    expect(resultOf(res.body).workspaceRowsWouldDelete).toBeGreaterThan(0);
+  });
+
+  it("REFUSES ?dryRun=0 and destroys nothing — a URL must not authorise erasure", async () => {
+    // The single most dangerous line this guards. `dryRun = param === "1"` looks
+    // equivalent and would let anyone holding the cron secret erase every
+    // overdue workspace from a browser address bar, on a deployment that has
+    // deliberately left the purge off.
+    delete process.env.PURGE_ENABLED;
+    harness = buildHarness({ overdueCompanies: ["co-a"], counts: { user: 3 } });
+    const res = await run("?dryRun=0");
+    expect(res.status).toBe(200);
+    expect(harness.ops.filter((o) => o.kind === "delete" || o.kind === "deleteMany")).toEqual([]);
+    expect(String(res.body.refusedOptions)).toMatch(/PURGE_ENABLED/);
+  });
+
+  it("reports a refused parameter rather than silently ignoring it", async () => {
+    delete process.env.PURGE_ENABLED;
+    harness = buildHarness({ overdueCompanies: [], counts: {} });
+    const res = await run("?limit=9999");
+    expect(Array.isArray(res.body.refusedOptions)).toBe(true);
+    expect((res.body.refusedOptions as string[]).join(" ")).toMatch(/exceeds the built-in cap/);
+  });
+
+  it("leaves an ordinary parameterless cron invocation exactly as it was", async () => {
+    delete process.env.PURGE_ENABLED;
+    harness = buildHarness({ overdueCompanies: ["co-a", "co-b"], counts: { user: 2 } });
+    const res = await run();
+    expect(res.status).toBe(200);
+    expect(res.body.dryRun).toBe(true);
+    expect(res.body.refusedOptions).toEqual([]);
+    expect(resultOf(res.body).companiesPurged).toBe(2);
+  });
+});
+
+/* ── cron-017 ──────────────────────────────────────────────────────────── */
+
+describe("cron-017 — a mistyped PURGE_ENABLED is visible on the first run", () => {
+  it("raises a Sentry event and reports the ignored value", async () => {
+    // The trap: the fail-safe direction is CORRECT — only "true" arms the purge —
+    // so nothing breaks, nothing 500s, `ok` is true, and the owner concludes
+    // 90-day erasure is live. Their answer to "do you still hold my data?" is
+    // then wrong in the direction that matters, indefinitely.
+    process.env.PURGE_ENABLED = "TRUE";
+    harness = buildHarness({ overdueCompanies: ["co-a"], counts: { user: 2 } });
+    const res = await run();
+    expect(res.status).toBe(200);
+    expect(res.body.dryRun).toBe(true);
+    expect(res.body.ignoredPurgeEnabledValue).toBe("TRUE");
+    expect(sentry.captureException).toHaveBeenCalled();
+    // And it really was a dry run: nothing was destroyed.
+    expect(harness.ops.filter((o) => o.kind === "delete" || o.kind === "deleteMany")).toEqual([]);
+  });
+
+  it("says nothing on a correctly-armed run", async () => {
+    process.env.PURGE_ENABLED = "true";
+    harness = buildHarness({ overdueCompanies: [], counts: {} });
+    const res = await run();
+    expect(res.body.dryRun).toBe(false);
+    expect(res.body.ignoredPurgeEnabledValue).toBeNull();
+    expect(sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it("says nothing when the variable is absent, which is the default state", async () => {
+    delete process.env.PURGE_ENABLED;
+    harness = buildHarness({ overdueCompanies: [], counts: {} });
+    const res = await run();
+    expect(res.body.dryRun).toBe(true);
+    expect(res.body.ignoredPurgeEnabledValue).toBeNull();
+    expect(sentry.captureException).not.toHaveBeenCalled();
   });
 });

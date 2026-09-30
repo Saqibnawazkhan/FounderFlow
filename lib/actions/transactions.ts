@@ -486,6 +486,28 @@ export async function deleteTransactionAction(id: string): Promise<ActionResult>
     });
   });
 
+  // finance-planning-005. Deleting an expense changes the month-to-date figure the
+  // budget alert was judged on, and until now nothing told the budget. So the
+  // classic case — a founder fat-fingers 5,000,000 instead of 5,000, the 100%
+  // alert emails and pushes to everyone who can see the project's money, they
+  // delete the typo — left the month's sentinel set and the budget silent until
+  // the 1st, however much the project really spent afterwards.
+  //
+  // The same hook the ADD path calls, for the same reason and with the same
+  // failure posture: outside the transaction, and awaited but never allowed to
+  // fail the delete (it swallows and logs internally). It now also RE-ARMS — see
+  // `decideRearm` in lib/budgets/threshold.ts — so this call is what turns a
+  // correction back into a working alert. Expenses only: an investment or revenue
+  // row counts against no cap, and asking would be a wasted aggregate on the
+  // busiest delete path.
+  if (txn.type === "expense") {
+    await checkBudgetThresholdAfterExpense({
+      companyId: txn.companyId,
+      projectId: txn.projectId,
+      category: txn.category,
+    });
+  }
+
   revalidatePath("/expenses");
   revalidatePath("/investments");
   revalidatePath("/revenue");

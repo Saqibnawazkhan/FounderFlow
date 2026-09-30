@@ -41,7 +41,7 @@ import { requireScopedSession } from "@/lib/queries/session";
 import { canSeeChannel, visibleChannelWhere } from "@/lib/auth/channel-permissions";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import { RedactedRunwayPayloadSchema, RunwayPayloadSchema } from "@/lib/schemas/chat";
-import { dmDisplayName } from "@/lib/chat/dm";
+import { dmDisplayName, DM_UNNAMED_COUNTERPART } from "@/lib/chat/dm";
 import { tokenizeForRender, type CommentSegment, type MentionUser } from "@/lib/comments/mentions";
 import { capUnread } from "@/lib/chat/unread";
 import { foldReactions, type ReactionRow } from "@/lib/chat/reactions";
@@ -443,11 +443,24 @@ export async function listChannelsForUser(): Promise<ChannelListItem[]> {
       // `userId: { not: userId }` is the whole trick: the rows that come back
       // are exactly the people this rail needs names for, and never the
       // caller, so nothing here scales with public-channel membership.
+      //
+      // NOTE THERE IS DELIBERATELY NO `user: { deletedAt: null }` FILTER. A
+      // tombstoned colleague's DM history stays readable (Tier 3 soft delete),
+      // so dropping their membership row here would leave the conversation with
+      // nobody to name and render it as an unlabelled row — which reads as a
+      // broken rail, not as a colleague who left. `deletedAt` is SELECTED
+      // instead, and `dmDisplayName` says so in the label.
       where: { channelId: { in: dmChannelIds }, userId: { not: userId } },
-      select: { channelId: true, user: { select: { id: true, name: true } } },
+      select: {
+        channelId: true,
+        user: { select: { id: true, name: true, deletedAt: true } },
+      },
     });
 
-    const membersByChannel = new Map<string, { id: string; name: string }[]>();
+    const membersByChannel = new Map<
+      string,
+      { id: string; name: string; deletedAt: Date | null }[]
+    >();
     for (const row of counterparts) {
       const bucket = membersByChannel.get(row.channelId);
       if (bucket) bucket.push(row.user);
@@ -455,8 +468,8 @@ export async function listChannelsForUser(): Promise<ChannelListItem[]> {
     }
     // `.forEach` rather than `for…of` over the Map: tsconfig has no
     // downlevelIteration, so iterating a Map directly is a TS2802.
-    membersByChannel.forEach((members, channelId) => {
-      const label = dmDisplayName(members, userId);
+    membersByChannel.forEach((dmMembers, channelId) => {
+      const label = dmDisplayName(dmMembers, userId);
       if (label !== null) dmNameByChannel.set(channelId, label);
     });
   }
@@ -464,7 +477,12 @@ export async function listChannelsForUser(): Promise<ChannelListItem[]> {
   return channels.map((c) => ({
     id: c.id,
     slug: c.slug,
-    name: c.kind === "dm" ? (dmNameByChannel.get(c.id) ?? c.name) : c.name,
+    // `DM_UNNAMED_COUNTERPART`, NOT `c.name`, is the fallback. The stored name
+    // is `openDmAction`'s "Saqib Nawaz & Ahmed Khan" and it contains the
+    // VIEWER, so falling back to it re-introduced the exact bug the
+    // viewer-relative rename exists to prevent, in the one case the rename
+    // could not resolve. See lib/chat/dm.ts.
+    name: c.kind === "dm" ? (dmNameByChannel.get(c.id) ?? DM_UNNAMED_COUNTERPART) : c.name,
     kind: c.kind,
     topic: c.topic,
     memberCount: c._count.members,
@@ -523,7 +541,10 @@ export async function getChannelBySlug(slug: string): Promise<ChannelDetail | nu
       // handle: feeds the composer's mention autocomplete, which prefers a
       // handle and falls back to a name slug — so without it a teammate whose
       // display name has no ASCII letters cannot be picked from the list.
-      user: { select: { id: true, name: true, handle: true } },
+      // deletedAt: NOT exported on the DTO — it is read only to annotate a DM
+      // whose counterpart has been deactivated (see `dmDisplayName`), which is
+      // the one place this surface must not pretend the room is still live.
+      user: { select: { id: true, name: true, handle: true, deletedAt: true } },
     },
     orderBy: { joinedAt: "asc" },
   });
@@ -535,12 +556,19 @@ export async function getChannelBySlug(slug: string): Promise<ChannelDetail | nu
   }));
 
   // The roster is already loaded here, so the DM rename costs nothing extra —
-  // no second query, unlike the rail. Falls back to the stored name when
-  // `dmDisplayName` returns null (the viewer is the only member left), because
-  // a blank channel header reads as a failed load rather than as a lost
-  // teammate.
+  // no second query, unlike the rail. `DM_UNNAMED_COUNTERPART` rather than the
+  // stored `channel.name` when `dmDisplayName` returns null: the stored name is
+  // "<me> & <them>" and naming the viewer to themselves is the bug the rename
+  // exists to prevent. Driven off `members` (which carries `deletedAt`) rather
+  // than `memberList` (which deliberately does not), so a deactivated
+  // counterpart is labelled as one.
   const name =
-    channel.kind === "dm" ? (dmDisplayName(memberList, userId) ?? channel.name) : channel.name;
+    channel.kind === "dm"
+      ? (dmDisplayName(
+          members.map((m) => ({ id: m.user.id, name: m.user.name, deletedAt: m.user.deletedAt })),
+          userId
+        ) ?? DM_UNNAMED_COUNTERPART)
+      : channel.name;
 
   const mine = members.find((m) => m.userId === userId) ?? null;
   let unreadCount = 0;

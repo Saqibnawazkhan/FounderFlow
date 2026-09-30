@@ -118,7 +118,11 @@ const PRE_AUTH_ENDPOINTS: Record<string, string> = {
     "two UUIDv4s (~244 bits), so guessing it is infeasible at any rate — but the " +
     "token was for a while the ONLY defence, which left an anonymous caller free " +
     "to drive unbounded invite lookups. gateAuthAction tokenRedeem class on top " +
-    "since auth-008, same 30/min/address as the other three redeem endpoints.",
+    "since auth-008, same 30/min/address as the other three redeem endpoints." +
+    " The GET half of the same surface - the page render at" +
+    " app/invite/[token]/page.tsx - is metered separately on the invitePageView" +
+    " class (15/min/address); it is not a server module, so this sweep cannot see" +
+    " it.",
 };
 
 /**

@@ -24,6 +24,7 @@ import { db } from "@/lib/db";
 import { NewRecurringRuleSchema, ToggleRecurringRuleSchema } from "@/lib/schemas/recurring";
 import { limiters } from "@/lib/rate-limit";
 import { checkBudgetThresholdAfterExpense } from "@/lib/budgets/check";
+import { seedStampFor } from "@/lib/recurring/materialize";
 import { captureServerError } from "@/lib/sentry-server";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 // money-001, persisted half: the activity `message` below is written once and
@@ -175,9 +176,21 @@ export async function createRecurringRuleAction(
           ruleId: rule.id,
         },
       });
+      // finance-planning-004. `lastMaterializedAt: now` charged the customer
+      // TWICE in the month they set the rule up: `dueDatesFor` walks
+      // (lastMaterializedAt, today], so a rule created on the 3rd with
+      // `dayOfMonth: 15` came due again on the 15th — of the same month — and both
+      // rows carry the same rule badge, so neither looks like the mistake. It was
+      // correct when created on or after the due day, which is why it survived.
+      //
+      // `seedStampFor` stamps past the current period's scheduled occurrence,
+      // because the seed above IS that occurrence. Dropping the seed instead
+      // would leave the first month of a recurring cost invisible to its budget
+      // (the hardest half of money-005 to find) and show nothing at all on a
+      // brand-new rule until its day came round.
       await tx.recurringRule.update({
         where: { id: rule.id },
-        data: { lastMaterializedAt: now },
+        data: { lastMaterializedAt: seedStampFor(rule, now) },
       });
       await tx.activity.create({
         data: {

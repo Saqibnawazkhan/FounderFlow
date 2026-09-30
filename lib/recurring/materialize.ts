@@ -263,3 +263,57 @@ function sameUTCDay(a: Date, b: Date): boolean {
     a.getUTCDate() === b.getUTCDate()
   );
 }
+
+/**
+ * The instant to stamp `lastMaterializedAt` with after SEEDING a brand-new rule.
+ *
+ * finance-planning-004 — A MONTHLY RULE CHARGED TWICE IN THE MONTH IT WAS
+ * CREATED. `createRecurringAction` posts a seed transaction immediately (the
+ * comment there explains why: "The seed IS the first month of this recurring
+ * cost", and it is what makes the new rule visible to its budget) and stamped
+ * `lastMaterializedAt: now`. `dueDatesFor` then walks (lastMaterializedAt, today],
+ * so a rule created on the 3rd with `dayOfMonth: 15` was due again on the 15th —
+ * of the same month. The customer set up one monthly rent charge and got two, and
+ * both rows carry the same rule badge, so neither looks like the mistake.
+ *
+ * Created ON or AFTER the due day it was already correct, which is exactly why
+ * this survived: whoever tried it on the 20th saw one charge.
+ *
+ * THE FIX IS TO STAMP PAST THE CURRENT PERIOD'S OCCURRENCE, not to drop the seed.
+ * Dropping it would leave the first month of a recurring cost invisible to the
+ * budget it belongs to — the half of money-005 that was hardest to find — and
+ * would make a brand-new rule show nothing at all until its day came round.
+ *
+ * So: look forward through the remainder of the CURRENT period only. If the rule
+ * has a scheduled occurrence in there, the seed has already paid for it, and the
+ * stamp becomes that date so the scheduler resumes at the NEXT period. If it does
+ * not (created on or after the due day), `when` is already correct and is
+ * returned unchanged.
+ *
+ * "Remainder of the current period" is the rest of the UTC month for a monthly
+ * rule and the next six days for a weekly one — deliberately not a week-start
+ * convention, because a weekly rule has no notion of which day a week begins on;
+ * six days is precisely "there is exactly one more of these coming".
+ *
+ * Pure, so `tests/lib/recurring/seed-stamp.test.ts` can walk a whole calendar
+ * without a database.
+ */
+export function seedStampFor(rule: RecurringRule, when: Date): Date {
+  const today = startOfDayUTC(when);
+  let lookahead: number;
+  if (rule.frequency === "monthly") {
+    const daysInMonth = new Date(
+      Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 0)
+    ).getUTCDate();
+    lookahead = daysInMonth - today.getUTCDate();
+  } else {
+    lookahead = 6;
+  }
+  // Strictly after today: `lastMaterializedAt = when` already excludes today,
+  // because `dueDatesFor` opens its window at lastMaterializedAt + 1 day.
+  for (let d = 1; d <= lookahead; d += 1) {
+    const candidate = addDaysUTC(today, d);
+    if (isRuleDueOn(rule, candidate)) return candidate;
+  }
+  return when;
+}

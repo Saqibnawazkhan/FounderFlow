@@ -413,3 +413,57 @@ describe("prodready-003 — a missing CRON_SECRET must not fail silently", () =>
     expect(res.status).toBe(401);
   });
 });
+
+/* ── cron-011 ──────────────────────────────────────────────────────────── */
+
+/**
+ * cron-011 — the materializer mints REAL MONEY ROWS across every tenant with no
+ * ceiling, and the project's own 100-row canary was not wired to it.
+ *
+ * `lib/safety/bulk-mutation-guard.ts` fires a Sentry warning tagged
+ * `boundary: bulk-mutation` above 100 rows, and it had nine call sites — every
+ * bulk workspace/project/task/transaction mutation, plus the purge. Neither
+ * nightly writer was among them. A bad rule set, a clock problem or a bug in
+ * `isRuleDueOn` could post thousands of transactions across every customer
+ * overnight with no signal at all.
+ *
+ * The assertion is the Sentry event rather than the call, for the reason stated
+ * in the sibling file: `warnBulkMutation` IS telemetry, so the event is the
+ * behaviour, and a source-text assertion would pass on an unused import.
+ */
+function bulkMutationEvents(): Array<{ message: string; tags: Record<string, string> }> {
+  return (sentry.captureMessage.mock.calls as unknown as unknown[][])
+    .map((c) => ({
+      message: String(c[0]),
+      tags: ((c[1] as { tags?: Record<string, string> })?.tags ?? {}) as Record<string, string>,
+    }))
+    .filter((e) => e.tags.boundary === "bulk-mutation");
+}
+
+describe("cron-011 — an outsized materialization run trips the bulk-mutation canary", () => {
+  it("fires the canary when one night posts more than a hundred transactions", async () => {
+    // 120 workspaces, one due occurrence each — the shape a platform-wide
+    // problem takes, rather than one workspace with a long backlog.
+    const rules: RecurringRule[] = [];
+    for (let i = 0; i < 120; i += 1) {
+      rules.push(rule({ id: `rule-${i}`, companyId: `co-${i}` }));
+    }
+    harness = buildHarness(rules);
+
+    const res = await run();
+    expect(res.status).toBe(200);
+    expect(res.body.transactionsCreated).toBe(120);
+
+    const events = bulkMutationEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tags.action).toBe("materializeRecurring");
+    expect(events[0].message).toMatch(/120 rows/);
+  });
+
+  it("stays quiet on an ordinary night", async () => {
+    harness = buildHarness([rule()]);
+    const res = await run();
+    expect(res.body.transactionsCreated).toBe(1);
+    expect(bulkMutationEvents()).toEqual([]);
+  });
+});

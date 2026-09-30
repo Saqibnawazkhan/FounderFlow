@@ -71,6 +71,7 @@ import { gateAuthAction } from "@/lib/rate-limit";
 import { getClientIp } from "@/lib/client-ip";
 import { appOrigin } from "@/lib/env";
 import { captureServerError } from "@/lib/sentry-server";
+import { escapeHtml } from "@/lib/email/html";
 import { sendEmail } from "@/lib/email/send";
 import {
   emailChangeBinding,
@@ -144,13 +145,19 @@ async function warnOldAddress(args: {
     ? `If this wasn't you, reset your password immediately at ${linkBase()}/forgot-password and contact support — whoever made this change now controls password resets for this account.`
     : `If this wasn't you, change your password now at ${settingsUrl}. That signs out every device AND cancels this pending request.`;
 
+  // The text/plain alternative is NOT escaped, deliberately: a human reads it as
+  // typed, and `&amp;` in front of a customer's own name is its own defect. Only
+  // the HTML body goes through `escapeHtml` (auth-016). `headline` and `remedy`
+  // are escaped whole rather than per-value because both are prose assembled
+  // above out of two addresses and a URL — escaping at the seam is what gets
+  // forgotten when a third sentence is added to them later.
   const text = `Hi ${name},\n\n${headline}\n\n${remedy}\n`;
   const html = `
       <div style="font-family:system-ui,sans-serif;max-width:520px;margin:auto;">
         <h2 style="margin:0 0 12px 0;">${applied ? "Your login email was changed" : "Your login email is being changed"}</h2>
-        <p>Hi ${name},</p>
-        <p>${headline}</p>
-        <p style="color:#B42318;"><strong>${remedy}</strong></p>
+        <p>Hi ${escapeHtml(name)},</p>
+        <p>${escapeHtml(headline)}</p>
+        <p style="color:#B42318;"><strong>${escapeHtml(remedy)}</strong></p>
       </div>
     `;
 
@@ -261,7 +268,7 @@ export async function requestEmailChangeAction(
     const html = `
       <div style="font-family:system-ui,sans-serif;max-width:520px;margin:auto;">
         <h2 style="margin:0 0 12px 0;">Confirm your new email</h2>
-        <p>Hi ${me.name},</p>
+        <p>Hi ${escapeHtml(me.name)},</p>
         <p>A request was made to change your FounderFlow login email to this address. Click below to confirm the change. The link expires in 1 hour.</p>
         <p style="margin:24px 0;">
           <a href="${url}" style="background:#10B981;color:#1F2933;padding:12px 20px;border-radius:8px;font-weight:700;text-decoration:none;">

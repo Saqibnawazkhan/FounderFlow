@@ -42,8 +42,13 @@
  */
 
 import Link from "next/link";
-import { Hash, Lock, Plus } from "lucide-react";
+import { Hash, Lock, MessageSquarePlus, Plus } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
+// `isDmKind` is IMPORTED, not re-spelled here. It used to be a local copy, and
+// that is how chat-008 happened: the rail learned that a DM is a person while
+// the channel header, the browser tab and the composer placeholder kept drawing
+// a hash. One spelling, four surfaces.
+import { isDmKind } from "@/lib/chat/dm";
 import { cn } from "@/lib/utils";
 import type { ChannelListItem } from "@/lib/queries/chat";
 
@@ -66,18 +71,6 @@ export function unreadLabel(count: number): string {
  */
 function isPrivateKind(kind: ChannelListItem["kind"]): boolean {
   return String(kind).toLowerCase().includes("private");
-}
-
-/**
- * Same defensiveness as `isPrivateKind`, and for a sharper reason: `kind` is
- * a plain String column (never a Prisma enum here), so casing is whatever the
- * writer happened to store. Reading "DM" as a room would file a private
- * two-person thread under "Channels" next to the workspace-wide rooms, which
- * reads as "everyone can see this" — the same class of mistake as drawing a
- * Hash on a private channel.
- */
-function isDmKind(kind: ChannelListItem["kind"]): boolean {
-  return String(kind).toLowerCase() === "dm";
 }
 
 type Props = {
@@ -164,7 +157,7 @@ function ChannelRow({
   active: boolean;
   onNavigate?: () => void;
 }) {
-  const dm = isDmKind(channel.kind);
+  const dm = isDmKind(String(channel.kind));
   const isPrivate = isPrivateKind(channel.kind);
   const Icon = isPrivate ? Lock : Hash;
 
@@ -214,8 +207,8 @@ export function ChannelRail({
 }: Props) {
   // One pass each rather than a reduce: two named lists read better at the
   // call sites below, and the rail is a few dozen rows at most.
-  const rooms = channels.filter((channel) => !isDmKind(channel.kind));
-  const dms = channels.filter((channel) => isDmKind(channel.kind));
+  const rooms = channels.filter((channel) => !isDmKind(String(channel.kind)));
+  const dms = channels.filter((channel) => isDmKind(String(channel.kind)));
 
   // An empty section with nothing to act on is noise, so "Direct" appears only
   // once it has something in it or a way to start one. "Channels" always shows,
@@ -270,7 +263,7 @@ export function ChannelRail({
           <div className="mt-4">
             <SectionHeader label="Direct" actionLabel="New direct message" onAction={onNewDm} />
           </div>
-          {dms.length > 0 && (
+          {dms.length > 0 ? (
             <ul className="mt-2 space-y-0.5">
               {dms.map((channel) => (
                 <ChannelRow
@@ -281,6 +274,31 @@ export function ChannelRail({
                 />
               ))}
             </ul>
+          ) : (
+            /* ── THE REPORTED BUG ────────────────────────────────────────────
+             * "The chat sidebar shows a CHANNELS heading with a + button and
+             * nothing else. No DM section, no way to message a person."
+             *
+             * A reader with no DMs yet got this section as a 9px mono label and
+             * a 12px icon-only "+" — no words anywhere saying you can message a
+             * person. This file's OWN comment already conceded the point for the
+             * Channels section ("a 12px icon in the corner of an otherwise blank
+             * rail, which is precisely the reader least likely to find it") and
+             * repeated the affordance there as a labelled button. Direct never
+             * got the same treatment. It does now, on exactly the same terms:
+             * only while the section is empty, because once it has rows the rows
+             * ARE the affordance and a permanent button is one more thing to
+             * scan past on every render. */
+            onNewDm && (
+              <button
+                type="button"
+                onClick={onNewDm}
+                className="mt-2 flex items-center gap-1.5 rounded-md bg-primary/15 px-2 py-1 text-xs font-semibold text-primary-strong transition-colors hover:bg-primary/25"
+              >
+                <MessageSquarePlus className="h-3 w-3" aria-hidden="true" />
+                Message a teammate
+              </button>
+            )
           )}
         </>
       )}

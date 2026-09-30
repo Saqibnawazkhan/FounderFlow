@@ -81,8 +81,13 @@ const pageActions = vi.hoisted(() => ({
 vi.mock("@/app/(app)/chat/[slug]/actions", () => pageActions);
 
 // Children, reduced to the props this island decides.
+// `onNewDm` is surfaced as an attribute rather than swallowed: whether this
+// island passes it at all is the whole of the reported "no way to message a
+// person" bug, and a stub that drops the prop cannot see the difference.
 vi.mock("@/components/chat/channel-rail", () => ({
-  ChannelRail: () => <nav aria-label="Channels" />,
+  ChannelRail: ({ onNewDm }: { onNewDm?: () => void }) => (
+    <nav aria-label="Channels" data-has-new-dm={onNewDm ? "true" : "false"} />
+  ),
 }));
 vi.mock("@/components/chat/channel-header", () => ({
   ChannelHeader: ({ channel }: { channel: { name: string } }) => <header>{channel.name}</header>,
@@ -98,14 +103,27 @@ vi.mock("@/components/chat/message-composer", () => ({
   MessageComposer: ({
     onSent,
     canPostRunway,
+    channelKind,
+    users,
   }: {
     onSent?: () => void;
     canPostRunway?: boolean;
+    // chat-008: the composer cannot decide "Message #general" vs "Message Ahmed
+    // Khan" without the kind, so whether this island forwards it is a fact
+    // worth asserting rather than a detail the stub drops.
+    channelKind?: string;
+    // chat-006: the @-autocomplete roster. Surfaced rather than swallowed for
+    // the same reason as `canPostRunway` — WHICH list this island hands down is
+    // the whole of the finding, and a stub that drops the prop cannot tell a
+    // one-person channel from the workspace.
+    users?: { id: string; name: string }[];
   }) => (
     <button
       type="button"
       data-testid="composer"
       data-can-post-runway={canPostRunway ? "true" : "false"}
+      data-channel-kind={channelKind ?? ""}
+      data-mention-roster={(users ?? []).map((u) => u.name).join("|")}
       onClick={() => onSent?.()}
     >
       Send a message
@@ -357,8 +375,78 @@ describe("ChatClient — adding people to a channel (chat-003)", () => {
     );
   });
 
-  it("offers nothing to someone who does not own the channel", () => {
+  it("offers nothing while the session is still resolving", () => {
+    // `beforeEach` leaves the session at status "loading", so this is the
+    // fail-closed case: an unknown company role is not an admin, and the worst
+    // outcome is a control that appears a frame late rather than one drawn for
+    // somebody the server would refuse.
     renderClient(channel({ kind: "private", isMember: true, myChannelRole: "member" }));
+
+    expect(screen.queryByRole("button", { name: /add people/i })).not.toBeInTheDocument();
+  });
+
+  it("offers nothing to a plain member who does not own the channel", () => {
+    signedInAs("member");
+    renderClient(channel({ kind: "private", isMember: true, myChannelRole: "member" }));
+
+    expect(screen.queryByRole("button", { name: /add people/i })).not.toBeInTheDocument();
+  });
+
+  /* ── THE RESIDUAL HALF OF chat-003 ──────────────────────────────────────
+   *
+   * `addChannelMembersAction` gates on `canManageChannel`, which admits a
+   * company admin or cofounder for ANY channel in the workspace as well as the
+   * channel's own owner. This island drew the control for `myChannelRole ===
+   * "owner"` alone — a second, NARROWER copy of a rule that lives in
+   * lib/auth/channel-permissions.ts, which is exactly what that module's header
+   * forbids ("If you find yourself writing `if (role === "admin")` … the rule
+   * belongs here instead", and the same goes for writing half of one).
+   *
+   * The consequence is not cosmetic. There is no other membership write in the
+   * product: no join action, no route, no second dialog. So an admin who was
+   * INVITED into a private channel, or who inherited one whose creator has since
+   * been deactivated, had no way to add anybody to it ever again — and the
+   * channel's "Only people you add can see this channel" promise became
+   * unfulfillable for that channel permanently.
+   *
+   * The role is already in this component's hands: it reads `useSession()` for
+   * the Runway gate on the very next screenful. The comment claiming otherwise
+   * ("this component is not handed the viewer's company role") was stale.
+   */
+  it("lets a company admin add people to a private channel they did not create", async () => {
+    signedInAs("admin");
+    renderClient(channel({ kind: "private", isMember: true, myChannelRole: "member" }));
+
+    expect(screen.getByRole("button", { name: /add people/i })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /add people/i }));
+    expect(await screen.findByRole("checkbox", { name: /bilal ahmed/i })).toBeInTheDocument();
+  });
+
+  it("lets a cofounder do the same, because the predicate admits cofounders", () => {
+    signedInAs("cofounder");
+    renderClient(channel({ kind: "private", isMember: true, myChannelRole: "member" }));
+
+    expect(screen.getByRole("button", { name: /add people/i })).toBeInTheDocument();
+  });
+
+  it("does not hand an admin a way around a DM's two-person identity", () => {
+    signedInAs("admin");
+    renderClient(channel({ kind: "dm", isMember: true, myChannelRole: "member", memberCount: 2 }));
+
+    expect(screen.queryByRole("button", { name: /add people/i })).not.toBeInTheDocument();
+  });
+
+  it("does not hand an admin a way into an archived channel", () => {
+    signedInAs("admin");
+    renderClient(
+      channel({
+        kind: "private",
+        isMember: true,
+        myChannelRole: "member",
+        archivedAt: "2026-09-01T00:00:00.000Z",
+      })
+    );
 
     expect(screen.queryByRole("button", { name: /add people/i })).not.toBeInTheDocument();
   });
@@ -382,6 +470,76 @@ describe("ChatClient — adding people to a channel (chat-003)", () => {
     );
 
     expect(screen.queryByRole("button", { name: /add people/i })).not.toBeInTheDocument();
+  });
+});
+
+/* ═════════ chat-006 — who the @-picker offers in a channel ════════════════
+ *
+ * The composer's autocomplete was fed `channel.members`, which is the
+ * ChannelMember rows. For a PRIVATE channel or a DM that is exactly right:
+ * membership is the permission, and `sendMessageAction` intersects mention
+ * recipients against the member list for any non-public kind, so offering an
+ * outsider would render a chip that notified nobody.
+ *
+ * For a PUBLIC channel it is wrong in the direction that loses a message. The
+ * action parses mentions against the whole live company roster
+ * (`db.user.findMany({ companyId, deletedAt: null })`) and skips the membership
+ * filter entirely when `channel.kind === "public"` — "anyone in the company can
+ * already read them". So in a freshly created public channel, whose only
+ * ChannelMember row is its creator, the picker offered one name while the server
+ * stood ready to notify the whole workspace. The roster the picker offers and
+ * the roster the server fans out to have to be the same set.
+ *
+ * `dmCandidates` is that set, already in this island's props and already
+ * tombstone-filtered by `listDmCandidates` — so this costs no new query.
+ */
+describe("ChatClient — the @-mention roster (chat-006)", () => {
+  it("offers everyone in the workspace in a public channel, not just its members", () => {
+    renderClient(channel({ kind: "public", isMember: false, memberCount: 1 }));
+
+    expect(screen.getByTestId("composer")).toHaveAttribute(
+      "data-mention-roster",
+      "Ayesha Raza|Bilal Ahmed"
+    );
+  });
+
+  it("offers only the members of a private channel", () => {
+    renderClient(
+      channel({ kind: "private", isMember: true, myChannelRole: "owner", memberCount: 1 })
+    );
+
+    expect(screen.getByTestId("composer")).toHaveAttribute("data-mention-roster", "Ayesha Raza");
+  });
+
+  it("offers only the two participants of a DM", () => {
+    renderClient(
+      channel({
+        kind: "dm",
+        isMember: true,
+        myChannelRole: "member",
+        memberCount: 2,
+        members: [
+          { id: ME, name: "Saqib Nawaz" },
+          { id: "u_bilal", name: "Bilal Ahmed" },
+        ],
+      })
+    );
+
+    expect(screen.getByTestId("composer")).toHaveAttribute(
+      "data-mention-roster",
+      "Saqib Nawaz|Bilal Ahmed"
+    );
+  });
+
+  it("never offers the same person twice when they are already a member", () => {
+    // Ayesha is both a ChannelMember and a DM candidate. A naive concat would
+    // list her twice, and two identical rows in an autocomplete is how a picker
+    // starts inserting the wrong token.
+    renderClient(channel({ kind: "public", isMember: true, memberCount: 1 }));
+
+    const roster = screen.getByTestId("composer").getAttribute("data-mention-roster") ?? "";
+    const names = roster.split("|");
+    expect(new Set(names).size).toBe(names.length);
   });
 });
 
@@ -437,5 +595,58 @@ describe("ChatClient — the Runway control has an entry point (reachability row
     // control that appears a moment late.
     renderClient(channel({ isMember: true }));
     expect(composer().getAttribute("data-can-post-runway")).toBe("false");
+  });
+});
+
+/* ══ THE REPORTED BUG — "no option for dm in chat" ═══════════════════════════
+ *
+ * Reported from the running product, with a screenshot of a rail showing a
+ * CHANNELS heading and nothing else.
+ *
+ * `onNewDm` was passed as `dmCandidates.length > 0 ? … : undefined`, so in a
+ * workspace of one the rail's whole Direct section vanished and there was no
+ * control anywhere that said "message a person". The reasoning in the comment
+ * was that a picker with nobody in it is a dead end — but <NewDmModal> ALREADY
+ * has the honest copy for that case ("You're the only person in this workspace
+ * — invite someone from the Team page"), and withholding the trigger was the
+ * only thing making that branch unreachable. A hidden control and a control
+ * that explains itself are not the same trade.
+ * ─────────────────────────────────────────────────────────────────────────── */
+describe("ChatClient — the way to start a direct message is always there", () => {
+  it("offers the DM control when there are teammates to message", () => {
+    renderClient(channel({ kind: "public", isMember: true }));
+    expect(screen.getByRole("navigation", { name: "Channels" })).toHaveAttribute(
+      "data-has-new-dm",
+      "true"
+    );
+  });
+
+  it("STILL offers it in a workspace of one, and lets the picker explain", () => {
+    renderClient(channel({ kind: "public", isMember: true }), { dmCandidates: [] });
+    expect(screen.getByRole("navigation", { name: "Channels" })).toHaveAttribute(
+      "data-has-new-dm",
+      "true"
+    );
+  });
+});
+
+/* ══ chat-008 — the composer has to know what it is talking to ═══════════════ */
+describe("ChatClient — the conversation's kind reaches the composer", () => {
+  it("forwards a room's kind", () => {
+    renderClient(channel({ kind: "public", isMember: true }));
+    expect(screen.getByTestId("composer")).toHaveAttribute("data-channel-kind", "public");
+  });
+
+  it("forwards a DM's kind, which is what stops 'Message #Ahmed Khan'", () => {
+    renderClient(
+      channel({
+        kind: "dm",
+        slug: "dm-u_me_u_bilal",
+        name: "Bilal Ahmed",
+        isMember: true,
+        memberCount: 2,
+      })
+    );
+    expect(screen.getByTestId("composer")).toHaveAttribute("data-channel-kind", "dm");
   });
 });

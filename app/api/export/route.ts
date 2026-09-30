@@ -133,6 +133,65 @@ const FINANCE_ACTIVITY_TYPES: string[] = [
 const FINANCE_CATEGORY = "finance";
 
 /**
+ * Workspace tables this export deliberately does NOT contain, and why.
+ *
+ * data-integrity-008. The four chat tables landed on 2026-09-24 and the export
+ * did not learn about them for five days — during which nothing anywhere could
+ * tell "deliberately excluded" from "nobody noticed". The exclusion itself was
+ * then argued at length in this file's header, which is the right decision in the
+ * wrong shape: prose cannot fail a build.
+ *
+ * So the decision is declared here instead. `tests/lib/db/export-coverage.test.ts`
+ * derives the list of `companyId`-bearing models from prisma/schema.prisma and
+ * demands that each one is either READ by this route or named below with a
+ * reason — so the thirteenth workspace table is covered on the day it lands. The
+ * same design as `PURGE_EXCLUDED` in the purge cron.
+ *
+ * It is also SURFACED IN THE FILE, under `meta.notIncluded`. A customer
+ * exercising a portability request is entitled to know what the download does not
+ * contain; the silence was the part of the finding that was genuinely wrong.
+ *
+ * Adding an entry is allowed. Adding one without a reason a customer would accept
+ * is not, and the test enforces the length of it.
+ */
+const EXPORT_EXCLUDED = new Map<string, string>([
+  [
+    "Channel",
+    "Conversation content. lib/auth/channel-permissions.ts refuses to give an " +
+      "admin a back door into a private channel they were never invited to, and " +
+      "says a compliance export has to be an explicit, audited, logged path — " +
+      "which a self-service download is not. Findings sec-007 / rep-002.",
+  ],
+  [
+    "Message",
+    "Same reason as Channel: a message you authored in a private channel is " +
+      "still a row in that channel's history, and this route is not the audited " +
+      "path lib/auth/channel-permissions.ts requires. It is also why Notification " +
+      "is read per-caller here — chat fan-out copies 140 characters of the body " +
+      "onto DM and mention pings.",
+  ],
+  [
+    "BillingEvent",
+    "Our own ledger of LemonSqueezy webhook DELIVERIES, not a record of the " +
+      "workspace's activity: one row per signed provider callback, kept as the " +
+      "idempotency key that makes a replayed delivery a no-op (bill-009). Each " +
+      "row holds the provider's raw signed payload and its webhook id, which are " +
+      "security material for the endpoint rather than the customer's data. The " +
+      "billing FACTS a customer would want are already in this file, on the " +
+      "company row: plan, subscriptionStatus, currentPeriodEnd, " +
+      "billingSubscriptionId. Invoices come from the LemonSqueezy customer " +
+      "portal linked in Settings, which is the merchant of record for them.",
+  ],
+]);
+
+/** The excluded tables, as the export file discloses them to the customer. */
+function notIncludedNote(): Array<{ table: string; reason: string }> {
+  const out: Array<{ table: string; reason: string }> = [];
+  EXPORT_EXCLUDED.forEach((reason, table) => out.push({ table, reason }));
+  return out;
+}
+
+/**
  * Which export the caller asked for, or `null` for a value we don't recognise.
  *
  * `req` is optional because a Route Handler is also an ordinary async function:
@@ -438,6 +497,12 @@ async function workspaceExport(session: ScopedSession): Promise<NextResponse> {
       note:
         "Your workspace data, exported for portability. Money amounts are " +
         "in the workspace currency. Password hashes are intentionally omitted.",
+      // data-integrity-008. What this file deliberately does NOT contain, stated
+      // in the file. The omissions are privacy decisions (see EXPORT_EXCLUDED),
+      // but a customer exercising a portability request cannot evaluate a
+      // decision they were never told about — and silence is indistinguishable
+      // from a table nobody remembered.
+      notIncluded: notIncludedNote(),
     },
     company,
     // Strip the bcrypt hash from every user — it's credential material,

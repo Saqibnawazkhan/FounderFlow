@@ -92,10 +92,17 @@ export async function createProjectAction(
   const { id: userId, companyId } = session.user;
 
   try {
-    // The supervisor must be a real member of THIS company. Stops a forged
-    // userId from being slipped in.
+    // The supervisor must be a real, LIVE member of THIS company. Stops a forged
+    // userId from being slipped in, and — data-integrity-012 — stops the project
+    // being handed to somebody who has been deactivated. `getCompanyUsers`
+    // filters `deletedAt: null`, which is why the picker never offers them; this
+    // lookup did not, so a form rendered before a deactivation (or a hand-made
+    // request) could give a project an owner who cannot sign in to act on it. The
+    // card would render their name as the owner, nothing would reach them, and
+    // `canManageProject` would keep granting the supervisor escape hatch to an
+    // account that regains it on reactivation.
     const supervisor = await db.user.findFirst({
-      where: { id: supervisorId, companyId },
+      where: { id: supervisorId, companyId, deletedAt: null },
       select: { id: true, name: true },
     });
     if (!supervisor) {
@@ -573,6 +580,13 @@ const CONCURRENCY_EXEMPT_FIELDS: readonly string[] = ["status"];
  * abort a Prisma interactive transaction, and it has to be distinguishable from
  * a genuine database failure at the catch.
  */
+/** Thrown inside restoreProjectAction's transaction when another caller won. */
+class AlreadyRestoredError extends Error {
+  constructor() {
+    super("project already restored");
+  }
+}
+
 class StaleProjectWriteError extends Error {
   constructor() {
     super("project changed since the form was rendered");
@@ -771,8 +785,11 @@ export async function changeSupervisorAction(input: unknown): Promise<ActionResu
     if (!project) {
       return { success: false, error: "Project not found" };
     }
+    // data-integrity-012, same as createProjectAction: a deactivated teammate is
+    // not a supervisor. See the comment there for what handing a project to one
+    // actually does.
     const supervisor = await db.user.findFirst({
-      where: { id: supervisorId, companyId },
+      where: { id: supervisorId, companyId, deletedAt: null },
       select: { id: true, name: true },
     });
     if (!supervisor) {
@@ -820,6 +837,112 @@ export async function changeSupervisorAction(input: unknown): Promise<ActionResu
   } catch (e) {
     captureServerError(e, { action: "changeSupervisorAction" });
     return { success: false, error: "Couldn't change the supervisor right now." };
+  }
+}
+
+/**
+ * Clear a project's tombstone. data-integrity-010.
+ *
+ * WHY THIS HAD TO EXIST. `deleteProjectAction` below stamps `deletedAt` and says,
+ * in its own comment, that it does so "so an accidental project delete has the
+ * same 90-day recovery window as every other soft-delete table". Nothing ever
+ * cleared that column — a grep for `deletedAt: null` WRITES across lib/ and app/
+ * found exactly one, `reactivateUserAction`. So the window was real in the
+ * database and unusable from the product: /projects excluded the row,
+ * /projects/<id> 404'd, search excluded it, and the only recovery was ops SQL the
+ * customer could not even ask for, because they could no longer see that the
+ * project existed. A supervisor who deleted the wrong project had to guess that
+ * support could do something, and support had to be told which project id to
+ * resurrect by the one person who could no longer look it up.
+ *
+ * THE GATE IS THE SAME ONE THAT DELETED IT. `canManageProject` — supervisor or
+ * founder — so restoring is exactly as privileged as deleting, and no wider. The
+ * read is `findFirst` with `companyId` AND `deletedAt: { not: null }` in the same
+ * predicate rather than checked afterwards: one question to get right instead of
+ * three, and it makes restoring a LIVE project a no-op rather than a write.
+ *
+ * THE WRITE IS CONDITIONAL, for the reason data-integrity-006 and -007 are about:
+ * `updateMany({ where: { id, companyId, deletedAt: { not: null } } })` means two
+ * people pressing Restore together produce one restore and one honest "already
+ * restored", instead of a second write landing on a live row.
+ *
+ * WHAT IT DOES NOT DO, deliberately:
+ *   • It does not restore the project's TASKS or BUDGETS. It cannot: a project is
+ *     only deletable when it has no live ones, so there is nothing to bring back.
+ *     A project archived-then-deleted with tombstoned children is outside this
+ *     action's remit, and the file header's runbook is the path for that.
+ *   • It does not check the supervisor is still active. `Project.supervisorId →
+ *     User` is `Restrict`, so the row is always there; if that person has since
+ *     been deactivated the restored project shows them and "Change supervisor"
+ *     is the fix. Refusing the restore would be worse — it would make a
+ *     recoverable project unrecoverable because of an unrelated departure.
+ *   • It does not refuse a project whose 90 days have elapsed. While the row is
+ *     still in the database it is still restorable; the purge is the thing that
+ *     ends the window, and pre-empting it here would destroy nothing but the
+ *     customer's last chance.
+ *
+ * Reuses the `project_updated` activity type rather than minting
+ * `project_restored`, so nothing downstream has to learn a new variant — the same
+ * choice `deleteAccountAction` made with `user_removed` (lib/actions/account.ts).
+ * The cause lives in the message, which is what /activities renders.
+ */
+export async function restoreProjectAction(projectId: string): Promise<ActionResult> {
+  const session = await auth();
+  if (!session?.user?.companyId || !session.user.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+  if (!projectId) return { success: false, error: "Missing project id" };
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
+  const { id: userId, companyId, role } = session.user;
+
+  try {
+    const project = await db.project.findFirst({
+      where: { id: projectId, companyId, deletedAt: { not: null } },
+    });
+    if (!project) {
+      return { success: false, error: "That project isn't in Recently deleted." };
+    }
+    if (!canManageProject({ userId, role: role as Role, project })) {
+      return {
+        success: false,
+        error: "Only the supervisor or a founder can restore this project",
+      };
+    }
+
+    const me = await db.user.findUnique({ where: { id: userId } });
+    if (!me) return { success: false, error: "User no longer exists" };
+
+    await db.$transaction(async (tx) => {
+      const { count } = await tx.project.updateMany({
+        where: { id: projectId, companyId, deletedAt: { not: null } },
+        data: { deletedAt: null },
+      });
+      // Somebody else restored it between the read and here. Rolling back takes
+      // the activity row with it, so the feed never narrates a restore that this
+      // caller did not perform.
+      if (count === 0) throw new AlreadyRestoredError();
+      await logProjectActivity(tx, {
+        companyId,
+        projectId,
+        type: "project_updated",
+        message: `${me.name} restored project "${project.name}" from Recently deleted`,
+        userId,
+        userName: me.name,
+        metadata: { kind: "project", projectId, projectName: project.name },
+      });
+    });
+
+    revalidatePath("/projects");
+    revalidatePath("/activities");
+    return { success: true, data: undefined };
+  } catch (e) {
+    if (e instanceof AlreadyRestoredError) {
+      return { success: false, error: "That project has already been restored." };
+    }
+    captureServerError(e, { action: "restoreProjectAction" });
+    return { success: false, error: "Couldn't restore the project right now." };
   }
 }
 

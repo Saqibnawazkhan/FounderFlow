@@ -75,6 +75,32 @@ export function TeamClient({
   const [inviteOpen, setInviteOpen] = useState(false);
   const [pendingUserId, setPendingUserId] = useState<string | null>(null);
   const [pendingInviteId, setPendingInviteId] = useState<string | null>(null);
+  /**
+   * acct-016 on the Reactivate button. Scoped to the row that was pressed.
+   *
+   * `reactivateUserAction` refuses a restore that would overrun the plan's seat
+   * cap with a three-option instruction — "Upgrade to Team in Settings, or
+   * deactivate someone else, to restore <name>" (lib/actions/team.ts:696) — and
+   * `toast.error(res.error)` was the whole delivery, at a toaster duration of
+   * 3500ms (components/providers.tsx:186). Of the six toast-only handlers in this
+   * file this was the worst: the button is at the bottom of a long page, the
+   * toast is at the top of the viewport, and there is no dialog for the copy to
+   * live in, so 3.5 seconds later nothing on the screen recorded that anything
+   * had happened at all.
+   *
+   * Keyed by user id rather than held as one page-level string so the alert
+   * renders in the row the admin actually pressed — a shared banner at the top of
+   * the roster would be off-screen for exactly the click that produces it.
+   *
+   * The other four handlers keep their toast, deliberately. Each one's only
+   * instruction-shaped message is unreachable from this UI, and the reasoning is
+   * written out in tests/app/team/invite-error-surface.test.tsx so it can be
+   * re-checked rather than taken on trust.
+   */
+  const [reactivateError, setReactivateError] = useState<{
+    userId: string;
+    message: string;
+  } | null>(null);
 
   const isAdmin = currentUserRole === "admin";
   // Members don't see the per-member finance/task footer (invested, logged,
@@ -135,12 +161,18 @@ export function TeamClient({
 
   async function handleReactivate(userId: string, name: string) {
     setPendingUserId(userId);
+    // Cleared before the attempt, not after it: a refusal left sitting under a
+    // fresh press reads as a second failure for the same reason.
+    setReactivateError(null);
     const res = await reactivateUserAction(userId);
     setPendingUserId(null);
     if (res.success) {
       toast.success(`${name} reactivated`);
       refresh();
     } else {
+      // The toast stays — it is what pulls the eye to the row. It is no longer
+      // the only copy.
+      setReactivateError({ userId, message: res.error });
       toast.error(res.error);
     }
   }
@@ -425,37 +457,45 @@ export function TeamClient({
           </p>
           <ul className="divide-y divide-border overflow-hidden rounded-2xl border border-border bg-surface">
             {deactivatedUsers.map((du) => (
-              <li
-                key={du.id}
-                className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div className="flex min-w-0 items-center gap-3">
-                  <span className="opacity-60">
-                    <Avatar name={du.name} size="md" />
-                  </span>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="truncate font-semibold text-fg">{du.name}</p>
-                      <span className="rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-fg-muted">
-                        {ROLE_LABELS[du.role as UserRole] ?? du.role}
-                      </span>
+              /* The row is a column so the refusal can sit under it; the
+                 identity/button pair keeps the layout it had, in the inner div. */
+              <li key={du.id} className="p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="opacity-60">
+                      <Avatar name={du.name} size="md" />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="truncate font-semibold text-fg">{du.name}</p>
+                        <span className="rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-fg-muted">
+                          {ROLE_LABELS[du.role as UserRole] ?? du.role}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 flex items-center gap-1.5 truncate text-sm text-fg-muted">
+                        <Mail className="h-3 w-3" aria-hidden="true" /> {du.email}
+                      </p>
+                      <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-fg-muted">
+                        Deactivated {d.date(du.deactivatedAt)}
+                      </p>
                     </div>
-                    <p className="mt-0.5 flex items-center gap-1.5 truncate text-sm text-fg-muted">
-                      <Mail className="h-3 w-3" aria-hidden="true" /> {du.email}
-                    </p>
-                    <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-fg-muted">
-                      Deactivated {d.date(du.deactivatedAt)}
-                    </p>
                   </div>
+                  <button
+                    onClick={() => handleReactivate(du.id, du.name)}
+                    disabled={pendingUserId === du.id}
+                    className="inline-flex shrink-0 items-center gap-1.5 self-end rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-semibold text-fg transition-colors hover:border-primary/40 hover:text-primary-strong disabled:opacity-50 sm:self-auto"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                    {pendingUserId === du.id ? "Restoring…" : "Reactivate"}
+                  </button>
                 </div>
-                <button
-                  onClick={() => handleReactivate(du.id, du.name)}
-                  disabled={pendingUserId === du.id}
-                  className="inline-flex shrink-0 items-center gap-1.5 self-end rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-semibold text-fg transition-colors hover:border-primary/40 hover:text-primary-strong disabled:opacity-50 sm:self-auto"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                  {pendingUserId === du.id ? "Restoring…" : "Reactivate"}
-                </button>
+                {/* role="alert", the shape app/forgot-password/page.tsx:277 uses:
+                    a failure the admin just caused, so interrupting is correct. */}
+                {reactivateError?.userId === du.id && (
+                  <p role="alert" className="mt-3 text-xs font-medium text-danger">
+                    {reactivateError.message}
+                  </p>
+                )}
               </li>
             ))}
           </ul>
@@ -512,6 +552,33 @@ function Cell({
 function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: () => void }) {
   const nameId = useId();
   const emailId = useId();
+  /**
+   * acct-016. The server's refusal, kept on the screen.
+   *
+   * `inviteUserAction` no longer answers an address collision with one flat
+   * sentence: it distinguishes a deactivated teammate from a deleted account and
+   * hands back an instruction for each (lib/actions/team.ts:192 and :200), and it
+   * refuses a seat-cap overrun with a third (:290). All three ask the admin to go
+   * and DO something — reactivate from the Deactivated list, contact support,
+   * upgrade in Settings — and `toast.error(res.error)` was the whole delivery, at
+   * a toaster duration of 3500ms (components/providers.tsx:186). An instruction
+   * the reader cannot re-read is an instruction they cannot follow.
+   *
+   * Rendered inside the dialog, next to the field whose value caused it, so the
+   * remedy and the fix are in one place. The toast still fires, because it is what
+   * draws the eye back to a dialog that may have been scrolled past; it is no
+   * longer the only copy. Same shape as app/forgot-password/page.tsx:277.
+   *
+   * NO CLEAR-ON-CLOSE HERE, and that is not an omission. `Modal` is a Radix
+   * Dialog whose content is unmounted when `open` goes false (no `forceMount`),
+   * so this whole component — state included — is discarded on every one of the
+   * three close paths: Cancel, the X, and Escape/overlay. An explicit clear wired
+   * to the Cancel handler alone would cover one of the three and read as if it
+   * covered all of them. tests/app/team/invite-error-surface.test.tsx asserts the
+   * reopened dialog is clean, so if `forceMount` is ever added the gap shows up
+   * as a failing test rather than as a stale refusal.
+   */
+  const [formError, setFormError] = useState<string | null>(null);
 
   const {
     register,
@@ -530,6 +597,9 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
   const nameValue = watch("name");
 
   async function onSubmit(data: InviteUserInput) {
+    // Cleared before the attempt, not after it: a refusal left sitting under a
+    // fresh submission reads as a second failure for the same reason.
+    setFormError(null);
     const res = await inviteUserAction(data);
     if (res.success) {
       // Two failure modes funnel into emailSent=false:
@@ -549,6 +619,7 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
       }
       onInvited();
     } else {
+      setFormError(res.error);
       toast.error(res.error);
     }
   }
@@ -623,6 +694,14 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
           })}
         </div>
       </div>
+
+      {/* role="alert", the shape app/forgot-password/page.tsx:277 uses: a submit
+          failure the admin just caused, so announcing it immediately is correct. */}
+      {formError && (
+        <p role="alert" className="text-xs font-medium text-danger">
+          {formError}
+        </p>
+      )}
 
       <div className="flex gap-3 pt-2">
         <button

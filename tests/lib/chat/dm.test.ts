@@ -11,7 +11,14 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { dmDisplayName, dmSlugFor } from "@/lib/chat/dm";
+import {
+  composerPlaceholder,
+  conversationTitle,
+  dmDisplayName,
+  dmSlugFor,
+  isDmKind,
+  DM_UNNAMED_COUNTERPART,
+} from "@/lib/chat/dm";
 import { dmKeyFor } from "@/lib/auth/channel-permissions";
 import { slugifyChannelName } from "@/lib/chat/slug";
 
@@ -134,10 +141,11 @@ describe("dmDisplayName (the heading a DM wears from the viewer's side)", () => 
   });
 
   it("returns null when the viewer is the only member", () => {
-    // null, never "", is the caller's signal to fall back to the stored
-    // Channel.name. An empty string renders as a blank heading and reads as a
-    // failed load — which is what a half-written row or a tombstoned
-    // counterpart would otherwise look like.
+    // null, never "", is the caller's signal that there is nobody to name — the
+    // caller then renders DM_UNNAMED_COUNTERPART (see the describe at the foot
+    // of this file for why NOT the stored Channel.name). An empty string would
+    // render as a blank heading and read as a failed load, which is what a
+    // half-written row would otherwise look like.
     expect(dmDisplayName([{ id: AYESHA, name: "Ayesha Khan" }], AYESHA)).toBeNull();
     expect(dmDisplayName([], AYESHA)).toBeNull();
   });
@@ -178,5 +186,151 @@ describe("dmDisplayName (the heading a DM wears from the viewer's side)", () => 
         AYESHA
       )
     ).toBeNull();
+  });
+});
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * chat-008: A DM IS A PERSON, NOT A ROOM.
+ *
+ * `#Ayesha Khan` is not a cosmetic slip. Three surfaces addressed a two-person
+ * conversation as a channel — the browser tab (`generateMetadata` titled every
+ * kind `#${name}`), the composer's placeholder and its sr-only label
+ * (`Message #${channelName}`, unconditional), and the channel header (an icon
+ * picked with `isPrivate ? Lock : Hash`, so `kind: "dm"` fell through to Hash).
+ * A reader who sees a hash in front of a colleague's name has been told the
+ * workspace can read it.
+ *
+ * The three fixes therefore share ONE pure decision rather than each spelling
+ * `kind === "dm" ? name : "#" + name` locally, which is how two of them end up
+ * disagreeing the day a fourth surface appears.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+describe("isDmKind (one spelling of the kind check, for every surface)", () => {
+  it("recognises a direct message whatever case the column holds", () => {
+    // `Channel.kind` is a plain String column, so the casing is whatever the
+    // writer stored. Reading "DM" as a room files a private two-person thread
+    // under the workspace-wide rooms.
+    for (const kind of ["dm", "DM", "Dm"]) expect(isDmKind(kind)).toBe(true);
+  });
+
+  it("does not mistake a room for a direct message", () => {
+    for (const kind of ["public", "private", "PRIVATE", "", "dmz"]) {
+      expect(isDmKind(kind)).toBe(false);
+    }
+  });
+});
+
+describe("conversationTitle (how a conversation is addressed in prose)", () => {
+  it("hashes a room", () => {
+    expect(conversationTitle("public", "general")).toBe("#general");
+    expect(conversationTitle("private", "hiring")).toBe("#hiring");
+  });
+
+  it("never hashes a direct message", () => {
+    // WHAT THE USER SAW: a browser tab reading "#Ahmed Khan · FounderFlow".
+    expect(conversationTitle("dm", "Ahmed Khan")).toBe("Ahmed Khan");
+    expect(conversationTitle("DM", "Ahmed Khan")).toBe("Ahmed Khan");
+  });
+});
+
+describe("composerPlaceholder (what the send box invites you to do)", () => {
+  it("names a room with its hash", () => {
+    expect(composerPlaceholder("public", "finance")).toBe("Message #finance");
+  });
+
+  it("names a person without one", () => {
+    expect(composerPlaceholder("dm", "Ahmed Khan")).toBe("Message Ahmed Khan");
+  });
+});
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * A DM WITH A DEACTIVATED TEAMMATE MUST DEGRADE HONESTLY.
+ *
+ * Tier 3 tombstones users (`User.deletedAt`) rather than deleting them, and
+ * nothing clears their `ChannelMember` rows — so the counterpart of a DM with
+ * a deactivated colleague still resolves, and the conversation silently reads
+ * exactly like a live one. The reader types into a room nobody will ever open
+ * again and is told nothing.
+ *
+ * The annotation lives in this one pure function on purpose: the rail, the
+ * channel header, the browser tab and the composer placeholder all render
+ * `ChannelListItem.name` / `ChannelDetail.name`, so annotating the NAME reaches
+ * every one of them at once. A separate `deactivated` boolean on the DTO would
+ * need four independent renders, which is four chances for one to ship
+ * unreached — the defect this codebase has produced four times this week.
+ * ─────────────────────────────────────────────────────────────────────────── */
+describe("dmDisplayName (a counterpart who has left the workspace)", () => {
+  it("says so when the only counterpart is deactivated", () => {
+    expect(
+      dmDisplayName(
+        [
+          { id: AYESHA, name: "Ayesha Khan" },
+          { id: SAQIB, name: "Saqib Nawaz", deletedAt: new Date("2026-09-01T00:00:00Z") },
+        ],
+        AYESHA
+      )
+    ).toBe("Saqib Nawaz (deactivated)");
+  });
+
+  it("still names them, rather than blanking the conversation", () => {
+    // A blank heading reads as a failed load, and the history of a DM with a
+    // departed colleague stays readable by design — so the name is kept and
+    // qualified, never dropped.
+    const heading = dmDisplayName(
+      [
+        { id: AYESHA, name: "Ayesha Khan" },
+        { id: SAQIB, name: "Saqib Nawaz", deletedAt: new Date() },
+      ],
+      AYESHA
+    );
+    expect(heading).toContain("Saqib Nawaz");
+  });
+
+  it("annotates only the members who actually left", () => {
+    const heading = dmDisplayName(
+      [
+        { id: AYESHA, name: "Ayesha Khan" },
+        { id: SAQIB, name: "Saqib Nawaz", deletedAt: new Date() },
+        { id: ZARA, name: "Zara Iqbal", deletedAt: null },
+      ],
+      AYESHA
+    );
+    expect(heading).toBe("Saqib Nawaz (deactivated), Zara Iqbal");
+  });
+
+  it("leaves a live counterpart unqualified whether deletedAt is null or absent", () => {
+    // The field is optional so every existing caller keeps compiling; absent
+    // and null must mean the same thing, or the annotation appears at random
+    // depending on which query populated the row.
+    expect(
+      dmDisplayName(
+        [
+          { id: AYESHA, name: "Ayesha Khan" },
+          { id: SAQIB, name: "Saqib Nawaz", deletedAt: null },
+        ],
+        AYESHA
+      )
+    ).toBe("Saqib Nawaz");
+    expect(
+      dmDisplayName(
+        [
+          { id: AYESHA, name: "Ayesha Khan" },
+          { id: SAQIB, name: "Saqib Nawaz" },
+        ],
+        AYESHA
+      )
+    ).toBe("Saqib Nawaz");
+  });
+});
+
+describe("DM_UNNAMED_COUNTERPART (the fallback when there is nobody to name)", () => {
+  it("is neutral text, never the viewer's own name", () => {
+    // WHY THE STORED Channel.name IS NOT THE FALLBACK: `openDmAction` writes
+    // it as "Saqib Nawaz & Ahmed Khan", which contains the VIEWER. Falling
+    // back to it in the one case the viewer-relative rename could not resolve
+    // re-introduces the exact bug `dmDisplayName` exists to prevent — Saqib
+    // opening a conversation with his own name in the heading.
+    expect(DM_UNNAMED_COUNTERPART.length).toBeGreaterThan(0);
+    expect(DM_UNNAMED_COUNTERPART).not.toContain("&");
   });
 });

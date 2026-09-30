@@ -504,3 +504,85 @@ export async function listProjectOptions(): Promise<{ id: string; name: string; 
   });
   return projects;
 }
+
+/**
+ * How long a tombstoned project survives before `/api/cron/purge-soft-deleted`
+ * erases it. Mirrors `RETENTION_DAYS` in that route, which is the authority.
+ *
+ * Duplicated rather than imported because the route is a Next.js Route Handler
+ * and cannot export a constant — Next validates route exports. The number is
+ * shown to the user, so `tests/lib/queries/deleted-projects.test.ts` reads the
+ * route's own literal and asserts the two agree: a countdown that disagrees with
+ * the job doing the deleting is worse than no countdown.
+ */
+export const PROJECT_RETENTION_DAYS = 90;
+
+/** A tombstoned project, as the "Recently deleted" panel needs it. */
+export interface DeletedProjectListItem {
+  id: string;
+  name: string;
+  color: string;
+  status: string;
+  supervisorName: string | null;
+  /** ISO 8601, so it crosses the RSC boundary unchanged. */
+  deletedAt: string;
+  /**
+   * Whole days left before the purge erases it, floored, never below 0.
+   *
+   * Computed on the SERVER on purpose. The client has the customer's clock, and
+   * this number is the difference between "you can still get it back" and "it is
+   * gone" — a browser an hour fast must not tell somebody their window closed.
+   */
+  daysUntilPurge: number;
+}
+
+/**
+ * Projects this caller deleted-but-can-still-recover. data-integrity-010.
+ *
+ * WHY THIS EXISTS. `deleteProjectAction` writes `Project.deletedAt` and says, in
+ * its own comment, that it does so "so an accidental project delete has the same
+ * 90-day recovery window as every other soft-delete table". Nothing ever cleared
+ * that column: a grep for `deletedAt: null` WRITES across lib/ and app/ found
+ * exactly one, `reactivateUserAction`. So the window existed in the database and
+ * was unusable from the product — /projects excluded the row, /projects/<id>
+ * 404'd, search excluded it, and the only recovery was ops SQL the customer could
+ * not even ASK for, because they could no longer see that the project existed.
+ * The tombstone bought none of what it was written to buy.
+ *
+ * The visibility rule is the same one `listProjectsForUser` uses, minus the half
+ * that cannot apply: admin/cofounder see every deleted project, and anyone else
+ * sees the ones they supervised. The task-assignment branch is deliberately
+ * absent — `deleteProjectAction` refuses a project with any live task, so a
+ * deleted project has no assignees to derive visibility from.
+ */
+export async function listDeletedProjectsForUser(
+  now: Date = new Date()
+): Promise<DeletedProjectListItem[]> {
+  const { userId, companyId, role } = await requireScopedSession();
+
+  const rows = await db.project.findMany({
+    where: canSeeAllProjects(role as Role)
+      ? { companyId, deletedAt: { not: null } }
+      : { companyId, deletedAt: { not: null }, supervisorId: userId },
+    include: { supervisor: { select: { name: true } } },
+    orderBy: { deletedAt: "desc" },
+  });
+
+  const msPerDay = 24 * 60 * 60 * 1000;
+  return rows.map((p) => {
+    // `deletedAt` is non-null by the WHERE above; the fallback keeps TypeScript
+    // honest without inventing a date that would read as "deleted just now".
+    const deletedAt = p.deletedAt ?? now;
+    const elapsedDays = (now.getTime() - deletedAt.getTime()) / msPerDay;
+    const left = Math.floor(PROJECT_RETENTION_DAYS - elapsedDays);
+    return {
+      id: p.id,
+      name: p.name,
+      color: p.color,
+      status: p.status,
+      supervisorName: p.supervisor?.name ?? null,
+      deletedAt: deletedAt.toISOString(),
+      daysUntilPurge: left > 0 ? left : 0,
+    };
+  });
+}

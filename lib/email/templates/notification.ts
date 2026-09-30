@@ -12,6 +12,8 @@
  * constraints (and structure) as templates/invite.ts.
  */
 
+import { escapeHtml } from "@/lib/email/html";
+
 export interface NotificationEmailVars {
   /** Who is being written to; used for the greeting only. */
   recipientName: string;
@@ -85,13 +87,4 @@ You're getting this because your FounderFlow notification settings have email
 switched on for this kind of update. Change that here: ${v.preferencesUrl}`;
 
   return { html, text };
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }

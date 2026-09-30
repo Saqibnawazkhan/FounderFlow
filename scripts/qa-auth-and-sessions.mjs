@@ -38,11 +38,17 @@
  *     points at PRODUCTION Supabase (tests/lib/db/script-safety.test.ts).
  *   - fail() records and prints a literal ❌ but never throws, so one run
  *     reports every broken assertion.
- *   - x-real-ip is set on every context before its first navigation.
- *     getClientIp() falls back to the literal "unknown" in dev, so without it
- *     all nine agents share ONE limiters.auth bucket of 5/60s fed by nine call
- *     sites. Every probe that deliberately BURNS the auth bucket uses its own
- *     suffixed key, so it can never starve the rest of this run.
+ *   - x-real-ip is set on every context before its first navigation. NOT because
+ *     of a shared "unknown" bucket any more: sec-001 removed that fallback, and
+ *     lib/client-ip.ts now returns UNTRUSTED_CLIENT_IP, which ipBucketKey()
+ *     degrades to a PER-ACCOUNT key rather than one global 5/60s bucket nine
+ *     agents share. The header is set so each agent gets its own per-address
+ *     budget instead of every agent's probes piling onto the same account keys,
+ *     and so the two classes that have NO account to fall back on
+ *     (`tokenRedeem`, `invitePageView`) are exercised at all — both of those
+ *     fail OPEN when no trusted address is supplied. Every probe that
+ *     deliberately BURNS a bucket uses its own suffixed key, so it can never
+ *     starve the rest of this run.
  *   - The same rule applies to the per-ACCOUNT failure bucket, which is the one
  *     that bites harder: a suffixed x-real-ip does nothing for it, because it is
  *     keyed on the EMAIL. So a probe that deliberately spends failures spends
@@ -377,17 +383,45 @@ async function main() {
     return { rendered: true, text: t ?? "" };
   }
 
-  /** Open a token-landing page (/verify-email, /verify-email-change) and read it. */
+  /**
+   * Open a token-landing page (/verify-email, /verify-email-change) and read it.
+   *
+   * THE TWO PAGES NO LONGER BEHAVE THE SAME, and this helper has to know it
+   * (auth-015). `/verify-email` still applies on load: confirming an address
+   * only records that the mailbox received our token, which stays true when a
+   * scanner inside that mailbox's own delivery path follows the link.
+   * `/verify-email-change` now waits for a click, because that link MOVES the
+   * address /forgot-password delivers to, so a mail scanner fetching it used to
+   * complete the change on the customer's behalf.
+   *
+   * So this function clicks, for that path only. It must, and not merely to
+   * avoid a false failure: `confirm` used to sit in the outcome alternation
+   * below, so `waitUntil` returned the instant the PRE-CLICK card painted and
+   * the helper reported success having submitted nothing. The email-change
+   * replay check further down this file then found the login address unmoved —
+   * which is exactly what a working `bv` binding looks like — and printed a
+   * green `ok()` with no evidence behind it. A false failure announces itself;
+   * a false pass reads as reassurance, which is why `confirm` is gone from the
+   * alternation rather than left in as a convenience.
+   */
   async function openTokenPage(path, token, ipKey) {
     const { ctx, page } = await newCtx(browser, ipKey);
     await page.goto(`${BASE}${path}?token=${encodeURIComponent(token)}`, {
       waitUntil: "networkidle0",
       timeout: 60000,
     });
+    if (path === "/verify-email-change") {
+      await page.evaluate(() => {
+        const b = [...document.querySelectorAll("button")].find((x) =>
+          /confirm/i.test(x.textContent ?? "")
+        );
+        if (b) b.click();
+      });
+    }
     const t = await waitUntil(
       async () => {
         const body = await bodyText(page);
-        return /verified|expired|invalid|malformed|no longer exists|confirm|updated|changed|in use/i.test(
+        return /verified|expired|invalid|malformed|no longer exists|updated|changed|in use/i.test(
           body
         )
           ? body
@@ -928,8 +962,10 @@ async function main() {
         `12 wrong guesses from ${IP}-burn (already locked out of the /login form) were all served, and a ` +
           `13th request carrying the CORRECT password then SIGNED IN (status ${correctPwProbe.status}). ` +
           "A spent per-IP budget must refuse a valid credential too; accepting one proves the provider " +
-          "path consumes no limiter. Fix: gate lib/auth.ts's authorize() itself — the choke point both " +
-          "the /login form and this endpoint share."
+          "path consumed no limiter. That gate EXISTS — lib/auth.ts's authorize() calls gateLoginAttempt " +
+          "from lib/auth/login-throttle.ts, the choke point both the /login form and this endpoint " +
+          "share — so this firing is a regression in it, or the per-IP window refilled mid-loop, not a " +
+          "fix that was never written."
       );
       // Do not leave a live session behind for the sections that follow.
       await burn.evaluate(async () => {
@@ -1252,8 +1288,12 @@ async function main() {
       fail(
         "a superseded email-change link silently reverts the login address",
         `after A→B→C, replaying the A→B link within its 1-hour TTL set the login email back to ` +
-          `${NEW_EMAIL_B}. Nothing makes the token single-use and nothing invalidates it when a ` +
-          `later change lands, so the customer's login address moves under them (page said: ${replayText.slice(0, 90)})`
+          `${NEW_EMAIL_B}, so the customer's login address moved under them. The mechanism that is ` +
+          `supposed to stop this EXISTS: the token carries a \`bv\` binding digest over ` +
+          `{sessionVersion, email, …} and confirmEmailChange bumps sessionVersion in the same UPDATE ` +
+          `as the swap (lib/actions/email-change.ts), which both makes the link single-use and kills ` +
+          `every other outstanding one. A firing here means that binding check broke, not that it was ` +
+          `never written (page said: ${replayText.slice(0, 90)})`
       );
     } else {
       ok("a superseded email-change link no longer applies");
@@ -1272,7 +1312,7 @@ async function main() {
       });
     }
 
-    /* ═══ 9. INVITE — an unauthenticated, unrate-limited single-use token ═══ */
+    /* ═══ 9. INVITE — an unauthenticated, metered, single-use token ═════════ */
     section("9. invite lifecycle");
 
     ({ ctx: teamCtx, page: team } = await newCtx(browser, `${IP}-team`));
@@ -1330,7 +1370,31 @@ async function main() {
           else fail("forged invite token", forgedBody.slice(0, 160));
           await shut(forgedPage, fCtx);
 
-          // 9b. Nothing prices an attempt against the invite surface.
+          // 9b. Is an attempt against the invite surface priced? BOTH HALVES ARE
+          // METERED as of auth-008, so this probe is now a regression detector
+          // rather than a finding:
+          //   GET  /invite/<token>   `invitePageView`, 15/min per client address
+          //                          (app/invite/[token]/page.tsx, before the
+          //                          token lookup — a refused render costs no
+          //                          database round trip)
+          //   POST acceptInviteAction `tokenRedeem`, 30/min per client address
+          //                          (lib/actions/team.ts, before the parse)
+          // Separate buckets, deliberately, so a flood of renders can never
+          // refuse the submit of somebody who already has the form open.
+          //
+          // 20 GETs from one address therefore has to trip the 15 valve. What
+          // this loop measures is the GET half only — which is the half an
+          // attacker would pick, and the half the first fix for auth-008 missed.
+          //
+          // BOTH CLASSES FAIL OPEN WHERE NO CLIENT ADDRESS IS TRUSTWORTHY
+          // (lib/rate-limit.ts returns "allowed, uncounted" rather than pooling
+          // every visitor into one bucket an attacker could use to lock everyone
+          // out). Trust is declared: with TRUSTED_PROXY_HEADER unset, x-real-ip
+          // is read on Vercel and in any non-production NODE_ENV, and NOWHERE
+          // else — so on a self-hosted production runtime both gates are a
+          // documented no-op. This harness sets x-real-ip per browser context
+          // against a dev server, so here the address IS trusted and the gates
+          // DO count.
           const { ctx: rlCtx, page: rlPage } = await newCtx(browser, `${IP}-i2`);
           await rlPage.goto(`${BASE}/login`, { waitUntil: "networkidle0", timeout: 60000 });
           const probes = await rlPage.evaluate(async () => {
@@ -1345,14 +1409,20 @@ async function main() {
           const inviteThrottled = probes.filter((p) => p.throttled).length;
           if (inviteThrottled === 0) {
             fail(
-              "the invite-token surface is unauthenticated AND unthrottled",
+              "the invite-token surface no longer throttles its GET half",
               `20 consecutive /invite/<128-char> probes from one IP were all served (statuses ` +
-                `${[...new Set(probes.map((p) => p.status))].join(",")}). acceptInviteAction calls no ` +
-                "limiter either, so nothing at all prices a guess against a live single-use join secret " +
-                "— and nothing caps the DB lookups an attacker can drive"
+                `${[...new Set(probes.map((p) => p.status))].join(",")}), and 20 is past the 15/min ` +
+                "`invitePageView` allowance. Both halves of this surface ARE metered — the render on " +
+                "`invitePageView` (15/min/address, app/invite/[token]/page.tsx) and the submit on " +
+                "`tokenRedeem` (30/min/address, acceptInviteAction) — so an all-served result means " +
+                "one of two things, and neither is 'no gate was ever written': either a gate was " +
+                "removed, or no trusted client address reached one. Check the second first — both " +
+                "classes fail OPEN when `isTrustedIpKey` rejects the key, which is what happens with " +
+                "TRUSTED_PROXY_HEADER unset outside Vercel and outside a non-production NODE_ENV. " +
+                "This harness supplies x-real-ip per context, so against a dev server it should count"
             );
           } else {
-            ok(`the invite surface throttles (${inviteThrottled}/20 rejected)`);
+            ok(`the invite GET half throttles — invitePageView rejected ${inviteThrottled}/20`);
           }
           await shut(rlPage, rlCtx);
 

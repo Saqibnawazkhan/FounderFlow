@@ -35,6 +35,11 @@
 import puppeteer from "puppeteer-core";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { localDb } from "./_local-db.mjs";
+// Section F asks the REAL build gate what it requires and what it refuses,
+// instead of grepping its source. Importing this module cannot start a build:
+// `isDirectInvocation` only calls main() when argv[1] is vercel-build.mjs
+// itself, which is pinned in tests/lib/env/build-config.test.ts.
+import { productionEnvProblems } from "./vercel-build.mjs";
 
 // ── constants ──────────────────────────────────────────────────────────────
 const AGENT_INDEX = 20;
@@ -125,9 +130,14 @@ function wire(page, cspSink) {
 }
 
 /**
- * Every page/context gets x-real-ip BEFORE its first navigation: getClientIp()
- * falls back to the literal "unknown" in dev, so without this all agents share
- * one limiters.auth bucket of 5/60s and starve each other.
+ * Every page/context gets x-real-ip BEFORE its first navigation.
+ *
+ * NOT because of the old shared "unknown" bucket — sec-001 removed that
+ * fallback, and lib/client-ip.ts now returns UNTRUSTED_CLIENT_IP, which
+ * ipBucketKey() degrades to a PER-ACCOUNT key instead of one global 5/60s bucket
+ * every agent starves. The header is still set so each agent counts against its
+ * own address, and so the classes with no account to fall back on are exercised
+ * at all rather than failing open.
  */
 async function newPage(ctx, cspSink, ip = AGENT_IP) {
   const page = await ctx.newPage();
@@ -257,7 +267,10 @@ async function main() {
     if (sitemapLine.startsWith(APP_URL)) ok(`robots advertises ${sitemapLine}`);
     else fail("robots Sitemap host", `expected to start with ${APP_URL}, got "${sitemapLine}"`);
     if (/localhost|127\.0\.0\.1/.test(sitemapLine)) {
-      note(`robots Sitemap points at localhost here because NEXT_PUBLIC_APP_URL=${APP_URL}; the SAME code path ships that value to prod and nothing in scripts/vercel-build.mjs requires the var`);
+      // NOT a finding. It was one until prodready-004 closed: the var is now in
+      // REQUIRED_PROD_ENV *and* value-checked, so the localhost value cannot
+      // reach a production deploy either by omission or by being pasted in.
+      note(`robots Sitemap points at localhost here because NEXT_PUBLIC_APP_URL=${APP_URL} — a dev artefact, not a finding. The same code path ships that value to prod, and a production build refuses it twice over: the var is in REQUIRED_PROD_ENV, and VALUE_RULES additionally rejects a loopback host (localhost, 127.x, 0.0.0.0, [::1]) even when it IS set. Section F re-checks both from here`);
     }
     // Which authenticated routes are crawlable. Already-filed finding — logged
     // as a note so it is visible without double-counting as a failure.
@@ -408,7 +421,7 @@ async function main() {
 
     // The purge cron, ONLY in proven dry-run. PURGE_ENABLED must not be "true".
     if (!CRON_SECRET) {
-      note("CRON_SECRET is empty in .env.local — skipping the authorized purge probe. NOTE: with it unset every cron returns 500 and emits NO Sentry event, so all three silently die in prod.");
+      note("CRON_SECRET is empty in .env.local — skipping the authorized purge probe. With it unset every cron returns 500 and emits NO Sentry event, which is why prodready-003 put it in REQUIRED_PROD_ENV: a production build now FAILS without it, so the silent-death case is a local-only state (section F re-checks that).");
     } else if (PURGE_ENABLED === "true") {
       note("PURGE_ENABLED=true in .env.local — REFUSING to invoke the purge endpoint (it would hard-delete). Data safety wins over coverage.");
     } else {
@@ -434,8 +447,13 @@ async function main() {
     section("E. observability");
     // Is the browser Sentry SDK even in the bundle? sentry.client.config.ts is
     // injected by withSentryConfig, which next.config.js only applies when
-    // SENTRY_AUTH_TOKEN + ORG + PROJECT are ALL set. And it reads
-    // NEXT_PUBLIC_SENTRY_DSN, which nothing validates or requires.
+    // SENTRY_DSN *and* SENTRY_AUTH_TOKEN + ORG + PROJECT are ALL set (and it
+    // THROWS, failing the build, on some-but-not-all of those three). And it reads
+    // NEXT_PUBLIC_SENTRY_DSN, which no production build REQUIRES — deliberately,
+    // since "no Sentry at all" is a choice this project made. What a production
+    // build does refuse (prodready-006) is exactly ONE of the two DSNs being set,
+    // because that deploy looks configured and is missing a whole side of the
+    // app; both absent only warns. Section F probes both halves of that rule.
     const html = await (await http("/login")).text();
     const chunkUrls = [...html.matchAll(/src="(\/_next\/static\/[^"]+\.js)"/g)].map((m) => m[1]);
     let sentryMarker = false;
@@ -463,25 +481,81 @@ async function main() {
 
     // ══ F. env + runtime contract ═════════════════════════════════════════
     section("F. env + runtime contract");
-    const buildScript = repoText("scripts/vercel-build.mjs");
-    const requiredProd = [
-      ...(buildScript.match(/const requiredProdEnv = \{([\s\S]*?)\n  \};/) ?? ["", ""])[1].matchAll(
-        /^\s{4}([A-Z0-9_]+):/gm
-      ),
-    ].map((m) => m[1]);
+    // DRIVEN, NOT GREPPED. This block used to match `const requiredProdEnv = {`
+    // out of vercel-build.mjs's source — an identifier that has never existed
+    // there (it is REQUIRED_PROD_ENV, keys indented two spaces, closing brace at
+    // column 0). The parse therefore captured nothing, this line printed
+    // "requires: (none parsed)", and the loop below reported every var as
+    // omitted on every run against a build script that requires them all. Five
+    // invented failures is a section people learn to skip.
+    //
+    // `productionEnvProblems` is pure, exported and unit-tested
+    // (tests/lib/env/build-config.test.ts). An empty Production scope makes
+    // every required var name itself, so the list cannot go stale.
+    const requiredProd = productionEnvProblems({})
+      .map((p) => (/^([A-Z][A-Z0-9_]*) is not set/.exec(p) ?? [])[1])
+      .filter(Boolean);
     ok(`vercel-build.mjs requires: ${requiredProd.join(", ") || "(none parsed)"}`);
-    // Vars the app cannot function without, that a green prod build may omit.
+    // Vars the app cannot function without, that a green prod build once omitted
+    // (prodready-003/004/005). All four are required now; the loop stays so a
+    // removal is loud rather than silent.
     const MUST_ALSO_REQUIRE = {
       NEXT_PUBLIC_APP_URL: "every invite / reset / verify link and robots+sitemap fall back to http://localhost:3000",
       CRON_SECRET: "all three crons return 500 forever, with no Sentry event",
       GMAIL_USER: "no transactional email is sent; password reset still says 'check your email'",
       GMAIL_APP_PASSWORD: "same — the dev-stub branch prints the reset link to the function log instead",
-      NEXT_PUBLIC_SENTRY_DSN: "browser-side error reporting is silently off",
     };
     for (const [k, why] of Object.entries(MUST_ALSO_REQUIRE)) {
       if (requiredProd.includes(k)) ok(`prod build requires ${k}`);
       else fail(`prod build may omit ${k}`, why);
     }
+
+    // The other half of the contract: what a production build refuses to ship
+    // WITH. Probed by perturbing a scope that is otherwise complete, because
+    // every name appears in the problem list when the scope is empty — a check
+    // against an empty scope would pass whatever the gate did.
+    const validProdScope = {};
+    for (const name of requiredProd) validProdScope[name] = "set-for-this-probe";
+    // The two vars that are value-checked as well as presence-checked, given
+    // values the gate must accept.
+    validProdScope.NEXT_PUBLIC_APP_URL = "https://app.founderflow.example";
+    validProdScope.DIRECT_URL = "postgresql://u:p@db.example.com:5432/postgres";
+    const scopeBaseline = productionEnvProblems(validProdScope);
+    if (scopeBaseline.length === 0) {
+      ok("a Production scope with every required var present and sane is accepted");
+    } else {
+      fail(
+        "the build gate refuses a scope that satisfies its own required list",
+        `${scopeBaseline.join(" | ")} — either a value rule is wrong or this probe's placeholder values are`
+      );
+    }
+    /** The problems that adding `extra` introduces to an otherwise-valid scope. */
+    const introducedBy = (extra) =>
+      productionEnvProblems({ ...validProdScope, ...extra }).filter(
+        (p) => !scopeBaseline.includes(p)
+      );
+    const REFUSALS = [
+      ["RATE_LIMIT_DISABLED", "true", "prodready-002 — a blanket bypass for every limiter in lib/rate-limit.ts, including the login throttle, with no runtime signal"],
+      // The dangerous value here is ZERO, which no truthiness check catches —
+      // hence the `refuse: "any"` mode on this entry. Probed AT zero on purpose.
+      ["PASSWORD_RESET_RESPONSE_FLOOR_MS", "0", "the uniform-latency floor on /forgot-password; 0 reopens the address-enumeration oracle on the clock, silently"],
+      ["NEXT_PUBLIC_APP_URL", "http://localhost:3000", "prodready-004's value half — the .env.local.example origin passes a presence check and mails every customer a link to their own machine"],
+      ["SENTRY_DSN", "https://abc@o1.ingest.sentry.io/2", "prodready-006 — half a Sentry configuration reports server errors, drops every browser crash, and still tells the customer \"The team has been notified\""],
+    ];
+    for (const [name, value, why] of REFUSALS) {
+      if (introducedBy({ [name]: value }).length > 0) {
+        ok(`prod build refuses ${name}=${value}`);
+      } else {
+        fail(`prod build accepts ${name}=${value}`, why);
+      }
+    }
+    // NEXT_PUBLIC_SENTRY_DSN is deliberately NOT in MUST_ALSO_REQUIRE. "No
+    // Sentry at all" is a choice this project has made out loud — no Sentry var
+    // exists in any Vercel scope today — and a build that refuses to deploy over
+    // an unconfigured observability tool is its own kind of outage. Both DSNs
+    // absent warns loudly and ships; exactly one of them set is refused, which
+    // is the case probed above.
+    note("both Sentry DSNs absent only WARNS on a production build (productionEnvWarnings), by decision — see section E for whether this deploy actually reports anything");
 
     const nvmrc = repoText(".nvmrc").trim();
     const pkg = JSON.parse(repoText("package.json"));
@@ -532,7 +606,11 @@ async function main() {
     // ══ H. is the rate-limit key client-forgeable? ═════════════════════════
     section("H. rate-limit key integrity");
     if (RATE_LIMIT_DISABLED === "true") {
-      note("RATE_LIMIT_DISABLED=true in .env.local — cannot probe the limiter. NOTE: nothing in scripts/vercel-build.mjs stops this same var being set in the Production scope, where it silently disables brute-force protection with zero signal.");
+      // The second sentence used to say the opposite, and said it about a guard:
+      // "nothing in vercel-build.mjs stops this same var being set in the
+      // Production scope". That closed with prodready-002. Section F above
+      // re-proves the refusal on every run, so this is a LOCAL bypass only.
+      note("RATE_LIMIT_DISABLED=true in .env.local — cannot probe the limiter, so section H is skipped. It is a local-only switch: the var is in FORBIDDEN_PROD_ENV and a production build refuses to proceed while it is truthy (prodready-002, re-checked in section F), so it cannot reach the Production scope silently. Unset it here to exercise this section.");
     } else {
       // A non-existent email: this can never lock out a seeded or real account.
       const victim = `qa-prodready-rl-${STAMP}@founderflow.test`;

@@ -1091,9 +1091,17 @@ async function main() {
      * LIVE user inside a tombstoned company — whose every row the purge cron
      * hard-deletes on day 90.
      *
-     * DI-004: CLAUDE.md and lib/actions/account.ts both tell ops to restore
-     * child rows with `UPDATE "Transaction" SET "deletedAt" = NULL WHERE
-     * "deletedAt" BETWEEN '<t-1s>' AND '<t+1s>'`. softDeleteWorkspace stamps
+     * DI-004: CLAUDE.md and lib/actions/account.ts both told ops to restore
+     * child rows with the statement below. lib/actions/account.ts was corrected
+     * on 2026-09-30 (data-integrity-005) to carry `"companyId" = '<id>' AND
+     * "deletedAt" = '<exact t>'`; CLAUDE.md's copy is still outstanding, which is
+     * why this probe stays. The broken form is reproduced verbatim because it is
+     * the thing being detected — runbook-quote-ok: this is the historical defect,
+     * not a procedure to follow, and tests/lib/db/restore-runbook.test.ts honours
+     * that marker rather than "correcting" the evidence.
+     *   UPDATE "Transaction" SET "deletedAt" = NULL WHERE
+     *   "deletedAt" BETWEEN '<t-1s>' AND '<t+1s>';
+     * softDeleteWorkspace stamps
      * ONE `now` across the whole sweep, so two workspaces deleted in the same
      * second share a timestamp and that UPDATE reaches both. Forced here by
      * deleting tenants B and D concurrently. Proved with a SELECT — the

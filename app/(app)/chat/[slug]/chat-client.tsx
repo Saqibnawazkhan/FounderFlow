@@ -40,7 +40,11 @@ import { NewDmModal } from "@/components/chat/new-dm-modal";
 import { ThreadPanel } from "@/components/chat/thread-panel";
 import { Modal } from "@/components/ui/modal";
 import { addChannelMembersAction, pollChannelActivityAction } from "@/lib/actions/chat";
-import { canPostInChannel, canPostRunwayCard } from "@/lib/auth/channel-permissions";
+import {
+  canManageChannel,
+  canPostInChannel,
+  canPostRunwayCard,
+} from "@/lib/auth/channel-permissions";
 import { cn } from "@/lib/utils";
 import { loadOlderMessagesAction, loadThreadAction } from "./actions";
 import type {
@@ -331,13 +335,29 @@ export function ChatClient({
    * add can see this channel". A founder who picked Private to talk about a
    * raise got a channel their cofounder could not see, with nothing to click.
    *
-   * The CLIENT gate is narrower than the server's on purpose. The server runs
-   * `canManageChannel`, which also admits a company admin or cofounder; this
-   * component is not handed the viewer's company role (ChannelDetail carries
-   * `myChannelRole` and not `role`), so drawing the control for an owner only
-   * is the honest subset — it never offers a write the server would refuse,
-   * which is the direction that matters. Widening it to admins needs
-   * `viewerRole` on ChannelDetail, a query this island does not own.
+   * THE GATE IS `canManageChannel`, NOT A NARROWER COPY OF IT. This used to
+   * read `channel.myChannelRole === "owner"`, with a comment explaining that the
+   * component "is not handed the viewer's company role" — which was already
+   * false when it was written: `useSession()` is read a screenful below for the
+   * Runway control, and <Providers> has always put `session.user.role` in the
+   * browser. So the honest-subset argument did not apply, and the cost was not
+   * cosmetic: there is no other membership write anywhere in the product, so an
+   * admin INVITED into a private channel, or one who inherited a channel whose
+   * creator has since been deactivated, could never add anybody to it again and
+   * the "Only people you add can see this channel" promise became permanently
+   * unfulfillable for that channel. Importing the predicate also settles it the
+   * way lib/auth/channel-permissions.ts's own header demands — half a copy of a
+   * permission rule inside a component is still a copy.
+   *
+   * FAIL-CLOSED WHILE THE SESSION RESOLVES, exactly like `canPostRunway`: an
+   * unknown role is not an admin, so the control appears a frame late rather
+   * than in front of somebody the server would refuse.
+   *
+   * The kind and archived checks stay here beside it. They are not a second
+   * copy of a ROLE rule — they are the two flat refusals the action spells out
+   * for itself ("a direct message is between two people", "un-archive it
+   * first"), and drawing a control whose only possible outcome is that toast
+   * would be worse than not drawing it.
    *
    * DMs and archived channels are excluded here as well as server-side: a DM's
    * pair IS its identity (`dmKeyFor` + the unique index), and an archived
@@ -348,12 +368,61 @@ export function ChatClient({
    * is in the channel already. No new query, and the tombstone filter that
    * query documents is inherited for free.
    */
+  // The viewer's company role, as the browser already has it — see the long
+  // note beside `canPostRunway` below for why `useSession()` and not a prop.
+  // Read here rather than there because two gates now need it.
+  const viewerRole = session?.user?.role;
   const archived = channel.archivedAt !== null;
-  const canManage = channel.myChannelRole === "owner" && channel.kind !== "dm" && !archived;
+  const canManage =
+    channel.kind !== "dm" &&
+    !archived &&
+    // `?? "member"` is the fail-closed default AND the no-flicker one, in one
+    // move: "member" is the least-privileged role in the union, so an unresolved
+    // session can only ever be granted by the predicate's OTHER arm —
+    // `channelRole === "owner"` — which is a server-rendered prop that is
+    // correct on the first paint. The channel's own creator therefore sees the
+    // control immediately, exactly as before, and the admin/cofounder widening
+    // waits for the session rather than guessing at it.
+    canManageChannel({ role: viewerRole ?? "member", channelRole: channel.myChannelRole });
   const addable = useMemo(() => {
     const already = new Set(channel.members.map((m) => m.id));
     return dmCandidates.filter((c) => !already.has(c.id));
   }, [dmCandidates, channel.members]);
+
+  /* ── chat-006: the roster the @-picker offers ────────────────────────────
+   *
+   * The composer used to be handed `channel.members`, i.e. the ChannelMember
+   * rows. In a private channel or a DM that is the right set and must stay the
+   * right set: membership IS the permission there, `sendMessageAction`
+   * intersects mention recipients against the member list for every non-public
+   * kind, and offering an outsider would render a chip that notified nobody.
+   *
+   * In a PUBLIC channel it was the wrong set, in the direction that silently
+   * loses a message. The action parses mentions against the whole live company
+   * roster and skips the membership intersection entirely for a public channel —
+   * "anyone in the company can already read them" — so a freshly created public
+   * channel offered its one creator while the server stood ready to notify the
+   * whole workspace. Whoever the server would fan out to is who the picker has
+   * to offer.
+   *
+   * `dmCandidates` IS that set and is already in this island's props for the DM
+   * picker: every live teammate except the viewer, with `listDmCandidates`'
+   * `deletedAt: null` filter inherited for free. No new query, and no new
+   * disclosure — the same list is already used to populate the "Add people" and
+   * "Message a teammate" dialogs on this page.
+   *
+   * Keyed through a Set rather than concatenated blind: in #general everyone is
+   * both a member and a candidate, and two identical rows in an autocomplete is
+   * how a picker starts inserting the wrong token.
+   */
+  const mentionRoster = useMemo<{ id: string; name: string }[]>(() => {
+    const members = channel.members.map((m) => ({ id: m.id, name: m.name }));
+    if (channel.kind !== "public") return members;
+    const already = new Set(members.map((m) => m.id));
+    return members.concat(
+      dmCandidates.filter((c) => !already.has(c.id)).map((c) => ({ id: c.id, name: c.name }))
+    );
+  }, [channel.kind, channel.members, dmCandidates]);
 
   const closeAdd = useCallback(() => {
     setAddOpen(false);
@@ -423,7 +492,6 @@ export function ChatClient({
    * the worst case is a control that appears a moment late rather than one shown
    * to a member.
    */
-  const viewerRole = session?.user?.role;
   const canPostRunway = viewerRole ? canPostRunwayCard(viewerRole) : false;
 
   return (
@@ -433,12 +501,21 @@ export function ChatClient({
         activeSlug={channel.slug}
         onNavigate={() => setRailOpen(false)}
         onNewChannel={() => setNewChannelOpen(true)}
-        // Withheld — not disabled — in a workspace of one. The prop is
-        // optional precisely so the rail can leave the control out rather
-        // than offer a picker with nobody in it; a solo founder clicking
-        // "message a teammate" into an empty list is a dead end, and there is
-        // no useful empty copy for "you have no colleagues yet".
-        onNewDm={dmCandidates.length > 0 ? () => setNewDmOpen(true) : undefined}
+        /* ── THE REPORTED BUG: "theres no option for dm in chat" ─────────────
+         *
+         * This was `dmCandidates.length > 0 ? … : undefined`. The reasoning was
+         * that a picker with nobody in it is a dead end — but withholding the
+         * trigger made the rail's ENTIRE Direct section vanish, so in a
+         * workspace of one there was no control anywhere that said "message a
+         * person", which is exactly what was reported.
+         *
+         * And the premise was wrong in a second way: <NewDmModal> already has
+         * honest copy for an empty roster ("You're the only person in this
+         * workspace — invite someone from the Team page"), and withholding the
+         * trigger from both callers was the ONLY thing making that branch
+         * unreachable. A hidden control and a control that explains itself are
+         * not the same trade. Passed unconditionally now. */
+        onNewDm={() => setNewDmOpen(true)}
         className={cn(
           "w-full border-border md:block md:w-[220px] md:shrink-0 md:border-e",
           railOpen ? "block" : "hidden"
@@ -500,9 +577,14 @@ export function ChatClient({
           ) : (
             <MessageComposer
               channelId={channel.id}
+              // chat-008. The composer cannot tell "Message #general" from
+              // "Message Ahmed Khan" without the kind, and it had neither — so
+              // every DM invited the reader to message a hash.
+              channelKind={channel.kind}
               channelName={channel.name}
               parentId={null}
-              users={channel.members}
+              // chat-006 — NOT `channel.members`. See `mentionRoster` above.
+              users={mentionRoster}
               disabled={false}
               canPostRunway={canPostRunway}
               onSent={handleSent}
@@ -515,8 +597,9 @@ export function ChatClient({
         <ThreadPanel
           root={thread.root}
           replies={thread.replies}
-          users={channel.members}
+          users={mentionRoster}
           channelName={channel.name}
+          channelKind={channel.kind}
           open={threadRootId !== null}
           onClose={closeThread}
         />

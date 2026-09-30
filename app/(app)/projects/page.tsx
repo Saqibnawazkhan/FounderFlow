@@ -5,7 +5,7 @@
  */
 
 import type { Metadata } from "next";
-import { listProjectsForUser } from "@/lib/queries/projects";
+import { listDeletedProjectsForUser, listProjectsForUser } from "@/lib/queries/projects";
 import { getCompanyUsers } from "@/lib/queries/users";
 import { requireScopedSession } from "@/lib/queries/session";
 import { ProjectsClient } from "./projects-client";
@@ -16,15 +16,19 @@ export const metadata: Metadata = {
 };
 
 export default async function ProjectsPage() {
-  const [session, projects, users] = await Promise.all([
+  const [session, projects, deletedProjects, users] = await Promise.all([
     requireScopedSession(),
     listProjectsForUser(),
+    // data-integrity-010. The 90-day project tombstone had no reader anywhere in
+    // the product, so the recovery window existed only in the database.
+    listDeletedProjectsForUser(),
     getCompanyUsers(),
   ]);
 
   return (
     <ProjectsClient
       projects={projects}
+      deletedProjects={deletedProjects}
       users={users}
       currentUserId={session.userId}
       currentUserRole={session.role}

@@ -341,3 +341,66 @@ describe("every scheduled cron route escalates the same way", () => {
     });
   }
 });
+
+/* ── cron-011 ──────────────────────────────────────────────────────────── */
+
+/**
+ * cron-011 — the 100-row canary existed and neither nightly job was wired to it.
+ *
+ * `lib/safety/bulk-mutation-guard.ts` was built so that "an admin clicked
+ * something and 12,000 rows disappeared" is visible in the ops feed. Nine call
+ * sites use it — every workspace/project/task/transaction bulk mutation, and the
+ * purge — and the two jobs that write across EVERY tenant with no ceiling did
+ * not. A `lastActivityAt` regression could have closed every open timer in the
+ * product in one night, silently.
+ *
+ * These assert the Sentry event, not the call: `@sentry/nextjs` is already faked
+ * at the top of this file, and `warnBulkMutation` is telemetry — the event IS the
+ * behaviour. A structural "does this file mention warnBulkMutation" assertion
+ * would pass on an import.
+ */
+function bulkMutationEvents(): Array<{ message: string; tags: Record<string, string> }> {
+  return (sentry.captureMessage.mock.calls as unknown as unknown[][])
+    .map((c) => ({
+      message: String(c[0]),
+      tags: ((c[1] as { tags?: Record<string, string> })?.tags ?? {}) as Record<string, string>,
+    }))
+    .filter((e) => e.tags.boundary === "bulk-mutation");
+}
+
+describe("cron-011 — an outsized sweep trips the bulk-mutation canary", () => {
+  it("fires the canary when one night closes more than a hundred timers", async () => {
+    const many: string[] = [];
+    for (let i = 0; i < 150; i += 1) many.push(`te-${i}`);
+    setSweep({ attempted: 150, closed: many });
+
+    const res = await run(authorized());
+    expect(res.status).toBe(200);
+
+    const events = bulkMutationEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].tags.action).toBe("sweepTimeEntries");
+    expect(events[0].message).toMatch(/150 rows/);
+  });
+
+  it("stays quiet on an ordinary night — the canary must mean something", async () => {
+    setSweep({ attempted: 3, closed: ["te-1", "te-2", "te-3"] });
+    await run(authorized());
+    expect(bulkMutationEvents()).toEqual([]);
+  });
+
+  it("counts what was CLOSED, not what was attempted", async () => {
+    // A night that finds 400 stale entries and fails to close all but two has a
+    // different problem, and the per-entry failures are already in Sentry. The
+    // canary is about rows that changed.
+    const attempted: string[] = [];
+    for (let i = 0; i < 400; i += 1) attempted.push(`te-${i}`);
+    setSweep({
+      attempted: 400,
+      closed: ["te-0", "te-1"],
+      failed: attempted.slice(2).map((id) => ({ id, error: "boom" })),
+    });
+    await run(authorized());
+    expect(bulkMutationEvents()).toEqual([]);
+  });
+});

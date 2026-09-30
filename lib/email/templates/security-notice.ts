@@ -39,6 +39,7 @@
  */
 
 import { appOrigin } from "@/lib/env";
+import { escapeHtml } from "@/lib/email/html";
 import { sendEmail } from "@/lib/email/send";
 import { captureServerError } from "@/lib/sentry-server";
 
@@ -337,13 +338,4 @@ export async function sendSecurityNotices(
   } catch (e) {
     captureServerError(e, { action: "sendSecurityNotices", extra: { kind: input.kind } });
   }
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }

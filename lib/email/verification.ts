@@ -11,6 +11,7 @@
  */
 
 import { appOrigin } from "@/lib/env";
+import { escapeHtml } from "@/lib/email/html";
 import { sendEmail } from "@/lib/email/send";
 import { signEmailVerificationToken } from "@/lib/auth/email-verification-token";
 
@@ -31,7 +32,7 @@ export async function sendVerificationEmail(input: {
   const html = `
     <div style="font-family:system-ui,sans-serif;max-width:520px;margin:auto;">
       <h2 style="margin:0 0 12px 0;">Confirm your email</h2>
-      <p>Hi ${input.name},</p>
+      <p>Hi ${escapeHtml(input.name)},</p>
       <p>Welcome to FounderFlow! Confirm this email address so you can recover your account and receive important workspace notifications. The link expires in 7 days.</p>
       <p style="margin:24px 0;">
         <a href="${url}" style="background:#10B981;color:#1F2933;padding:12px 20px;border-radius:8px;font-weight:700;text-decoration:none;">

@@ -323,9 +323,19 @@ model BillingEvent {
   // and a ledger that cannot distinguish the two answers none of the questions
   // it was built for. Pair it with `reason` for the detail.
   outcome String
-  // The machine-readable reason behind a non-applied outcome — the same verdict
-  // strings the Sentry breadcrumbs already use ("stale-grant", "unresolvable",
-  // "replay", "wrong-store"). NULL for a plain application.
+  // The machine-readable reason QUALIFYING the outcome — the same verdict strings
+  // the Sentry breadcrumbs already use ("stale-grant", "unresolvable", "replay",
+  // "wrong-store"). Usually NULL on an `applied` row, and NULL always means
+  // "nothing further to say", never "the write was refused" — read `outcome` for
+  // that.
+  //
+  // AND IT IS NOT ONLY FOR NON-APPLIED OUTCOMES, which is what this comment used
+  // to say. An application that had to DROP a field it could not read carries
+  // `outcome: "applied"` WITH `reason: "period-end-unreadable"` (bill-010, see
+  // app/api/webhooks/lemonsqueezy/route.ts): the delivery really did apply, and
+  // the customer's stored paid-through date is now silently stale. "Applied with
+  // no reason" and "applied with one column quietly not updated" must not be the
+  // same row, because the second is what a billing dispute turns on.
   reason  String?
 
   // THE RAW SIGNED BODY, verbatim, as the bytes arrived.

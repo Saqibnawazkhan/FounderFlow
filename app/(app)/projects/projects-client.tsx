@@ -13,22 +13,29 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
-import { Briefcase, Copy, Plus } from "lucide-react";
+import { Briefcase, Copy, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Modal } from "@/components/ui/modal";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { ProjectCard } from "@/components/projects/project-card";
 import { NewProjectModal } from "./new-project-modal";
 import { canCreateProject } from "@/lib/auth/project-permissions";
-import { duplicateProjectAction } from "@/lib/actions/projects";
+import { duplicateProjectAction, restoreProjectAction } from "@/lib/actions/projects";
 import { useT } from "@/lib/i18n/use-t";
 import { cn } from "@/lib/utils";
-import type { ProjectListItem } from "@/lib/queries/projects";
+import type { DeletedProjectListItem, ProjectListItem } from "@/lib/queries/projects";
 import type { Role } from "@/lib/auth/role-gates";
 import type { User } from "@/lib/types";
 
 type Props = {
   projects: ProjectListItem[];
+  /**
+   * Tombstoned projects this caller may restore (data-integrity-010). Empty for
+   * the overwhelming majority of visits, and the panel below renders nothing at
+   * all when it is — a "Recently deleted (0)" heading on every workspace that has
+   * never deleted anything is noise on the one screen people scan for their work.
+   */
+  deletedProjects: DeletedProjectListItem[];
   users: User[];
   currentUserId: string;
   currentUserRole: Role;
@@ -36,7 +43,13 @@ type Props = {
 
 type StatusFilter = "all" | "active" | "on_hold" | "completed" | "archived";
 
-export function ProjectsClient({ projects, users, currentUserId, currentUserRole }: Props) {
+export function ProjectsClient({
+  projects,
+  deletedProjects,
+  users,
+  currentUserId,
+  currentUserRole,
+}: Props) {
   const t = useT();
   const router = useRouter();
   const canCreate = canCreateProject(currentUserRole);
@@ -187,6 +200,8 @@ export function ProjectsClient({ projects, users, currentUserId, currentUserRole
         />
       )}
 
+      <RecentlyDeletedProjects projects={deletedProjects} onRestored={() => router.refresh()} />
+
       {canCreate && (
         <DuplicateProjectModal
           project={duplicating}
@@ -198,6 +213,99 @@ export function ProjectsClient({ projects, users, currentUserId, currentUserRole
         />
       )}
     </div>
+  );
+}
+
+/**
+ * "Recently deleted" — the panel that makes the 90-day project tombstone usable
+ * (data-integrity-010).
+ *
+ * `deleteProjectAction` has stamped `Project.deletedAt` since Tier 3, saying in
+ * its own comment that it does so "so an accidental project delete has the same
+ * 90-day recovery window as every other soft-delete table". Nothing cleared that
+ * column and nothing showed the row, so the window was real in the database and
+ * invisible in the product: /projects excluded it, /projects/<id> 404'd, search
+ * excluded it. A supervisor who deleted the wrong project could not even TELL
+ * support which id to resurrect, because they could no longer look it up.
+ *
+ * Deliberately at the BOTTOM of the page and absent when empty. This is a
+ * recovery affordance, not a view of current work — putting it above the grid
+ * would make every workspace's projects screen open on a list of things that are
+ * gone. The countdown comes from the server (`daysUntilPurge`), because the one
+ * number here that must not be wrong is how long is left, and a browser clock an
+ * hour fast would tell somebody their window had closed.
+ */
+function RecentlyDeletedProjects({
+  projects,
+  onRestored,
+}: {
+  projects: DeletedProjectListItem[];
+  onRestored: () => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+
+  if (projects.length === 0) return null;
+
+  async function restore(project: DeletedProjectListItem) {
+    setBusy(project.id);
+    const res = await restoreProjectAction(project.id);
+    setBusy(null);
+    if (!res.success) {
+      toast.error(res.error);
+      // A refused restore is usually "somebody else already did it", so the
+      // panel is stale either way — re-read rather than leaving a row that no
+      // longer needs restoring.
+      onRestored();
+      return;
+    }
+    toast.success(`Restored "${project.name}"`);
+    onRestored();
+  }
+
+  return (
+    <section className="mt-10 rounded-2xl border border-border bg-surface/60 p-5">
+      <h2 className="flex items-center gap-2 text-sm font-bold text-fg">
+        <Trash2 className="h-4 w-4 text-fg-muted" aria-hidden="true" />
+        Recently deleted
+      </h2>
+      <p className="mt-1 text-xs text-fg-muted">
+        Deleted projects stay recoverable for 90 days, then they are erased for good.
+      </p>
+      <ul className="mt-4 flex flex-col gap-2">
+        {projects.map((p) => (
+          <li
+            key={p.id}
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-bg/40 px-3 py-2.5"
+          >
+            <div className="flex min-w-0 items-center gap-2.5">
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: p.color }}
+                aria-hidden="true"
+              />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-fg">{p.name}</p>
+                <p className="text-[11px] text-fg-muted">
+                  {p.supervisorName ? `${p.supervisorName} · ` : ""}
+                  {p.daysUntilPurge > 0
+                    ? `${p.daysUntilPurge} day${p.daysUntilPurge === 1 ? "" : "s"} left to restore`
+                    : "Being erased in the next nightly run"}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void restore(p)}
+              disabled={busy === p.id}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-xs font-semibold text-fg transition-colors hover:border-primary/40 disabled:opacity-60"
+            >
+              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+              {busy === p.id ? "Restoring…" : "Restore"}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

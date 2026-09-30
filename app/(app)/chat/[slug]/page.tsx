@@ -26,6 +26,7 @@ import {
   listDmCandidates,
 } from "@/lib/queries/chat";
 import { requireScopedSession } from "@/lib/queries/session";
+import { conversationTitle } from "@/lib/chat/dm";
 import { ChatClient } from "./chat-client";
 
 type Params = { params: { slug: string } };
@@ -34,7 +35,12 @@ export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const channel = await getChannelBySlug(params.slug);
   if (!channel) return { title: "Chat" };
   return {
-    title: `#${channel.name}`,
+    // chat-008: this was `#${channel.name}` for EVERY kind, so a direct message
+    // with Ahmed Khan put "#Ahmed Khan · FounderFlow" in the browser tab, the
+    // history and every bookmark. `conversationTitle` is the one place that
+    // decides, shared with the channel header and the composer placeholder.
+    // `channel.name` is already the viewer-relative counterpart name for a DM.
+    title: conversationTitle(channel.kind, channel.name),
     description: channel.topic ?? "Talk to your team in channels, without leaving your workspace.",
   };
 }

@@ -53,6 +53,7 @@ import { captureServerError } from "@/lib/sentry-server";
 import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
 import { withCronCheckIn } from "@/lib/cron/monitor";
 import { safeEqual } from "@/lib/safe-compare";
+import { decidePurgeOptions, type PurgeRunOptions } from "@/lib/cron/purge-options";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -283,6 +284,21 @@ async function purgeCompany(
     await del(tx.inviteToken.deleteMany(where));
     // Projects before users (Project.supervisor/createdBy → User is Restrict).
     await del(tx.project.deleteMany(where));
+    // cron-009. Per-person rows that hang off User with onDelete: Cascade and
+    // carry NO companyId and NO deletedAt of their own — so neither of this
+    // file's coverage rules could see them and `tx.user.deleteMany` below made
+    // them vanish for free. They were the same undercount the chat tables
+    // caused: roughly seven preference rows per person plus one per browser, so
+    // a 20-seat workspace hid 150+ rows from the number `warnBulkMutation`
+    // thresholds on, which is enough on its own to hold a real purge under the
+    // 100-row canary. Scoped through the parent, exactly as ChannelMember and
+    // MessageReaction are, and BEFORE the user rows they depend on so the order
+    // holds even if either FK is changed to Restrict later.
+    //
+    // (scripts/_qa-guard.mjs already listed both. The QA harness knew about
+    // these tables and the production sweep did not.)
+    await del(tx.pushSubscription.deleteMany({ where: { user: { companyId } } }));
+    await del(tx.notificationPreference.deleteMany({ where: { user: { companyId } } }));
     // Break the Company↔owner FK before removing users.
     await tx.company.update({ where: { id: companyId }, data: { ownerId: null } });
     await del(tx.user.deleteMany(where));
@@ -329,6 +345,13 @@ async function countCompanyRows(
   await add("Task", db.task.count(where));
   await add("InviteToken", db.inviteToken.count(where));
   await add("Project", db.project.count(where));
+  // cron-009. Same scope as the deletes: through the parent, since neither table
+  // has a companyId of its own.
+  await add("PushSubscription", db.pushSubscription.count({ where: { user: { companyId } } }));
+  await add(
+    "NotificationPreference",
+    db.notificationPreference.count({ where: { user: { companyId } } })
+  );
   await add("User", db.user.count(where));
   byTable.Company = 1; // the workspace row itself, which db.company.delete removes
 
@@ -357,13 +380,44 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // cron-012. Per-request options, decided by a pure function so the safety
+  // asymmetry is unit-testable: a parameter may only make the run SAFER.
+  // `?dryRun=1` forces a dry run, `?dryRun=0` is refused and reported,
+  // `?companyId=` narrows the run to one workspace (still ANDed with the overdue
+  // cutoff, so it is not a delete-by-id endpoint), and the two limits may only
+  // come down. Parsed AFTER the secret check: an unauthenticated caller does not
+  // get to influence the run in any way, including safely.
+  const options = decidePurgeOptions(new URL(request.url).searchParams, process.env, {
+    companies: MAX_COMPANIES_PER_RUN,
+    projects: MAX_PROJECTS_PER_RUN,
+  });
+
   // Inside the secret check on purpose: an unauthenticated probe of this URL is
   // not a run of the job, and must not close the heartbeat either way.
-  return withCronCheckIn(MONITOR, () => purgeRun());
+  return withCronCheckIn(MONITOR, () => purgeRun(options));
 }
 
-async function purgeRun(): Promise<NextResponse> {
-  const dryRun = process.env.PURGE_ENABLED !== "true";
+async function purgeRun(options: PurgeRunOptions): Promise<NextResponse> {
+  const { dryRun, onlyCompanyId, companyLimit, projectLimit } = options;
+
+  if (options.ignoredPurgeEnabledValue !== null) {
+    // cron-017. Only `"true"` arms the purge and that stays — the fail-safe
+    // direction is right. What was missing is any signal: `PURGE_ENABLED="TRUE"`
+    // left the job in dry-run for ever while the owner, looking at a green cron
+    // and `ok: true`, believed 90-day erasure was running. So their answer to
+    // "do you still hold my data?" was wrong in the direction that matters, and
+    // the opposite typo is harmless, which is what lets this hide for months.
+    captureServerError(
+      new Error(
+        `PURGE_ENABLED is set to ${JSON.stringify(options.ignoredPurgeEnabledValue)}, which is ` +
+          `not "true" — the purge is running in DRY-RUN and is deleting nothing`
+      ),
+      {
+        action: "purgeSoftDeleted.config.ignoredValue",
+        extra: { value: options.ignoredPurgeEnabledValue },
+      }
+    );
+  }
   const startedAt = Date.now();
   const now = new Date();
   const cutoff = new Date(now.getTime() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
@@ -389,9 +443,11 @@ async function purgeRun(): Promise<NextResponse> {
   // 1. Whole-workspace erasure, one company at a time in dependency order.
   try {
     const overdueCompanies = await db.company.findMany({
-      where: overdue,
+      // `onlyCompanyId` is ANDed with `overdue`, never substituted for it: the
+      // parameter can only pick a workspace this run would already have taken.
+      where: onlyCompanyId ? { ...overdue, id: onlyCompanyId } : overdue,
       select: { id: true },
-      take: MAX_COMPANIES_PER_RUN,
+      take: companyLimit,
     });
     if (dryRun) {
       result.companiesPurged = overdueCompanies.length;
@@ -482,7 +538,7 @@ async function purgeRun(): Promise<NextResponse> {
     const overdueProjects = await db.project.findMany({
       where: projectWhere,
       select: { id: true },
-      take: MAX_PROJECTS_PER_RUN,
+      take: projectLimit,
     });
     if (dryRun) {
       result.orphanProjectsPurged = overdueProjects.length;
@@ -583,7 +639,24 @@ async function purgeRun(): Promise<NextResponse> {
       limits: {
         companiesPerRun: MAX_COMPANIES_PER_RUN,
         projectsPerRun: MAX_PROJECTS_PER_RUN,
+        // cron-012: what this particular run actually used, which is not the
+        // built-in cap when ?limit= or ?companyId= narrowed it.
+        companiesThisRun: companyLimit,
+        projectsThisRun: projectLimit,
+        onlyCompanyId,
       },
+      // cron-012. Parameters that were NOT honoured, and why. Reported rather
+      // than swallowed: an operator who types ?dryRun=0, gets a dry run and is
+      // told nothing will reasonably conclude the parameter worked and the purge
+      // found nothing to do — the most dangerous misreading this endpoint
+      // offers. Empty on an ordinary cron invocation.
+      refusedOptions: options.refused,
+      // cron-017. A PURGE_ENABLED that is set but is not the one arming spelling
+      // — `TRUE`, `1`, `yes`, a stray trailing space. Null is the healthy answer.
+      // Reported here AND raised to Sentry below, because the whole failure mode
+      // is that a green cron and an `ok: true` convinced somebody erasure was
+      // live when it never ran once.
+      ignoredPurgeEnabledValue: options.ignoredPurgeEnabledValue,
       // What the sweep deliberately leaves behind. Empty is the healthy
       // answer; a non-empty array here is the thing to read before trusting
       // "the workspace is gone".

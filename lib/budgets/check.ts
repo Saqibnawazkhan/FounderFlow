@@ -38,7 +38,7 @@
  */
 
 import { db } from "@/lib/db";
-import { decideThreshold, monthKey } from "@/lib/budgets/threshold";
+import { decideRearm, decideThreshold, monthKey } from "@/lib/budgets/threshold";
 import { captureServerError } from "@/lib/sentry-server";
 import { notifyUsers } from "@/lib/notify/fan-out";
 import { canSeeProjectFinances } from "@/lib/auth/project-permissions";
@@ -83,7 +83,46 @@ export async function checkBudgetThresholdAfterExpense({
     const monthToDate = sum._sum.amount ? sum._sum.amount.toNumber() : 0;
     const monthlyLimit = budget.monthlyLimit.toNumber();
 
-    const decision = decideThreshold({ ...budget, monthlyLimit }, monthToDate, now);
+    // finance-planning-005 — RE-ARM BEFORE DECIDING.
+    //
+    // The month sentinels were only ever set, never cleared, so a budget went
+    // silent for the rest of the calendar month the moment it fired once —
+    // including after the mis-typed expense that tripped it was deleted. The
+    // sentinel recorded "we notified this month" when the claim worth recording is
+    // "we notified about this state". `decideRearm` clears each sentinel when its
+    // own threshold is no longer crossed; see it for why the two thresholds
+    // re-arm at different points.
+    //
+    // Before, not after: a correction applied afterwards would be judged against
+    // the state it was supposed to correct. The two are mutually exclusive per
+    // threshold anyway — a sentinel only clears while its threshold is BELOW the
+    // line, at which point `decideThreshold` would not have fired it.
+    //
+    // The write pins the observed sentinel values, exactly like the claim further
+    // down: if a concurrent expense has just fired this threshold, this pass's
+    // snapshot is stale and it must not undo their claim.
+    let sentinels = {
+      lastWarnedMonth: budget.lastWarnedMonth,
+      lastAlertedMonth: budget.lastAlertedMonth,
+    };
+    const rearm = decideRearm({ ...budget, monthlyLimit }, monthToDate, now);
+    if (rearm) {
+      const cleared = await db.budget.updateMany({
+        where: {
+          id: budget.id,
+          lastWarnedMonth: budget.lastWarnedMonth,
+          lastAlertedMonth: budget.lastAlertedMonth,
+        },
+        data: rearm,
+      });
+      // Only believe the re-arm landed if it did. Losing the race means somebody
+      // else's decision is now the current state and ours was computed from a
+      // stale read, so this pass stops rather than deciding from a mixture.
+      if (cleared.count === 0) return;
+      sentinels = { ...sentinels, ...rearm };
+    }
+
+    const decision = decideThreshold({ ...budget, ...sentinels, monthlyLimit }, monthToDate, now);
     if (!decision) return;
 
     const [project, company] = await Promise.all([
@@ -154,8 +193,11 @@ export async function checkBudgetThresholdAfterExpense({
       const claimed = await tx.budget.updateMany({
         where: {
           id: budget.id,
-          lastWarnedMonth: budget.lastWarnedMonth,
-          lastAlertedMonth: budget.lastAlertedMonth,
+          // `sentinels`, not `budget.*`: the re-arm above may have just cleared
+          // one of these, and pinning the pre-re-arm values would make this claim
+          // match nothing and silently skip an alert we had decided to send.
+          lastWarnedMonth: sentinels.lastWarnedMonth,
+          lastAlertedMonth: sentinels.lastAlertedMonth,
         },
         data:
           decision.kind === "alert"

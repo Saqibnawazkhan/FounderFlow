@@ -57,12 +57,24 @@ import toast from "react-hot-toast";
 import { Avatar } from "@/components/ui/avatar";
 import { useMentionAutocomplete } from "@/components/mentions/use-mention-autocomplete";
 import { postRunwayCardAction, sendMessageAction } from "@/lib/actions/chat";
+import { composerPlaceholder, conversationTitle } from "@/lib/chat/dm";
 import { slugifyName } from "@/lib/comments/mentions";
 import { cn } from "@/lib/utils";
 
 type Props = {
   channelId: string;
-  /** Drives the placeholder: `Message #general`. */
+  /**
+   * The conversation's `Channel.kind`, so the placeholder can tell a room from a
+   * person: `Message #general` versus `Message Ahmed Khan` (chat-008).
+   *
+   * REQUIRED, deliberately, rather than optional-with-a-"public"-default. A
+   * default would let a future caller silently reintroduce "Message #Ahmed Khan"
+   * — which is the bug the product owner reported — and fail-open is the wrong
+   * direction for a string that misrepresents who can read a conversation.
+   * TypeScript refusing the call is the guard.
+   */
+  channelKind: string;
+  /** Drives the placeholder: `Message #general`, or a person's name for a DM. */
   channelName: string;
   /** Set when composing a threaded reply; the thread root's id. */
   parentId?: string | null;
@@ -90,6 +102,7 @@ const MAX_COMPOSER_HEIGHT = 160;
 
 export function MessageComposer({
   channelId,
+  channelKind,
   channelName,
   parentId,
   users,
@@ -235,7 +248,12 @@ export function MessageComposer({
     void submit();
   }
 
-  const placeholder = `Message #${channelName}`;
+  // chat-008: this was `Message #${channelName}` unconditionally, so a DM read
+  // "Message #Ahmed Khan". `composerPlaceholder` is the one place that decides,
+  // shared with the browser tab and the channel header — and it is used for BOTH
+  // the visible placeholder and the sr-only <label> below, so the wording a
+  // screen-reader user hears cannot drift from the one a sighted reader sees.
+  const placeholder = composerPlaceholder(channelKind, channelName);
 
   return (
     <form
@@ -246,7 +264,9 @@ export function MessageComposer({
       className="mt-auto border-t border-border p-3"
     >
       <label htmlFor={textareaId} className="sr-only">
-        {parentId ? `Reply in the thread in #${channelName}` : placeholder}
+        {parentId
+          ? `Reply in the thread in ${conversationTitle(channelKind, channelName)}`
+          : placeholder}
       </label>
       <div className="relative">
         <div

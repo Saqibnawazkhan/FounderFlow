@@ -22,13 +22,33 @@
  *   for 90 days. `/api/cron/purge-soft-deleted` hard-deletes them after
  *   the window; nothing survives past that.
  *
- * Recovery within the window (ops, no user UI):
- *   UPDATE "Company" SET "deletedAt" = NULL WHERE id = '<id>';
- *   UPDATE "User"    SET "deletedAt" = NULL WHERE "companyId" = '<id>';
- *   -- child rows share the same tombstone timestamp, so a range filter
- *   -- reunites them:
+ * Recovery within the window (ops, no user UI). BOTH clauses on every child
+ * table — this is data-integrity-005 and the workspace id is the half that was
+ * missing:
+ *
+ *   UPDATE "Company" SET "deletedAt" = NULL WHERE id = '<companyId>';
+ *   UPDATE "User"    SET "deletedAt" = NULL WHERE "companyId" = '<companyId>';
+ *   -- Repeat for Project / Task / Budget / Transaction / Comment / TimeEntry /
+ *   -- Message. `<exact t>` is the single instant softDeleteWorkspace stamped.
  *   UPDATE "Transaction" SET "deletedAt" = NULL
- *     WHERE "deletedAt" BETWEEN '<t - 1s>' AND '<t + 1s>';
+ *     WHERE "companyId" = '<companyId>' AND "deletedAt" = '<exact t>';
+ *
+ * WHY BOTH, AND WHY NOT A RANGE (data-integrity-005). The timestamp alone was a
+ * CROSS-TENANT WRITE. `softDeleteWorkspace` stamps one `now` across all seven
+ * updateMany calls inside one $transaction, so every row of a deleted workspace
+ * shares that instant to the millisecond — and two workspaces deleted in the
+ * same second are then indistinguishable to a `deletedAt`-only filter. The old
+ * `BETWEEN '<t - 1s>' AND '<t + 1s>'` widened that to a two-second window for no
+ * benefit. Running it restored another customer's transactions, tasks and budgets
+ * into a workspace whose Company row stays tombstoned, where neither they nor
+ * support can see or re-delete them: the safety net performing the worst kind of
+ * write, at the moment whoever is running it is under the most pressure.
+ *
+ * The timestamp still has to be there, though — dropping it and restoring by
+ * `companyId` alone would resurrect the messages and comments individual authors
+ * deleted BEFORE the workspace was, which carry their own earlier tombstones and
+ * which softDeleteWorkspace's `deletedAt: null` filter deliberately left alone.
+ * Tenant AND instant. `tests/lib/db/restore-runbook.test.ts` enforces it.
  */
 
 import bcrypt from "bcryptjs";
@@ -258,6 +278,14 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
       deletedAt: now,
     });
 
+    // data-integrity-009. "The workspace survives this delete" is what the branch
+    // above assumes, and under two concurrent self-deletes it was false. Asked
+    // AFTER the tombstone has committed, because that is the only moment the
+    // answer can be trusted — see tombstoneAbandonedWorkspace for why a
+    // transaction cannot prevent the race and why the end state is what gets
+    // fixed. A no-op on every ordinary delete.
+    await tombstoneAbandonedWorkspace(companyId, me, now);
+
     await signOut({ redirect: false });
     // i18n-002: the account is gone, so its year-long appearance cookies must
     // go with it - otherwise the next person on a shared browser paints in a
@@ -297,6 +325,117 @@ const SOFT_DELETE_EXCLUDED: readonly string[] = [];
  * The billing columns a teardown decision reads, plus the name both
  * confirmations quote back at the user.
  */
+/**
+ * data-integrity-009 — repair a workspace whose last live member has just left.
+ *
+ * THE RACE. `deleteAccountAction` counts other live users and other live admins,
+ * then writes its tombstone on a separate statement. Two admins submitting
+ * together each read `otherUsers = 1, otherAdmins = 1`, both pass the sole-admin
+ * guard, and both tombstone themselves. The terminal state was
+ * `Company.deletedAt = null` with zero live users, and every exit from it was
+ * closed: the Credentials provider refuses every tombstoned user, so nobody signs
+ * in; `getDeactivatedUsers` / `reactivateUserAction` are admin-only and there is
+ * no live admin to call them; and the purge cron only looks at companies whose
+ * `deletedAt` is SET, so the rows were simultaneously unreachable and
+ * unpurgeable — sitting there for ever, which is also a retention failure for a
+ * customer who asked to be erased.
+ *
+ * WHY THIS AND NOT "PUT THE COUNT IN THE TRANSACTION". A transaction does not
+ * close this race. At READ COMMITTED both transactions read the same committed
+ * rows, neither sees the other's uncommitted tombstone, and both commit. Refusing
+ * the LOSER would need a row lock — `SELECT … FOR UPDATE` on the Company row, in
+ * raw SQL — and that is a heavier change than this outcome justifies, because both
+ * admins genuinely intended to leave. What is unacceptable is the END STATE, so
+ * that is what this fixes: the workspace ends up tombstoned, exactly as the
+ * sole-user branch would have left it, recoverable for 90 days by the runbook in
+ * this file's header and collectable by the purge.
+ *
+ * THE CLAIM IS THE MUTEX. `company.updateMany({ where: { id, deletedAt: null } })`
+ * is a single conditional statement, so exactly one caller can win it however many
+ * notice the empty workspace. That matters beyond tidiness: the subscription
+ * cancellation below is an outbound call, and asking LemonSqueezy to cancel an
+ * already-cancelled subscription is an error we would then have to ignore — which
+ * is how a real failure gets swallowed.
+ *
+ * ORDER, AND THE ONE PLACE IT DISAGREES WITH acct-002. acct-002's rule is "stop
+ * the money BEFORE tombstoning", because nobody can reach Manage billing
+ * afterwards. Here the members are already gone — that door shut before this
+ * function was called — so the claim has to come first to keep the outbound call
+ * single. And if the cancellation then fails we do NOT abort: the tombstone has
+ * landed, and a tombstoned workspace with a live subscription is recoverable by a
+ * human in the LemonSqueezy dashboard, whereas a live workspace with no members is
+ * recoverable by nobody. The failure is raised to Sentry loudly, because a card
+ * still being charged is the expensive half.
+ *
+ * Returns true when this call performed the repair.
+ */
+async function tombstoneAbandonedWorkspace(
+  companyId: string,
+  leaver: { id: string; name: string; email: string },
+  now: Date
+): Promise<boolean> {
+  const liveLeft = await db.user.count({ where: { companyId, deletedAt: null } });
+  if (liveLeft > 0) return false;
+
+  const claim = await db.company.updateMany({
+    where: { id: companyId, deletedAt: null },
+    data: { deletedAt: now },
+  });
+  if (claim.count !== 1) return false;
+
+  // Worth knowing about even though it is now handled: it means two people
+  // submitted a self-delete inside the same moment, and the sole-admin guard did
+  // not hold. If this fires often, the row lock above becomes worth its cost.
+  captureServerError(
+    new Error(
+      `Workspace ${companyId} lost its last live member to a concurrent self-delete; ` +
+        `tombstoned it rather than leaving it unreachable`
+    ),
+    { action: "deleteAccountAction.abandonedWorkspace", userId: leaver.id, companyId }
+  );
+
+  const company = await db.company.findUnique({
+    where: { id: companyId },
+    select: COMPANY_TEARDOWN_SELECT,
+  });
+  let billingWrite: BillingTeardownWrite | undefined;
+  if (company) {
+    const teardown = await cancelWorkspaceSubscription(company);
+    if (teardown.ok) {
+      billingWrite = teardown.billingWrite;
+    } else {
+      captureServerError(
+        new Error(
+          `Abandoned workspace ${companyId} was tombstoned but its subscription could ` +
+            `not be cancelled: ${teardown.error} — the card is still being charged`
+        ),
+        { action: "deleteAccountAction.abandonedWorkspace.billing", companyId }
+      );
+    }
+  }
+
+  const rowsTouched = await softDeleteWorkspace(companyId, now, billingWrite);
+  warnBulkMutation(rowsTouched, {
+    action: "deleteAccountAction.abandonedWorkspace",
+    userId: leaver.id,
+    companyId,
+    extra: { softDeleteExcluded: SOFT_DELETE_EXCLUDED },
+  });
+
+  // The account receipt the caller already gets says nothing about the
+  // workspace's data. This one carries the 90-day restore route, which is now the
+  // only way anybody gets back in.
+  await sendSecurityNotice({
+    kind: "workspace-deleted",
+    to: leaver.email,
+    recipientName: leaver.name,
+    accountEmail: leaver.email,
+    workspaceName: company?.name ?? "your workspace",
+    deletedAt: now,
+  });
+  return true;
+}
+
 const COMPANY_TEARDOWN_SELECT = {
   id: true,
   name: true,
@@ -593,11 +732,17 @@ async function softDeleteWorkspace(
  * Since Tier 3 this is a SOFT delete via `softDeleteWorkspace()` — same
  * cascade the sole-user account-delete branch takes. Recovery in ops:
  *
- *   UPDATE "Company" SET "deletedAt" = NULL WHERE id = '<id>';
- *   UPDATE "User" SET "deletedAt" = NULL WHERE "companyId" = '<id>';
- *   -- (repeat for Transaction/Task/Budget/Project/Message/Comment/TimeEntry —
- *   -- they share the same tombstone timestamp so a range filter reunites them,
- *   -- and a range filter is what keeps individually-deleted messages deleted)
+ *   UPDATE "Company" SET "deletedAt" = NULL WHERE id = '<companyId>';
+ *   UPDATE "User" SET "deletedAt" = NULL WHERE "companyId" = '<companyId>';
+ *   -- Repeat for Transaction/Task/Budget/Project/Message/Comment/TimeEntry,
+ *   -- with BOTH clauses every time (data-integrity-005):
+ *   UPDATE "Transaction" SET "deletedAt" = NULL
+ *     WHERE "companyId" = '<companyId>' AND "deletedAt" = '<exact t>';
+ *
+ * The timestamp is what keeps individually-deleted messages deleted; the
+ * companyId is what keeps the restore inside one tenant. This used to carry only
+ * the first, which made it a cross-tenant write — see the file header for the
+ * full argument, and tests/lib/db/restore-runbook.test.ts for the guard.
  *
  * The nightly cron at /api/cron/purge-soft-deleted hard-deletes rows past
  * the 90-day window; nothing is recoverable after that.

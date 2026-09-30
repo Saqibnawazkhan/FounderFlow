@@ -5,11 +5,27 @@
  * clicked something and 12,000 rows disappeared" visible in the ops feed
  * with the userId, companyId, and the action name attached.
  *
- * Two intended callsites, right now:
- *   1. deleteWorkspaceAction — every real workspace hits this on click
- *   2. /api/cron/purge-soft-deleted — nightly hard-purge past the 90-day
- *      window; ok to be large but if it's suddenly 10x usual, we want to
- *      know before customers do.
+ * WHERE IT IS CALLED FROM. This header used to say "two intended callsites,
+ * right now" and name `deleteWorkspaceAction` and the purge cron. That stopped
+ * being true and then became actively misleading (cron-011): the list had grown
+ * to nine — account deletion and workspace deletion, project delete, the two
+ * bulk task paths, bulk transaction delete, and four stages of the purge — while
+ * the two jobs that write across EVERY tenant with no row cap were the ones
+ * still missing. A reader checking "is the canary wired in?" against this
+ * comment would have concluded yes for the purge and stopped looking.
+ *
+ * So: no list. `grep -rn warnBulkMutation lib app` is authoritative and cannot
+ * go stale. What is worth stating is the RULE — every mutation whose row count
+ * is bounded by customer data rather than by a constant reports itself here,
+ * including the nightly jobs, which are the only callers with no human behind
+ * them to notice.
+ *
+ * NOT A CEILING, and cron-011 asked for one. A hard abort past (say) 5x the
+ * trailing average needs persisted run history — a table, which this change
+ * cannot add — and the failure it would cause is its own hazard: refusing to
+ * post a customer's rent on a legitimate catch-up night after an outage is worse
+ * than posting it loudly. Reporting stays the contract; a ceiling is a separate,
+ * schema-bearing decision.
  *
  * We tag Sentry with `boundary: bulk-mutation` so a single alert rule can
  * page on-call whenever this trips.

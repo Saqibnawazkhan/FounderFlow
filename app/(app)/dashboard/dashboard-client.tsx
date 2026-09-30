@@ -34,6 +34,11 @@ import { useDateFormat, useNumberFormat } from "@/lib/i18n/use-t";
 // west of UTC while /budgets counted it in the current one (money-007).
 import { isPast, isToday } from "date-fns";
 import { isInUtcMonth, utcMonthShortLabel, utcMonthWindow, utcMonthsAgo } from "@/lib/date-range";
+// From a plain module, NOT re-exported from here: page.tsx is a Server
+// Component and needs the same two numbers. An export from this file would
+// reach it as a client-reference proxy ({}) rather than a number, which is
+// exactly how the dashboard crashed. See ./windows.ts for the full account.
+import { BURN_WINDOW_MONTHS, CASH_FLOW_MONTHS } from "./windows";
 import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat, type DashboardStatProps } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
@@ -110,10 +115,6 @@ export interface DashboardRollups {
   contributions: Record<string, UserContribution>;
 }
 
-/** Months in the rolling burn window behind the runway figure. */
-export const BURN_WINDOW_MONTHS = 3;
-/** Buckets on the cash-flow chart. */
-export const CASH_FLOW_MONTHS = 6;
 /** Slices the pie stays readable at. */
 const MAX_PIE_SLICES = 6;
 

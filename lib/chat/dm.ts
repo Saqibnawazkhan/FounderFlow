@@ -55,6 +55,94 @@ export function dmSlugFor(dmKey: string): string {
 }
 
 /**
+ * Is this `Channel.slug` a direct message's?
+ *
+ * The inverse of `dmSlugFor`, and it lives here for the same reason
+ * `isDmKind` does: one module owns the spelling. The caller that needs it
+ * is the breadcrumb trail, which has only a URL to go on — no `kind`, no
+ * membership rows — and was humanising the slug into
+ * "Dm-demo-ali_dmsmoke-ghost-816234" for want of this question.
+ *
+ * A prefix test, not a shape test: the ids after it are cuids whose format
+ * is Prisma's business, and a stricter pattern here would start disagreeing
+ * with `dmSlugFor` the first time that changes.
+ */
+export function isDmSlug(slug: string): boolean {
+  return slug.startsWith(DM_SLUG_PREFIX);
+}
+
+/**
+ * Is this `Channel.kind` a direct message?
+ *
+ * ONE SPELLING, FOR EVERY SURFACE. `Channel.kind` is a plain String column, not
+ * a Prisma enum, so the casing is whatever the writer happened to store — and
+ * this check had been re-spelled inline in channel-rail.tsx and
+ * channel-header.tsx, which is how chat-008 came about: the rail learned that a
+ * DM is a person and the header, the browser tab and the composer did not.
+ *
+ * Reading "DM" as a room is not cosmetic. A hash in this product means "a room",
+ * and a room means other people can be in it, so a Hash in front of a
+ * colleague's name misrepresents who can read the conversation — the same class
+ * of mistake as drawing a Hash on a private channel.
+ */
+export function isDmKind(kind: string): boolean {
+  return kind.toLowerCase() === "dm";
+}
+
+/**
+ * How a conversation is ADDRESSED in prose — the browser tab, a heading, the
+ * subject of a sentence.
+ *
+ * `#general` for a room. `Ahmed Khan` for a direct message, with no hash,
+ * because a DM is addressed to a person. Before this existed,
+ * `generateMetadata` titled every kind `#${channel.name}` and a two-person
+ * conversation showed up in the tab, the history and every bookmark as
+ * "#Ahmed Khan".
+ *
+ * `name` is expected to be the value lib/queries/chat.ts already resolved — for
+ * a DM that is the VIEWER-RELATIVE counterpart name from `dmDisplayName`, never
+ * the stored `Channel.name`. This function does not and must not re-derive it:
+ * a second source of truth for "who is this DM with" is exactly how two
+ * surfaces come to disagree.
+ */
+export function conversationTitle(kind: string, name: string): string {
+  return isDmKind(kind) ? name : `#${name}`;
+}
+
+/**
+ * What the send box invites you to do: `Message #general`, or `Message Ahmed
+ * Khan`.
+ *
+ * Its own function rather than `\`Message ${conversationTitle(...)}\`` at the
+ * call site, because the composer uses this string TWICE — as the placeholder
+ * and as the sr-only <label> — and the two must not be able to drift into
+ * different wording for sighted and screen-reader readers.
+ */
+export function composerPlaceholder(kind: string, name: string): string {
+  return `Message ${conversationTitle(kind, name)}`;
+}
+
+/**
+ * What a DM is called when `dmDisplayName` finds nobody to name.
+ *
+ * WHY NOT THE STORED `Channel.name`. That is what the callers used to fall back
+ * to, and `openDmAction` writes it as `"Saqib Nawaz & Ahmed Khan"` — it
+ * CONTAINS THE VIEWER. So the fallback re-introduced, in the one case the
+ * viewer-relative rename could not resolve, precisely the bug `dmDisplayName`
+ * exists to prevent: Saqib opening a conversation headed with his own name.
+ *
+ * Neutral text is the honest answer. It is not "" — a blank heading reads as a
+ * failed load — and it is not an error, because the conversation and its
+ * history are real and still readable; it is only the label that is missing.
+ * Reachable when a membership row is absent (a half-written DM) or when the
+ * only counterpart's name is blank.
+ */
+export const DM_UNNAMED_COUNTERPART = "Unknown teammate";
+
+/** The suffix a departed teammate's name carries. See `dmDisplayName`. */
+const DEACTIVATED_SUFFIX = " (deactivated)";
+
+/**
  * The counterpart's name from the viewer's side — what the rail and the
  * channel header render INSTEAD of `Channel.name`.
  *
@@ -75,15 +163,40 @@ export function dmSlugFor(dmKey: string): string {
  * Joins with ", " rather than assuming exactly two members. A DM is a pair
  * today, but a heading that silently drops a participant is a worse failure
  * than one that is merely longer than expected.
+ *
+ * ── A COUNTERPART WHO HAS LEFT THE WORKSPACE ───────────────────────────────
+ *
+ * Tier 3 TOMBSTONES users (`User.deletedAt`) instead of deleting them, and
+ * nothing clears their `ChannelMember` rows. So the counterpart of a DM with a
+ * deactivated colleague still resolves perfectly, and the conversation reads
+ * exactly like a live one: the reader types into a room nobody will ever open
+ * again and is told nothing. `deletedAt` therefore annotates the name —
+ * "Ahmed Khan (deactivated)".
+ *
+ * WHY THE ANNOTATION IS IN THE NAME AND NOT A SEPARATE DTO FIELD. The rail, the
+ * channel header, the browser tab and the composer's placeholder all render
+ * `ChannelListItem.name` / `ChannelDetail.name`. Annotating the name reaches
+ * every one of them from this single decision. A `dmCounterpartDeactivated`
+ * boolean on the DTO would need four independent renders instead — four chances
+ * for one to ship unreached, which is the defect this codebase has produced
+ * repeatedly (see the "shipped, tested, unreachable" rows in the audit).
+ *
+ * The name is KEPT, never blanked: the DM's history stays readable by design,
+ * and a blank heading would read as a failed load rather than as a colleague who
+ * has gone. `deletedAt` is OPTIONAL so every existing caller keeps compiling,
+ * and absent must mean the same as null — otherwise the annotation appears at
+ * random depending on which query populated the row.
  */
 export function dmDisplayName(
-  members: { id: string; name: string }[],
+  members: { id: string; name: string; deletedAt?: Date | string | null }[],
   viewerId: string
 ): string | null {
   const others = members
     .filter((member) => member.id !== viewerId)
-    .map((member) => member.name.trim())
-    .filter((name) => name.length > 0);
+    .map((member) => ({ name: member.name.trim(), gone: Boolean(member.deletedAt) }))
+    .filter((member) => member.name.length > 0);
   if (others.length === 0) return null;
-  return others.join(", ");
+  return others
+    .map((member) => (member.gone ? `${member.name}${DEACTIVATED_SUFFIX}` : member.name))
+    .join(", ");
 }

@@ -55,9 +55,17 @@ vi.mock("react-hot-toast", () => ({
 }));
 
 // The server actions are irrelevant to a landmark: mocked so importing a page
-// doesn't drag the Prisma client into the test process. The two verification
-// pages fire theirs on mount, so those resolve to nothing on purpose — the
-// "verifying" card is the state under test.
+// doesn't drag the Prisma client into the test process.
+//
+// The two verification pages no longer agree, so state it per page rather than
+// as one rule. app/verify-email/page.tsx still verifies on mount, so its action
+// resolves to nothing on purpose and the "verifying" card is what renders.
+// app/verify-email-change/page.tsx waits for a click (auth-015 — that link moves
+// the address password resets are delivered to, so a mail scanner fetching it
+// used to complete the change), so its mock is never called at all and the
+// confirm card is the state under test. Both render the <main id="main"> this
+// file asserts, which is why the change did not turn anything red — and is
+// exactly why the comment needed correcting rather than trusting the green.
 vi.mock("@/lib/actions/auth", () => ({ loginAction: vi.fn(), signupAction: vi.fn() }));
 vi.mock("@/lib/actions/password-reset", () => ({
   requestPasswordResetAction: vi.fn(),

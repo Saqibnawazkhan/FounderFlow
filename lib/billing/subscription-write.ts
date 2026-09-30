@@ -54,6 +54,7 @@ import {
   isPaidSubscriptionStatus,
   isTerminalSubscriptionStatus,
   accessGraceDays,
+  normalizePlan,
   type Plan,
 } from "@/lib/billing/plan";
 
@@ -115,6 +116,13 @@ export type SubscriptionWriteDecision =
        * handed a statement about a period that is over.
        */
       lapsed: boolean;
+      /**
+       * True when `status` is neither on the paid list nor terminal — `paused`
+       * today, or anything LemonSqueezy grows tomorrow. The plan column was HELD
+       * rather than decided, so this is the signal that our status vocabulary has
+       * fallen behind the provider's. bill-020.
+       */
+      unrecognisedStatus: boolean;
     };
 
 /**
@@ -224,8 +232,42 @@ export function decideSubscriptionWrite(
     ? new Date(event.periodEnd.getTime() + accessGraceDays(event.status) * MS_PER_DAY)
     : null;
   const lapsed = Boolean(accessEndsAt && accessEndsAt.getTime() <= now.getTime());
-  const plan: Plan =
-    isPaidSubscriptionStatus(event.status) && !lapsed ? (event.variantPlan ?? "team") : "free";
+
+  // ---- bill-020: three outcomes, not two ----------------------------------
+  // This used to be `isPaidSubscriptionStatus(status) && !lapsed ? plan : "free"`
+  // — an allow-list of four strings deciding entitlement with no reference to
+  // the funded date for anything OFF the list. Two things fell through it.
+  //
+  // `paused` is the one the customer feels. `effectivePlan` on the read side
+  // never consults this predicate: it takes access away only for a terminal
+  // status or an expired date, so a paused subscription with a future date keeps
+  // Team there, and `describeBillingPeriod` has a "Paused - resumes {date}"
+  // branch for exactly that row. This writer was the only thing preventing that
+  // state from existing — `subscription_paused` wrote `plan: "free"` on arrival,
+  // mid-period, so pausing (LemonSqueezy's own retention button, reachable from
+  // the portal this app links to) was punished HARDER than cancelling, and the
+  // copy branch was unreachable.
+  //
+  // The other is worse because it is silent and unbounded: any status the
+  // provider adds later is also off the list, so a vocabulary change at
+  // LemonSqueezy would de-licence every workspace it reached.
+  //
+  // So: terminal or lapsed revokes; a paid status grants what the variant buys;
+  // and a status that is NEITHER holds what we already had. Holding is the
+  // fail-safe reading in both directions — "not terminal, therefore team" would
+  // have handed paid features to a free workspace off an unrecognised word.
+  // `isPaidSubscriptionStatus("paused")` stays FALSE on purpose: it answers "is
+  // money moving", which it is not. Entitlement is the date's job.
+  const statusIsTerminal = isTerminalSubscriptionStatus(event.status);
+  const statusIsPaid = isPaidSubscriptionStatus(event.status);
+  const unrecognisedStatus = !statusIsTerminal && !statusIsPaid;
+  const plan: Plan = statusIsTerminal
+    ? "free"
+    : lapsed
+      ? "free"
+      : statusIsPaid
+        ? (event.variantPlan ?? "team")
+        : normalizePlan(stored.plan);
 
   // ---- bill-007: build the data object CONDITIONALLY ----------------------
   const data: SubscriptionWriteData = {
@@ -239,5 +281,5 @@ export function decideSubscriptionWrite(
   // Absent = unchanged. Present-and-null = explicitly cleared.
   if (!event.periodEndAbsent) data.currentPeriodEnd = event.periodEnd;
 
-  return { apply: true, data, lapsed };
+  return { apply: true, data, lapsed, unrecognisedStatus };
 }

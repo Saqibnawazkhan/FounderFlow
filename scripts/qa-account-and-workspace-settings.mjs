@@ -274,15 +274,16 @@ async function setInput(page, selector, value) {
 /** Text of every live toast currently on screen. */
 const toastsOf = (page) =>
   page.evaluate(() =>
-    [...document.querySelectorAll('[role="status"],[role="alert"]')].map((t) => t.innerText).join(" | ")
+    [...document.querySelectorAll('[role="status"],[role="alert"]')]
+      .map((t) => t.innerText)
+      .join(" | ")
   );
 
 async function waitForToast(page, timeout = 20000) {
   await page
-    .waitForFunction(
-      () => document.querySelectorAll('[role="status"],[role="alert"]').length > 0,
-      { timeout }
-    )
+    .waitForFunction(() => document.querySelectorAll('[role="status"],[role="alert"]').length > 0, {
+      timeout,
+    })
     .catch(() => {});
   return toastsOf(page);
 }
@@ -377,7 +378,12 @@ async function tombstoneShape(companyId) {
   ] = await Promise.all([
     db.company.findUnique({
       where: { id: companyId },
-      select: { deletedAt: true, plan: true, subscriptionStatus: true, billingSubscriptionId: true },
+      select: {
+        deletedAt: true,
+        plan: true,
+        subscriptionStatus: true,
+        billingSubscriptionId: true,
+      },
     }),
     db.user.count({ where: { companyId, deletedAt: null } }),
     db.user.count({ where: { companyId, deletedAt: { not: null } } }),
@@ -628,9 +634,16 @@ async function main() {
     // 3b. happy path.
     const h1 = `qa${STAMP}a`;
     const good = await saveHandle(h1);
-    const handleRow = await db.user.findUnique({ where: { id: A.userId }, select: { handle: true } });
+    const handleRow = await db.user.findUnique({
+      where: { id: A.userId },
+      select: { handle: true },
+    });
     if (handleRow?.handle === h1) ok("[persistence] handle saved to my own User row");
-    else fail("[persistence] handle saved", `expected ${h1}, got ${handleRow?.handle} (${good.toast})`);
+    else
+      fail(
+        "[persistence] handle saved",
+        `expected ${h1}, got ${handleRow?.handle} (${good.toast})`
+      );
 
     // 3c. the 3/hour budget. Changes 2, 3 and 4 in this hour; the 4th must be
     //     refused by `handleLimiter`, NOT by limiters.write.
@@ -658,7 +671,11 @@ async function main() {
     await setInput(a.page, '[role="dialog"] input[type=email]', movedEmail);
     await a.page.evaluate(() => document.querySelector('[role="dialog"] form').requestSubmit());
     await a.page
-      .waitForFunction(() => /check|inbox|confirm/i.test(document.querySelector('[role="dialog"]')?.innerText ?? ""), { timeout: 20000 })
+      .waitForFunction(
+        () =>
+          /check|inbox|confirm/i.test(document.querySelector('[role="dialog"]')?.innerText ?? ""),
+        { timeout: 20000 }
+      )
       .catch(() => {});
     await shot(a.page, "04-email-change-requested");
 
@@ -678,7 +695,10 @@ async function main() {
     // Observable proxy: no Notification row, and /settings renders no
     // "pending email change" state after a reload.
     const pendingNotif = await db.notification.count({
-      where: { companyId: A.companyId, OR: [{ title: { contains: "email" } }, { message: { contains: "email" } }] },
+      where: {
+        companyId: A.companyId,
+        OR: [{ title: { contains: "email" } }, { message: { contains: "email" } }],
+      },
     });
     await gotoSettings(a.page);
     const afterRequestText = await bodyText(a.page);
@@ -715,7 +735,10 @@ async function main() {
         const inputs = [...d.querySelectorAll("input")];
         const set = (el, v) => {
           el.focus();
-          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(el, v);
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+            el,
+            v
+          );
           el.dispatchEvent(new Event("input", { bubbles: true }));
         };
         set(inputs[0], wrong);
@@ -735,7 +758,10 @@ async function main() {
       where: { id: A.userId },
       select: { sessionVersion: true, passwordHash: true },
     });
-    if (unchanged.passwordHash === before.passwordHash && unchanged.sessionVersion === before.sessionVersion) {
+    if (
+      unchanged.passwordHash === before.passwordHash &&
+      unchanged.sessionVersion === before.sessionVersion
+    ) {
       ok("[error path] a refused password change writes nothing");
     } else {
       fail("[error path] refused change wrote anyway", "hash or sessionVersion moved");
@@ -749,7 +775,10 @@ async function main() {
         const inputs = [...d.querySelectorAll("input")];
         const set = (el, v) => {
           el.focus();
-          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(el, v);
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+            el,
+            v
+          );
           el.dispatchEvent(new Event("input", { bubbles: true }));
         };
         set(inputs[0], cur);
@@ -762,7 +791,8 @@ async function main() {
     await a.page
       .waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 30000 })
       .catch(() => {});
-    if (a.page.url().includes("/login")) ok("[happy path] password change redirects the caller to /login");
+    if (a.page.url().includes("/login"))
+      ok("[happy path] password change redirects the caller to /login");
     else fail("[happy path] password change redirect", `landed on ${a.page.url()}`);
 
     const after = await db.user.findUnique({
@@ -804,9 +834,31 @@ async function main() {
       await v.page.goto(`${BASE}/verify-email-change?token=${encodeURIComponent(forged)}`, {
         waitUntil: "networkidle0",
       });
-      await v.page
-        .waitForFunction(() => !/verifying/i.test(document.body.innerText), { timeout: 25000 })
-        .catch(() => {});
+      // THIS PROBE HAS TO PRESS THE BUTTON NOW (auth-015), and the reason is
+      // worth stating because the old shape was worse than a broken check.
+      // /verify-email-change used to apply the change on load, so landing on it
+      // WAS the submission. It now renders a confirm card and waits for a click.
+      // The old wait — `!/verifying/i` — became instantly true, since no
+      // "verifying" text ever renders any more; the DB read below then found the
+      // login address unmoved, which is precisely what a REJECTED token looks
+      // like, and printed the NEGATIVE ok(). Nothing had been submitted. A
+      // green line asserting a security property that was never exercised is
+      // the most expensive possible outcome here, so the click is asserted
+      // rather than attempted: if the button is missing, say so and stop.
+      const confirmed = await clickButton(v.page, /Confirm/i);
+      if (!confirmed) {
+        fail(
+          "[ACCT-004] harness: no Confirm button on /verify-email-change",
+          "the probe cannot submit the forged token, so its verdict would be meaningless"
+        );
+      } else {
+        await v.page
+          .waitForFunction(
+            () => /no longer valid|invalid|expired|changed/i.test(document.body.innerText),
+            { timeout: 25000 }
+          )
+          .catch(() => {});
+      }
       await shot(v.page, "05-email-change-token-after-password-change");
       const swapped = await db.user.findUnique({
         where: { id: A.userId },
@@ -818,7 +870,11 @@ async function main() {
           `login email moved to ${movedEmail} AFTER the password was changed and every session killed`
         );
         A.email = movedEmail;
-      } else {
+      } else if (confirmed) {
+        // Only claim the negative when the token was actually submitted. An
+        // unmoved address proves nothing if nobody pressed Confirm — that is
+        // the false pass this probe just stopped producing, and re-emitting the
+        // reassurance on the un-clicked path would put it straight back.
         ok("[ACCT-004 NEGATIVE] the email-change token was rejected after the password change");
       }
       await v.ctx.close().catch(() => {});
@@ -836,7 +892,9 @@ async function main() {
 
     await clickButton(a3.page, /^Light/i);
     await a3.page
-      .waitForFunction(() => !document.documentElement.classList.contains("dark"), { timeout: 10000 })
+      .waitForFunction(() => !document.documentElement.classList.contains("dark"), {
+        timeout: 10000,
+      })
       .catch(() => {});
     // updateAppearanceAction is fire-and-forget; poll the row, don't sleep.
     let themeRow = null;
@@ -858,7 +916,9 @@ async function main() {
     await shot(a3.page, "06-appearance-urdu");
     // Put it back so later blocks read English labels.
     await clickButton(a3.page, /English/i);
-    await a3.page.waitForFunction(() => document.documentElement.lang === "en", { timeout: 10000 }).catch(() => {});
+    await a3.page
+      .waitForFunction(() => document.documentElement.lang === "en", { timeout: 10000 })
+      .catch(() => {});
 
     // Notification matrix: flip the first email checkbox, assert the row, reload.
     const flipped = await a3.page.evaluate(() => {
@@ -883,8 +943,13 @@ async function main() {
       }
       if (prefRows.length > 0) {
         ok(`[persistence] a NotificationPreference row exists for MY user (${prefRows[0].event})`);
-        if (prefRows[0].email === flipped.now) ok("[persistence] the flipped channel matches the DB");
-        else fail("[persistence] flipped channel", `UI says ${flipped.now}, DB says ${prefRows[0].email}`);
+        if (prefRows[0].email === flipped.now)
+          ok("[persistence] the flipped channel matches the DB");
+        else
+          fail(
+            "[persistence] flipped channel",
+            `UI says ${flipped.now}, DB says ${prefRows[0].email}`
+          );
       } else {
         fail("[persistence] NotificationPreference upsert", "no row for my user after the flip");
       }
@@ -904,7 +969,13 @@ async function main() {
       const r = await fetch("/api/export");
       const ct = r.headers.get("content-type") ?? "";
       const text = await r.text();
-      return { status: r.status, ct, len: text.length, hasHash: /passwordHash/.test(text), body: text.slice(0, 400) };
+      return {
+        status: r.status,
+        ct,
+        len: text.length,
+        hasHash: /passwordHash/.test(text),
+        body: text.slice(0, 400),
+      };
     });
     if (exportRes.status === 200 && exportRes.ct.includes("application/json")) {
       ok("[happy path] admin export returns JSON");
@@ -932,7 +1003,9 @@ async function main() {
       // Confirm it, then measure what actually changed.
       await a3.page.evaluate(() => {
         const d = document.querySelector('[role="dialog"]');
-        const btn = [...d.querySelectorAll("button")].find((b) => /Reset everything|سب کچھ/i.test(b.textContent));
+        const btn = [...d.querySelectorAll("button")].find((b) =>
+          /Reset everything|سب کچھ/i.test(b.textContent)
+        );
         btn?.click();
       });
       await a3.page
@@ -952,7 +1025,10 @@ async function main() {
       } else if (!claimsServerWipe) {
         ok("[ACCT-007 NEGATIVE] the dialog copy no longer promises a server wipe");
       } else {
-        fail("[data safety] reset actually destroyed server rows", JSON.stringify({ beforeReset, afterReset }));
+        fail(
+          "[data safety] reset actually destroyed server rows",
+          JSON.stringify({ beforeReset, afterReset })
+        );
       }
       // Still signed in? (the redirect to /login bounces straight back)
       await a3.page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle0" }).catch(() => {});
@@ -974,7 +1050,9 @@ async function main() {
     const memberEmail = `qa-acct-b-${STAMP}-mem@founderflow.test`;
     const memberPassword = `QaAudit${STAMP}!m`;
     await b.page.goto(`${BASE}/team`, { waitUntil: "networkidle0", timeout: 60000 });
-    await b.page.waitForFunction(() => document.querySelectorAll("article").length > 0, { timeout: 30000 }).catch(() => {});
+    await b.page
+      .waitForFunction(() => document.querySelectorAll("article").length > 0, { timeout: 30000 })
+      .catch(() => {});
     await clickButton(b.page, /Invite member/i);
     await b.page.waitForSelector('[role="dialog"] input', { timeout: 15000 });
     await b.page.evaluate(
@@ -983,12 +1061,17 @@ async function main() {
         const inputs = d.querySelectorAll("input");
         const set = (el, v) => {
           el.focus();
-          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(el, v);
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+            el,
+            v
+          );
           el.dispatchEvent(new Event("input", { bubbles: true }));
         };
         set(inputs[0], n);
         set(inputs[1], e);
-        const roleBtn = [...d.querySelectorAll("button[aria-pressed]")].find((x) => /team member/i.test(x.textContent ?? ""));
+        const roleBtn = [...d.querySelectorAll("button[aria-pressed]")].find((x) =>
+          /team member/i.test(x.textContent ?? "")
+        );
         roleBtn?.click();
       },
       { n: `QA Member ${STAMP}`, e: memberEmail }
@@ -1006,16 +1089,24 @@ async function main() {
     } else {
       ok("[setup] invite created through the real flow");
       const m = await newCtx(browser, "member-B", "m");
-      await m.page.goto(`${BASE}/invite/${inviteRow.token}`, { waitUntil: "networkidle0", timeout: 60000 });
+      await m.page.goto(`${BASE}/invite/${inviteRow.token}`, {
+        waitUntil: "networkidle0",
+        timeout: 60000,
+      });
       await m.page
-        .waitForFunction(() => {
-          const btn = document.querySelector('form button[type="submit"]');
-          return !!btn && !btn.disabled;
-        }, { timeout: 30000 })
+        .waitForFunction(
+          () => {
+            const btn = document.querySelector('form button[type="submit"]');
+            return !!btn && !btn.disabled;
+          },
+          { timeout: 30000 }
+        )
         .catch(() => {});
       await m.page.type("input[type=password]", memberPassword);
       await m.page.click('form button[type="submit"]');
-      await m.page.waitForFunction(() => location.pathname.startsWith("/dashboard"), { timeout: 30000 }).catch(() => {});
+      await m.page
+        .waitForFunction(() => location.pathname.startsWith("/dashboard"), { timeout: 30000 })
+        .catch(() => {});
 
       const memberRow = await db.user.findFirst({
         where: { companyId: B.companyId, email: memberEmail },
@@ -1037,7 +1128,8 @@ async function main() {
         if (!re.test(memberText)) ok(`[role gate] member does not see "${label}"`);
         else fail(`[role gate] member sees "${label}"`, "must be admin/cofounder only");
       }
-      if (/Delete my account/i.test(memberText)) ok("[role gate] member CAN delete their own account");
+      if (/Delete my account/i.test(memberText))
+        ok("[role gate] member CAN delete their own account");
       else fail("[role gate] member account-delete row", "missing");
 
       // 9b. member export must 403 even by direct fetch.
@@ -1046,7 +1138,11 @@ async function main() {
         return { status: r.status, body: (await r.text()).slice(0, 200) };
       });
       if (memberExport.status === 403) ok("[security] /api/export refuses a member with 403");
-      else fail("[security] /api/export member gate", `status ${memberExport.status}: ${memberExport.body}`);
+      else
+        fail(
+          "[security] /api/export member gate",
+          `status ${memberExport.status}: ${memberExport.body}`
+        );
 
       // 9c. [ACCT-009] a member has no way to take their own data before
       //     deleting their account — the only export is finance-gated.
@@ -1062,7 +1158,9 @@ async function main() {
       await clickButton(m.page, /Delete account/i);
       const delModal = await m.page.evaluate(() => {
         const d = document.querySelector('[role="dialog"]');
-        return d ? { text: d.innerText, inputs: [...d.querySelectorAll("input")].map((i) => i.type) } : null;
+        return d
+          ? { text: d.innerText, inputs: [...d.querySelectorAll("input")].map((i) => i.type) }
+          : null;
       });
       await shot(m.page, "10-member-delete-account-modal");
       if (delModal) {
@@ -1071,24 +1169,47 @@ async function main() {
         await setInput(m.page, '[role="dialog"] input[type=password]', "wrong-password-entirely");
         await m.page.evaluate(() => document.querySelector('[role="dialog"] form').requestSubmit());
         const wrongToast = await waitForToast(m.page);
-        if (/Password doesn't match/i.test(wrongToast)) ok("[error path] account delete refuses a wrong password");
+        if (/Password doesn't match/i.test(wrongToast))
+          ok("[error path] account delete refuses a wrong password");
         else fail("[error path] account delete wrong password", `toast: ${wrongToast}`);
         const midway = await tombstoneShape(B.companyId);
-        if (midway.usersDead === beforeMemberDelete.usersDead) ok("[data safety] a refused delete tombstones nothing");
-        else fail("[data safety] refused delete tombstoned rows", JSON.stringify({ beforeMemberDelete, midway }));
+        if (midway.usersDead === beforeMemberDelete.usersDead)
+          ok("[data safety] a refused delete tombstones nothing");
+        else
+          fail(
+            "[data safety] refused delete tombstoned rows",
+            JSON.stringify({ beforeMemberDelete, midway })
+          );
 
         await drainToasts(m.page);
         await setInput(m.page, '[role="dialog"] input[type=password]', memberPassword);
         await m.page.evaluate(() => document.querySelector('[role="dialog"] form').requestSubmit());
-        await m.page.waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 30000 }).catch(() => {});
+        await m.page
+          .waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 30000 })
+          .catch(() => {});
 
         const afterMemberDelete = await tombstoneShape(B.companyId);
-        if (afterMemberDelete.companyDeletedAt === null) ok("[happy path] a member self-delete leaves the workspace live");
-        else fail("[data safety] member self-delete tombstoned the WORKSPACE", `companyDeletedAt=${afterMemberDelete.companyDeletedAt}`);
-        if (afterMemberDelete.usersDead === beforeMemberDelete.usersDead + 1) ok("[happy path] exactly one user tombstoned");
-        else fail("[happy path] one user tombstoned", JSON.stringify({ beforeMemberDelete, afterMemberDelete }));
-        if (afterMemberDelete.tasksLive === beforeMemberDelete.tasksLive) ok("[happy path] the workspace's tasks survive the member leaving");
-        else fail("[data safety] member delete took tasks with it", `${beforeMemberDelete.tasksLive} → ${afterMemberDelete.tasksLive}`);
+        if (afterMemberDelete.companyDeletedAt === null)
+          ok("[happy path] a member self-delete leaves the workspace live");
+        else
+          fail(
+            "[data safety] member self-delete tombstoned the WORKSPACE",
+            `companyDeletedAt=${afterMemberDelete.companyDeletedAt}`
+          );
+        if (afterMemberDelete.usersDead === beforeMemberDelete.usersDead + 1)
+          ok("[happy path] exactly one user tombstoned");
+        else
+          fail(
+            "[happy path] one user tombstoned",
+            JSON.stringify({ beforeMemberDelete, afterMemberDelete })
+          );
+        if (afterMemberDelete.tasksLive === beforeMemberDelete.tasksLive)
+          ok("[happy path] the workspace's tasks survive the member leaving");
+        else
+          fail(
+            "[data safety] member delete took tasks with it",
+            `${beforeMemberDelete.tasksLive} → ${afterMemberDelete.tasksLive}`
+          );
 
         // They must not be able to sign back in.
         const reIn = await signIn(m.page, memberEmail, memberPassword);
@@ -1104,13 +1225,20 @@ async function main() {
         await m.page.type('input[name="email"]', memberEmail);
         await m.page.type('input[name="password"]', `QaAudit${STAMP}!r`);
         await m.page.evaluate(() => {
-          const btn = [...document.querySelectorAll("form button[type=button]")].find((x) => /continue/i.test(x.textContent ?? ""));
+          const btn = [...document.querySelectorAll("form button[type=button]")].find((x) =>
+            /continue/i.test(x.textContent ?? "")
+          );
           btn?.click();
         });
-        await m.page.waitForFunction(() => {
-          const el = document.querySelector('input[name="companyName"]');
-          return !!el && el.offsetParent !== null;
-        }, { timeout: 15000 }).catch(() => {});
+        await m.page
+          .waitForFunction(
+            () => {
+              const el = document.querySelector('input[name="companyName"]');
+              return !!el && el.offsetParent !== null;
+            },
+            { timeout: 15000 }
+          )
+          .catch(() => {});
         await m.page.type('input[name="companyName"]', `qa-return-${STAMP}`);
         await m.page.click('form button[type="submit"]');
         const signupToast = await waitForToast(m.page, 25000);
@@ -1122,7 +1250,10 @@ async function main() {
           );
         } else if (/created|dashboard/i.test(signupToast) || m.page.url().includes("/dashboard")) {
           ok("[ACCT-001 NEGATIVE] the address can be reused after an account delete");
-          const strays = await db.user.findMany({ where: { email: memberEmail }, select: { companyId: true } });
+          const strays = await db.user.findMany({
+            where: { email: memberEmail },
+            select: { companyId: true },
+          });
           for (const s of strays) if (!myTenants.includes(s.companyId)) myTenants.push(s.companyId);
         } else {
           note(`[ACCT-001] signup produced: ${signupToast}`);
@@ -1138,7 +1269,9 @@ async function main() {
     const mate2Email = `qa-acct-b-${STAMP}-mate@founderflow.test`;
     const mate2Password = `QaAudit${STAMP}!n`;
     await b.page.goto(`${BASE}/team`, { waitUntil: "networkidle0", timeout: 60000 });
-    await b.page.waitForFunction(() => document.querySelectorAll("article").length > 0, { timeout: 30000 }).catch(() => {});
+    await b.page
+      .waitForFunction(() => document.querySelectorAll("article").length > 0, { timeout: 30000 })
+      .catch(() => {});
     await clickButton(b.page, /Invite member/i);
     await b.page.waitForSelector('[role="dialog"] input', { timeout: 15000 });
     await b.page.evaluate(
@@ -1147,12 +1280,17 @@ async function main() {
         const inputs = d.querySelectorAll("input");
         const set = (el, v) => {
           el.focus();
-          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(el, v);
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+            el,
+            v
+          );
           el.dispatchEvent(new Event("input", { bubbles: true }));
         };
         set(inputs[0], n);
         set(inputs[1], e);
-        const roleBtn = [...d.querySelectorAll("button[aria-pressed]")].find((x) => /team member/i.test(x.textContent ?? ""));
+        const roleBtn = [...d.querySelectorAll("button[aria-pressed]")].find((x) =>
+          /team member/i.test(x.textContent ?? "")
+        );
         roleBtn?.click();
       },
       { n: `QA Mate ${STAMP}`, e: mate2Email }
@@ -1166,14 +1304,24 @@ async function main() {
     });
     if (mate2Invite) {
       const m2 = await newCtx(browser, "mate-B", "m2");
-      await m2.page.goto(`${BASE}/invite/${mate2Invite.token}`, { waitUntil: "networkidle0", timeout: 60000 });
-      await m2.page.waitForFunction(() => {
-        const btn = document.querySelector('form button[type="submit"]');
-        return !!btn && !btn.disabled;
-      }, { timeout: 30000 }).catch(() => {});
+      await m2.page.goto(`${BASE}/invite/${mate2Invite.token}`, {
+        waitUntil: "networkidle0",
+        timeout: 60000,
+      });
+      await m2.page
+        .waitForFunction(
+          () => {
+            const btn = document.querySelector('form button[type="submit"]');
+            return !!btn && !btn.disabled;
+          },
+          { timeout: 30000 }
+        )
+        .catch(() => {});
       await m2.page.type("input[type=password]", mate2Password);
       await m2.page.click('form button[type="submit"]');
-      await m2.page.waitForFunction(() => location.pathname.startsWith("/dashboard"), { timeout: 30000 }).catch(() => {});
+      await m2.page
+        .waitForFunction(() => location.pathname.startsWith("/dashboard"), { timeout: 30000 })
+        .catch(() => {});
       note("second teammate live in tenant B");
 
       const beforeGuard = await tombstoneShape(B.companyId);
@@ -1184,13 +1332,21 @@ async function main() {
       await b.page.evaluate(() => document.querySelector('[role="dialog"] form').requestSubmit());
       const guardToast = await waitForToast(b.page, 25000);
       await shot(b.page, "12-sole-admin-guard");
-      if (/only admin/i.test(guardToast)) ok("[negative result] the sole-admin-with-teammates guard holds");
-      else fail("[P0 RISK] sole admin deleted themselves with teammates present", `toast: ${guardToast}`);
+      if (/only admin/i.test(guardToast))
+        ok("[negative result] the sole-admin-with-teammates guard holds");
+      else
+        fail(
+          "[P0 RISK] sole admin deleted themselves with teammates present",
+          `toast: ${guardToast}`
+        );
       const afterGuard = await tombstoneShape(B.companyId);
       if (afterGuard.usersDead === beforeGuard.usersDead && afterGuard.companyDeletedAt === null) {
         ok("[negative result] the blocked delete wrote nothing");
       } else {
-        fail("[data safety] blocked delete still wrote", JSON.stringify({ beforeGuard, afterGuard }));
+        fail(
+          "[data safety] blocked delete still wrote",
+          JSON.stringify({ beforeGuard, afterGuard })
+        );
       }
       await closeDialog(b.page);
       await m2.ctx.close().catch(() => {});
@@ -1210,7 +1366,10 @@ async function main() {
         const d = document.querySelector('[role="dialog"]');
         const set = (el, v) => {
           el.focus();
-          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(el, v);
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+            el,
+            v
+          );
           el.dispatchEvent(new Event("input", { bubbles: true }));
         };
         set(d.querySelector('input[type="text"]'), name);
@@ -1221,7 +1380,8 @@ async function main() {
     await b.page.evaluate(() => document.querySelector('[role="dialog"] form').requestSubmit());
     const crossToast = await waitForToast(b.page, 25000);
     await shot(b.page, "13-cross-tenant-name-refused");
-    if (/doesn't match/i.test(crossToast)) ok("[negative result] another tenant's workspace name is refused");
+    if (/doesn't match/i.test(crossToast))
+      ok("[negative result] another tenant's workspace name is refused");
     else fail("[P0 RISK] cross-tenant workspace name accepted", `toast: ${crossToast}`);
     const aAfter = await tombstoneShape(A.companyId);
     if (aAfter.companyDeletedAt === null && aAfter.usersLive === aBefore.usersLive) {
@@ -1237,7 +1397,10 @@ async function main() {
         const d = document.querySelector('[role="dialog"]');
         const set = (el, v) => {
           el.focus();
-          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(el, v);
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+            el,
+            v
+          );
           el.dispatchEvent(new Event("input", { bubbles: true }));
         };
         set(d.querySelector('input[type="text"]'), name);
@@ -1247,7 +1410,8 @@ async function main() {
     );
     await b.page.evaluate(() => document.querySelector('[role="dialog"] form').requestSubmit());
     const wrongWsToast = await waitForToast(b.page, 25000);
-    if (/Password doesn't match/i.test(wrongWsToast)) ok("[error path] workspace delete refuses a wrong password");
+    if (/Password doesn't match/i.test(wrongWsToast))
+      ok("[error path] workspace delete refuses a wrong password");
     else fail("[error path] workspace delete wrong password", `toast: ${wrongWsToast}`);
     await closeDialog(b.page);
 
@@ -1271,21 +1435,25 @@ async function main() {
       },
     });
     // W3 — a device registration for MY user, to observe what delete leaves behind.
-    await db.pushSubscription.create({
-      data: {
-        userId: D.userId,
-        endpoint: `https://qa.example.invalid/push/${STAMP}`,
-        p256dh: "qa-p256dh",
-        auth: "qa-auth",
-        userAgent: "qa-agent-11",
-      },
-    }).catch(() => note("pushSubscription seed skipped"));
+    await db.pushSubscription
+      .create({
+        data: {
+          userId: D.userId,
+          endpoint: `https://qa.example.invalid/push/${STAMP}`,
+          p256dh: "qa-p256dh",
+          auth: "qa-auth",
+          userAgent: "qa-agent-11",
+        },
+      })
+      .catch(() => note("pushSubscription seed skipped"));
 
     // An OUTSTANDING invite that will outlive the workspace [ACCT-003].
     const zombieEmail = `qa-acct-d-${STAMP}-zombie@founderflow.test`;
     const zombiePassword = `QaAudit${STAMP}!z`;
     await d.page.goto(`${BASE}/team`, { waitUntil: "networkidle0", timeout: 60000 });
-    await d.page.waitForFunction(() => document.querySelectorAll("article").length > 0, { timeout: 30000 }).catch(() => {});
+    await d.page
+      .waitForFunction(() => document.querySelectorAll("article").length > 0, { timeout: 30000 })
+      .catch(() => {});
     await clickButton(d.page, /Invite member/i);
     await d.page.waitForSelector('[role="dialog"] input', { timeout: 15000 });
     await d.page.evaluate(
@@ -1294,12 +1462,17 @@ async function main() {
         const inputs = dd.querySelectorAll("input");
         const set = (el, v) => {
           el.focus();
-          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(el, v);
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+            el,
+            v
+          );
           el.dispatchEvent(new Event("input", { bubbles: true }));
         };
         set(inputs[0], n);
         set(inputs[1], e);
-        const roleBtn = [...dd.querySelectorAll("button[aria-pressed]")].find((x) => /team member/i.test(x.textContent ?? ""));
+        const roleBtn = [...dd.querySelectorAll("button[aria-pressed]")].find((x) =>
+          /team member/i.test(x.textContent ?? "")
+        );
         roleBtn?.click();
       },
       { n: `QA Zombie ${STAMP}`, e: zombieEmail }
@@ -1348,7 +1521,10 @@ async function main() {
         const dd = document.querySelector('[role="dialog"]');
         const set = (el, v) => {
           el.focus();
-          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(el, v);
+          Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(
+            el,
+            v
+          );
           el.dispatchEvent(new Event("input", { bubbles: true }));
         };
         set(dd.querySelector('input[type="text"]'), name);
@@ -1357,8 +1533,11 @@ async function main() {
       { name: D.companyName, pw: D.password }
     );
     await d.page.evaluate(() => document.querySelector('[role="dialog"] form').requestSubmit());
-    await d.page.waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 30000 }).catch(() => {});
-    if (d.page.url().includes("/login")) ok("[happy path] workspace delete lands the admin on /login");
+    await d.page
+      .waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 30000 })
+      .catch(() => {});
+    if (d.page.url().includes("/login"))
+      ok("[happy path] workspace delete lands the admin on /login");
     else fail("[happy path] workspace delete redirect", `at ${d.page.url()}`);
 
     const dAfter = await tombstoneShape(D.companyId);
@@ -1398,7 +1577,9 @@ async function main() {
     }
 
     // [ACCT-008] push registration survives.
-    const survivingPush = await db.pushSubscription.count({ where: { user: { companyId: D.companyId } } });
+    const survivingPush = await db.pushSubscription.count({
+      where: { user: { companyId: D.companyId } },
+    });
     if (survivingPush > 0) {
       fail(
         "[ACCT-008] a deleted workspace's device registrations survive",
@@ -1410,8 +1591,11 @@ async function main() {
 
     // The admin's other live session must die on its next request.
     await d2.page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle0" }).catch(() => {});
-    await d2.page.waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 20000 }).catch(() => {});
-    if (d2.page.url().includes("/login")) ok("[session] the admin's other device is signed out at once");
+    await d2.page
+      .waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 20000 })
+      .catch(() => {});
+    if (d2.page.url().includes("/login"))
+      ok("[session] the admin's other device is signed out at once");
     else fail("[session] other device survived the workspace delete", `at ${d2.page.url()}`);
 
     // Double-submit: a second invocation must not re-stamp a NEW tombstone
@@ -1425,22 +1609,34 @@ async function main() {
     // tombstoned workspace.
     if (zombieInvite) {
       const z = await newCtx(browser, "zombie", "z");
-      await z.page.goto(`${BASE}/invite/${zombieInvite.token}`, { waitUntil: "networkidle0", timeout: 60000 });
+      await z.page.goto(`${BASE}/invite/${zombieInvite.token}`, {
+        waitUntil: "networkidle0",
+        timeout: 60000,
+      });
       const hasForm = await z.page.$("input[type=password]");
       await shot(z.page, "15-invite-into-deleted-workspace");
       if (!hasForm) {
         ok("[ACCT-003 NEGATIVE] the invite link is refused once the workspace is deleted");
       } else {
-        await z.page.waitForFunction(() => {
-          const btn = document.querySelector('form button[type="submit"]');
-          return !!btn && !btn.disabled;
-        }, { timeout: 30000 }).catch(() => {});
+        await z.page
+          .waitForFunction(
+            () => {
+              const btn = document.querySelector('form button[type="submit"]');
+              return !!btn && !btn.disabled;
+            },
+            { timeout: 30000 }
+          )
+          .catch(() => {});
         await z.page.type("input[type=password]", zombiePassword);
         await z.page.click('form button[type="submit"]');
-        await z.page.waitForFunction(
-          () => location.pathname.startsWith("/dashboard") || document.querySelectorAll('[role="status"],[role="alert"]').length > 0,
-          { timeout: 30000 }
-        ).catch(() => {});
+        await z.page
+          .waitForFunction(
+            () =>
+              location.pathname.startsWith("/dashboard") ||
+              document.querySelectorAll('[role="status"],[role="alert"]').length > 0,
+            { timeout: 30000 }
+          )
+          .catch(() => {});
         const zToast = await toastsOf(z.page);
         const zombieRow = await db.user.findFirst({
           where: { companyId: D.companyId, email: zombieEmail },
@@ -1453,7 +1649,9 @@ async function main() {
             `User ${zombieRow.id} committed with deletedAt=null into Company ${D.companyId} whose deletedAt=${dAfter.companyDeletedAt}. softDeleteWorkspace() never touches InviteToken and acceptInviteAction never checks company.deletedAt. Landed at ${z.page.url()} — toast: ${zToast}`
           );
           // Their session, if any, hits getCurrentCompany() → throws.
-          const broken = await z.page.evaluate(() => /something went wrong|error/i.test(document.body.innerText));
+          const broken = await z.page.evaluate(() =>
+            /something went wrong|error/i.test(document.body.innerText)
+          );
           if (broken) {
             note("[ACCT-003] the zombie account renders the error boundary on every app page");
           }
@@ -1498,11 +1696,15 @@ async function main() {
 
     await setInput(e.page, '[role="dialog"] input[type=password]', E.password);
     await e.page.evaluate(() => document.querySelector('[role="dialog"] form').requestSubmit());
-    await e.page.waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 30000 }).catch(() => {});
+    await e.page
+      .waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 30000 })
+      .catch(() => {});
     const eAfter = await tombstoneShape(E.companyId);
     note(`tenant E after solo delete: ${JSON.stringify(eAfter)}`);
     if (eAfter.companyDeletedAt !== null && eAfter.usersLive === 0) {
-      ok("[ACCT-013] confirmed: 'Delete my account' tombstoned the WHOLE workspace for a solo founder");
+      ok(
+        "[ACCT-013] confirmed: 'Delete my account' tombstoned the WHOLE workspace for a solo founder"
+      );
     } else {
       fail("[ACCT-013] solo delete cascade", JSON.stringify({ eBefore, eAfter }));
     }
@@ -1527,9 +1729,12 @@ async function main() {
       const btn = [...dd.querySelectorAll("button")].find((x) => /sign out/i.test(x.textContent));
       btn?.click();
     });
-    await f.page.waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 25000 }).catch(() => {});
+    await f.page
+      .waitForFunction(() => location.pathname.startsWith("/login"), { timeout: 25000 })
+      .catch(() => {});
     await f.page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle0" }).catch(() => {});
-    if (f.page.url().includes("/login")) ok("[happy path] sign out really clears the session cookie");
+    if (f.page.url().includes("/login"))
+      ok("[happy path] sign out really clears the session cookie");
     else fail("[happy path] sign out left a live session", `at ${f.page.url()}`);
     note(`tenant F = ${F.companyName}`);
 

@@ -17,11 +17,17 @@
  * find no way into it, because `createChannelAction` shipped with no caller.
  * This is that caller.
  *
- * The DM button is HIDDEN, not disabled, when the roster is empty: in a
- * workspace of one there is nobody to message, and a greyed-out control
- * implies a precondition the reader could go and satisfy, which "invite a
- * colleague first" is only indirectly. One clear next step beats two, one of
- * which is dead.
+ * THE DM BUTTON IS ALWAYS OFFERED — corrected after the product owner reported
+ * "theres no option for dm in chat". It used to be hidden when the roster was
+ * empty, on the reasoning that a workspace of one has nobody to message. Two
+ * things were wrong with that. It is the branch a brand-new workspace is
+ * ALWAYS in, so the reader most in need of being told that DMs exist was the
+ * one reader guaranteed not to see them. And <NewDmModal> already has the
+ * honest copy for it — "You're the only person in this workspace — invite
+ * someone from the Team page" — which this gate, and the matching one in
+ * chat-client.tsx, were the only things making unreachable. A control that
+ * explains why it cannot help yet, and points at the page that fixes it, is a
+ * next step; a control that is not there is silence.
  */
 
 import { useState } from "react";
@@ -70,16 +76,23 @@ export function EmptyChat({ dmCandidates }: Props) {
           New channel
         </button>
 
-        {dmCandidates.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setNewDmOpen(true)}
-            className="inline-flex items-center gap-2 rounded-full border border-border bg-bg px-5 py-2.5 text-sm font-semibold text-fg transition-colors hover:border-primary/40 hover:text-primary-strong"
-          >
-            <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
-            Message a teammate
-          </button>
-        )}
+        {/* Unconditional. It used to be gated on `dmCandidates.length > 0`, so
+            the first person into a brand-new workspace — who is very often
+            alone in it — got no way to message a person at all, which is the
+            bug that was reported. <NewDmModal> already carries the honest copy
+            for an empty roster ("You're the only person in this workspace —
+            invite someone from the Team page"), and this gate plus the matching
+            one in chat-client.tsx were the only things keeping that branch
+            unreachable. Offering a control that explains why it cannot help yet
+            beats offering nothing and saying nothing. */}
+        <button
+          type="button"
+          onClick={() => setNewDmOpen(true)}
+          className="inline-flex items-center gap-2 rounded-full border border-border bg-bg px-5 py-2.5 text-sm font-semibold text-fg transition-colors hover:border-primary/40 hover:text-primary-strong"
+        >
+          <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
+          Message a teammate
+        </button>
       </div>
 
       <NewChannelModal

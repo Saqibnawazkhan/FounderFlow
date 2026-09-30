@@ -62,7 +62,9 @@ import { splitAroundPlaceholder, type Locale } from "@/lib/i18n/strings";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import { formatDuration } from "@/lib/time/thresholds";
 import type { AccountStats } from "@/lib/queries/stats";
-import type { BillingSummary } from "@/lib/queries/billing";
+// Type-only: lib/queries/billing.ts is server-only (it imports the Prisma
+// client), so a VALUE import here would drag Prisma into the client bundle.
+import type { BillingCharge, BillingSummary } from "@/lib/queries/billing";
 import {
   createCheckoutSessionAction,
   createBillingPortalSessionAction,
@@ -74,6 +76,7 @@ import {
   type BillingNoticeTone,
 } from "@/lib/billing/plan";
 import { useNumberFormat } from "@/lib/i18n/use-t";
+import { BillingConfirmation } from "./billing-confirmation";
 import { EditProfileModal } from "./edit-profile-modal";
 import { ChangePasswordModal } from "./change-password-modal";
 import { ChangeEmailModal } from "./change-email-modal";
@@ -85,7 +88,7 @@ type Props = {
   user: UserType;
   company: Company;
   stats: AccountStats;
-  billing: BillingSummary;
+  billing: BillingSummary | null;
   notifyMatrix: NotificationMatrixRow[];
 };
 
@@ -142,21 +145,17 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
     startTransition(() => router.refresh());
   }
 
-  // Stripe Checkout redirects back to /settings?billing=success|cancelled.
-  // The webhook updates the plan asynchronously, so refresh a beat later.
-  useEffect(() => {
-    const billingParam = new URLSearchParams(window.location.search).get("billing");
-    if (billingParam === "success") {
-      toast.success("Payment received — your plan will update in a moment.");
-      startTransition(() => router.refresh());
-      window.history.replaceState({}, "", "/settings");
-    } else if (billingParam === "cancelled") {
-      toast("Checkout cancelled — no charge made.");
-      window.history.replaceState({}, "", "/settings");
-    }
-    // Run once on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // bill-021. The return-from-checkout handling used to live here: one
+  // `router.refresh()` in the same tick as a toast promising the plan would
+  // "update in a moment", `[]` deps, and nothing that ever looked again. The
+  // webhook that writes the plan is a separate delivery, so that promise was
+  // routinely broken while an Upgrade button sat on screen. It now belongs to
+  // `BillingConfirmation`, rendered inside the billing card, which polls to a
+  // bounded window and reports an unconfirmed payment as such.
+  //
+  // Note that the old comment said "Stripe Checkout". Billing is LemonSqueezy —
+  // Stripe does not onboard Pakistan-based sellers and there is no Stripe
+  // handler in this repo.
 
   async function handleLogout() {
     const ok = await confirm({
@@ -397,10 +396,13 @@ export function SettingsClient({ user, company, stats, billing, notifyMatrix }: 
         </Section>
       )}
 
-      {/* Billing is the workspace owner's concern — admin only. */}
-      {user.role === "admin" && (
+      {/* Billing is the workspace owner's concern — admin only. And `billing`
+          is null for anyone who may not see money (A43), so this is two
+          independent conditions rather than one restated twice: the server
+          decides who the DATA reaches, this decides who the CARD reaches. */}
+      {user.role === "admin" && billing && (
         <Section icon={CreditCard} label="Plan & billing">
-          <BillingSection billing={billing} />
+          <BillingSection billing={billing} workspaceCurrency={company.currency} />
         </Section>
       )}
 
@@ -886,7 +888,105 @@ function periodNoticeClass(tone: BillingNoticeTone | undefined): string {
   return "text-fg-muted";
 }
 
-function BillingSection({ billing }: { billing: BillingSummary }) {
+/**
+ * The charge as the customer's bank would print it (bill-016).
+ *
+ * PREFERS THE PROVIDER'S OWN STRING. `total_formatted` comes off the invoice
+ * payload already rendered by LemonSqueezy, so it needs no assumption about
+ * where the symbol goes or how many minor units the currency has.
+ *
+ * THE FALLBACK IS WHERE THE CARE IS. `amountMinor` is in the currency's MINOR
+ * unit, and dividing by 100 is only right for currencies that have two of them:
+ * a ¥1,500 charge rendered as ¥15 is a tenfold understatement presented as
+ * fact, which is worse than showing nothing. So the exponent is asked of `Intl`
+ * (`maximumFractionDigits` under `style: "currency"` is the currency's own digit
+ * count — 2 for USD, 0 for JPY).
+ *
+ * WHAT AN UNKNOWN CURRENCY ACTUALLY DOES, because this used to say "an unknown
+ * code returns null so the caller shows the currency statement with no figure
+ * attached" and that is only half true. Measured rather than reasoned about:
+ * `Intl.NumberFormat` throws `RangeError` only for a MALFORMED code — "Q" does,
+ * and the try/catch below duly answers null. A well-formed but UNKNOWN code does
+ * not throw: "QQQ" resolves and formats "QQQ 10.00", assuming two minor units.
+ * So the real failure mode for an unrecognised currency is a figure computed on
+ * a guessed exponent, which is the thing this fallback exists to avoid, not the
+ * no-figure path it claimed. It is reachable only because `readInvoiceCharge`
+ * validates the field with `currency.length === 0` rather than a three-letter
+ * shape — that boundary is pinned in tests/lib/queries/billing-summary.test.ts,
+ * with a note to change that case if the validation is ever tightened. Provider
+ * data makes it near-unreachable in practice; the wrong reason was the defect.
+ *
+ * `Math.pow` rather than `**` is a readability choice and nothing more. This
+ * used to justify it with "tsconfig sets `lib` but no `target`, so tsc emits
+ * ES5", which is wrong twice: tsconfig.json sets `"noEmit": true`, so tsc emits
+ * nothing at all, and TypeScript downlevels `**` for an ES5 target without
+ * complaint anyway — only bigint operands need es2016+. The genuine ES5 trap in
+ * this repo is `matchAll` in a for…of, spreading a Set or a Map, and named
+ * capture groups, which DO fail `npm run typecheck` while passing vitest. That
+ * rule is real; it just has nothing to do with this line.
+ *
+ * The locale is fixed at "en" on purpose, and this is NOT the same decision as
+ * `useNumberFormat()`. That hook exists so no component names a locale tag when
+ * formatting the WORKSPACE's own numbers. This is a foreign-currency total
+ * inside a hardcoded-English sentence, and it is the provider's own figure
+ * rather than ours — the same argument the date marker in `BillingSection`
+ * makes, and the same one `formatAmountForMessage` in lib/utils.ts rests on.
+ */
+function formatChargeAmount(charge: BillingCharge): string | null {
+  if (charge.formatted) return charge.formatted;
+  try {
+    const nf = new Intl.NumberFormat("en", { style: "currency", currency: charge.currency });
+    const digits = nf.resolvedOptions().maximumFractionDigits ?? 2;
+    return nf.format(charge.amountMinor / Math.pow(10, digits));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The sentence that reconciles the billing currency with the reporting currency.
+ *
+ * THE FINDING, in one line: `Company.currency` is PKR by default and is printed
+ * on this same page, and LemonSqueezy — a merchant of record, which is why it
+ * works for a Pakistan-based seller at all — charges the card in its own store
+ * currency. Nothing on any screen joined those two facts, so a USD line on a
+ * bank statement had nothing in the product to match it against.
+ *
+ * It names LemonSqueezy rather than FounderFlow because LemonSqueezy is the name
+ * that actually appears on the statement.
+ *
+ * The mismatch clause is CONDITIONAL. Telling a workspace that already reports
+ * in the billing currency that its currencies differ would be the same class of
+ * confidently-wrong copy as bill-005's "Renews" on a cancelled subscription,
+ * pointed the other way.
+ */
+function billingCurrencyNote(args: {
+  isTeam: boolean;
+  billingCurrency: string;
+  workspaceCurrency: string;
+}): string {
+  const subject = args.isTeam ? "Billed" : "Team is billed";
+  const who = `${subject} in ${args.billingCurrency} by LemonSqueezy, our merchant of record`;
+  if (args.billingCurrency === args.workspaceCurrency) return `${who}.`;
+  const tense = args.isTeam ? "appears" : "will appear";
+  return (
+    `${who} - this workspace reports in ${args.workspaceCurrency}, ` +
+    `so the charge ${tense} as ${args.billingCurrency} on your statement.`
+  );
+}
+
+export function BillingSection({
+  billing,
+  workspaceCurrency,
+}: {
+  billing: BillingSummary;
+  /**
+   * `Company.currency` — what every other number in this product is reported
+   * in. Passed in rather than read from the summary because the point of it
+   * here is the COMPARISON with `billing.billingCurrency` (bill-016).
+   */
+  workspaceCurrency: string;
+}) {
   const [busy, setBusy] = useState<"checkout" | "portal" | null>(null);
   const isTeam = billing.plan === "team";
   // `status` is this summary's name for `subscriptionStatus`; the notice reads
@@ -904,6 +1004,20 @@ function BillingSection({ billing }: { billing: BillingSummary }) {
     // in lib/utils.ts is built on. Localise the sentence first, then this.
     formatDate
   );
+
+  // bill-016. Read, not assumed: `lastCharge` is lifted out of the LemonSqueezy
+  // invoice payload this app already stores. Null when the workspace has never
+  // been billed, or when those bytes could not be read as an invoice — in which
+  // case the currency note below still renders and no figure is shown.
+  const charge = billing.lastCharge;
+  const chargeAmount = charge ? formatChargeAmount(charge) : null;
+  // locale-free-date-ok: the same reasoning as the period notice above, and for
+  // the same sentence. This date lands inside hardcoded English ("Last charge
+  // $10.00 USD on …") and it is the date on a LemonSqueezy invoice rather than
+  // one of the workspace's own records. Localising only the date would
+  // half-translate the line; localise the whole billing card first, which needs
+  // the copy in lib/billing/plan.ts to move too.
+  const chargeDate = charge ? formatDate(new Date(charge.chargedAt)) : null;
 
   async function upgrade() {
     setBusy("checkout");
@@ -960,6 +1074,65 @@ function BillingSection({ billing }: { billing: BillingSummary }) {
             ? period.text
             : `Up to ${FREE_MEMBER_LIMIT} members. Upgrade for unlimited co-founders and investor-ready extras.`}
         </p>
+        {/*
+          bill-021. The plan above is the SERVER's answer; this is what fills the
+          gap between the charge and the webhook that writes it. Rendered here
+          rather than at the top of the page on purpose: the sentence it replaces
+          is the plan line directly above it, so a customer reading "Solo (Free)"
+          reads "confirming your plan" in the same glance.
+        */}
+        <BillingConfirmation plan={billing.plan} />
+        {/*
+          bill-016. The card used to show a plan name, a status token and a date
+          — no amount, no currency, no route to a receipt — while the Company
+          card on this same page prints `currency: PKR`. Everything below is READ
+          (`billing.lastCharge` comes from the stored LemonSqueezy invoice
+          payload; see lib/queries/billing.ts) rather than typed in, because a
+          hardcoded figure is a lie on the day the variant price changes.
+
+          Gated on `configured`: a deployment with no LemonSqueezy keys has no
+          merchant and takes no money, so claiming a USD charge there would be
+          inventing a billing relationship.
+        */}
+        {billing.configured && (
+          <>
+            {charge && chargeAmount && (
+              <p className="mt-1.5 text-xs text-fg-muted">
+                Last charge{" "}
+                <span className="font-mono font-semibold text-fg">
+                  {chargeAmount} {charge.currency}
+                </span>{" "}
+                on {chargeDate}
+              </p>
+            )}
+            <p className="mt-1.5 text-xs text-fg-muted">
+              {billingCurrencyNote({
+                isTeam,
+                billingCurrency: billing.billingCurrency,
+                workspaceCurrency,
+              })}
+              {/*
+                The route to receipts is the customer portal behind the button in
+                this card — NOT the `urls.invoice_url` on the stored payload,
+                which is a short-lived hosted link and would be dead by the time
+                anyone read it. The label is quoted verbatim so the reader can
+                find it, the same discipline as the export hints in
+                lib/i18n/strings.ts; tests/app/settings/billing-price.test.tsx
+                fails if the button is renamed without this following it.
+
+                `hasCustomer` as well as `isTeam`: a hand-comped Team workspace
+                (the demo workspace, anyone the operator upgraded by hand) has no
+                LemonSqueezy customer, so that button answers "No billing account
+                yet — upgrade first.". Sending them there for an invoice would be
+                a smaller copy of the defect this whole row is about — a
+                confident instruction that leads nowhere.
+              */}
+              {isTeam && billing.hasCustomer
+                ? " Invoices and receipts are under “Manage billing”."
+                : ""}
+            </p>
+          </>
+        )}
       </div>
 
       {!billing.configured ? (
