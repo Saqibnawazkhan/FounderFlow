@@ -91,13 +91,15 @@ type Props = {
   /**
    * Whether this viewer may change the task's status (tasks-and-comments-009).
    *
-   * OPTIONAL, defaulting to `true`, only because `app/(app)/projects/[id]/
-   * project-detail-client.tsx` also renders this modal and belongs to another
-   * slice — a required prop would break a file this change cannot touch. The
-   * default preserves that surface's current behaviour exactly; passing the real
-   * predicate there is reported as a follow-up. /tasks passes it.
+   * REQUIRED, since sec-016. It was optional and defaulted to `true` for one
+   * release, so that tasks-and-comments-009 could land on /tasks without
+   * touching `app/(app)/projects/[id]/project-detail-client.tsx` — and that file
+   * then went on rendering an enabled select for viewers
+   * `updateTaskStatusAction` refuses, which is the defect sec-016 reported.
+   * Both callers now compute it from `canEditTask`
+   * (lib/tasks/task-permissions.ts); required, so a third cannot repeat it.
    */
-  canEdit?: boolean;
+  canEdit: boolean;
   onStatusChange: (id: string, status: TaskStatus) => void;
   onDelete: (id: string) => void;
   /** Called after a comment is posted/deleted so the parent list can bump
@@ -113,7 +115,7 @@ export function TaskDetailModal({
   currentUserRole,
   companyUsers,
   canDelete,
-  canEdit = true,
+  canEdit,
   onStatusChange,
   onDelete,
   onCommentsChanged,

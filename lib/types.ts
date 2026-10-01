@@ -102,7 +102,18 @@ export type ActivityType =
   // one row per message would drown /activities, which members cannot see
   // anyway. See lib/actions/chat.ts.
   | "channel_created"
-  | "channel_archived";
+  | "channel_archived"
+  // sec-020. Security events, written by lib/activity/security-log.ts. The
+  // workspace already recorded what people did to each OTHER (roles, invites,
+  // deactivations) and nothing about what they did to an ACCOUNT or to the data
+  // in bulk, so "when did my email change?" and "did someone export our books?"
+  // had no data to answer from. There is deliberately no `session_revoked`:
+  // `bumpSessionVersion` has no caller yet (the "log out all devices" control
+  // was never built), and a type nothing writes is this repo's other recurring
+  // defect rather than coverage.
+  | "workspace_exported"
+  | "email_changed"
+  | "password_changed";
 
 /**
  * The JSON blob on `Activity.metadata`, parsed and cast (never validated — it

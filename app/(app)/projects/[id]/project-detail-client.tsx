@@ -40,6 +40,7 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { deleteProjectAction, updateProjectAction } from "@/lib/actions/projects";
 import { canManageProject, canReassignSupervisor } from "@/lib/auth/project-permissions";
+import { canDeleteTask, canEditTask } from "@/lib/tasks/task-permissions";
 import { COLOR_CLASSES, STATUS_LABEL_KEY } from "@/components/projects/project-card";
 import type { ProjectStatus } from "@/lib/schemas/project";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
@@ -688,6 +689,17 @@ export function ProjectDetailClient({
         />
       </Modal>
 
+      {/* sec-016. Both task affordances read lib/tasks/task-permissions.ts, the
+          same module updateTaskStatusAction and deleteTaskAction call, because
+          CLAUDE.md's rule is that the two permission layers must agree.
+
+          `canEdit` was simply not passed and the prop defaults to true, so this
+          page — unlike /tasks — offered an enabled status <select> to a
+          cofounder whom `canEditTask` refuses: the change went to the server and
+          came back as a bare "Not authorized" toast (handleTaskStatusChange,
+          above). `canDelete` was a hand-rolled fourth copy of `canDeleteTask`;
+          it agreed, but a copy that agrees today is how the rule drifts.
+          tests/components/project-detail-task-permissions.test.tsx pins both. */}
       {detailTask && (
         <TaskDetailModal
           task={detailTask}
@@ -696,7 +708,14 @@ export function ProjectDetailClient({
           currentUserId={currentUserId}
           currentUserRole={currentUserRole}
           companyUsers={mentionUsers}
-          canDelete={detailTask.assignedBy === currentUserId || currentUserRole === "admin"}
+          canEdit={canEditTask({
+            actor: { userId: currentUserId, role: currentUserRole },
+            task: detailTask,
+          })}
+          canDelete={canDeleteTask({
+            actor: { userId: currentUserId, role: currentUserRole },
+            task: detailTask,
+          })}
           onStatusChange={handleTaskStatusChange}
           onDelete={handleTaskDelete}
           onCommentsChanged={refresh}

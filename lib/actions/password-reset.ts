@@ -84,6 +84,7 @@ import { appOrigin } from "@/lib/env";
 import { captureServerError } from "@/lib/sentry-server";
 import { escapeHtml } from "@/lib/email/html";
 import { sendEmail } from "@/lib/email/send";
+import { tryWriteSecurityActivity } from "@/lib/activity/security-log";
 import {
   passwordVersion,
   signPasswordResetToken,
@@ -436,7 +437,10 @@ export async function resetPasswordAction(
       // before anyone checks whether it still exists. findUnique cannot carry
       // this filter; do not change it back.
       where: { id: verified.userId, deletedAt: null },
-      select: { id: true, email: true, passwordHash: true },
+      // `name` and `companyId` are sec-020's: the Activity row below is
+      // workspace-scoped and names the person, like every other row in that
+      // table. Nothing else on this path reads either.
+      select: { id: true, name: true, email: true, companyId: true, passwordHash: true },
     });
     if (!user) {
       // Covers both "never existed" and "deleted". A holder of a valid signed
@@ -460,6 +464,24 @@ export async function resetPasswordAction(
       // that prompted the reset) is force-signed-out on its next request.
       data: { passwordHash, sessionVersion: { increment: 1 } },
     });
+
+    // sec-020. A reset leaves a row the way a change does, and the message says
+    // WHICH of the two happened: a reset is reachable by anyone holding the
+    // inbox, a change needs the old password, so to an investigator they are
+    // different events. This path sends no email — the reset mail the user just
+    // followed is the only notice — which makes the row the sole record of it.
+    //
+    // Never allowed to fail the reset: the new hash has landed, so answering
+    // "couldn't reset your password" would strand someone who is already locked
+    // out and whose single-use link is now spent. See lib/activity/security-log.ts.
+    await tryWriteSecurityActivity({
+      companyId: user.companyId,
+      userId: user.id,
+      userName: user.name,
+      type: "password_changed",
+      message: `${user.name} reset their password using a reset link`,
+    });
+
     return { success: true, data: { email: user.email } };
   } catch (e) {
     captureServerError(e, { action: "resetPasswordAction" });

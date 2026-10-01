@@ -630,6 +630,32 @@ export async function updateUserRoleAction(input: unknown): Promise<ActionResult
     if (target.companyId !== companyId) {
       return { success: false, error: "Not authorized" };
     }
+    // A DEACTIVATED TEAMMATE HAS NO ROLE TO CHANGE (sec-017). This read is the
+    // last of the four "resolve another user by a client-supplied id" paths that
+    // skipped the tombstone — `addTaskAction` (data-integrity-004),
+    // `createProjectAction` and `changeSupervisorAction` (data-integrity-012)
+    // were already closed; `removeUserAction` below has carried the same check
+    // all along. Here it was reachable from a /team tab that was rendered before
+    // somebody else pressed Deactivate, or from a hand-made request.
+    //
+    // What a role written onto a tombstoned row does: nothing visible. The
+    // roster filters `deletedAt: null`, the Deactivated panel offers a
+    // Reactivate button and no role control, and `notifyUsers` drops tombstoned
+    // recipients on every channel, so the person is not told either. The next
+    // thing to read that column is `reactivateUserAction`, which restores them
+    // with it — under a panel that promises "their previous role". A silent
+    // promotion to admin therefore comes back as billing, invite/remove, role
+    // changes and workspace delete.
+    //
+    // ORDER: after the company check, because this message names them and a
+    // cross-tenant id must not be answered with a stranger's name; and before
+    // the `target.role === role` no-op below, which answers `{ success: true }`.
+    if (target.deletedAt) {
+      return {
+        success: false,
+        error: `${target.name} is deactivated. Reactivate them first, then change their role.`,
+      };
+    }
     if (target.role === role) {
       // No-op — return success so the UI can still refresh.
       return { success: true, data: undefined };

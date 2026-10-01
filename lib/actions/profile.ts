@@ -28,6 +28,8 @@
  *     • Bumps `sessionVersion`, which signs out every session for this
  *       user — including the current device. The modal redirects to
  *       /login afterwards.
+ *     • Mails the address on file (acct-005) AND writes a `password_changed`
+ *       Activity row (sec-020) — the alert and the durable record.
  *
  *   getMyHandleAction() / updateHandleAction({ handle })
  *     • Read + write of User.handle, the @mention address (FaultsAudit T16).
@@ -47,6 +49,7 @@ import {
 import { gateAuthAction, limiters, rateLimiter } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
 import { sendSecurityNotice } from "@/lib/email/templates/security-notice";
+import { tryWriteSecurityActivity } from "@/lib/activity/security-log";
 
 import type { ActionResult } from "@/lib/actions/types";
 
@@ -155,6 +158,24 @@ export async function changePasswordAction(input: unknown): Promise<ActionResult
       to: me.email,
       recipientName: me.name,
       accountEmail: me.email,
+    });
+
+    // sec-020. The durable half of the same signal. The notice above is an ALERT
+    // — one inbox, once, and deleting the message deletes the evidence; this is
+    // the row that outlives it, on the surface the workspace's admins already
+    // read. It sits beside the notice rather than after `signOut()` only to keep
+    // the two halves together: every field it needs comes from `me`, which is
+    // already in hand, so it does not depend on the session still existing.
+    //
+    // Never allowed to fail the change: the UPDATE has landed, and reporting
+    // failure would leave the user trying the old password for ever. Same
+    // posture as `sendSecurityNotice`; see lib/activity/security-log.ts.
+    await tryWriteSecurityActivity({
+      companyId: me.companyId,
+      userId: me.id,
+      userName: me.name,
+      type: "password_changed",
+      message: `${me.name} changed their password`,
     });
 
     // The bump also invalidates THIS session — its JWT still carries the old

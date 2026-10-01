@@ -562,3 +562,75 @@ checkbox for direct messages, which would save, read back, and govern nothing.
 > asserts **both** directions: no notification row (the thing the change exists to
 > stop) **and** a non-zero unread watermark (the thing that replaced it). Either one
 > alone passes while the product is broken.
+
+## 14. P2 security-and-tenancy tranche (2026-10-02) — a fixer and a tester per finding
+
+Nine findings, worked **one at a time**: an agent fixes, a different agent tries to
+break the fix and must reverse the source change and watch the test go red before it
+will pass the item. 19 agents, no errors.
+
+**Four of the nine were already closed** — each confirmed by a tester mandated to
+challenge that verdict, two of which returned `no-change-needed` after trying and
+failing to reproduce. The filings were written against an older tree, and the tell is
+usually a line number: sec-013 cites `components/providers.tsx:80-94`, which in this
+tree is the service-worker registration effect.
+
+| finding | verdict | what it was |
+|---|---|---|
+| sec-009 CSP | **needs-owner** | real, and the fix is a deployment trade (below) |
+| sec-012 push takeover | **fixed** | a genuine cross-tenant write |
+| sec-013 localStorage role | already-closed | closed by 9150f6e, plus a new pin |
+| sec-014 invite bcrypt | already-closed | the throttle landed as auth-008 |
+| sec-015 password limiter | already-closed | fixed as auth-014 in e651ae3 |
+| sec-016 cofounder tasks | **needs-owner** + fixed half | a permission widening, not a defect |
+| sec-017 deactivated assignment | **fixed** | three-quarters closed, one quarter real |
+| sec-018 reset for removed account | already-closed | fixed 2026-09-28, 8-case pin |
+| sec-020 audit trail | **fixed** | three of four loci |
+
+### What the adversarial half was worth
+
+20 findings, 4 major, **one `broken` verdict** that sent the item back for remediation
+and produced a real fix:
+
+- **sec-016's fixer reported the impact as closed. It was closed on `/tasks` only.**
+  `TaskDetailModal` declared `canEdit?: boolean` **defaulting to `true`**, and
+  `project-detail-client.tsx` passed `canDelete` but no `canEdit` — so on
+  `/projects/[id]` the status dropdown rendered enabled for every viewer and produced
+  a bare "Not authorized" toast, which is the finding's impact sentence verbatim. The
+  remediation made `canEdit` **required**, so a call site that forgets it is now a
+  typecheck error rather than a silently enabled control.
+- **sec-016's fixer then introduced a false comment of the class it was correcting**,
+  claiming both bulk actions must express the rule in SQL. `bulkDeleteTasksAction`
+  already does `findMany` then `updateMany`, so it can filter per row.
+- **sec-012's "the caller learns nothing about whether that endpoint is registered"
+  was false.** The message is uniform; the outcome is not — an unregistered endpoint
+  takes the create path and returns success. One bit survives in the `success` flag.
+- **sec-013's residue was permanent, not a flash.** A persisted row with a missing or
+  non-string `email` made the lookup throw; the catch swallowed it *without*
+  hydrating, so a forged `currentUser.role` governed the client store for the whole
+  page lifetime. The tester proved it by appending a probe to the fixer's own test
+  file, watching `expected "vi.fn()" to be called at least once` fail, then removing
+  the probe and restoring the file byte-identically.
+
+- [ ] **A56 · 🔵 [OPP] Two redundant defences, one of them untested — and the tests looked complete.** The sec-013 remediation added both a total lookup (`typeof u?.email === "string"`) and a fail-safe catch that hydrates from the session when anything above it throws. Either alone prevents the bug, so the first tests — which asserted only the outcome, "the session wins" — passed with **either one reverted**, and would have shipped an untested defence under a green suite. Caught by mutating each half separately rather than by reading. Fixed with two assertions that can tell them apart: `console.error` **not** having been called proves the lookup absorbed the row rather than the catch rescuing it, and a store that throws on access reaches the catch where the lookup guard cannot help. Both now fail alone. The general lesson is that redundant defences need assertions that discriminate between them, not assertions on the shared outcome. → [components/providers.tsx](components/providers.tsx), [tests/components/providers-session-role-authority.test.tsx](tests/components/providers-session-role-authority.test.tsx)
+
+- [ ] **A57 · 🟠 [BUG] A flaky test in the suite that guards the clamp notice — it failed once in six consecutive runs, after 22.8 seconds.** `tests/app/reports/reports-clamp-notice.test.tsx` drives the real `ReportsClient` with `userEvent` on real timers, and that component pulls its three charts through `next/dynamic` with `ssr: false`. Mounting it therefore starts three async chunk loads that resolve into recharts, and every click races them: on a quiet machine the test finishes in about a second, under load it spent **22.8 seconds** and then failed. Both of its sibling reports tests already avoid that cost. Found by running the suite repeatedly rather than by reading it — the first failure looked like a one-off, and the same tree passed four times around it. **Fixed** by stubbing the three chart components, which changes nothing the file asserts: it is about whether a `role="status"` message renders, and the charts carry none of it. Now 3-for-3 green with test time back to ~1s. The general hazard is wider than this file: 12 test files build fixtures from `new Date()` with no frozen clock, which is the same shape of time-dependent failure as A55 — green all day, red in one window. → [tests/app/reports/reports-clamp-notice.test.tsx](tests/app/reports/reports-clamp-notice.test.tsx)
+
+### Open for the owner
+
+- **A nonce-based CSP makes every route dynamically rendered**, marketing page
+  included, which `app/layout.tsx` itself calls "a large permanent cost". There is no
+  incremental step: per CSP3, `'unsafe-inline'` is ignored the moment a nonce- or
+  hash-source appears, so hashing our one bootstrap script would immediately block
+  all 66 of Next's own inline flight chunks. That trap is now a test, not a comment.
+  The tester argued the trade is narrower — scope the nonce to `/(app)/*`, already
+  dynamic because it calls `auth()` — but could not prove it without `next build`.
+- **Where CSP violations should report to.** Needs a destination that exists.
+- **What a co-founder seat means.** A cofounder can create a task in any project, set
+  that project's budgets, rename and archive it, and post in the task's comment
+  thread — but cannot mark the task done. A prior wave declined this widening
+  deliberately and wrote `tests/app/tasks/task-permissions.test.ts:59-66` so it could
+  not land silently, so granting it means deleting those assertions.
+- **Brute-force alerting.** `lib/auth.ts:229` already captures repeated credential
+  rejections to Sentry with a user id and hash prefix. Nobody is paged on it, so the
+  signal is produced and discarded. That is an alert rule, not a commit.

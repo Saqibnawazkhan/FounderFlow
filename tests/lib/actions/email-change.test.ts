@@ -73,7 +73,19 @@ const H = vi.hoisted(() => {
     };
   }
 
-  return { db: { user }, calls, results, sent, session: { value: null as unknown } };
+  // sec-020: the confirm path now writes an `email_changed` Activity row. It is
+  // modelled here rather than left undefined because `tryWriteSecurityActivity`
+  // swallows its own failures — a missing delegate would pass this suite while
+  // the row silently never landed. The row's content is asserted in
+  // tests/security/credential-audit-trail.test.ts.
+  const activity: Record<string, Op> = {
+    create: async (args?: Record<string, unknown>) => {
+      calls.push({ path: "activity.create", args: args ?? {} });
+      return results.get("activity.create") ?? { id: "a1" };
+    },
+  };
+
+  return { db: { user, activity }, calls, results, sent, session: { value: null as unknown } };
 });
 
 vi.mock("@/lib/db", () => ({ db: H.db }));
@@ -122,6 +134,8 @@ type Row = {
   id: string;
   name: string;
   email: string;
+  /** sec-020 — the Activity row the confirm path writes is workspace-scoped. */
+  companyId: string;
   passwordHash: string;
   sessionVersion: number;
   deletedAt: Date | null;
@@ -132,6 +146,7 @@ function row(over: Partial<Row> = {}): Row {
     id: "u1",
     name: "Ayesha",
     email: OLD_EMAIL,
+    companyId: "c1",
     passwordHash: HASH,
     sessionVersion: 0,
     deletedAt: null,

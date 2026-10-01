@@ -5,12 +5,15 @@ import { useRouter } from "next/navigation";
 import {
   Activity as ActivityIcon,
   Archive,
+  AtSign,
   MessageSquare,
   CheckCircle2,
   CheckSquare,
+  Download,
   Edit3,
   FolderPlus,
   Filter,
+  KeyRound,
   Loader2,
   Search,
   ShieldCheck,
@@ -62,6 +65,12 @@ const ACTIVITY_META: Record<ActivityType, { icon: LucideIcon; tone: ActivityTone
     project_supervisor_changed: { icon: UserCog, tone: "forest", label: "Supervisor changed" },
     channel_created: { icon: MessageSquare, tone: "forest", label: "Channel created" },
     channel_archived: { icon: Archive, tone: "warning", label: "Channel archived" },
+    // sec-020 — the security trail. `warning` on the two that are a takeover's
+    // last step or a bulk download, `info` on the routine one: a tone that
+    // shouts on every quarterly password change is a tone nobody reads.
+    workspace_exported: { icon: Download, tone: "warning", label: "Workspace exported" },
+    email_changed: { icon: AtSign, tone: "warning", label: "Login email changed" },
+    password_changed: { icon: KeyRound, tone: "info", label: "Password changed" },
   };
 
 const TONE_FILL: Record<ActivityTone, string> = {

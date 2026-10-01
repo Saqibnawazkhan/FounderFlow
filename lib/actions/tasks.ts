@@ -7,12 +7,58 @@
  *     and any notifications they should fan out
  *   - Mutations revalidatePath the routes that show tasks
  *
- * Permissions enforced server-side:
- *   - addTaskAction: any company member can create. The DB constraint
- *     ensures assignedTo also belongs to the same company.
- *   - updateTaskStatusAction: the assignee, the creator, or an admin
- *     can change status. Anyone else gets "Not authorized".
- *   - deleteTaskAction: only the creator or an admin.
+ * Permissions enforced server-side. TWO DIFFERENT PREDICATES own the two
+ * questions — may I file work here, and may I touch this particular task:
+ *   - addTaskAction (creating): `canManageProject`
+ *     (lib/auth/project-permissions.ts) — admin, cofounder, or the supervisor
+ *     of THAT project. NOT "any company member", which this header claimed
+ *     until sec-016: a member who does not supervise the project is refused
+ *     with "Only the supervisor or a founder can add tasks here", and
+ *     `listFilableProjectOptions` (lib/queries/tasks.ts) keeps such a project
+ *     out of the picker — it arrives at the board as the `filableProjects` prop
+ *     — so the form is never opened onto one. Cross-company assignment is
+ *     blocked HERE, in application code (`assignee.companyId !== companyId`) —
+ *     there is NO DB constraint doing it, which this header also claimed:
+ *     `Task.assignedTo` is an FK to `User.id` in any company.
+ *   - updateTaskStatusAction / reorderTaskAction (moving): `canEditTask`
+ *     (lib/tasks/task-permissions.ts) — the assignee, the creator, or an admin.
+ *     Anyone else gets "Not authorized".
+ *   - deleteTaskAction (destroying): the creator or an admin. Stricter than
+ *     editing — being handed a task lets you move it, not destroy it. Stated
+ *     inline here (a one-line delegation to `canDeleteTask` is an open
+ *     follow-up) and, as `canDeleteTask`, in that same module, which is what
+ *     BOTH surfaces that render a trash icon read — /tasks and, since sec-016,
+ *     /projects/[id]; the statements must agree.
+ *   - The two bulk actions restate the edit and delete rules as Prisma `where`
+ *     clauses (`bulkTaskScope` and the inline scope in bulkDeleteTasksAction).
+ *     `bulkTaskScope` has to: it runs as one `updateMany`, so there is no row to
+ *     hand a predicate. bulkDeleteTasksAction does NOT — it already does
+ *     findMany-then-updateMany (it needs the ids for the notification sweep), so
+ *     selecting `assignedBy` there and filtering with `canDeleteTask` is a
+ *     drop-in that nothing but scope has stopped. Until it is, both are mirrors,
+ *     noted at each site.
+ *
+ * SO A COFOUNDER MAY FILE A TASK IN ANY PROJECT AND THEN NOT MOVE OR DELETE IT,
+ * and a member-supervisor likewise — `canManageProject` admits them, the other
+ * two predicates do not. That gap is deliberate and OPEN, not an oversight:
+ * tasks-and-comments-009 centralised the edit/delete rule and made the board
+ * disable its own controls to match it, rather than widening it, because
+ * widening is a product decision and the nearest written criterion points the
+ * other way — "an admin can delete anyone's; a cofounder cannot delete mine"
+ * (FaultsAudit X20, which is an acceptance criterion about CHAT MESSAGES, so it
+ * argues here only by analogy). Audit finding sec-016 re-raised it and was again
+ * referred to the owner. If the decision goes the other way,
+ * lib/tasks/task-permissions.ts plus the two `where` mirrors below are the
+ * entire change — every UI surface now reads that module, so none of them need
+ * editing — and tests/app/tasks/task-permissions.test.ts is the file that will
+ * go red first.
+ *
+ * What sec-016 DID close, needing no decision, is the half where the two layers
+ * disagreed: /projects/[id] rendered <TaskDetailModal> without `canEdit` (the
+ * prop defaulted to true), so a cofounder there got an enabled status select and a
+ * bare "Not authorized" toast from `updateTaskStatusAction`. That is a
+ * narrowing, and CLAUDE.md's "both must agree" rule already required it.
+ * tests/components/project-detail-task-permissions.test.tsx pins it.
  *
  * Deletes (single and bulk) write the Tier 3 `deletedAt` tombstone rather than
  * hard-deleting, so a mis-click keeps the documented 90-day recovery window and

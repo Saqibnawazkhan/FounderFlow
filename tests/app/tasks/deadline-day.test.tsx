@@ -213,6 +213,11 @@ describe("TaskDetailModal names the picked day (011)", () => {
         currentUserRole="admin"
         companyUsers={[]}
         canDelete={false}
+        // Required since sec-016 (it defaulted to `true`, which is how
+        // /projects/[id] shipped an enabled select the server refuses). These
+        // cases are about which DAY is rendered, and the viewer is an admin, so
+        // the value that preserves them is the one an admin would get.
+        canEdit
         onStatusChange={vi.fn()}
         onDelete={vi.fn()}
       />

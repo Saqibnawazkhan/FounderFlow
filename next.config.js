@@ -1,26 +1,17 @@
 /** @type {import('next').NextConfig} */
 
+const { buildCspHeader } = require("./lib/security/csp");
+
 const isProd = process.env.NODE_ENV === "production";
 
-// CSP — kept relatively permissive for dev (Next.js dev needs 'unsafe-eval').
-// Tighten further once Phase 1 (real backend) lands.
-const cspHeader = [
-  "default-src 'self'",
-  `script-src 'self' ${isProd ? "" : "'unsafe-eval'"} 'unsafe-inline'`,
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "img-src 'self' data: blob: https://ui-avatars.com https://images.unsplash.com",
-  "font-src 'self' data: https://fonts.gstatic.com",
-  // 'self' covers RSC/Server-Action fetches + the same-origin Sentry tunnel
-  // (/monitoring). The explicit sentry.io ingest hosts are a fallback so
-  // browser-side error reporting still works when the tunnel isn't active
-  // (partial Sentry config) instead of being silently blocked by CSP.
-  "connect-src 'self' https://*.sentry.io https://*.ingest.sentry.io",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-]
-  .join("; ")
-  .replace(/\s{2,}/g, " ");
+// CSP. The directive list lives in lib/security/csp.js so that
+// tests/security/csp-header.test.ts can assert the PRODUCTION policy from a
+// test process (where NODE_ENV is "test", making the prod branch of an inline
+// ternary unreachable). That file also documents sec-009: production `script-src`
+// still allows inline scripts, because Next.js inlines its own flight chunks
+// into every page and the only alternative is a per-request nonce, which costs
+// static rendering app-wide. Read the comment there before changing it.
+const cspHeader = buildCspHeader({ isProd });
 
 const securityHeaders = [
   { key: "Content-Security-Policy", value: cspHeader },

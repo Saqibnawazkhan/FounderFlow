@@ -17,8 +17,10 @@
  *   - `confirmEmailChangeAction(token)` — token-scoped (works logged-out on any
  *     device, which is why it takes no session). Swaps the email, marks it
  *     verified and bumps `sessionVersion` in ONE update, then tells the old
- *     address the move has landed. Single-use: a spent or superseded link is
- *     refused, it is not quietly re-applied.
+ *     address the move has landed and writes an `email_changed` Activity row
+ *     (sec-020) so the move is still answerable once that mail is deleted.
+ *     Single-use: a spent or superseded link is refused, it is not quietly
+ *     re-applied.
  *
  * WHY THE EXTRA CEREMONY. Moving the login address is the last step of an
  * account takeover, not a profile edit: once the row holds attacker@x, the
@@ -73,6 +75,7 @@ import { appOrigin } from "@/lib/env";
 import { captureServerError } from "@/lib/sentry-server";
 import { escapeHtml } from "@/lib/email/html";
 import { sendEmail } from "@/lib/email/send";
+import { tryWriteSecurityActivity } from "@/lib/activity/security-log";
 import {
   emailChangeBinding,
   signEmailChangeToken,
@@ -341,6 +344,9 @@ export async function confirmEmailChangeAction(
         id: true,
         name: true,
         email: true,
+        // sec-020: the Activity row below is workspace-scoped like every other
+        // row in that table. Nothing else on this path needs it.
+        companyId: true,
         passwordHash: true,
         sessionVersion: true,
       },
@@ -420,6 +426,28 @@ export async function confirmEmailChangeAction(
       newEmail: verified.newEmail,
       name: user.name,
       applied: true,
+    });
+
+    // sec-020. The durable half. `warnOldAddress` above is an ALERT — one inbox,
+    // once, and deleting the message deletes the evidence; this is the record
+    // that outlives it and answers "when did my email change, and from what?"
+    // on a surface the workspace's admins already read.
+    //
+    // BOTH ADDRESSES, because "the email changed" without the previous value
+    // cannot answer that question: an owner who has lost the account needs to
+    // recognise which address was theirs. The feed is admin/co-founder-only
+    // (`requireFinanceSession` in lib/queries/activities.ts), and those are the
+    // people who already hold the roster, so this adds no reader.
+    //
+    // NOT ALLOWED TO FAIL THE CHANGE: the UPDATE above has landed, and telling
+    // the user otherwise would send them to sign in with an address the row no
+    // longer holds. See lib/activity/security-log.ts.
+    await tryWriteSecurityActivity({
+      companyId: user.companyId,
+      userId: user.id,
+      userName: user.name,
+      type: "email_changed",
+      message: `${user.name} changed their login email from ${previousEmail} to ${verified.newEmail}`,
     });
 
     return { success: true, data: { email: verified.newEmail } };

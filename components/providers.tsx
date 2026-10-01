@@ -146,21 +146,45 @@ function Inner({ children }: { children: React.ReactNode }) {
         // Read users via getState() so Zustand subscriptions don't pull this
         // effect into a render loop when the seed populates.
         const localUsers = useStore.getState().users;
+        // `typeof u?.email === "string"` is not defensive habit, it is the one
+        // thing standing between a malformed persisted row and the catch below.
+        // `users` is replayed verbatim out of the `founderflow-storage` blob with
+        // no `version`, `migrate` or `merge` (lib/store.ts), so a row whose `email`
+        // is absent or non-string is reachable — and `u.email.toLowerCase()` on it
+        // THROWS, which used to skip `hydrateUser` entirely and leave a forged
+        // persisted `currentUser.role` governing the store for the whole page life.
+        const sessionEmail = (sUser.email ?? "").toLowerCase();
         const local = localUsers.find(
-          (u) => u.email.toLowerCase() === (sUser.email ?? "").toLowerCase()
+          (u) => typeof u?.email === "string" && u.email.toLowerCase() === sessionEmail
         );
         // THE SESSION WINS on every field it owns, and the local row supplies
         // only what it alone knows (`createdAt`). Spreading `local` wholesale
         // was the second half of the same bug: that array is seeded roster
         // data with no idea a rename happened, so a matching local row put the
         // stale name straight back after the session had been fixed.
+        //
+        // sec-013: `id`, `role` and `companyId` take NO fallback to `local` at
+        // all, not even behind a `??`. `users` is part of the
+        // `founderflow-storage` localStorage blob (lib/store.ts `partialize`),
+        // so every field on `local` is whatever the person at the browser last
+        // typed into devtools — and the store's `role` is what the sidebar's
+        // finance-nav filter reads (components/layout/sidebar.tsx:215). Those
+        // three fallbacks were unreachable in practice, because
+        // `auth.config.ts:55` already defaults the session's role/id/companyId
+        // (`?? "member"` / `?? ""`) so the left operand is never nullish. That
+        // made the rule true by coincidence of another file: delete that `??`
+        // and a member could promote their own chrome by editing localStorage.
+        // Hard-coding the defaults here instead keeps the invariant local and
+        // changes no reachable behaviour. `name` and `email` keep their
+        // fallbacks deliberately — DefaultSession types both as possibly null,
+        // they gate nothing, and a blank sidebar label is the worse outcome.
         hydrateUser({
           ...(local ?? { password: "", createdAt: new Date().toISOString() }),
-          id: sUser.id ?? local?.id ?? "",
+          id: sUser.id ?? "",
           name: sUser.name ?? local?.name ?? "",
           email: sUser.email ?? local?.email ?? "",
-          role: sUser.role ?? local?.role ?? "member",
-          companyId: sUser.companyId ?? local?.companyId ?? "",
+          role: sUser.role ?? "member",
+          companyId: sUser.companyId ?? "",
         });
       } else {
         // Genuinely unauthenticated — wipe any stale local identity.
@@ -169,6 +193,30 @@ function Inner({ children }: { children: React.ReactNode }) {
       hydratedIdentityRef.current = identity;
     } catch (e) {
       console.error("session hydration failed:", e);
+      // FAIL SAFE, not just fail quiet. This catch used to log and return, which
+      // meant any throw above left whatever `currentUser` Zustand had replayed out
+      // of localStorage in charge of the client store — including a role the person
+      // at the browser typed in themselves. The session is the authority even when
+      // the merge fails, so hydrate from it alone and let the local row go.
+      try {
+        const sUser = session?.user;
+        hydrateUser(
+          sUser
+            ? {
+                password: "",
+                createdAt: new Date().toISOString(),
+                id: sUser.id ?? "",
+                name: sUser.name ?? "",
+                email: sUser.email ?? "",
+                role: sUser.role ?? "member",
+                companyId: sUser.companyId ?? "",
+              }
+            : null
+        );
+      } catch {
+        // Nothing left to try: clear the identity rather than keep a tampered one.
+        hydrateUser(null);
+      }
     }
   }, [session, status, hydrateUser]);
 

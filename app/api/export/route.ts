@@ -58,6 +58,10 @@
  *   4. A rate limiter, per caller and per scope, consumed AFTER the role gate and
  *      BEFORE the first read (rep-010). See ./rate-limit.ts for the numbers and
  *      the argument; the ordering is the load-bearing part.
+ *   5. An audit row (sec-020). A successful `scope=workspace` download writes a
+ *      `workspace_exported` Activity before the file is handed over, so the
+ *      workspace can answer "who exported our books, and when". `scope=me`
+ *      deliberately writes none — see the call site in `workspaceExport`.
  *
  * PII / secret posture:
  *   - `passwordHash` is stripped from every user row in both scopes. A bcrypt
@@ -110,6 +114,9 @@ import { db } from "@/lib/db";
 import { canSeeFinances } from "@/lib/auth/role-gates";
 import { requireScopedSession, type ScopedSession } from "@/lib/queries/session";
 import { captureServerError } from "@/lib/sentry-server";
+// sec-020. The audit row for a bulk download; see the call site in
+// `workspaceExport` for why it is awaited and allowed to fail the response.
+import { writeSecurityActivity } from "@/lib/activity/security-log";
 // rep-010. Declared in a sibling module, not here: Next validates a Route
 // Handler's export surface and an extra named export is a build error. See that
 // file for the numbers and why the bucket is per (scope, caller).
@@ -536,6 +543,38 @@ async function workspaceExport(session: ScopedSession): Promise<NextResponse> {
   if (!company) {
     return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
   }
+
+  // ── THE AUDIT ROW (sec-020) ───────────────────────────────────────────────
+  //
+  // The heaviest and most sensitive read in the product used to leave no record
+  // of any kind — no Activity row, nothing in Sentry — so "did someone export
+  // our books?" had no data to answer from. It is the question that gets asked
+  // exactly once, after something has already gone wrong, and it is also what a
+  // buyer's security questionnaire asks for.
+  //
+  // AWAITED, AND ALLOWED TO FAIL THE RESPONSE. The reads above have run but no
+  // bytes have left yet, so refusing costs a legitimate admin one retry —
+  // whereas a download with no row is unrecoverable, because the row is the only
+  // record it happened. That is why this calls `writeSecurityActivity` and not
+  // its swallowing sibling; the argument for the asymmetry lives in
+  // lib/activity/security-log.ts. A throw here lands in `GET`'s catch, which
+  // reports to Sentry and answers 500.
+  //
+  // ONLY THIS SCOPE. `scope=me` is bounded by the caller's own rows, which is not
+  // the bulk-egress event this records — and reporting a data-subject access
+  // request into a feed only admins can read is its own small privacy problem.
+  //
+  // The actor's display name comes from the `users` read above when it is there,
+  // because that is the row /team shows; the session value is the fallback, and it
+  // can be empty (`requireScopedSession` defaults `userName` to "").
+  const actorName = users.find((u) => u.id === userId)?.name || session.userName || session.email;
+  await writeSecurityActivity({
+    companyId,
+    userId,
+    userName: actorName,
+    type: "workspace_exported",
+    message: `${actorName} downloaded a full export of the workspace`,
+  });
 
   const payload = {
     meta: {

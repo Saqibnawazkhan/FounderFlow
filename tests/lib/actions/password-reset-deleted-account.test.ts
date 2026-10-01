@@ -42,6 +42,8 @@ const H = vi.hoisted(() => {
     id: "u_ayesha",
     email: "ayesha@nimbus.app",
     name: "Ayesha",
+    // sec-020 — the Activity row the reset path writes is workspace-scoped.
+    companyId: "c_nimbus",
     passwordHash: "bcrypt$old",
     sessionVersion: 3,
     deletedAt: null as Date | null,
@@ -70,6 +72,17 @@ const H = vi.hoisted(() => {
       update: (args: Record<string, unknown>) => {
         calls.push({ path: "user.update", args: args ?? {} });
         return Promise.resolve({ ...row });
+      },
+    },
+    // sec-020: `resetPasswordAction` now writes a `password_changed` Activity
+    // row. Modelled rather than left undefined because the writer swallows its
+    // own failures — a missing delegate would pass this suite while the row
+    // silently never landed. Its content is asserted in
+    // tests/security/credential-audit-trail.test.ts.
+    activity: {
+      create: (args: Record<string, unknown>) => {
+        calls.push({ path: "activity.create", args: args ?? {} });
+        return Promise.resolve({ id: "a1" });
       },
     },
   };

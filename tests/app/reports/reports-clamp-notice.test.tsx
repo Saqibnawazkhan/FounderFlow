@@ -20,7 +20,28 @@
  * the customer and that.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+/*
+ * THE THREE CHARTS ARE STUBBED, and this is a FLAKE FIX, not a convenience.
+ *
+ * `reports-client.tsx` pulls each chart through `next/dynamic` with `ssr:false`,
+ * so mounting it starts three async chunk loads that resolve into recharts. This
+ * file drives the component with `userEvent` on REAL timers, so those loads race
+ * every click: the suite caught this test failing once in six consecutive runs,
+ * after 22.8 SECONDS in a file whose other case finishes in milliseconds. A test
+ * that fails under load and passes when the machine is quiet is worse than no
+ * test, because the next red run gets waved through as "that one again".
+ *
+ * Stubbing them changes nothing this file asserts — it is about whether a STATUS
+ * MESSAGE renders, and the charts carry none of it. Its two sibling reports tests
+ * already avoid the same cost.
+ */
+vi.mock("@/app/(app)/reports/reports-charts", () => ({
+  CashFlowBarChart: () => null,
+  CategoriesPieChart: () => null,
+  FoundersHorizontalBar: () => null,
+}));
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ReportsClient } from "@/app/(app)/reports/reports-client";

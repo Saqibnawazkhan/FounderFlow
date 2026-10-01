@@ -32,14 +32,23 @@
  * is refused because an admin has been exporting the workspace would have no way
  * to understand why.
  *
- * The AUDIT-TRAIL half of rep-010 (an Activity row per export) is NOT here, and
- * not because it was forgotten — see this agent's report. Writing the row needs
+ * THE AUDIT-TRAIL HALF (sec-020) IS NOW HERE, in the last describe block. It was
+ * deferred when rep-010 landed because writing the row needs
  * `"workspace_exported"` added to `ActivityType` in lib/types.ts and to
  * `ACTIVITY_META` in app/(app)/activities/activities-client.tsx, both owned by
- * other agents this wave. That client indexes `ACTIVITY_META[activity.type]` and
+ * other agents that wave. That client indexes `ACTIVITY_META[activity.type]` and
  * dereferences the result unguarded, so a row written before those two edits land
  * would crash /activities for the whole workspace — permanently, because the row
- * persists. The three edits have to arrive together.
+ * persists. The three edits arrived together in sec-020, which also covers the
+ * credential paths (tests/security/credential-audit-trail.test.ts) and holds the
+ * structural guard over the union and the icon map.
+ *
+ * THE ROW IS FAIL-CLOSED, which is the one place in this family that is. If the
+ * INSERT fails the export does not go out: the twelve reads have happened but no
+ * bytes have left, so refusing costs a retry and nothing else. The credential
+ * paths are the opposite — their UPDATE has already landed by the time the row is
+ * written, so there a failed row must not be reported as a failed password
+ * change. lib/activity/security-log.ts carries both postures and the argument.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -338,5 +347,80 @@ describe("the limiter sits after the cheap refusals, not before them", () => {
       expect((await GET(req("sideways"))).status).toBe(400);
     }
     expect((await GET(req("workspace"))).status).toBe(200);
+  });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+/* sec-020 — bulk egress leaves a trail                                        */
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+describe("sec-020 — a workspace export is recorded in the activity feed", () => {
+  /** The `data` of every Activity row written this run. */
+  function activityRows(): Array<Record<string, unknown>> {
+    return prisma.calls
+      .filter((c) => c.delegate === "activity" && c.method === "create")
+      .map((c) => ((c.args[0] as { data?: unknown })?.data ?? {}) as Record<string, unknown>);
+  }
+
+  it("writes one row naming who downloaded it", async () => {
+    // The question that gets asked exactly once, after something has gone wrong:
+    // "did someone export our books?" Before this, there was no data to answer
+    // from — the heaviest and most sensitive read in the product was invisible.
+    const res = await GET(req("workspace"));
+    expect(res.status).toBe(200);
+
+    const rows = activityRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.type).toBe("workspace_exported");
+    expect(rows[0]!.companyId).toBe("c_nimbus");
+    expect(rows[0]!.userId).toBe("u_admin");
+    expect(String(rows[0]!.message)).toMatch(/export/i);
+  });
+
+  it("writes the row BEFORE the file is handed over", async () => {
+    // Fail-closed: no trail, no bulk download. The reads have run but nothing has
+    // left the building yet, so refusing costs a retry — whereas an export with
+    // no row is unrecoverable, because the row is the only record it happened.
+    // `record()` hands back `Promise.resolve(answer)`, and resolving a rejected
+    // promise yields that same rejected promise — so this is the harness's way of
+    // making one delegate call fail.
+    const boom = Promise.reject(new Error("audit insert failed"));
+    // Marked handled so the rejection cannot surface as an unhandled one if the
+    // route ever stops awaiting it; the awaiter inside the route still sees it.
+    void boom.catch(() => undefined);
+    prisma.answers.set("activity.create", boom);
+
+    const res = await GET(req("workspace"));
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-disposition")).toBeNull();
+  });
+
+  it("does not record a refused export", async () => {
+    // A member's workspace request never reads anything and never happened, so a
+    // row for it would be a false history — and `prisma.calls` being empty is
+    // the existing guarantee this must not weaken.
+    asUser("u_member", "member");
+    const res = await GET(req("workspace"));
+    expect(res.status).toBe(403);
+    expect(prisma.calls).toHaveLength(0);
+  });
+
+  it("does not record a personal download", async () => {
+    // `scope=me` is bounded by the caller's own rows — not the bulk-egress event
+    // this finding is about — and reporting a data-subject access request into an
+    // admin-only feed is its own small privacy problem. The route's header states
+    // the decision; this pins it so it is not "fixed" by accident.
+    const res = await GET(req("me"));
+    expect(res.status).toBe(200);
+    expect(activityRows()).toEqual([]);
+  });
+
+  it("does not put the exported rows in the audit row", async () => {
+    // The feed is prose a human reads. Copying payload into it would duplicate
+    // every transaction into a second table and widen the leak it is recording.
+    await GET(req("workspace"));
+    const serialized = JSON.stringify(activityRows());
+    expect(serialized).not.toContain("50000");
+    expect(serialized).not.toContain("ayesha@nimbus.app");
   });
 });
