@@ -4,11 +4,12 @@
  * WHAT acct-016 GAVE THE SERVER. `inviteUserAction` no longer answers an
  * address collision with one flat sentence. It now distinguishes a *deactivated*
  * teammate from a *deleted* account and hands back an instruction for each
- * (lib/actions/team.ts:192 and :200) — "Reactivate them in the Deactivated list
+ * (the two `existing?.deletedAt` branches of `inviteUserAction`) — "Reactivate
+ * them in the Deactivated list
  * on the Team page instead of re-inviting them", and "Contact support to restore
  * it, or invite a different address". Same file, `reactivateUserAction` throws a
  * three-option instruction when the workspace is at its seat cap
- * (lib/actions/team.ts:696): upgrade, or deactivate someone else, or give up.
+ * (`seatLimitMessage`): upgrade, or deactivate someone else, or give up.
  *
  * WHAT THE CLIENT DID WITH IT. `toast.error(res.error)` and nothing else, at a
  * toaster duration of 3500ms (components/providers.tsx:186). Every one of those
@@ -31,13 +32,13 @@
  * is UNREACHABLE from this UI, which is the evidence rather than a preference:
  *
  *   - handleRoleChange — the only instruction it can receive is "You're the only
- *     admin. Promote someone else first" (team.ts:454), which needs
+ *     admin. Promote someone else first" (`updateUserRoleAction`), which needs
  *     `target.id === actorId`; team-client renders the role <select> only for
  *     `user.id !== currentUserId`, so the actor cannot aim it at themselves.
  *   - handleRemove — both of its instructions are equally out of reach: "Use the
- *     Sign-out button" (team.ts:535) needs `userId === actorId` and the
+ *     Sign-out button" (`removeUserAction`) needs `userId === actorId` and the
  *     Deactivate button is rendered only for other people; "You can't remove the
- *     last admin" (team.ts:554) needs an admin target while `adminCount <= 1`,
+ *     last admin" (`removeUserAction`) needs an admin target while `adminCount <= 1`,
  *     and the actor is already an admin who is not the target, so the count is at
  *     least 2 whenever that branch is evaluated.
  *   - handleResend / handleRevoke — every refusal is a short verdict.

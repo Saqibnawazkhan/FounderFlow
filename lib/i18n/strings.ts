@@ -295,8 +295,20 @@ export const en = {
     dataNote:
       "Your workspace data lives in Supabase. Clearing local data only wipes UI prefs (theme, sidebar state) — it does not delete server data.",
     exportWorkspace: "Export workspace",
+    // rep-005. This used to read "a machine-readable JSON copy of EVERYTHING in
+    // this workspace". It is not everything, and the omissions are deliberate:
+    // app/api/export/route.ts declares them in `EXPORT_EXCLUDED` and lists them in
+    // the file under `meta.notIncluded`. But a person exercising a data-portability
+    // request, or leaving the company, reads THIS CARD and then trusts it — a
+    // disclosure inside the download only reaches someone who has already decided
+    // there was nothing to disclose. Chat is named because it is the omission a
+    // customer would actually miss; BillingEvent is not, because it is our own
+    // ledger of webhook deliveries rather than their data, and their invoices come
+    // from the LemonSqueezy portal linked above.
+    // tests/lib/db/export-coverage.test.ts pins this sentence against the route's
+    // declared exclusions, so widening or narrowing the export re-opens the copy.
     exportWorkspaceDesc:
-      "Download a machine-readable JSON copy of everything in this workspace — projects, tasks, transactions, budgets, time, comments. Password hashes are never included.",
+      "Download a machine-readable JSON copy of your workspace data — projects, tasks, transactions, budgets, time, comments. Chat messages are not included, and the file lists what it leaves out. Password hashes are never included.",
     exportWorkspaceAction: "Export JSON",
     exportPreparing: "Preparing…",
     exportReadyToast: "Export downloaded",
@@ -746,8 +758,16 @@ export const ur: typeof en = {
     dataNote:
       "آپ کا ورک اسپیس ڈیٹا Supabase پر محفوظ ہے۔ لوکل ڈیٹا صاف کرنا صرف UI ترجیحات (تھیم، سائڈبار اسٹیٹ) کو مٹاتا ہے — سرور ڈیٹا متاثر نہیں ہوتا۔",
     exportWorkspace: "ورک اسپیس ایکسپورٹ کریں",
+    // rep-005, Urdu half. ONE substitution, deliberately: «ہر چیز» ("everything")
+    // → «ڈیٹا» ("data"), the loanword this dictionary already uses in `dataStorage`
+    // and `dataNote`. That removes the false promise without inventing vocabulary.
+    // The English card additionally says chat is not included; this one does NOT,
+    // because the Urdu dictionary has no word for "chat" or "message" anywhere —
+    // the chat surface is one of the untranslated screens — and guessing the
+    // terminology for a compliance sentence is worse than leaving it shorter. The
+    // clause needs a human who reads Urdu; see this agent's report.
     exportWorkspaceDesc:
-      "اس ورک اسپیس کی ہر چیز کی مشین ریڈایبل JSON کاپی ڈاؤن لوڈ کریں — منصوبے، کام، ٹرانزیکشنز، بجٹ، ٹائم، تبصرے۔ پاس ورڈ ہیش کبھی شامل نہیں ہوتے۔",
+      "اس ورک اسپیس کے ڈیٹا کی مشین ریڈایبل JSON کاپی ڈاؤن لوڈ کریں — منصوبے، کام، ٹرانزیکشنز، بجٹ، ٹائم، تبصرے۔ پاس ورڈ ہیش کبھی شامل نہیں ہوتے۔",
     exportWorkspaceAction: "JSON ایکسپورٹ",
     exportPreparing: "تیار کیا جا رہا ہے…",
     exportReadyToast: "ایکسپورٹ ڈاؤن لوڈ ہو گیا",

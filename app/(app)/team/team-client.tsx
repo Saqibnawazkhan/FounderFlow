@@ -80,7 +80,7 @@ export function TeamClient({
    *
    * `reactivateUserAction` refuses a restore that would overrun the plan's seat
    * cap with a three-option instruction — "Upgrade to Team in Settings, or
-   * deactivate someone else, to restore <name>" (lib/actions/team.ts:696) — and
+   * deactivate someone else, to restore <name>", built by `seatLimitMessage` — and
    * `toast.error(res.error)` was the whole delivery, at a toaster duration of
    * 3500ms (components/providers.tsx:186). Of the six toast-only handlers in this
    * file this was the worst: the button is at the bottom of a long page, the
@@ -557,8 +557,9 @@ function InviteForm({ onClose, onInvited }: { onClose: () => void; onInvited: ()
    *
    * `inviteUserAction` no longer answers an address collision with one flat
    * sentence: it distinguishes a deactivated teammate from a deleted account and
-   * hands back an instruction for each (lib/actions/team.ts:192 and :200), and it
-   * refuses a seat-cap overrun with a third (:290). All three ask the admin to go
+   * hands back an instruction for each (the two `existing?.deletedAt` branches of
+   * `inviteUserAction`), and it refuses a seat-cap overrun with a third
+   * (`seatLimitMessage`). All three ask the admin to go
    * and DO something — reactivate from the Deactivated list, contact support,
    * upgrade in Settings — and `toast.error(res.error)` was the whole delivery, at
    * a toaster duration of 3500ms (components/providers.tsx:186). An instruction

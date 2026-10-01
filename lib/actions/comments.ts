@@ -4,9 +4,13 @@
  * Comment server actions: create, delete, list.
  *
  * Permissions:
- *  - Any company member can read all comments on company resources.
- *  - Any company member can post a comment on a task/transaction in their
- *    company.
+ *  - A TASK thread follows the task's own visibility: assignee, creator,
+ *    supervisor of its project, or admin/cofounder. `mayAccessTaskThread`
+ *    (lib/comments/task-access.ts) is that predicate, shared with the read
+ *    query's `mayReadTarget` so the write and the read state one rule
+ *    (tasks-and-comments-015 — this used to be a bare company check, so a
+ *    member could post into a thread they were refused when reading).
+ *  - A TRANSACTION thread needs `canSeeFinances`, on both paths.
  *  - Only the comment author OR a company admin can delete a comment.
  *
  * @mentions: parsed server-side against the company user list (never trust
@@ -21,6 +25,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { NewCommentSchema, DeleteCommentSchema } from "@/lib/schemas/comment";
 import { extractMentions } from "@/lib/comments/mentions";
+import { mayAccessTaskThread } from "@/lib/comments/task-access";
 import { limiters } from "@/lib/rate-limit";
 import { captureServerError } from "@/lib/sentry-server";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
@@ -69,10 +74,57 @@ export async function createCommentAction(input: unknown): Promise<
     // Verify the target belongs to this company. Prevents cross-company
     // comment writes via a forged taskId/transactionId.
     if (taskId) {
-      const task = await db.task.findUnique({ where: { id: taskId }, select: { companyId: true } });
-      if (!task || task.companyId !== companyId) {
+      const task = await db.task.findUnique({
+        where: { id: taskId },
+        select: {
+          companyId: true,
+          deletedAt: true,
+          projectId: true,
+          assignedTo: true,
+          assignedBy: true,
+        },
+      });
+      // `deletedAt` matters as much as `companyId` (tasks-and-comments-015).
+      // deleteTaskAction tombstones rather than hard-deleting, and every Task
+      // READ filters `deletedAt: null` — getTasks, search, the project board,
+      // and `mayReadTarget` in lib/queries/comments.ts. Without the filter here
+      // a stale modal, or any retained id, could append to the thread of a task
+      // that exists on no surface, and a restore would bring back a
+      // conversation that continued after the delete.
+      if (!task || task.deletedAt || task.companyId !== companyId) {
         return { success: false, error: "Target not found" };
       }
+
+      /* THE WRITE OBEYS THE SAME VISIBILITY RULE AS THE READ (015).
+       *
+       * This was `select: { companyId: true }` and a company check, and nothing
+       * else: no assignee, creator or supervisor test. `mayReadTarget` in
+       * lib/queries/comments.ts refuses a member a teammate's thread, so the
+       * endpoint could not be READ and could still be WRITTEN by anyone holding
+       * a task id — and ids are handed out freely (the clock-widget picker
+       * returns company tasks as `{ id, title }`, and every task notification
+       * embeds `taskId=` in its link).
+       *
+       * `mayAccessTaskThread` is the shared predicate so the two layers state
+       * one rule rather than two that happen to agree. It is monotone in
+       * `project`, so the `null` probe below can only under-grant: admins and
+       * cofounders are answered without the extra query, and only a member who
+       * is neither assignee nor creator pays for the project read.
+       *
+       * The refusal reuses "Target not found" — the same answer a forged id from
+       * another workspace gets — so it confirms nothing about what exists. The
+       * read side returns an empty thread for the same reason.
+       */
+      const reader = { userId, role: session.user.role as Role };
+      let mayAccess = mayAccessTaskThread({ reader, task, project: null });
+      if (!mayAccess) {
+        const project = await db.project.findFirst({
+          where: { id: task.projectId, companyId, deletedAt: null },
+          select: { supervisorId: true },
+        });
+        mayAccess = mayAccessTaskThread({ reader, task, project });
+      }
+      if (!mayAccess) return { success: false, error: "Target not found" };
     } else if (transactionId) {
       const txn = await db.transaction.findUnique({
         where: { id: transactionId },

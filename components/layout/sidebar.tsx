@@ -8,6 +8,8 @@ import { ChevronDown, ChevronsLeft, ChevronsRight, X } from "lucide-react";
 import { BrandMark } from "@/components/brand-mark";
 import { useStore, useStoreHasHydrated } from "@/lib/store";
 import { unreadNotificationCountAction } from "@/lib/actions/notifications";
+import { unreadChatCountAction } from "@/lib/actions/chat";
+import { unreadLabel } from "@/lib/chat/unread";
 import { useT } from "@/lib/i18n/use-t";
 import { cn } from "@/lib/utils";
 import { homeRouteForRole, isMemberBlockedRoute, type Role } from "@/lib/auth/role-gates";
@@ -122,15 +124,49 @@ export function Sidebar() {
   // connections at zero. Coming back to the tab refetches immediately, so the
   // badge is never showing an hour-old number.
   const [unreadCount, setUnreadCount] = useState(0);
+  // The Chat row's own badge — unread MESSAGES, a different number from unread
+  // notifications. Chat used to reach the reader only by writing notification
+  // rows, so a DM showed up under the bell and nowhere near the word "Chat";
+  // the DM fan-out in lib/actions/chat.ts no longer writes those rows and this
+  // is what replaced them. @mentions still write theirs, because a count cannot
+  // say that one of those messages named you — so the two badges overlap by
+  // design for exactly that case.
+  //
+  // Polled on the SAME timer and behind the SAME `document.hidden` gate as the
+  // notification count rather than on a second interval: this is the app's only
+  // background load (see the note above), and a second interval would mean a
+  // second wake-up, a second visibility gate and a second thing to get wrong.
+  //
+  // It IS two requests, not one — the honest figure is two round trips per
+  // thirty seconds, issued concurrently, where there used to be one. An earlier
+  // version of this comment claimed "one round trip, not two", which was simply
+  // false; they are parallel, not combined. Two indexed counts on one tick is
+  // the cost of the badge, and it is worth stating plainly rather than talking
+  // it away.
+  const [chatUnread, setChatUnread] = useState(0);
   useEffect(() => {
     let cancelled = false;
     async function fetchCount() {
       if (cancelled) return;
       if (typeof document !== "undefined" && document.hidden) return;
-      const res = await unreadNotificationCountAction();
-      if (!cancelled && res.success) {
-        setUnreadCount(res.data.count);
-      }
+      // `.catch` PER REQUEST, not around the pair. A server action rejects
+      // outright when the round trip fails, and under Promise.all one rejection
+      // takes the other answer with it — so a chat poll failing on a flaky
+      // connection would also freeze the notification badge, a surface this
+      // change has no business touching. Neither did the single call that stood
+      // here before: it had no catch at all, so a dropped poll raised an
+      // unhandled rejection in every open tab.
+      const [notif, chat] = await Promise.all([
+        unreadNotificationCountAction().catch(() => null),
+        unreadChatCountAction().catch(() => null),
+      ]);
+      if (cancelled) return;
+      // Each badge updates only from its OWN successful answer. A failed poll
+      // leaves that number where it was rather than zeroing it — a badge that
+      // blinks to zero on a dropped request reads as "you have read everything",
+      // which is the one lie a badge must not tell.
+      if (notif?.success) setUnreadCount(notif.data.count);
+      if (chat?.success) setChatUnread(chat.data.count);
     }
     fetchCount();
     const id = setInterval(fetchCount, 30_000);
@@ -144,11 +180,17 @@ export function Sidebar() {
     const onPush = () => fetchCount();
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("ff-notifications-changed", onPush);
+    // Reading a channel clears its share of the chat badge, and waiting out the
+    // interval would leave the pill claiming unread messages the reader is
+    // looking at — the same "teaches people to ignore the badge" failure
+    // chat-007 fixed for the channel rail, one surface up.
+    window.addEventListener("ff-chat-read", onPush);
     return () => {
       cancelled = true;
       clearInterval(id);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("ff-notifications-changed", onPush);
+      window.removeEventListener("ff-chat-read", onPush);
     };
   }, []);
 
@@ -396,7 +438,18 @@ export function Sidebar() {
                   label={t.nav[node.labelKey]}
                   active={pathname === node.href}
                   collapsed={collapsed}
-                  badge={node.href === "/notifications" ? unreadCount : 0}
+                  badge={
+                    node.href === "/notifications"
+                      ? unreadCount
+                      : node.href === "/chat"
+                        ? chatUnread
+                        : 0
+                  }
+                  // The chat total is capped at 99 by the server, so it renders
+                  // through the same "99+" helper the channel rail uses. The
+                  // notification count is NOT capped, and keeps rendering whole.
+                  badgeText={node.href === "/chat" ? unreadLabel(chatUnread) : undefined}
+                  badgeNoun={node.href === "/chat" ? "unread messages" : undefined}
                   onNavigate={() => setMobileOpen(false)}
                 />
               )
@@ -476,6 +529,8 @@ function NavRow({
   collapsed = false,
   nested = false,
   badge = 0,
+  badgeText,
+  badgeNoun = "unread notifications",
   onNavigate,
 }: {
   href: string;
@@ -485,8 +540,15 @@ function NavRow({
   collapsed?: boolean;
   nested?: boolean;
   badge?: number;
+  /** What the badge PRINTS, when that differs from the count (e.g. "99+"). */
+  badgeText?: string;
+  /** What the badge counts, for screen readers. */
+  badgeNoun?: string;
   onNavigate: () => void;
 }) {
+  // `badge` stays the number, because it is what decides whether to render at
+  // all; `badgeText` is only ever the printed form of that same number.
+  const shownBadge = badgeText ?? String(badge);
   return (
     <Link
       href={href}
@@ -513,17 +575,17 @@ function NavRow({
           <span className="flex-1">{label}</span>
           {badge > 0 && (
             <span
-              aria-label={`${badge} unread notifications`}
+              aria-label={`${shownBadge} ${badgeNoun}`}
               className="flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-[10px] font-bold text-white"
             >
-              {badge}
+              {shownBadge}
             </span>
           )}
         </>
       )}
       {collapsed && badge > 0 && (
         <span
-          aria-label={`${badge} unread notifications`}
+          aria-label={`${shownBadge} ${badgeNoun}`}
           className="absolute -end-0.5 -top-0.5 h-2 w-2 rounded-full bg-danger ring-2 ring-surface"
         />
       )}

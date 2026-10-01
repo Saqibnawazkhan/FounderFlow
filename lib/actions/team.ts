@@ -65,6 +65,144 @@ function roleLabel(role: string): string {
 class SeatLimitReached extends Error {}
 
 /**
+ * The slice of the Prisma client a seat count touches.
+ *
+ * Structural, matching `ChatBootstrapClient` in lib/chat/bootstrap.ts and for
+ * the same two reasons: `Prisma.TransactionClient` is the whole client minus its
+ * `$` methods, so it would let this helper quietly start writing rows, and a
+ * narrow `Pick` lets a unit test hand in a plain object instead of a database.
+ */
+type SeatCountClient = Pick<typeof db, "user" | "inviteToken">;
+
+interface SeatUsage {
+  /**
+   * Active members, excluding tombstoned rows.
+   *
+   * Reported because the refusal wording has to know whether revoking an invite
+   * would actually free a seat. It does not when the roster alone fills the cap —
+   * see `seatLimitMessage`.
+   */
+  members: number;
+  /**
+   * Unused invites somebody could still redeem. See `expiresAt` below.
+   *
+   * Reported separately from `total` because the refusal WORDING depends on it —
+   * an invite holding the last seat has a one-click remedy a full roster does
+   * not. `seatLimitMessage` is the only reader.
+   */
+  liveInvites: number;
+  /** Active members plus `liveInvites` — what a Free cap is compared against. */
+  total: number;
+}
+
+/**
+ * How many of a workspace's seats are taken, read through the caller's `tx` so
+ * the answer and the write that acts on it are one unit of work.
+ *
+ * ONE FUNCTION FOR BOTH SEAT GATES, because A48 was the two of them disagreeing.
+ * `inviteUserAction` counted members + pending invites; `reactivateUserAction`
+ * counted members only. On a Free workspace at one member plus one outstanding
+ * invite — the cap, and a state the invite gate itself produces — Reactivate saw
+ * "1 of 2" and cleared the tombstone, spending the seat the admin had already
+ * promised to an invitee. Nothing warned the admin, and the invitee found out by
+ * being refused at the password step with a live link in their hand.
+ *
+ * `expiresAt: { gt: now }` IS THE OTHER HALF (team-and-invites-004). The count
+ * used to filter on `usedAt: null` alone, and nothing in the product ever clears
+ * an expired-but-unused token in a live workspace — the purge cron only deletes
+ * InviteToken rows inside a whole-company purge. A token past its 7-day window
+ * cannot be redeemed by anybody (`acceptInviteAction` refuses it, and so does
+ * app/invite/[token]/page.tsx), so it was holding a seat that could never be
+ * filled, permanently, and the refusal told the founder to buy the Team plan.
+ * NOTHING CLEARS AN EXPIRED ROW AUTOMATICALLY, and the adverb is the whole claim —
+ * an earlier draft of this sentence said nothing clears it at all, which the next
+ * line then refuted. `revokeInviteAction` hard-deletes one, `inviteUserAction`
+ * deletes the address's outstanding token before issuing a fresh one (unfiltered
+ * by expiry, so re-inviting the same person clears a lapsed row), and
+ * `removeUserAction` clears theirs. What has no automatic collector is the row
+ * nobody touches: the purge cron only deletes InviteToken rows inside a
+ * whole-company transaction. So the expired row is left in place on purpose —
+ * /team renders it with an Expired badge and a Revoke control, which is how the
+ * admin learns an invite lapsed at all.
+ *
+ * `acceptInviteAction` DELIBERATELY DOES NOT USE THIS, and that is not the
+ * inconsistency A48 named. It is converting a token into a member, so the seat
+ * it needs is a member's seat; counting the OTHER outstanding invites there
+ * would refuse a genuine invitee over seats nobody occupies — a workspace whose
+ * Team subscription lapsed while five invites were outstanding has real room for
+ * one more member, and the members-only question is the one that says so. Its
+ * own reasoning is at the gate.
+ */
+async function countSeatsInUse(
+  tx: SeatCountClient,
+  companyId: string,
+  now: Date
+): Promise<SeatUsage> {
+  // Sequential, not `Promise.all`: two queries issued concurrently on one
+  // interactive-transaction client share a single connection, and the round trip
+  // saved is not worth reasoning about that.
+  const members = await tx.user.count({ where: { companyId, deletedAt: null } });
+  const liveInvites = await tx.inviteToken.count({
+    where: { companyId, usedAt: null, expiresAt: { gt: now } },
+  });
+  return { members, liveInvites, total: members + liveInvites };
+}
+
+/**
+ * The sentence a full workspace gets, built in one place so the two gates cannot
+ * drift into describing the same cap differently.
+ *
+ * NAMING THE PENDING INVITE is the half of team-and-invites-004 that is a copy
+ * bug rather than a counting one. "Your Solo plan is limited to 2 members.
+ * Upgrade…" is true when a member holds the seat and misleading when an invite
+ * does: the admin has a one-click Revoke beside every row in the Pending invites
+ * section of /team, and nothing pointed them at it — so the likely outcome was
+ * paying for Team to solve what a revoke would have fixed. Both controls this
+ * names ("Pending invites" with its Revoke, and Settings) exist on those pages.
+ *
+ * `restoring` is the teammate's name on the reactivation path, and its absence
+ * is the invite path. The members-only wording of each is unchanged from what
+ * each gate said before.
+ */
+function seatLimitMessage(params: {
+  limit: number;
+  members: number;
+  liveInvites: number;
+  restoring?: string;
+}): string {
+  const { limit, members, liveInvites, restoring } = params;
+  const cap = `Your ${PLAN_LABELS.free} plan is limited to ${limit} members`;
+
+  // OFFERING THE REVOKE NEEDS A SECOND CONDITION, not just "an invite exists".
+  // This branched on `liveInvites > 0` alone, which is confidently wrong copy on
+  // a path this repo deliberately designs for: `effectivePlan` drops a lapsed
+  // workspace to the free cap by status or date, while the invites issued while
+  // it was paying are burnt only when the `subscription_expired` delivery
+  // arrives — and bill-004 is this repo's record of that delivery going missing.
+  // So five members and two live invites on an effective cap of two was told to
+  // "Revoke one under Pending invites"; revoking both frees nothing, because the
+  // roster alone is already over. A remedy that cannot work is worse than no
+  // remedy — it spends the reader's time and then teaches them to distrust the
+  // next sentence the product shows them.
+  if (liveInvites > 0 && members < limit) {
+    const held =
+      liveInvites === 1
+        ? "one of those seats is held by a pending invite"
+        : `${liveInvites} of those seats are held by pending invites`;
+    const revoke = liveInvites === 1 ? "Revoke it" : "Revoke one";
+    return restoring
+      ? `${cap}, and ${held}. ${revoke} under Pending invites on the Team page, or ` +
+          `upgrade to ${PLAN_LABELS.team} in Settings, to restore ${restoring}.`
+      : `${cap}, and ${held}. ${revoke} under Pending invites on the Team page, or ` +
+          `upgrade to ${PLAN_LABELS.team} in Settings for unlimited co-founders.`;
+  }
+  return restoring
+    ? `${cap}, and it is full. Upgrade to ${PLAN_LABELS.team} in Settings, or ` +
+        `deactivate someone else, to restore ${restoring}.`
+    : `${cap}. Upgrade to ${PLAN_LABELS.team} in Settings for unlimited co-founders.`;
+}
+
+/**
  * Render + send the invite email for a token. Shared by inviteUserAction
  * (fresh invite) and resendInviteAction (re-send an existing pending one).
  * Never throws on a delivery failure — returns `emailSent: false` so the
@@ -252,15 +390,15 @@ export async function inviteUserAction(
       // says can be lost) landed on the refusal instead.
       //
       // In here, the delete is part of the same transaction as the counts, so
-      // `pendingInvites` still excludes it and the resend behaviour is
+      // the invite count below still excludes it and the resend behaviour is
       // unchanged — and a throw takes the delete with it.
       await tx.inviteToken.deleteMany({
         where: { email, companyId, usedAt: null },
       });
 
       // THE SEAT DECISION, TAKEN WHERE THE ROW IS WRITTEN (bill-014). Active
-      // members + still-pending invites, so you cannot queue past the limit.
-      // Team plan is unlimited, and pays for no count at all.
+      // members plus the invites somebody can still redeem, so you cannot queue
+      // past the limit. Team plan is unlimited, and pays for no count at all.
       //
       // IT USED TO BE DECIDED OUT HERE, before the transaction, and then never
       // asked again. That is the half of bill-014 that is not a race at all: any
@@ -298,16 +436,13 @@ export async function inviteUserAction(
       // boundary or a metered charge — and `acceptInviteAction` re-asks the cap
       // at acceptance, so an extra PENDING invite costs nobody a seat at all.
       if (Number.isFinite(limit)) {
-        // Sequential, not `Promise.all`: two queries issued concurrently on one
-        // interactive-transaction client share a single connection, and the
-        // round trip saved is not worth reasoning about that.
-        const activeMembers = await tx.user.count({ where: { companyId, deletedAt: null } });
-        const pendingInvites = await tx.inviteToken.count({
-          where: { companyId, usedAt: null },
-        });
-        if (activeMembers + pendingInvites >= limit) {
+        // `countSeatsInUse` is shared with `reactivateUserAction` below (A48),
+        // and it is the thing that stopped counting invites nobody can redeem
+        // (team-and-invites-004). Its docstring carries both.
+        const seats = await countSeatsInUse(tx, companyId, new Date());
+        if (seats.total >= limit) {
           throw new SeatLimitReached(
-            `Your ${PLAN_LABELS.free} plan is limited to ${limit} members. Upgrade to ${PLAN_LABELS.team} in Settings for unlimited co-founders.`
+            seatLimitMessage({ limit, members: seats.members, liveInvites: seats.liveInvites })
           );
         }
       }
@@ -392,10 +527,47 @@ export async function resendInviteAction(
 
     const token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    await db.inviteToken.update({
-      where: { id: invite.id },
-      data: { token, expiresAt },
-    });
+
+    // RESEND IS THE FOURTH SEAT GATE, and it counted nothing until closing
+    // team-and-invites-004 turned it into one.
+    //
+    // While an expired token still held a seat, `members + unusedTokens <= limit`
+    // was an invariant here and reviving a row could not raise the total. Now an
+    // expired token is free — the entire point of 004 — so reviving one ADDS a live
+    // seat. Two clicks, no race: on Free with one member and one expired invite the
+    // next invite is allowed (004 working as designed), and the Resend button
+    // renders on every pending row regardless of expiry, so resending the lapsed
+    // one leaves one member and two live invites against a cap of two.
+    //
+    // Counted AFTER the revive and inside the transaction, so the throw rolls the
+    // rotate back: a refusal must not leave the invitee's link rotated out from
+    // under them. That is the A44 lesson, in the file A44 was fixed in.
+    // `> limit`, not `>=`: resending an invite that is already LIVE must keep
+    // working, and that token is already inside this count.
+    const limit = memberLimitForCompany(company);
+    try {
+      await db.$transaction(async (tx) => {
+        await tx.inviteToken.update({
+          where: { id: invite.id },
+          data: { token, expiresAt },
+        });
+        if (Number.isFinite(limit)) {
+          const seats = await countSeatsInUse(tx, gate.companyId, new Date());
+          if (seats.total > limit) {
+            throw new SeatLimitReached(
+              seatLimitMessage({
+                limit,
+                members: seats.members,
+                liveInvites: seats.liveInvites,
+              })
+            );
+          }
+        }
+      });
+    } catch (e) {
+      if (e instanceof SeatLimitReached) return { success: false, error: e.message };
+      throw e;
+    }
 
     const { emailSent, inviteUrl } = await deliverInviteEmail({
       email: invite.email,
@@ -696,11 +868,11 @@ export async function reactivateUserAction(userId: string): Promise<ActionResult
       // `plan` column still says "team" because a `subscription_expired` delivery
       // was lost is capped here anyway.
       //
-      // The tombstoned target is not in this count — `deletedAt: null` excludes
-      // them — so the comparison is "is there room for one more", and a workspace
-      // exactly at its cap refuses. The already-active early return above runs
-      // before this, so pressing Reactivate on a live teammate (which the UI does
-      // to refresh) can never be answered with a plan error.
+      // The tombstoned target is not in this count — `countSeatsInUse` filters
+      // `deletedAt: null` — so the comparison is "is there room for one more",
+      // and a workspace exactly at its cap refuses. The already-active early
+      // return above runs before this, so pressing Reactivate on a live teammate
+      // (which the UI does to refresh) can never be answered with a plan error.
       const company = await tx.company.findUnique({
         where: { id: companyId },
         select: { plan: true, subscriptionStatus: true, currentPeriodEnd: true },
@@ -708,14 +880,22 @@ export async function reactivateUserAction(userId: string): Promise<ActionResult
       if (!company) throw new Error("Company no longer exists");
       const limit = memberLimitForCompany(company);
       if (Number.isFinite(limit)) {
-        const activeMembers = await tx.user.count({
-          where: { companyId, deletedAt: null },
-        });
-        if (activeMembers >= limit) {
+        // COUNTED THE SAME WAY `inviteUserAction` COUNTS (A48). This asked
+        // `user.count` alone, so the two gates agreed on the LIMIT and not on
+        // what fills it: at one member plus one outstanding invite — the cap,
+        // and a state the invite gate itself produces — this saw "1 of 2" and
+        // cleared the tombstone. The seat the admin had already promised to an
+        // invitee was gone, the admin was not told, and the invitee met the
+        // refusal at the password step holding a link that still worked.
+        const seats = await countSeatsInUse(tx, companyId, new Date());
+        if (seats.total >= limit) {
           throw new SeatLimitReached(
-            `Your ${PLAN_LABELS.free} plan is limited to ${limit} members, and it is full. ` +
-              `Upgrade to ${PLAN_LABELS.team} in Settings, or deactivate someone else, to ` +
-              `restore ${target.name}.`
+            seatLimitMessage({
+              limit,
+              members: seats.members,
+              liveInvites: seats.liveInvites,
+              restoring: target.name,
+            })
           );
         }
       }

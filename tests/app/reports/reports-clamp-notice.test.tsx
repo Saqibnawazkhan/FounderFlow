@@ -1,0 +1,99 @@
+// @vitest-environment jsdom
+/**
+ * rep-009, the reachability half: the clamp notice must actually RENDER.
+ *
+ * `reportWindow` sets `requestedStart` when it narrows a span, and
+ * tests/app/reports/reports-custom-range-bounds.test.ts pins that decision as a
+ * pure function. On its own that proves nothing a customer experiences — this
+ * codebase's signature defect is complete, tested code with no caller, and an
+ * "explanation" the user never sees would be exactly that: the page would still
+ * silently redraw a narrower range, which is the part of this finding that
+ * matters.
+ *
+ * So this drives the real component through a real click and asserts the sentence
+ * is in the document, and that it is NOT there for an ordinary range.
+ *
+ * WHY THE "All time" PRESET rather than typing into the Custom inputs: it reaches
+ * the same clamp through the path a user hits by accident rather than on purpose.
+ * One transaction with a mistyped or corrupt year — a stored row, not typed input
+ * — opens the all-time window a millennium back, and no date picker stands between
+ * the customer and that.
+ */
+
+import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { ReportsClient } from "@/app/(app)/reports/reports-client";
+import type { Company, Transaction, User } from "@/lib/types";
+
+const company: Company = {
+  id: "c1",
+  name: "Nimbus Labs",
+  industry: "SaaS",
+  currency: "USD",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  ownerId: "u1",
+};
+
+const users: User[] = [
+  {
+    id: "u1",
+    name: "Ayesha Khan",
+    email: "ayesha@nimbus.test",
+    role: "admin",
+    companyId: "c1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  } as User,
+];
+
+function txn(date: string, over: Partial<Transaction> = {}): Transaction {
+  return {
+    id: `t-${date}`,
+    companyId: "c1",
+    type: "expense",
+    amount: 100,
+    category: "Ops",
+    description: "row",
+    date,
+    addedBy: "u1",
+    addedByName: "Ayesha Khan",
+    createdAt: date,
+    ...over,
+  } as Transaction;
+}
+
+/** This month, so "All time" has a recent end to clamp towards. */
+function thisMonthIso(): string {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 15)).toISOString();
+}
+
+describe("rep-009 — the narrowed range explains itself on screen", () => {
+  it("says so when a millennium-old row would open an absurd window", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReportsClient
+        transactions={[txn("1000-01-01T00:00:00.000Z"), txn(thisMonthIso())]}
+        users={users}
+        company={company}
+      />
+    );
+    // The window only widens once the reader asks for all time; the default is 6m.
+    expect(screen.queryByRole("status")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "All time" }));
+    const notice = screen.getByRole("status");
+    expect(notice.textContent ?? "").toMatch(/cannot chart|most recent/i);
+  });
+
+  it("stays silent for an ordinary ledger, so the notice means something", async () => {
+    // A warning that is always on screen is furniture. If this goes red, the clamp
+    // is firing on ranges it should leave alone and every real report now carries
+    // an apology.
+    const user = userEvent.setup();
+    render(<ReportsClient transactions={[txn(thisMonthIso())]} users={users} company={company} />);
+    await user.click(screen.getByRole("button", { name: "All time" }));
+    expect(screen.queryByRole("status")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "1 year" }));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});

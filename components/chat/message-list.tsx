@@ -53,6 +53,17 @@ export type MessageListProps = {
   disabled?: boolean;
   /** Passed through to each row's reply indicator. */
   onOpenThread?: (message: MessageClient) => void;
+  /**
+   * The message a `?message=<id>` deep link named (chat-010), or null.
+   *
+   * This component's job is to MARK it and to bring it into view. Whether the
+   * row is in the loaded page at all, and what to do when it is not, is
+   * <ChatClient>'s — see `nextAnchorStep` in lib/chat/anchor.ts. An id that is
+   * not in `messages` marks nothing and scrolls nowhere: guessing at the nearest
+   * row would assert that the wrong message was the one somebody was mentioned
+   * in, which is worse than highlighting none.
+   */
+  anchoredMessageId?: string | null;
   /** Test seam: tests pass 0 so the read receipt doesn't need fake timers. */
   readDebounceMs?: number;
 };
@@ -66,9 +77,29 @@ export function MessageList({
   onLoadOlder,
   disabled = false,
   onOpenThread,
+  anchoredMessageId = null,
   readDebounceMs = READ_DEBOUNCE_MS,
 }: MessageListProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * The rendered row for each message id, so the anchor can be found without a
+   * `document.getElementById` reaching outside this component's own tree. Ref
+   * callbacks, not a query: two <MessageList>s on one page (a thread panel is a
+   * different component, but nothing prevents it) would collide on a global id
+   * lookup, and this cannot.
+   */
+  const rowRefs = useRef(new Map<string, HTMLElement>());
+  /**
+   * Was a deep link present when this list MOUNTED?
+   *
+   * A ref seeded once, rather than the prop, because the mount branch of the
+   * scroll effect below must not list `anchoredMessageId` as a dependency: that
+   * effect also handles arrivals and prepends, and re-running it because the
+   * anchor changed would put it through the arrival branch and pin the viewport
+   * to the bottom — exactly what the anchor exists to prevent. The question it
+   * needs answered is about mount time anyway, and that never changes.
+   */
+  const anchoredOnMount = useRef(anchoredMessageId);
   const [atBottom, setAtBottom] = useState(true);
   const [unseen, setUnseen] = useState(0);
 
@@ -114,8 +145,29 @@ export function MessageList({
       mountedRef.current = true;
       prevFirstId.current = firstId;
       prevLastId.current = lastId;
-      el.scrollTop = el.scrollHeight;
-      atBottomRef.current = true;
+      // chat-010: a deep link opens ON the message it named, not at the live
+      // edge. The anchor effect below owns the position in that case; pinning
+      // here first would scroll twice and land wherever the second one ran.
+      //
+      // BUT ONLY IF THE ANCHOR IS ACTUALLY HERE. This tested the raw prop, and
+      // the anchor effect returns early on the DERIVED `anchoredId`, which is
+      // null whenever the id is not in `messages`. So for three of chat-010's
+      // own outcomes — a thread reply (never in the timeline by design), a root
+      // older than the loaded page, and an id that resolves to nothing — the pin
+      // was suppressed and the anchor effect then did nothing either, leaving
+      // the reader at the TOP of the loaded history: no anchor, and not the live
+      // edge they would have got with no link at all. Found by adversarial
+      // verification, which is also why the comment above now says "below".
+      //
+      // Asked here rather than by re-seeding the ref, because this branch runs
+      // exactly once and `messages` is already in scope; `useRef(expr)` would
+      // re-evaluate the search on every render to keep a value from the first.
+      const anchorIsHere =
+        anchoredOnMount.current !== null && messages.some((m) => m.id === anchoredOnMount.current);
+      if (!anchorIsHere) {
+        el.scrollTop = el.scrollHeight;
+        atBottomRef.current = true;
+      }
       prevMetrics.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
       return;
     }
@@ -158,12 +210,77 @@ export function MessageList({
     const timer = setTimeout(() => {
       // Wrapped in Promise.resolve so a mocked action that returns undefined
       // doesn't blow up on .catch.
-      Promise.resolve(markChannelReadAction({ channelId })).catch(() => {
-        // A failed read receipt is cosmetic — the badge stays until next time.
-      });
+      Promise.resolve(markChannelReadAction({ channelId }))
+        .then((res) => {
+          // Tell the sidebar its Chat total just shrank. Only on a real
+          // success: `res` is undefined under the test mocks this Promise.resolve
+          // exists for, and firing on those would have the badge refetch after a
+          // write that never happened. The sidebar re-reads the count from the
+          // server rather than trusting a number from here, so a spurious event
+          // is harmless but a missed one leaves a stale badge for 30s.
+          if (res && res.success && typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("ff-chat-read"));
+          }
+        })
+        .catch(() => {
+          // A failed read receipt is cosmetic — the badge stays until next time.
+        });
     }, readDebounceMs);
     return () => clearTimeout(timer);
   }, [atBottom, newestId, channelId, readDebounceMs]);
+
+  /**
+   * Is the anchored message actually in the page on screen?
+   *
+   * Derived rather than trusted: the parent may hand down an id it is still
+   * paging towards, so "did we get one?" and "is it on screen?" are different
+   * questions and the mark and the scroll below both need the second.
+   *
+   * THE MOUNT BOTTOM-PIN ASKS THE SAME QUESTION AND NOT THROUGH THIS VALUE, and
+   * an earlier version of this comment claimed otherwise — "every branch below …
+   * has to agree … One answer, computed once" — while the pin a hundred lines up
+   * read the raw prop. That disagreement was the regression: an anchor outside
+   * the loaded page suppressed the pin and satisfied nothing. The pin cannot use
+   * this memo (it runs in a layout effect that must not depend on the anchor, or
+   * an anchor change would re-enter the arrival branch and pin to the bottom —
+   * the exact thing the anchor exists to prevent), so it repeats the membership
+   * test locally against the same `messages`. Two call sites, one rule, stated in
+   * both places.
+   */
+  const anchoredId = useMemo(() => {
+    if (!anchoredMessageId) return null;
+    return messages.some((m) => m.id === anchoredMessageId) ? anchoredMessageId : null;
+  }, [anchoredMessageId, messages]);
+
+  /**
+   * Bring the anchored row into view, once per anchor that lands.
+   *
+   * WHY IT IS ALLOWED TO OVERRIDE RULE 1 ("mount pins to the bottom"). A reader
+   * who followed a mention notification did not ask for the newest message, they
+   * asked for a specific one, and the mount pin is what left them at the live
+   * edge of a busy room with nothing to show which message the link was about.
+   * The pin still governs every ordinary open, because `anchoredId` is null then.
+   *
+   * `atBottomRef` is cleared at the same time so the NEXT arrival does not yank
+   * the viewport back down to it — rule 2 already says an arrival pins only if
+   * the reader was at the bottom, and someone reading a five-week-old message is
+   * not.
+   *
+   * `scrollIntoView` is guarded: jsdom does not implement it (tests/setup.ts
+   * installs a stub), and neither did older Safari with an options object.
+   */
+  const scrolledToAnchor = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!anchoredId || scrolledToAnchor.current === anchoredId) return;
+    const node = rowRefs.current.get(anchoredId);
+    if (!node) return;
+    scrolledToAnchor.current = anchoredId;
+    atBottomRef.current = false;
+    setAtBottom(false);
+    if (typeof node.scrollIntoView === "function") {
+      node.scrollIntoView({ block: "center" });
+    }
+  }, [anchoredId]);
 
   const rows = useMemo(() => {
     return messages.map((message, i) => {
@@ -212,7 +329,14 @@ export function MessageList({
           </div>
         ) : (
           rows.map(({ message, startsDay, grouped, created }) => (
-            <div key={message.id} className={grouped ? "mt-0.5" : "mt-3 first:mt-0"}>
+            <div
+              key={message.id}
+              ref={(node) => {
+                if (node) rowRefs.current.set(message.id, node);
+                else rowRefs.current.delete(message.id);
+              }}
+              className={grouped ? "mt-0.5" : "mt-3 first:mt-0"}
+            >
               {startsDay && (
                 <div className="my-4 flex items-center gap-3 first:mt-0">
                   <span className="h-px flex-1 bg-border" />
@@ -228,6 +352,7 @@ export function MessageList({
                 grouped={grouped}
                 disabled={disabled}
                 onOpenThread={onOpenThread}
+                anchored={message.id === anchoredId}
               />
             </div>
           ))

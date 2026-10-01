@@ -468,3 +468,159 @@ describe("a finance event only reaches people entitled to the money (sec-005)", 
     expect(financeRecipients.mock.calls[0]![0]).toEqual(["u1"]);
   });
 });
+
+/**
+ * `skipInApp` — chat announces itself on the Chat badge, not under the bell.
+ *
+ * WHAT WAS WRONG. Every direct message wrote a Notification row, so a two-line
+ * exchange put two entries in the notifications list beside budget alerts and
+ * role changes, while the word "Chat" in the sidebar never changed. The unread
+ * signal was in the wrong place and there was no way to tell "someone messaged
+ * me" from "my role changed" without opening both surfaces.
+ *
+ * The flag has to do exactly one thing. The failure mode worth guarding is not
+ * "the row still gets written" — that is obvious and would be caught by any
+ * assertion — but the quiet over-reach: suppressing the row and taking push or
+ * email down with it, which would silently stop telling people they had been
+ * messaged while away. Half of these tests exist for that direction.
+ */
+describe("skipInApp — the in-app row, and ONLY the in-app row", () => {
+  it("writes no notification row", async () => {
+    const { calls, client } = fakeClient();
+
+    const res = await notifyUsers({
+      ...base,
+      event: "dm",
+      userIds: ["u1", "u2"],
+      skipInApp: true,
+      tx: client,
+    });
+
+    expect(calls, "a row here is the bug this flag exists to fix").toHaveLength(0);
+    expect(res.notified).toBe(0);
+  });
+
+  it("still pushes, so being messaged while away still reaches you", async () => {
+    const { client } = fakeClient();
+
+    await notifyUsers({
+      ...base,
+      event: "dm",
+      userIds: ["u1"],
+      skipInApp: true,
+      tx: client,
+    });
+    await settlePush();
+
+    expect(
+      pushForNotificationRows,
+      "'don't list it under the bell' and 'don't tell me at all' are different requests"
+    ).toHaveBeenCalledTimes(1);
+    expect(pushForNotificationRows.mock.calls[0][0]).toEqual([
+      expect.objectContaining({ userId: "u1" }),
+    ]);
+  });
+
+  it("still emails", async () => {
+    const { client } = fakeClient();
+
+    await notifyUsers({
+      ...base,
+      event: "dm",
+      userIds: ["u1"],
+      skipInApp: true,
+      tx: client,
+    });
+
+    expect(fireNotificationEmails).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves every other call site alone", async () => {
+    const { calls, client } = fakeClient();
+
+    const res = await notifyUsers({ ...base, userIds: ["u1", "u2"], tx: client });
+
+    expect(calls, "without the flag the in-app row is written exactly as before").toHaveLength(1);
+    expect(res.notified).toBe(2);
+  });
+
+  it("reports `reached` so a suppressed caller can still say who it got to", async () => {
+    const { client } = fakeClient();
+
+    const res = await notifyUsers({
+      ...base,
+      event: "dm",
+      userIds: ["u1", "u2", "u3"],
+      skipInApp: true,
+      tx: client,
+    });
+
+    expect(
+      res.dispatched,
+      "notified is 0 by design here; without `reached` the composer says 'pinged 0' over a message that reached three people"
+    ).toBe(3);
+  });
+
+  it("counts PEOPLE in `reached`, not deliveries", async () => {
+    // u1 has all three channels on. That is one person dispatched, not three.
+    const { client } = fakeClient();
+
+    const res = await notifyUsers({ ...base, userIds: ["u1"], tx: client });
+
+    expect(res.dispatched).toBe(1);
+    expect(res.notified).toBe(1);
+  });
+
+  it("does not count someone every channel would miss", async () => {
+    // u2 has turned this event off everywhere; u1 has it on.
+    const stored: Stored[] = [
+      { userId: "u2", event: base.event, inApp: false, email: false, push: false },
+    ];
+    const { client } = fakeClient(stored);
+
+    const res = await notifyUsers({ ...base, userIds: ["u1", "u2"], tx: client });
+
+    expect(res.dispatched, "reached means delivered, not attempted").toBe(1);
+  });
+
+  it("does not count a deactivated teammate as reached", async () => {
+    const { client } = fakeClient([], ["u2"]);
+
+    const res = await notifyUsers({
+      ...base,
+      event: "dm",
+      userIds: ["u1", "u2"],
+      skipInApp: true,
+      tx: client,
+    });
+
+    expect(
+      res.dispatched,
+      "the tombstone filter runs before delivery; reached must agree with it"
+    ).toBe(1);
+  });
+
+  it("reaches nobody when in-app was the recipient's only channel", async () => {
+    // The realistic shape of a zero: push and email off, in-app on — and in-app
+    // is the one this call refuses. Nothing was delivered, and `reached` says so
+    // rather than crediting the preference row that would have been honoured.
+    const stored: Stored[] = [
+      { userId: "u1", event: "dm", inApp: true, email: false, push: false },
+    ];
+    const { calls, client } = fakeClient(stored);
+
+    const res = await notifyUsers({
+      ...base,
+      event: "dm",
+      userIds: ["u1"],
+      skipInApp: true,
+      tx: client,
+    });
+    await settlePush();
+
+    expect(res).toEqual({ notified: 0, dispatched: 0 });
+    expect(calls).toHaveLength(0);
+    expect(pushForNotificationRows).not.toHaveBeenCalled();
+    expect(fireNotificationEmails).not.toHaveBeenCalled();
+  });
+});

@@ -14,6 +14,20 @@
 
 import puppeteer from "puppeteer-core";
 
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.13";
+
 const BASE = process.env.SMOKE_BASE_URL || "http://localhost:3000";
 const CHROME =
   process.env.PUPPETEER_EXECUTABLE_PATH || "C:/Program Files/Google/Chrome/Application/chrome.exe";
@@ -67,6 +81,7 @@ async function main() {
   // into the admin's session below.
   const sarahCtx = await browser.createBrowserContext();
   const sarah = await sarahCtx.newPage();
+  await sarah.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
   await sarah.setViewport({ width: 1440, height: 900 });
   await signIn(sarah, "sarah@nimbus.app", "demo123");
   const landedAt = new URL(sarah.url()).pathname;
@@ -119,6 +134,7 @@ async function main() {
   // ── Saqib (admin) — fresh context, no cookies from sarah's session.
   const saqibCtx = await browser.createBrowserContext();
   const saqib = await saqibCtx.newPage();
+  await saqib.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
   await saqib.setViewport({ width: 1440, height: 900 });
   await signIn(saqib, "demo@founderflow.app", "demo123");
   const adminLanded = new URL(saqib.url()).pathname;

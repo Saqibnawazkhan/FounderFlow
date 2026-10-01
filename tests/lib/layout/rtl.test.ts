@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { SUPPORTED_LOCALES } from "@/lib/i18n/strings";
+import { dialectFor, stripComments } from "../harness/source-scan";
 
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 
@@ -131,16 +133,16 @@ const NOT_YET_CONVERTED = new Map<string, string>([
   ["components/chat/reaction-bar.tsx", "left-0 on the emoji popover"],
 ]);
 
-/**
- * Blanks out comments while preserving line numbering, so prose discussing
- * left-0 or border-r — which this file and the components it scans both do —
- * cannot masquerade as a class. The (?<!:) guard keeps https:// intact.
- */
-function stripComments(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/(?<!:)\/\/[^\n]*/g, (m) => " ".repeat(m.length));
-}
+// `stripComments` blanks comments while preserving line numbering, so prose
+// discussing left-0 or border-r — which this file and the components it scans
+// both do — cannot masquerade as a class. It comes from
+// tests/lib/harness/source-scan.ts, shared with eight other structural guards;
+// the two-regex copy that used to sit here carried audit A40, and the URL
+// carve-out it spelled with a lookbehind lives in the shared scanner now.
+//
+// `dialectFor` matters because this sweep walks `.css` as well as `.tsx`, and a
+// stylesheet has no line comments and no regex literals: reading the slash in
+// `calc(100% / 3)` as the start of one would skip real text.
 
 /** Repo-relative, forward-slashed — the shape NOT_YET_CONVERTED is keyed by. */
 function relPath(file: string): string {
@@ -204,7 +206,7 @@ function scanFile(file: string): HitScan {
   const rel = relPath(file);
   const source = fs.readFileSync(file, "utf8");
   const rawLines = source.split("\n");
-  const strippedLines = stripComments(source).split("\n");
+  const strippedLines = stripComments(source, dialectFor(file)).split("\n");
   const exemptions = exemptionFor(rawLines, strippedLines);
 
   const hits: string[] = [];
@@ -315,7 +317,7 @@ describe("the RTL mirror (shell and pages alike)", () => {
       // are unconverted as a whole, glyphs included, and each names its arrows
       // in its reason string.
       if (NOT_YET_CONVERTED.has(relPath(file))) return;
-      const source = stripComments(fs.readFileSync(file, "utf8"));
+      const source = stripComments(fs.readFileSync(file, "utf8"), dialectFor(file));
       const tags = source.match(/<(?:Chevrons?|Arrow)(?:Left|Right)\b[^>]*>/g) ?? [];
       tags.forEach((tag) => {
         if (!tag.includes("rtl:rotate-180")) {
@@ -328,6 +330,74 @@ describe("the RTL mirror (shell and pages alike)", () => {
       unmirrored,
       `Horizontal chevrons and arrows need rtl:rotate-180 or they point the wrong way in Urdu:\n${unmirrored.join("\n")}`
     ).toEqual([]);
+  });
+});
+
+describe("the comment stripper this guard reads through (audit A40)", () => {
+  /**
+   * This guard can only report what its stripper leaves visible, so the
+   * stripper is part of the guard and gets its own test.
+   *
+   * The two-regex shape it used to carry blanked BLOCK comments first, over text
+   * that still contained line comments. A line comment that merely mentioned a
+   * block-comment opener therefore opened a block, which the pattern closed at
+   * the next block-comment closer — blanking every line in between and every
+   * class string on them. Measured in the tree at ONE site, not the two an
+   * earlier version of this comment claimed: lib/auth/channel-permissions.ts:98
+   * mentions a glob containing a block-comment opener, and the next closer is at :115, so :98-:115 went
+   * blank — eighteen lines, six of them real code, and those six are
+   * `visibleChannelWhere`'s own `return`. lib/actions/team.ts was named too and
+   * is not affected: its only unpaired opener has no closer after it anywhere, so
+   * the lazy pattern never matched. See tests/lib/harness/source-scan.ts.
+   *
+   * Driven end-to-end through scanFile() on a real temporary file rather than
+   * against the stripper alone, because the thing at risk is this guard's hit
+   * list, not a helper's return value.
+   */
+  it("still reports a physical utility below a line comment that mentions a block opener", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-rtl-strip-"));
+    const file = path.join(dir, "sample.tsx");
+    fs.writeFileSync(
+      file,
+      [
+        "export function Sample() {",
+        "  // the opener /* in this sentence never closes on this line",
+        '  return <div className="ml-4" />;',
+        "}",
+        "/* and this closer sits further down the file */",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    try {
+      expect(scanFile(file).hitsIgnoringMarkers.join("\n")).toContain("ml-/mr-");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let prose about a class count as a class", () => {
+    // The other direction, and the reason the stripper exists at all: this very
+    // file discusses left-0 and border-r in its own comments.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-rtl-prose-"));
+    const file = path.join(dir, "sample.tsx");
+    fs.writeFileSync(
+      file,
+      [
+        "/** Prose mentioning ml-4 and text-left and border-r. */",
+        "export function Sample() {",
+        "  // and a line comment mentioning pl-2",
+        '  return <div className="ps-2" />;',
+        "}",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    try {
+      expect(scanFile(file).hitsIgnoringMarkers).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

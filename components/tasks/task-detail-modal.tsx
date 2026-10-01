@@ -24,7 +24,8 @@
  */
 
 import { useEffect, useState } from "react";
-import { format, isPast, isToday } from "date-fns";
+import { format } from "date-fns";
+import { formatDeadlineDay, isDeadlineOverdue, isDeadlineToday } from "@/lib/tasks/deadline";
 import {
   AlertCircle,
   AlertOctagon,
@@ -87,6 +88,16 @@ type Props = {
   currentUserRole: "admin" | "cofounder" | "member";
   companyUsers: MentionUser[];
   canDelete: boolean;
+  /**
+   * Whether this viewer may change the task's status (tasks-and-comments-009).
+   *
+   * OPTIONAL, defaulting to `true`, only because `app/(app)/projects/[id]/
+   * project-detail-client.tsx` also renders this modal and belongs to another
+   * slice — a required prop would break a file this change cannot touch. The
+   * default preserves that surface's current behaviour exactly; passing the real
+   * predicate there is reported as a follow-up. /tasks passes it.
+   */
+  canEdit?: boolean;
   onStatusChange: (id: string, status: TaskStatus) => void;
   onDelete: (id: string) => void;
   /** Called after a comment is posted/deleted so the parent list can bump
@@ -102,6 +113,7 @@ export function TaskDetailModal({
   currentUserRole,
   companyUsers,
   canDelete,
+  canEdit = true,
   onStatusChange,
   onDelete,
   onCommentsChanged,
@@ -135,9 +147,13 @@ export function TaskDetailModal({
     else toast.error(res.error);
   }
 
-  const deadline = new Date(task.deadline);
-  const overdue = isPast(deadline) && task.status !== "completed";
-  const dueToday = isToday(deadline);
+  // A deadline is a calendar DAY, read from UTC parts
+  // (tasks-and-comments-011). `isPast(new Date(task.deadline))` formatted and
+  // compared the stored instant in the VIEWER's zone, so at UTC-5 this modal
+  // showed the day before the one the assigner picked — while the assignment
+  // email showed the right one — and flagged a task due today as overdue.
+  const overdue = isDeadlineOverdue(task.deadline) && task.status !== "completed";
+  const dueToday = isDeadlineToday(task.deadline);
 
   const PriorityIcon = PRIORITY_ICONS[task.priority];
   const StatusIcon = STATUS_ICONS[task.status];
@@ -180,7 +196,7 @@ export function TaskDetailModal({
             ) : (
               <Calendar className="h-3 w-3" aria-hidden="true" />
             )}
-            {format(deadline, "MMM dd, yyyy")}
+            {formatDeadlineDay(task.deadline, "MMM dd, yyyy")}
             {overdue && " · overdue"}
             {dueToday && !overdue && " · today"}
           </span>
@@ -193,8 +209,17 @@ export function TaskDetailModal({
           <select
             id={`detail-status-${task.id}`}
             value={task.status}
+            disabled={!canEdit}
+            title={
+              canEdit
+                ? undefined
+                : "Only the assignee, the person who filed it, or an admin can move this task"
+            }
             onChange={(e) => onStatusChange(task.id, e.target.value as TaskStatus)}
-            className="ms-auto cursor-pointer rounded-full border border-border bg-bg px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors hover:bg-surface-hover focus:border-primary/50 focus:outline-none"
+            className={cn(
+              "ms-auto rounded-full border border-border bg-bg px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg transition-colors focus:border-primary/50 focus:outline-none",
+              canEdit ? "cursor-pointer hover:bg-surface-hover" : "cursor-not-allowed opacity-60"
+            )}
           >
             <option value="pending">Pending</option>
             <option value="in_progress">In progress</option>

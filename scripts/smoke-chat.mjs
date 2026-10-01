@@ -14,11 +14,28 @@
  *
  * Seed assumptions: company demo-nimbus. demo@founderflow.app is admin,
  * fatima@nimbus.app is a plain member. Everything it creates is removed in
- * `finally`, including on failure.
+ * `finally`, including on failure -- and, since audit harness-011, every row it
+ * UPDATED is put back too. Reading a channel advances a SEEDED
+ * ChannelMember.lastReadAt, which is not an insert and was therefore invisible
+ * to the old cleanup.
  */
 
 import puppeteer from "puppeteer-core";
 import { localDb } from "./_local-db.mjs";
+
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.5";
 
 const BASE = process.env.BASE ?? "http://localhost:3000";
 const CHROME =
@@ -81,10 +98,33 @@ async function main() {
   const body = `chat smoke ${STAMP}`;
   let privateChannelId = null;
 
+  /**
+   * READ WATERMARKS, SNAPSHOTTED BEFORE ANYTHING OPENS A CHANNEL
+   * (audit harness-011).
+   *
+   * This script's cleanup covered everything it INSERTED and nothing it
+   * UPDATED. Opening #general calls markChannelRead, which advances
+   * ChannelMember.lastReadAt on a SEEDED row -- so every run left the demo
+   * workspace a little different from the seed, and scripts/_qa-guard.mjs
+   * (which hashes whole channelMember rows) reported
+   * "channelMember: same N rows but CONTENT CHANGED (an update)" against every
+   * other agent's cleanup verification.
+   *
+   * Restoring by ID is what makes this safe to run after the deletes below: the
+   * private channel's member rows are created during the run, so they are not in
+   * this snapshot and cannot be resurrected by it.
+   */
+  const watermarksBefore = await db.channelMember.findMany({
+    where: { channel: { companyId: "demo-nimbus" } },
+    select: { id: true, lastReadAt: true },
+  });
+  console.log(`  (snapshotted ${watermarksBefore.length} read watermarks)`);
+
   try {
     // ── admin ───────────────────────────────────────────────────────
     const adminCtx = await browser.createBrowserContext();
     const admin = await adminCtx.newPage();
+    await admin.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
     wire(admin);
     await signIn(admin, "demo@founderflow.app", "demo123");
 
@@ -164,6 +204,7 @@ async function main() {
     // ── member ──────────────────────────────────────────────────────
     const memberCtx = await browser.createBrowserContext();
     const member = await memberCtx.newPage();
+    await member.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
     wire(member);
     await signIn(member, "fatima@nimbus.app", "demo123");
 
@@ -235,6 +276,18 @@ async function main() {
         await db.message.deleteMany({ where: { channelId: privateChannelId } });
         await db.channel.delete({ where: { id: privateChannelId } });
       }
+      // ...and the rows this run UPDATED rather than inserted. `updateMany` on the
+      // id keeps a row deleted above from being recreated, which `update` would
+      // throw on and `upsert` would do.
+      let restored = 0;
+      for (const row of watermarksBefore) {
+        const res = await db.channelMember.updateMany({
+          where: { id: row.id, lastReadAt: { not: row.lastReadAt } },
+          data: { lastReadAt: row.lastReadAt },
+        });
+        restored += res.count;
+      }
+      if (restored > 0) console.log(`  (restored ${restored} read watermark(s))`);
     } catch (e) {
       console.error("cleanup failed:", e.message);
     }

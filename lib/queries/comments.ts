@@ -43,7 +43,7 @@
 import { db } from "@/lib/db";
 import { requireScopedSession } from "@/lib/queries/session";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
-import { canSeeAllProjects } from "@/lib/auth/project-permissions";
+import { canManageProject, canSeeAllProjects } from "@/lib/auth/project-permissions";
 import { getProjectForUser } from "@/lib/queries/projects";
 import { tokenizeForRender, type CommentSegment } from "@/lib/comments/mentions";
 
@@ -125,18 +125,33 @@ async function mayReadTarget(
   });
   if (!task) return false;
 
-  // Admin + cofounder see every board. For a member the rule mirrors the two
-  // surfaces that already state it: the GLOBAL board narrows to
-  // `assignedTo: userId` (lib/queries/tasks.ts) and so does the command
-  // palette (lib/queries/search.ts) — but the PROJECT board deliberately does
-  // not, because `getTasks({ projectId })` carries no `assignedTo` filter. A
-  // member who can open the project therefore sees its whole board, and must
-  // be able to read those threads or the comment button on a card they are
-  // looking at does nothing. `getProjectForUser` is the audited predicate for
-  // "can open the project", reused rather than re-derived.
+  // Admin + cofounder see every board. For a member the rule now mirrors all
+  // THREE surfaces that state it: the global board narrows to
+  // `assignedTo: userId` (lib/queries/tasks.ts), so does the command palette
+  // (lib/queries/search.ts), and so — since projects-017 — does the PROJECT
+  // board (`visibleProjectTasks`, applied in app/(app)/projects/[id]/page.tsx).
+  //
+  // THIS BRANCH USED TO BE JUSTIFIED BY THE OPPOSITE. Its comment read "the
+  // PROJECT board deliberately does not [narrow] … a member who can open the
+  // project therefore sees its whole board, and must be able to read those
+  // threads" — and it ended in `getProjectForUser(...) !== null`, i.e. "any
+  // member who can open the project may read any thread in it". projects-017
+  // removed that premise at the page and left this line behind, so the leak it
+  // closed on the board stayed open through the comment endpoint: a member
+  // could still fetch a teammate's thread by task id. Found by adversarial
+  // verification, not by the change that caused it.
+  //
+  // `canManageProject` rather than `getProjectForUser`: it is the same predicate
+  // `visibleProjectTasks` uses, so the thread a member can read is exactly the
+  // task they can see, by construction rather than by two rules agreeing. A
+  // supervisor still reads every thread on their own project; a plain member
+  // reads the threads on their own work, which is what the comment button on a
+  // card they can see needs.
   if (canSeeAllProjects(role)) return true;
   if (task.assignedTo === userId || task.assignedBy === userId) return true;
-  return (await getProjectForUser(task.projectId)) !== null;
+  const project = await getProjectForUser(task.projectId);
+  if (!project) return false;
+  return canManageProject({ userId, role, project: { supervisorId: project.supervisorId } });
 }
 
 export async function listCommentsForTarget(target: CommentTarget): Promise<CommentClient[]> {

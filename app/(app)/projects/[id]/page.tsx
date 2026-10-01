@@ -7,7 +7,11 @@
 
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
-import { getProjectOverview, getProjectTitleForUser } from "@/lib/queries/projects";
+import {
+  getProjectOverview,
+  getProjectTitleForUser,
+  visibleProjectTasks,
+} from "@/lib/queries/projects";
 import { getTasks } from "@/lib/queries/tasks";
 import { getBudgetsWithSpend } from "@/lib/queries/budgets";
 import { getCompanyUsers } from "@/lib/queries/users";
@@ -58,11 +62,35 @@ export default async function ProjectDetailPage({ params }: { params: { id: stri
     project: { supervisorId: overview.supervisorId },
   });
 
-  const [tasks, budgets, users] = await Promise.all([
+  const [allTasks, budgets, users] = await Promise.all([
     getTasks({ projectId: params.id }),
     canSeeBudgets ? getBudgetsWithSpend({ projectId: params.id }) : Promise.resolve([]),
     getCompanyUsers(),
   ]);
+
+  /**
+   * projects-017. `getTasks({ projectId })` returns the project's WHOLE board:
+   * `taskScopeWhere` in lib/queries/tasks.ts applies its `assignedTo: userId`
+   * narrowing only when no `projectId` is passed, so the confidentiality rule
+   * /tasks enforces at the data boundary switched itself off for this page. A
+   * plain member holding one task here received every teammate's task, and the
+   * client component renders the first ten of them.
+   *
+   * Filtered here, not masked in the component: the RSC hands its props to the
+   * client through the Flight payload, so a row that reaches this call is in the
+   * served HTML whether or not anything paints it — the same argument
+   * `getProjectOverview` makes for SKIPPING the spend aggregate rather than
+   * em-dashing it.
+   *
+   * `visibleProjectTasks` leaves admin, cofounder and this project's supervisor
+   * with the full board, which is what the escape hatch is for.
+   */
+  const tasks = visibleProjectTasks({
+    userId: session.userId,
+    role: session.role,
+    project: { supervisorId: overview.supervisorId },
+    tasks: allTasks,
+  });
 
   return (
     <ProjectDetailClient

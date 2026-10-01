@@ -359,6 +359,69 @@ function loadRoster(companyId: string): Promise<MentionUser[]> {
 }
 
 /**
+ * One number: how many unread messages the caller has across ALL of chat.
+ *
+ * This is what the sidebar's Chat row badges. It answers the same question as
+ * the rail's per-channel badges, so it is built from the same three rules and
+ * deliberately NOT from a second set:
+ *
+ *   1. A MEMBERSHIP ROW IS THE GATE. `lastReadAt` only exists on one, so a
+ *      public channel you have never joined contributes nothing — the same
+ *      documented model `listChannelsForUser` states ("for a public channel,
+ *      membership controls the badge and nothing else"). #general counts
+ *      because `joinDefaultChannels` puts everyone in it at signup; a private
+ *      channel counts once you are added to it; a DM counts because opening
+ *      one creates both membership rows.
+ *   2. YOUR OWN MESSAGES ARE NEVER UNREAD TO YOU.
+ *   3. ARCHIVED CHANNELS DROP OUT, because archiving is a soft close and a
+ *      closed room is not in the rail either.
+ *
+ * MUTED CHANNELS STILL COUNT, and that is not an oversight. `mutedAt` is
+ * documented on the schema as "still a member, still sees the channel, just no
+ * notification fan-out" — it suppresses the interrupting ping, not the passive
+ * count, and the rail already badges a muted channel. A total that quietly
+ * disagreed with the rows it is a total OF is the surface-disagreement bug this
+ * codebase keeps producing.
+ *
+ * TWO QUERIES, FIXED, regardless of how many channels the caller is in: the
+ * per-channel `(channelId, createdAt > my watermark)` pairs fold into one OR,
+ * exactly as the rail's `groupBy` does. It rides @@index([userId]) on
+ * ChannelMember and @@index([channelId, createdAt]) on Message. This runs on a
+ * 30-second poll in every open tab, so the shape matters: the notification
+ * badge it sits beside was rewritten for precisely this reason (perf-004).
+ */
+export async function unreadChatTotal(): Promise<number> {
+  const { userId, companyId } = await requireScopedSession();
+
+  const memberships = await db.channelMember.findMany({
+    // `channel: { companyId }` is the tenant boundary on this half. A
+    // membership row carries no companyId of its own, so without it a forged
+    // or stale row could point at another workspace's channel — and the count
+    // below would then be scoped by a channelId this workspace does not own.
+    where: { userId, channel: { companyId, archivedAt: null } },
+    select: { channelId: true, lastReadAt: true },
+  });
+  if (memberships.length === 0) return 0;
+
+  const raw = await db.message.count({
+    where: {
+      // Belt to the membership query's braces: Message carries a denormalized
+      // companyId, so the tenant scope is asserted on both sides of the join
+      // rather than inferred from one.
+      companyId,
+      deletedAt: null,
+      authorId: { not: userId },
+      OR: memberships.map((m) => ({
+        channelId: m.channelId,
+        createdAt: { gt: m.lastReadAt },
+      })),
+    },
+  });
+
+  return capUnread(raw);
+}
+
+/**
  * The channel rail: every channel the caller can see, newest conversation
  * first, each with its unread badge.
  *
@@ -656,6 +719,67 @@ export async function getMessagesPage(channelId: string, cursor?: string): Promi
     messages: page.reverse().map((row) => toMessageClient(row, roster, userId, role)),
     nextCursor,
   };
+}
+
+/**
+ * Where does one message live? (chat-010)
+ *
+ * `null` when the id names nothing this reader may reach — a message from
+ * another workspace, from a channel they cannot see, or one that never existed.
+ * Absence, not a throw, for the reason rule 3 of this file's header gives about
+ * `getChannelBySlug`: a distinguishable error on a real id would confirm that a
+ * private conversation exists.
+ *
+ * WHY A QUERY OF ITS OWN RATHER THAN A WIDER `getMessagesPage`. The caller has an
+ * id and needs one fact about it: is this a root the timeline could show, or a
+ * reply that only the thread panel can? `getMessagesPage` filters `parentId:
+ * null`, so it can never answer the second half, and an "anchored page" mode
+ * would have to count every newer row in the channel to decide how far to reach
+ * back — an unbounded `take` on a table that grows for years. Two indexed reads
+ * and a bounded walk backwards is the cheaper shape, and it degrades into a
+ * truthful "further back than this loads" instead of a slow query.
+ *
+ * `rootId` collapses the one-level thread rule the write path enforces
+ * (`sendMessageAction` attaches a reply-to-a-reply to the same root), so a caller
+ * never has to walk parents.
+ */
+export interface MessageLocation {
+  id: string;
+  /** The thread root when this message is a REPLY, else null. */
+  rootId: string | null;
+}
+
+export async function getMessageLocation(
+  channelId: string,
+  messageId: string
+): Promise<MessageLocation | null> {
+  const { userId, companyId } = await requireScopedSession();
+
+  // The channel is re-resolved through the SAME visibility rule as every other
+  // read here rather than trusted from the caller. `locateMessageAction` has
+  // already resolved the slug, but this function is exported and the next caller
+  // may not have — and "which channel is this message in" is precisely the fact
+  // a private channel's membership is supposed to hide.
+  const channel = await db.channel.findFirst({
+    where: { id: channelId, ...visibleChannelWhere(userId, companyId) },
+    select: { id: true },
+  });
+  if (!channel) return null;
+
+  const message = await db.message.findFirst({
+    // `companyId` as well as `channelId`: the id arrives from the client, and
+    // this is the re-verification step. Tenancy is not implied by the channel
+    // scope — a forged id from another workspace would simply not match.
+    where: { id: messageId, channelId, companyId },
+    select: { id: true, parentId: true },
+  });
+  if (!message) return null;
+
+  // Soft-deleted messages are deliberately still locatable. `getMessagesPage`
+  // returns tombstones so the timeline does not resequence around a hole, and a
+  // notification that outlives its message should land on "This message was
+  // deleted." rather than on a "couldn't find it" that reads like a bug.
+  return { id: message.id, rootId: message.parentId };
 }
 
 /**

@@ -2,7 +2,12 @@
  * GET /api/export — data portability (GDPR / CCPA), in two scopes.
  *
  *   ?scope=workspace  (the default, and what a bare /api/export means)
- *       Every row this WORKSPACE owns, for a caller who may see finances.
+ *       The workspace's own records, for a caller who may see finances. NOT
+ *       "every row this workspace owns" — that is what this line used to say,
+ *       and rep-005 was filed against it, correctly. `EXPORT_EXCLUDED` below is
+ *       the list of what is left out and why, `meta.notIncluded` puts that list
+ *       in the file, and the /settings card that offers the download says so
+ *       too (lib/i18n/strings.ts `exportWorkspaceDesc`).
  *   ?scope=me
  *       Every row about the CALLER, for any signed-in role.
  *
@@ -50,6 +55,9 @@
  *      that a fourth role would slide past.
  *   3. Every query is scoped to `session.companyId`, so no forged request
  *      reaches another workspace's rows.
+ *   4. A rate limiter, per caller and per scope, consumed AFTER the role gate and
+ *      BEFORE the first read (rep-010). See ./rate-limit.ts for the numbers and
+ *      the argument; the ordering is the load-bearing part.
  *
  * PII / secret posture:
  *   - `passwordHash` is stripped from every user row in both scopes. A bcrypt
@@ -102,6 +110,10 @@ import { db } from "@/lib/db";
 import { canSeeFinances } from "@/lib/auth/role-gates";
 import { requireScopedSession, type ScopedSession } from "@/lib/queries/session";
 import { captureServerError } from "@/lib/sentry-server";
+// rep-010. Declared in a sibling module, not here: Next validates a Route
+// Handler's export surface and an extra named export is a build error. See that
+// file for the numbers and why the bucket is per (scope, caller).
+import { exportLimitKey, exportLimiter } from "./rate-limit";
 
 export const runtime = "nodejs"; // Prisma needs Node
 export const dynamic = "force-dynamic"; // never cache a per-workspace export
@@ -166,9 +178,13 @@ const EXPORT_EXCLUDED = new Map<string, string>([
     "Message",
     "Same reason as Channel: a message you authored in a private channel is " +
       "still a row in that channel's history, and this route is not the audited " +
-      "path lib/auth/channel-permissions.ts requires. It is also why Notification " +
-      "is read per-caller here — chat fan-out copies 140 characters of the body " +
-      "onto DM and mention pings.",
+      "path lib/auth/channel-permissions.ts requires. Notification is ALSO read " +
+      "per-caller here, though the reason narrowed: chat used to copy 140 " +
+      "characters of a message body onto DM and mention pings, and no longer " +
+      "writes in-app rows at all (skipInApp, lib/notify/fan-out.ts). Legacy rows " +
+      "from before that change still hold those excerpts, and task and " +
+      "transaction comment mentions still quote bodies today, so per-caller " +
+      "scoping stays load-bearing either way.",
   ],
   [
     "BillingEvent",
@@ -266,6 +282,41 @@ export async function GET(req?: Request): Promise<Response> {
           "Use /api/export?scope=me for a copy of your own data.",
       },
       { status: 403 }
+    );
+  }
+
+  // ── THE LIMITER (rep-010) ──────────────────────────────────────────────────
+  //
+  // AFTER the 400 and the 403, BEFORE any read. Both of those refusals do zero
+  // database work, so they cost nothing to serve, and charging them would only
+  // let a member with no export rights burn a budget they cannot spend.
+  // Everything past this line issues twelve unbounded `findMany` calls in one
+  // `Promise.all` and serializes the result into a single document, which is why
+  // the check has to precede it: a 429 returned after the reads have run prices
+  // nothing at all.
+  //
+  // This endpoint had no limiter of any kind while every other consequential
+  // operation in lib/actions/ had one, and while FaultsAudit.md described it as
+  // "admin-only, rate-limited". It is the heaviest query in the app and the one
+  // that returns every transaction, every email address, every comment and every
+  // time entry, so unlimited repeats are both an exfiltration channel and the
+  // cheapest self-inflicted denial of service available to a signed-in session.
+  const verdict = exportLimiter.consume(exportLimitKey(scope, session.userId));
+  if (!verdict.allowed) {
+    return NextResponse.json(
+      {
+        error:
+          verdict.error ?? "That's a lot of exports in a short window. Try again in a few minutes.",
+      },
+      {
+        status: 429,
+        headers: {
+          // Seconds, per RFC 9110. /settings surfaces any non-200 as a toast;
+          // this is for anything scripted against the endpoint.
+          "Retry-After": String(Math.max(1, Math.ceil(verdict.retryAfterMs / 1000))),
+          "Cache-Control": "no-store",
+        },
+      }
     );
   }
 

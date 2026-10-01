@@ -41,6 +41,20 @@ import { mkdirSync } from "node:fs";
 import puppeteer from "puppeteer-core";
 import { localDb } from "./_local-db.mjs";
 
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.3";
+
 const BASE = process.env.BASE ?? "http://localhost:3000";
 const CHROME =
   process.env.PUPPETEER_EXECUTABLE_PATH || "C:/Program Files/Google/Chrome/Application/chrome.exe";
@@ -259,6 +273,7 @@ async function main() {
     // ── the admin creates a channel from the rail ───────────────────────
     const adminCtx = await browser.createBrowserContext();
     const admin = await adminCtx.newPage();
+    await admin.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
     wire(admin);
     await signIn(admin, SENDER_EMAIL, PASSWORD);
 
@@ -443,6 +458,7 @@ async function main() {
     if (dmSlug) {
       const outsiderCtx = await browser.createBrowserContext();
       const stranger = await outsiderCtx.newPage();
+      await stranger.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
       wire(stranger);
       await signIn(stranger, OUTSIDER_EMAIL, PASSWORD);
 
@@ -498,6 +514,7 @@ async function main() {
       } else {
         const recipientCtx = await browser.createBrowserContext();
         const reader = await recipientCtx.newPage();
+        await reader.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
         wire(reader);
         await signIn(reader, RECIPIENT_EMAIL, PASSWORD);
         await reader.goto(`${BASE}/chat/${anchor.slug}`, {
@@ -537,38 +554,60 @@ async function main() {
         await recipientCtx.close();
       }
 
-      // The durable half of the same guarantee. The body carries NO @mention,
-      // so the mention fan-out cannot have written this row — only the
-      // `event: "dm"` branch in sendMessageAction can. Without that branch a
-      // direct message is SILENT, which is perverse: it is the one place a
-      // message is unambiguously addressed at a named human, and nobody types
-      // "@fatima" in a room that has exactly one other person in it.
-      const pings = await db.notification.findMany({
+      // The durable half of the same guarantee, REWRITTEN. This block used to
+      // assert that a Notification row existed for the DM, on the reasoning that
+      // without the `event: "dm"` branch a direct message is SILENT. That
+      // reasoning still holds; what changed is where the signal lives. Chat now
+      // passes `skipInApp` (lib/notify/fan-out.ts), so no in-app row is written
+      // for a DM at all — the durable unread signal is the read watermark, which
+      // is what the sidebar's Chat badge counts. Asserting the old row would fail
+      // on correct code, which is the worst kind of check.
+      //
+      // So it asserts BOTH directions, because either one alone can pass while
+      // the product is broken:
+      //   1. no Notification row  — the thing the change exists to stop. A row
+      //      here means chat is back in the notifications list.
+      //   2. an unread message the recipient has not seen — the thing that
+      //      replaced it. Zero here means the DM is silent after all, which is
+      //      the original perverse outcome in a new costume.
+      const strayPings = await db.notification.findMany({
         where: { userId: recipient.id, message: dmBody },
-        select: { title: true, link: true, category: true },
+        select: { title: true, category: true },
       });
-      const expectedTitle = `${sender.name} sent you a message`;
-      if (pings.length === 0) {
-        fail("dm fan-out", `no Notification for ${recipient.name} quoting "${dmBody}"`);
-      } else {
-        const wrong = pings.filter(
-          (n) =>
-            n.category !== "team" ||
-            !n.link ||
-            !n.link.includes(dmSlug) ||
-            n.title !== expectedTitle
+      if (strayPings.length > 0) {
+        fail(
+          "dm writes no notification row",
+          `a DM put ${strayPings.length} row(s) in the notifications list: ${JSON.stringify(strayPings)}`
         );
-        if (wrong.length > 0) {
+      } else {
+        ok("the dm wrote no notification row — chat stays out of the bell");
+      }
+
+      // The replacement signal, counted exactly as lib/queries/chat.ts does:
+      // messages newer than MY watermark, in a channel I am a member of, that I
+      // did not write.
+      const membership = await db.channelMember.findFirst({
+        where: { userId: recipient.id, channel: { slug: dmSlug } },
+        select: { lastReadAt: true, channelId: true },
+      });
+      if (!membership) {
+        fail("dm unread signal", `${recipient.name} has no membership row for ${dmSlug}`);
+      } else {
+        const unread = await db.message.count({
+          where: {
+            channelId: membership.channelId,
+            deletedAt: null,
+            authorId: { not: recipient.id },
+            createdAt: { gt: membership.lastReadAt },
+          },
+        });
+        if (unread < 1) {
           fail(
-            "dm notification shape",
-            `expected "${expectedTitle}", got ${JSON.stringify(pings)}`
+            "dm unread signal",
+            `the DM left ${recipient.name} nothing to see: 0 unread in ${dmSlug}, so the Chat badge stays dark and no notification was written either`
           );
-        } else if (pings.length > 1) {
-          // One message must ping once. More than that means both fan-outs
-          // fired for the same body and the recipient gets doubles forever.
-          fail("dm fan-out duplicated", `${pings.length} rows for one message`);
         } else {
-          ok("the dm fan-out pinged the recipient, with no @mention in the body");
+          ok(`the dm is unread for the recipient (${unread}), which is what the Chat badge counts`);
         }
       }
     }

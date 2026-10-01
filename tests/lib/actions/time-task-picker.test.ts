@@ -169,3 +169,58 @@ describe("getOpenEntryAction — the clock-in task picker", () => {
     expect(read.args.take as number).toBeGreaterThan(0);
   });
 });
+
+/**
+ * time-013 — the picker's ceiling was silent.
+ *
+ * `take: 100` with `orderBy: { createdAt: "desc" }` and a plain native `<select>`:
+ * no search field, no count, no hint. So in a workspace with more than a hundred
+ * open tasks the 101st-oldest was simply untaggable, and long-lived backlog items
+ * are exactly the ones that fall off the bottom of a createdAt-desc list — the
+ * tasks people track the most time against became the ones they could not tag,
+ * and their hours landed as untagged work.
+ *
+ * A ceiling is legitimate; an INVISIBLE ceiling is the bug. These cases assert
+ * the action reports the truncation, using the repo's own has-more probe pattern
+ * (`take + 1`, as documented on `getTaskPage`) rather than a second `count()` —
+ * the widget mounts on every route, so an extra aggregate per page view is not
+ * free.
+ *
+ * Making the 101st task REACHABLE needs a searchable combobox backed by a
+ * `title contains` query. That is a feature, not a fix, and it is reported rather
+ * than built.
+ */
+describe("getOpenEntryAction — the picker says when it is showing a subset", () => {
+  function openTasks(n: number) {
+    return Array.from({ length: n }, (_, i) => ({ id: `t_${i}`, title: `Task ${i}` }));
+  }
+
+  it("reports truncation and drops the probe row when the workspace is over the cap", async () => {
+    signedInAs("admin");
+    // One more than whatever the action asked for: the probe hits.
+    H.results.set("task.findMany", openTasks(1_000));
+
+    const result = await getOpenEntryAction();
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+
+    const read = H.calls.find((c) => c.path === "task.findMany")!;
+    const take = read.args.take as number;
+    expect(
+      result.data.tasks.length,
+      "the has-more probe row must not be offered as an option"
+    ).toBe(take - 1);
+    expect(result.data.tasksTruncated, "a ceiling nobody is told about is the finding").toBe(true);
+  });
+
+  it("reports no truncation for a workspace inside the cap", async () => {
+    signedInAs("admin");
+    H.results.set("task.findMany", openTasks(7));
+
+    const result = await getOpenEntryAction();
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.tasks).toHaveLength(7);
+    expect(result.data.tasksTruncated).toBe(false);
+  });
+});

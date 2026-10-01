@@ -33,7 +33,7 @@
 // order: the suite catches a wrong RULE, this script catches a wrong APP.
 
 import puppeteer from "puppeteer-core";
-import { execSync } from "node:child_process";
+import { psqlExec as psql, psqlScalar } from "./_local-psql.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +44,20 @@ import {
   classifyProbe,
   scoreInvalidation,
 } from "./_session-invalidation-contract.mjs";
+
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.20";
 
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const BASE = process.env.BASE ?? "http://localhost:3000";
@@ -65,14 +79,12 @@ if (!sentinels.ok) {
   process.exit(2);
 }
 
-// Run SQL against the local docker Postgres via stdin (no shell-quoting of the
-// "User" identifier — that's what tripped PowerShell earlier).
-function psql(sql) {
-  execSync("docker exec -i founderflow-postgres psql -U founderflow -d founderflow", {
-    input: sql,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-}
+// Raw SQL against the LOCAL docker Postgres, through the one module allowed to
+// shell out to psql. It pins the container as a literal and refuses the run when
+// .env.local names a non-loopback host, so this path now carries the same host
+// discipline `localDb()` gives the Prisma path — audit harness-004, where six
+// smoke scripts (this one among them) reached the database with no host check at
+// all. SQL goes in on stdin, so `"User"` needs no shell quoting.
 
 async function login(page, email, pw) {
   await page.goto(`${BASE}/login`, { waitUntil: "networkidle2" });
@@ -126,9 +138,64 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox", "--no-proxy-server", "--proxy-bypass-list=*", "--disable-gpu"],
 });
 const page = await browser.newPage();
+await page.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
 page.on("pageerror", (e) => console.error("PAGEERROR:", e.message));
 
 let pass = true;
+
+/**
+ * RESTORE WHAT WAS READ, NOT WHAT WAS ASSUMED (audit harness-003).
+ *
+ * This script used to finish with `SET "sessionVersion" = 0` and
+ * `SET "deletedAt" = NULL` -- literals, not the values it found. Per
+ * lib/auth/session-version.ts, `sessionTokenStillValid` returns true when the
+ * token's version matches the row's, and a legacy token carrying no version
+ * field defaults to 0. So writing 0 over a version a password reset had
+ * legitimately bumped to 3 would RE-VALIDATE every old token for that account,
+ * resurrecting exactly the sessions the reset revoked. Restoring a tombstone to
+ * NULL has the same shape: it un-deletes an account somebody deactivated on
+ * purpose.
+ *
+ * psql -tA prints SQL NULL as the empty string, so an empty read restores NULL.
+ */
+function sqlLiteralOrNull(value) {
+  return value === "" ? "NULL" : "'" + value.replace(/'/g, "''") + "'";
+}
+
+/** The two values this run is about to overwrite, read before it does. */
+const SEED = {
+  fatimaDeletedAt: psqlScalar(
+    `SELECT COALESCE("deletedAt"::text, '') FROM "User" WHERE email = 'fatima@nimbus.app';`
+  ),
+  sarahSessionVersion: psqlScalar(
+    `SELECT "sessionVersion" FROM "User" WHERE email = 'sarah@nimbus.app';`
+  ),
+};
+console.log(
+  `baseline: fatima deletedAt = ${JSON.stringify(SEED.fatimaDeletedAt)}, ` +
+    `sarah sessionVersion = ${JSON.stringify(SEED.sarahSessionVersion)}`
+);
+
+/** Put both rows back exactly as they were found. Idempotent. */
+function restoreSeed() {
+  psql(
+    `UPDATE "User" SET "deletedAt" = ${sqlLiteralOrNull(SEED.fatimaDeletedAt)} ` +
+      `WHERE email = 'fatima@nimbus.app';`
+  );
+  // A bare integer, and refused if the baseline read did not look like one: a
+  // blank or malformed read must not turn into a silent
+  // `SET "sessionVersion" = 0`, which is the bug this block replaces.
+  if (!/^[0-9]+$/.test(SEED.sarahSessionVersion)) {
+    throw new Error(
+      `refusing to restore sessionVersion from an unreadable baseline ` +
+        `(${JSON.stringify(SEED.sarahSessionVersion)}) -- restore it by hand`
+    );
+  }
+  psql(
+    `UPDATE "User" SET "sessionVersion" = ${SEED.sarahSessionVersion} ` +
+      `WHERE email = 'sarah@nimbus.app';`
+  );
+}
 
 try {
   console.log(
@@ -147,7 +214,10 @@ try {
   console.log("  after  delete:", JSON.stringify(aAfter));
   await page.screenshot({ path: `${OUT}/session-inval-A.png` });
 
-  psql(`UPDATE "User" SET "deletedAt" = NULL WHERE email = 'fatima@nimbus.app';`);
+  psql(
+    `UPDATE "User" SET "deletedAt" = ${sqlLiteralOrNull(SEED.fatimaDeletedAt)} ` +
+      `WHERE email = 'fatima@nimbus.app';`
+  );
   pass = report("deletedAt", aBefore, aAfter) && pass;
 
   // ── Part B: sessionVersion bump ─────────────────────────────────────────
@@ -161,15 +231,21 @@ try {
   console.log("  after  bump:", JSON.stringify(bAfter));
   await page.screenshot({ path: `${OUT}/session-inval-B.png` });
 
-  psql(`UPDATE "User" SET "sessionVersion" = 0 WHERE email = 'sarah@nimbus.app';`);
+  psql(
+    `UPDATE "User" SET "sessionVersion" = ${SEED.sarahSessionVersion} ` +
+      `WHERE email = 'sarah@nimbus.app';`
+  );
   pass = report("sessionVersion", bBefore, bAfter) && pass;
 } finally {
   // Belt-and-braces: make sure the seed is restored even if something threw.
+  // A failure to restore is reported rather than swallowed: a run that left a
+  // teammate tombstoned, or a session version rewritten, must not exit 0.
   try {
-    psql(
-      `UPDATE "User" SET "deletedAt" = NULL WHERE email = 'fatima@nimbus.app'; UPDATE "User" SET "sessionVersion" = 0 WHERE email = 'sarah@nimbus.app';`
-    );
-  } catch {}
+    restoreSeed();
+  } catch (e) {
+    console.error(`  FAIL  could not restore the seed rows -- ${e.message}`);
+    pass = false;
+  }
   await browser.close();
 }
 

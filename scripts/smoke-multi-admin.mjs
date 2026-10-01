@@ -8,19 +8,33 @@
 // Reverts the role afterwards so the seed stays clean.
 
 import puppeteer from "puppeteer-core";
-import { execSync } from "node:child_process";
+import { psqlScalar } from "./_local-psql.mjs";
+
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.14";
 
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const BASE = process.env.BASE ?? "http://localhost:3000";
 const OUT = "C:/Users/USER/AppData/Local/Temp/ff-screenshots";
 const TARGET = "fatima@nimbus.app";
 
-function psqlScalar(sql) {
-  return execSync("docker exec -i founderflow-postgres psql -U founderflow -d founderflow -tA", {
-    input: sql,
-    encoding: "utf8",
-  }).trim();
-}
+// Raw SQL against the LOCAL docker Postgres, through the one module allowed to
+// shell out to psql. It pins the container as a literal and refuses the run when
+// .env.local names a non-loopback host, so this path now carries the same host
+// discipline `localDb()` gives the Prisma path — audit harness-004, where six
+// smoke scripts (this one among them) reached the database with no host check at
+// all. SQL goes in on stdin, so `"User"` needs no shell quoting.
 
 async function login(page, email, pw) {
   await page.goto(`${BASE}/login`, { waitUntil: "networkidle2" });
@@ -37,13 +51,25 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox", "--no-proxy-server", "--proxy-bypass-list=*", "--disable-gpu"],
 });
 const page = await browser.newPage();
+await page.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
 page.on("pageerror", (e) => console.error("PAGEERROR:", e.message));
+
+/**
+ * Baseline, read OUTSIDE the try so `finally` can restore what was actually
+ * there (audit harness-003).
+ *
+ * The restore used to be `SET role = 'member'` -- a literal, not the value this
+ * script read. Against any workspace where the target is a cofounder that
+ * silently demotes them, and it did so even when the run had already FAILED on
+ * `startRole === "member"`: a failing run corrupted the seed it was complaining
+ * about. `startRole` was declared inside the try, so `finally` could not see it
+ * even though the script had it.
+ */
+const startRole = psqlScalar(`SELECT role FROM "User" WHERE email = '${TARGET}';`);
+console.log(`baseline: ${TARGET} role = ${startRole}`);
 
 let pass = true;
 try {
-  // Baseline: target starts as a member.
-  const startRole = psqlScalar(`SELECT role FROM "User" WHERE email = '${TARGET}';`);
-  console.log(`baseline: ${TARGET} role = ${startRole}`);
 
   // ── Part 1: promote via the /team UI ────────────────────────────────────
   console.log("\n== Part 1: promote member -> admin via /team ==");
@@ -103,6 +129,7 @@ try {
   console.log("\n== Part 2: promoted user can reach a finance page ==");
   const ctx = await browser.createBrowserContext();
   const page2 = await ctx.newPage();
+  await page2.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
   page2.on("pageerror", (e) => console.error("PAGEERROR:", e.message));
   await login(page2, TARGET, "demo123");
   await page2.goto(`${BASE}/expenses`, { waitUntil: "networkidle2" });
@@ -116,11 +143,24 @@ try {
   console.log(`  => ${p2 ? "PASS" : "FAIL"} (admin not bounced from finance)`);
   pass = pass && p2;
 } finally {
-  // Restore the seed regardless of outcome.
+  // Restore the role this run READ, regardless of outcome. A restore that
+  // cannot be done is reported rather than swallowed: leaving a teammate with
+  // the wrong role must not exit 0.
   try {
-    psqlScalar(`UPDATE "User" SET role = 'member' WHERE email = '${TARGET}';`);
-    console.log(`\n(restored ${TARGET} to member)`);
-  } catch {}
+    if (/^[a-z_]+$/.test(startRole)) {
+      psqlScalar(`UPDATE "User" SET role = '${startRole}' WHERE email = '${TARGET}';`);
+      console.log(`\n(restored ${TARGET} to ${startRole})`);
+    } else {
+      console.error(
+        `  FAIL  baseline role for ${TARGET} was unreadable ` +
+          `(${JSON.stringify(startRole)}) -- restore it by hand`
+      );
+      pass = false;
+    }
+  } catch (e) {
+    console.error(`  FAIL  could not restore ${TARGET}'s role -- ${e.message}`);
+    pass = false;
+  }
   await browser.close();
 }
 

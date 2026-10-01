@@ -68,6 +68,7 @@
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
+import { codeOnly, stripComments } from "../harness/source-scan";
 
 const ROOT = process.cwd();
 
@@ -92,101 +93,17 @@ function isActionModulePath(rel: string): boolean {
 // ---------------------------------------------------------------------------
 // source scanning
 //
-// neutralize/sourceFiles/rel are duplicated from the two sibling guards rather
-// than shared. Importing from another `*.test.ts` file re-registers its
-// describe blocks inside this one: the suite would run action-auth-gates twice,
-// and a failure there would be reported against this file. A copy is the lesser
-// evil, and the fixtures at the bottom are what keep this copy honest.
+// `codeOnly` and `stripComments` come from tests/lib/harness/source-scan.ts,
+// which is a plain module rather than a test file — importing a helper out of a
+// `*.test.ts` would re-register that file's describe blocks inside this one, so
+// the suite would run action-auth-gates twice and report its failures here. That
+// constraint is why three copies of the scanner existed; it was never a reason
+// to copy it, only a reason not to import it from a test. The copies had audit
+// A49 in them: a `"` inside a regex literal read as the start of a string and
+// blanked the rest of the file, so a call sitting below a shape-check regex was
+// invisible and this guard reported the action it called as unreachable. See
+// `counts a caller in a file that also contains a regex literal with a quote`.
 // ---------------------------------------------------------------------------
-
-/**
- * Blank out comments and, when `keepStrings` is false, the CONTENTS of string
- * literals — preserving length so offsets into the result still line up.
- *
- * Both halves are load-bearing here: traps 1 and 2 above are entirely about
- * text that looks like a call and is not.
- */
-function neutralize(src: string, keepStrings: boolean): string {
-  const out = src.split("");
-  const n = src.length;
-  const BACKSLASH = String.fromCharCode(92);
-  let i = 0;
-  let state: "code" | "line" | "block" | "string" = "code";
-  let quote = "";
-
-  while (i < n) {
-    const c = src[i];
-    const c2 = src[i + 1];
-
-    if (state === "code") {
-      if (c === "/" && c2 === "/") {
-        out[i] = " ";
-        out[i + 1] = " ";
-        i += 2;
-        state = "line";
-        continue;
-      }
-      if (c === "/" && c2 === "*") {
-        out[i] = " ";
-        out[i + 1] = " ";
-        i += 2;
-        state = "block";
-        continue;
-      }
-      if (c === '"' || c === "'" || c === "`") {
-        quote = c;
-        i += 1;
-        state = "string";
-        continue;
-      }
-      i += 1;
-      continue;
-    }
-
-    if (state === "line") {
-      if (c === "\n") {
-        state = "code";
-        i += 1;
-        continue;
-      }
-      out[i] = " ";
-      i += 1;
-      continue;
-    }
-
-    if (state === "block") {
-      if (c === "*" && c2 === "/") {
-        out[i] = " ";
-        out[i + 1] = " ";
-        i += 2;
-        state = "code";
-        continue;
-      }
-      if (c !== "\n") out[i] = " ";
-      i += 1;
-      continue;
-    }
-
-    // inside a string literal
-    if (c === BACKSLASH) {
-      if (!keepStrings) {
-        out[i] = " ";
-        if (i + 1 < n) out[i + 1] = " ";
-      }
-      i += 2;
-      continue;
-    }
-    if (c === quote) {
-      state = "code";
-      i += 1;
-      continue;
-    }
-    if (!keepStrings && c !== "\n") out[i] = " ";
-    i += 1;
-  }
-
-  return out.join("");
-}
 
 function sourceFiles(dir: string, found: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -231,11 +148,11 @@ function makeUniverse(sources: Record<string, string>): Universe {
   const universe: Universe = new Map();
   const entries = Object.entries(sources);
   for (const pair of entries) {
-    const code = neutralize(pair[1], false);
+    const code = codeOnly(pair[1]);
     universe.set(pair[0], {
       rel: pair[0],
       code,
-      text: neutralize(pair[1], true),
+      text: stripComments(pair[1]),
       body: withoutImports(code),
     });
   }
@@ -653,6 +570,30 @@ export function Caller() {
 `,
     });
     expect(unreachableEndpoints(universe)).toEqual(["lib/actions/fixture.ts:strandedAction"]);
+  });
+
+  it("counts a caller in a file that also contains a regex literal with a quote", () => {
+    // Audit A49, in the direction that costs an hour rather than a customer.
+    // app/verify-email-change/page.tsx briefly shape-checked an address with a
+    // character class containing a double quote; the scanner read that quote as
+    // the start of a string literal, blanked every character to the next quote
+    // — end of file, there being none — and this guard reported
+    // confirmEmailChangeAction as an endpoint with no caller while the call sat
+    // a few lines below the regex. Both fixture endpoints are called here, so
+    // the expected answer is the empty list and nothing has to be read into it.
+    const universe = universeWith({
+      "components/regex-caller.tsx": `import { strandedAction, wiredAction } from "@/lib/actions/fixture";
+const SAFE_LABEL = /[^<>"@]+/;
+export function RegexCaller({ label }: { label: string }) {
+  return SAFE_LABEL.test(label) ? (
+    <button onClick={() => strandedAction()}>Go</button>
+  ) : (
+    <form action={wiredAction} />
+  );
+}
+`,
+    });
+    expect(unreachableEndpoints(universe)).toEqual([]);
   });
 
   it("does not count the action module's own body as a caller", () => {

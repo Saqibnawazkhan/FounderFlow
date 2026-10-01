@@ -45,8 +45,22 @@
  */
 
 import { mkdirSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { psqlScalar as psql } from "./_local-psql.mjs";
 import puppeteer from "puppeteer-core";
+
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.4";
 
 const BASE = process.env.BASE ?? "http://localhost:3000";
 const CHROME =
@@ -90,19 +104,12 @@ function isFalse(label, actual) {
   else fail(label, `was ${JSON.stringify(actual)}`);
 }
 
-/**
- * Raw SQL against the LOCAL docker Postgres only. Deliberately NOT a Prisma
- * client: a bare `new PrismaClient()` resolves the root `.env`, and everything
- * under scripts/ is held to `localDb()` for exactly that reason (CLAUDE.md,
- * Tier 2). Every statement here is either a read or a delete of a row this run
- * created.
- */
-function psql(sql) {
-  return execSync("docker exec -i founderflow-postgres psql -U founderflow -d founderflow -tA", {
-    input: sql,
-    encoding: "utf8",
-  }).trim();
-}
+// Raw SQL against the LOCAL docker Postgres, through the one module allowed to
+// shell out to psql. It pins the container as a literal and refuses the run when
+// .env.local names a non-loopback host, so this path now carries the same host
+// discipline `localDb()` gives the Prisma path — audit harness-004, where six
+// smoke scripts (this one among them) reached the database with no host check at
+// all. SQL goes in on stdin, so `"User"` needs no shell quoting.
 
 /** Only this run's channels, children before parents. Idempotent. */
 function cleanup() {
@@ -229,6 +236,7 @@ try {
   console.log(`\n[1] ${OWNER.email} creates a PRIVATE channel "${PRIVATE_NAME}"`);
   const ownerCtx = await browser.createBrowserContext();
   const owner = wire(await ownerCtx.newPage(), "owner");
+  await owner.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
   await signIn(owner, OWNER.email);
   await owner.goto(`${BASE}/chat`, { waitUntil: "networkidle0", timeout: 120000 });
   await owner.waitForSelector('nav[aria-label="Channels"]', { timeout: 60000 });
@@ -337,6 +345,7 @@ try {
   console.log(`\n[3] ${INVITEE.email} (plain member, just added) signs in`);
   const inviteeCtx = await browser.createBrowserContext();
   const invitee = wire(await inviteeCtx.newPage(), "invitee");
+  await invitee.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
   await signIn(invitee, INVITEE.email);
   await invitee.goto(`${BASE}/chat`, { waitUntil: "networkidle0", timeout: 120000 });
   await invitee.waitForSelector('nav[aria-label="Channels"]', { timeout: 60000 });
@@ -361,6 +370,7 @@ try {
   console.log(`\n[4] ${COFOUNDER.email} (cofounder, added as a plain channel member)`);
   const cofoCtx = await browser.createBrowserContext();
   const cofo = wire(await cofoCtx.newPage(), "cofounder");
+  await cofo.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
   await signIn(cofo, COFOUNDER.email);
   await cofo.goto(`${BASE}/chat/${privateSlug}`, { waitUntil: "networkidle0", timeout: 120000 });
   await new Promise((r) => setTimeout(r, 2500));
@@ -390,6 +400,7 @@ try {
   console.log(`\n[5] ${OUTSIDER.email} was never added. What can she see?`);
   const outCtx = await browser.createBrowserContext();
   const out = wire(await outCtx.newPage(), "outsider");
+  await out.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
   await signIn(out, OUTSIDER.email);
   await out.goto(`${BASE}/chat`, { waitUntil: "networkidle0", timeout: 120000 });
   await out.waitForSelector('nav[aria-label="Channels"]', { timeout: 60000 });

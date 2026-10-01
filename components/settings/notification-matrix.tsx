@@ -16,7 +16,13 @@ import { useState } from "react";
 import toast from "react-hot-toast";
 import { Bell, Mail, Smartphone } from "lucide-react";
 import { updateNotificationPreferenceAction } from "@/lib/actions/notification-preferences";
-import { EVENT_COPY, NOTIFY_CHANNELS, type NotifyChannel } from "@/lib/notify/events";
+import {
+  EVENT_CHANNEL_NOTE,
+  EVENT_COPY,
+  EVENT_DELIVERABLE_CHANNELS,
+  NOTIFY_CHANNELS,
+  type NotifyChannel,
+} from "@/lib/notify/events";
 import type { NotificationMatrixRow } from "@/lib/queries/notification-preferences";
 import { cn } from "@/lib/utils";
 
@@ -62,8 +68,11 @@ export function NotificationMatrix({ initial }: { initial: NotificationMatrixRow
   return (
     <div>
       <p className="mb-5 text-sm text-fg-muted">
-        Choose how each kind of update reaches you. In-app notifications are always kept as a record
-        on the notifications page; email and push are the interruptions.
+        Choose how each kind of update reaches you. In-app notifications are kept as a record on the
+        notifications page; email and push are the interruptions. Direct messages are the exception
+        — they show up on the Chat badge in the sidebar rather than in your notifications. Being
+        @mentioned still appears here, because a badge can tell you there are unread messages but
+        not that one of them named you.
       </p>
 
       <div className="scrollbar-thin overflow-x-auto">
@@ -107,6 +116,31 @@ export function NotificationMatrix({ initial }: { initial: NotificationMatrixRow
                 {NOTIFY_CHANNELS.map((channel) => {
                   const checked = row.channels[channel];
                   const key = `${row.event}:${channel}`;
+                  // A channel this event is never delivered on gets no switch.
+                  //
+                  // Indexed directly, with no "unknown event" fallback. An
+                  // earlier draft had one, defended by a comment claiming
+                  // `row.event` was "a string off the wire" — it is not.
+                  // `NotificationMatrixRow.event` is a `NotifyEvent`, and
+                  // `matrixFor` builds these rows by walking NOTIFY_EVENTS
+                  // rather than by trusting the stored rows, so every event
+                  // here is one this build declares. The fallback could not
+                  // fire, and the two lines above would have thrown on
+                  // EVENT_COPY first in any case.
+                  const deliverable = EVENT_DELIVERABLE_CHANNELS[row.event];
+                  if (deliverable.indexOf(channel) === -1) {
+                    return (
+                      <td key={channel} className="py-3.5 text-center">
+                        <span
+                          aria-label={`${CHANNEL_COPY[channel].label} is not available for ${EVENT_COPY[row.event].label}`}
+                          title={EVENT_CHANNEL_NOTE[row.event]}
+                          className="text-fg-muted"
+                        >
+                          —
+                        </span>
+                      </td>
+                    );
+                  }
                   return (
                     <td key={channel} className="py-3.5 text-center">
                       <input

@@ -80,6 +80,17 @@ type Props = {
   disabled?: boolean;
   /** Opens the thread panel. Absent inside the panel itself. */
   onOpenThread?: (message: MessageClient) => void;
+  /**
+   * Is this the message a `?message=<id>` deep link named (chat-010)?
+   *
+   * Drawn as a ring rather than as the mention wash: the two can be true at the
+   * same time — following a mention notification lands on a message that
+   * mentions you — and an outline plus a background is legible where two
+   * backgrounds are one muddled tint. It is also not colour alone: `aria-current`
+   * says the same thing to a screen reader, because "this is the one you were
+   * sent here for" is the entire content of the highlight.
+   */
+  anchored?: boolean;
 };
 
 export function MessageRow({
@@ -88,6 +99,7 @@ export function MessageRow({
   grouped,
   disabled = false,
   onOpenThread,
+  anchored = false,
 }: Props) {
   const confirmDelete = useConfirm();
   const [deleting, setDeleting] = useState(false);
@@ -185,11 +197,24 @@ export function MessageRow({
 
   return (
     <article
+      // A STABLE ANCHOR ON EVERY ROW (chat-010), not only on the highlighted one:
+      // <MessageList> finds the row to scroll to by this id, and it has to exist
+      // before anything decides to look for it. The id is safe to interpolate
+      // because `parseMessageAnchor` is the only thing that produces the value
+      // being looked up and it refuses anything outside [A-Za-z0-9_-].
+      id={`message-${message.id}`}
+      data-anchored={anchored ? "true" : undefined}
+      aria-current={anchored ? "true" : undefined}
       className={cn(
         "group flex gap-2.5 rounded-lg",
         // A message that names the reader gets a wash, same idea as the
         // comment thread's mention highlight — it must survive a fast scroll.
-        mentionsMe && !deleted && "-mx-2 bg-primary/[0.06] px-2 py-1"
+        mentionsMe && !deleted && "-mx-2 bg-primary/[0.06] px-2 py-1",
+        // The deep-link ring. Persistent rather than a fading flash: the reader
+        // arrived here from a notification and may take a moment to read the
+        // surrounding conversation, and a highlight that has already faded by
+        // then leaves them exactly where the missing feature did.
+        anchored && "-mx-2 px-2 py-1 ring-1 ring-primary/60"
       )}
     >
       {grouped ? (

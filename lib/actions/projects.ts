@@ -396,6 +396,48 @@ export async function duplicateProjectAction(
       };
     });
 
+    /**
+     * How many copied tasks landed on each COLLEAGUE. projects-005.
+     *
+     * The duplicator is left out, and that is the whole condition this needs:
+     * with `keepAssignees` off every row's `assignedTo` is already `userId`, and
+     * a carried-over assignee who failed the live-member check fell back to
+     * `userId` too (see `liveAssigneeNameById`). So an empty map means "nobody
+     * but the person who pressed the button is affected", which is the truthful
+     * answer in all three of those cases without a flag to keep in sync.
+     */
+    const copiedByAssignee = new Map<string, number>();
+    for (const row of taskRows) {
+      if (row.assignedTo === userId) continue;
+      copiedByAssignee.set(row.assignedTo, (copiedByAssignee.get(row.assignedTo) ?? 0) + 1);
+    }
+    /** `{ userId: count }`, for the activity row's metadata. */
+    const assignedCounts: Record<string, number> = {};
+    // `Array.from` rather than iterating the Map directly — tsconfig has no
+    // `target`, so it compiles as ES5 and a bare `for…of` over Map entries is
+    // TS2802. Same reason as `carriedAssigneeIds` above.
+    const assigneeCounts = Array.from(copiedByAssignee.entries());
+    for (const [assigneeId, count] of assigneeCounts) assignedCounts[assigneeId] = count;
+
+    /**
+     * Recipients grouped BY COUNT, so everyone who inherited the same number of
+     * tasks shares one `notifyUsers` call.
+     *
+     * The message differs per person only in that number, and `notifyUsers`
+     * takes one message for a set of recipients — so grouping is what keeps the
+     * number of round trips inside the transaction proportional to the number of
+     * DISTINCT counts rather than to the size of the company. It matters because
+     * every call does a preference read and a row write, and this all runs inside
+     * the same interactive transaction as a `createMany` of up to
+     * `MAX_DUPLICATED_TASKS` rows.
+     */
+    const recipientsByCount = new Map<number, string[]>();
+    for (const [assigneeId, count] of assigneeCounts) {
+      const bucket = recipientsByCount.get(count);
+      if (bucket) bucket.push(assigneeId);
+      else recipientsByCount.set(count, [assigneeId]);
+    }
+
     const created = await db.$transaction(async (tx) => {
       const project = await tx.project.create({
         data: {
@@ -440,6 +482,10 @@ export async function duplicateProjectAction(
           projectName: name,
           duplicatedFrom: source.id,
           taskCount: taskRows.length,
+          // projects-005, the audit-trail half: WHO was signed up for what, in
+          // one row rather than one per task. `taskCount` alone said a quarter's
+          // work had been created and nothing said onto whom.
+          assignedCounts,
         },
       });
 
@@ -457,6 +503,44 @@ export async function duplicateProjectAction(
         link: `/projects/${project.id}`,
         tx,
       });
+
+      /**
+       * projects-005 — tell each colleague who inherited copied tasks.
+       *
+       * `addTaskAction` fires `task_assigned` when ONE task lands on somebody
+       * else; this path could land up to `MAX_DUPLICATED_TASKS` of them and fired
+       * nothing, so the one deliberate bulk-assign route was the only one that
+       * told nobody. `DuplicateProjectSchema.keepAssignees` already argues its
+       * default-false case in terms of "fifteen new obligations on fourteen
+       * colleagues — each with a notification": this is what makes that true.
+       *
+       * ONE PER PERSON, CARRYING THE COUNT, rather than one per task. At the
+       * ceiling a per-task fan-out is 500 notification rows and 500 pushes from a
+       * single click, which is indistinguishable from a bug to the person
+       * receiving it.
+       *
+       * The same `task_assigned` event as the single-task path, deliberately, so
+       * the recipient's notification PREFERENCES, push routing and the sec-005
+       * finance filter in `notifyUsers` all apply — a bespoke event name would
+       * bypass all three. `exclude: userId` is belt-and-braces over
+       * `copiedByAssignee` already skipping the duplicator.
+       */
+      for (const [count, userIds] of Array.from(recipientsByCount.entries())) {
+        await notifyUsers({
+          event: "task_assigned",
+          userIds,
+          exclude: userId,
+          companyId,
+          projectId: project.id,
+          title: "Tasks copied to you",
+          message:
+            `${creator.name} copied ${count} ${count === 1 ? "task" : "tasks"} ` +
+            `from "${source.name}" onto you in "${name}".`,
+          category: "task",
+          link: `/projects/${project.id}`,
+          tx,
+        });
+      }
 
       return project;
     });
@@ -599,6 +683,14 @@ export async function updateProjectAction(input: unknown): Promise<ActionResult>
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
   }
+  // projects-012. Placed here, before the parse, so it matches
+  // createProjectAction / duplicateProjectAction / restoreProjectAction and so a
+  // flood of malformed payloads is bounded too. Without it this was the cheapest
+  // unbounded write in the app: every call logs an Activity row inside the
+  // transaction below, and any member who supervises one project can reach it
+  // from the header's own buttons.
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   const parsed = PartialUpdateProjectSchema.safeParse(input);
   if (!parsed.success) {
@@ -744,6 +836,36 @@ export async function updateProjectAction(input: unknown): Promise<ActionResult>
 
     revalidatePath("/projects");
     revalidatePath(`/projects/${projectId}`);
+    // projects-016. A project row is read by two surfaces outside /projects, and
+    // neither was being revalidated.
+    //
+    //   /tasks     — `taskScopeWhere` (lib/queries/tasks.ts) hides tasks whose
+    //                parent project is `completed` or `archived`, so a status
+    //                change is exactly what the board keys on. It also selects
+    //                the project's NAME and surfaces it as `projectName`, so a
+    //                rename is stale content there in the same way.
+    //   /dashboard — NOT because it reads project data; it reads none. It has no
+    //                project query and its client renders no project field, which an
+    //                earlier version of this comment got wrong in both this action
+    //                and the delete below. The real path is `getTasks()` and
+    //                `getTaskStatusCounts()`, which go through `taskScopeWhere` and
+    //                therefore change when a project is archived or renamed. The
+    //                revalidation is right; the reason given for it was not.
+    //
+    // UNCONDITIONAL rather than "only when status changed", deliberately: a
+    // rename matters to /tasks too, so the condition would have to be "status or
+    // name", and a condition that has to enumerate the fields that matter is a
+    // condition that goes stale the next time a column is added. Invalidating a
+    // cache entry that did not need it costs one re-render; the reverse cost is a
+    // user archiving a project twice because the first one looked like it failed.
+    // AND THE FIVE SIBLINGS NOW REALLY DO AGREE. An earlier version of this
+    // sentence claimed they already did on the strength of `createProjectAction`
+    // and `duplicateProjectAction` alone — `restoreProjectAction` and
+    // `changeSupervisorAction` revalidated neither path. Restore is where the
+    // argument bites hardest: un-tombstoning the row puts its tasks back within
+    // `taskScopeWhere`'s reach, so /tasks was missing work that had just returned.
+    revalidatePath("/tasks");
+    revalidatePath("/dashboard");
     return { success: true, data: undefined };
   } catch (e) {
     // A lost-update refusal is an ordinary, expected outcome of two people
@@ -767,6 +889,11 @@ export async function changeSupervisorAction(input: unknown): Promise<ActionResu
   if (!canReassignSupervisor(session.user.role as Role)) {
     return { success: false, error: "Only founders can reassign a supervisor" };
   }
+  // projects-012 — the same write policy as the other four project actions. A
+  // reassignment also fires a notification, so an ungated loop here is a way to
+  // flood one colleague's bell as well as the Activity table.
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   const parsed = ChangeSupervisorSchema.safeParse(input);
   if (!parsed.success) {
@@ -833,6 +960,12 @@ export async function changeSupervisorAction(input: unknown): Promise<ActionResu
 
     revalidatePath("/projects");
     revalidatePath(`/projects/${projectId}`);
+    // A supervisor change moves who can SEE the project's whole board
+    // (`canManageProject` is what `visibleProjectTasks` and the task counts filter
+    // on since projects-017), so both the old and the new supervisor have a stale
+    // /tasks and stale dashboard counts until something else invalidates them.
+    revalidatePath("/tasks");
+    revalidatePath("/dashboard");
     return { success: true, data: undefined };
   } catch (e) {
     captureServerError(e, { action: "changeSupervisorAction" });
@@ -936,6 +1069,13 @@ export async function restoreProjectAction(projectId: string): Promise<ActionRes
 
     revalidatePath("/projects");
     revalidatePath("/activities");
+    // Same two as `updateProjectAction`, and for the sharper reason: restoring
+    // un-tombstones the project, so every task under it re-enters
+    // `taskScopeWhere`'s results. Without these, /tasks and the dashboard counts
+    // kept omitting work that had just come back — the mirror image of the archive
+    // case, and the one a reader notices least because nothing looks broken.
+    revalidatePath("/tasks");
+    revalidatePath("/dashboard");
     return { success: true, data: undefined };
   } catch (e) {
     if (e instanceof AlreadyRestoredError) {
@@ -952,6 +1092,9 @@ export async function deleteProjectAction(projectId: string): Promise<ActionResu
     return { success: false, error: "Not authenticated" };
   }
   if (!projectId) return { success: false, error: "Missing project id" };
+  // projects-012 — same gate as restoreProjectAction, which is its exact inverse.
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   try {
     const project = await db.project.findFirst({
@@ -982,6 +1125,15 @@ export async function deleteProjectAction(projectId: string): Promise<ActionResu
     // deletedAt:null read filters hide it immediately.
     await db.project.update({ where: { id: projectId }, data: { deletedAt: new Date() } });
     revalidatePath("/projects");
+    // projects-016, the same two surfaces as updateProjectAction. A project is
+    // only deletable when it has no LIVE tasks or budgets, so /tasks has nothing
+    // of this project's left to drop — and the dashboard does NOT read project
+    // counts, which this comment used to claim and which is simply not true of
+    // app/(app)/dashboard/page.tsx. What justifies both paths is the same thing as
+    // in updateProjectAction: `getTasks` joins Project on every row, so an entry
+    // cached against a row that is now tombstoned is stale either way.
+    revalidatePath("/tasks");
+    revalidatePath("/dashboard");
     return { success: true, data: undefined };
   } catch (e) {
     captureServerError(e, { action: "deleteProjectAction" });

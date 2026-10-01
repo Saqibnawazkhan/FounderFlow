@@ -33,7 +33,7 @@
 
 import { ArrowLeft, Hash, Lock } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
-import { isDmKind } from "@/lib/chat/dm";
+import { isDmKind, isPrivateKind } from "@/lib/chat/dm";
 import type { ChannelDetail } from "@/lib/queries/chat";
 
 type Props = {
@@ -44,7 +44,11 @@ type Props = {
 
 export function ChannelHeader({ channel, onBack }: Props) {
   const dm = isDmKind(String(channel.kind));
-  const isPrivate = String(channel.kind).toLowerCase().includes("private");
+  // `isPrivateKind` is IMPORTED, not re-spelled inline. This line used to be a
+  // third private copy of the same substring test, beside the rail's copy and
+  // the one in lib/chat/dm.ts, which is how the tab and the composer came to
+  // call a private channel "#pvt-hiring" while this header drew a Lock.
+  const isPrivate = isPrivateKind(String(channel.kind));
   const Icon = isPrivate ? Lock : Hash;
   // `channel.name` is ALREADY the viewer-relative counterpart name for a DM —
   // lib/queries/chat.ts swaps it in before the row reaches the client, because

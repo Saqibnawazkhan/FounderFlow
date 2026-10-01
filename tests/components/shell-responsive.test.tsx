@@ -76,6 +76,7 @@ const H = vi.hoisted(() => ({
   markAllNotificationsReadAction: vi.fn(),
   markNotificationReadAction: vi.fn(),
   unreadNotificationCountAction: vi.fn(),
+  unreadChatCountAction: vi.fn(),
   logoutAction: vi.fn(),
   updateAppearanceAction: vi.fn(),
 }));
@@ -85,6 +86,13 @@ vi.mock("@/lib/actions/notifications", () => ({
   markAllNotificationsReadAction: H.markAllNotificationsReadAction,
   markNotificationReadAction: H.markNotificationReadAction,
   unreadNotificationCountAction: H.unreadNotificationCountAction,
+}));
+
+// The sidebar's Chat badge polls this. Mocked for the same reason as the
+// notification endpoints above: the real module is "use server" and drags
+// next-auth into jsdom.
+vi.mock("@/lib/actions/chat", () => ({
+  unreadChatCountAction: H.unreadChatCountAction,
 }));
 
 vi.mock("@/lib/actions/auth", () => ({ logoutAction: H.logoutAction }));
@@ -252,6 +260,13 @@ beforeEach(() => {
   storeState.mobileNavOpen = false;
   H.unreadNotificationCountAction.mockReset();
   H.unreadNotificationCountAction.mockResolvedValue({ success: true, data: { count: 0 } });
+  // Primed, not just wired. A bare vi.fn() returns undefined, and the sidebar's poll
+  // does `unreadChatCountAction().catch(...)` — so an unprimed mock throws while the
+  // Promise.all array is still being built, taking the notification half down with it.
+  // Every test still reported green above six unhandled TypeErrors, and `npm test`
+  // exited 1. Both sibling sidebar tests prime it; this file wired the mock and did not.
+  H.unreadChatCountAction.mockReset();
+  H.unreadChatCountAction.mockResolvedValue({ success: true, data: { count: 0 } });
   H.listNotificationsAction.mockReset();
   H.listNotificationsAction.mockResolvedValue({ success: true, data: [] });
   H.markNotificationReadAction.mockResolvedValue({ success: true, data: null });

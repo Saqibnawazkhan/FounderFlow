@@ -83,6 +83,16 @@ export type PeriodMode = "3m" | "6m" | "1y" | "all" | "custom";
 export interface ReportWindow {
   start: Date;
   endExclusive: Date;
+  /**
+   * The start that was ASKED for, present only when the span exceeded
+   * `MAX_REPORT_MONTHS` and `start` was moved forward to fit (rep-009).
+   *
+   * One field rather than a `clamped` boolean beside a value: the picker has to
+   * tell the reader what was narrowed, and two fields that must agree are two
+   * fields that can disagree. Absent means nothing was narrowed, so a surface
+   * reading it cannot announce a clamp that never happened.
+   */
+  requestedStart?: Date;
 }
 
 /** Whether a date-only value falls in the window. */
@@ -91,14 +101,128 @@ export function inWindow(value: string | Date, w: ReportWindow): boolean {
   return at >= w.start && at < w.endExclusive;
 }
 
+/**
+ * UTC midnight at `year-month-day`, with the month/day overflow `Date.UTC`
+ * gives (day 32 of December rolls into January).
+ *
+ * NOT `Date.UTC(year, ...)`, and that is not pedantry: `Date.UTC` maps a year
+ * argument of 0–99 into 1900–1999, a legacy two-digit rule with no opt-out. So
+ * `<input type="date">` set to `0001-01-01` produced 1901-01-01 here — a
+ * silently different century from the one the customer typed, and the reason the
+ * clamp below could not otherwise report the start it was actually given.
+ * `setUTCFullYear` takes the year literally.
+ */
+function utcMidnight(year: number, month: number, day: number): Date {
+  const at = new Date(0);
+  at.setUTCFullYear(year, month, day);
+  return at;
+}
+
 /** UTC midnight on the calendar day of `value`. */
 function startOfUtcDay(value: Date): Date {
-  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
+  return utcMidnight(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate());
 }
 
 /** The next UTC midnight after `value`'s day — a half-open upper bound. */
 function endOfUtcDayExclusive(value: Date): Date {
-  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate() + 1));
+  return utcMidnight(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate() + 1);
+}
+
+/**
+ * The widest span /reports will chart, in whole UTC months (rep-009).
+ *
+ * Ten years. Every figure on this page is a monthly series rendered as a recharts
+ * BarChart, so the span is a bar count as much as a date range, and a founder
+ * comparing decades is not a case this product has. `All time` on a real
+ * workspace is a few years; anything past this cap arrived by a typo, a paste, or
+ * a corrupt row.
+ *
+ * WHAT IT REPLACES. `eachMonthOfInterval({ start, end })` over 0001-01-01 →
+ * 9999-12-31 materialised ~120,000 Dates and `monthlyData` re-filtered the whole
+ * ledger once per bucket, which is what froze the tab. money-007 replaced that
+ * walk with a counter, which stopped the hang but truncated from the START of the
+ * span — so the same input charted the first fifty years AD: six hundred empty
+ * months, none of the customer's data, and nothing said so. A clamp that keeps
+ * the RECENT end and announces itself is the fix; the counter in `monthBuckets`
+ * stays as the inner bound for a hand-built window.
+ */
+export const MAX_REPORT_MONTHS = 120;
+
+/** A month as one comparable integer — the bucket index in `monthBuckets`. */
+function utcMonthIndex(value: Date): number {
+  return value.getUTCFullYear() * 12 + value.getUTCMonth();
+}
+
+/**
+ * Calendar months the half-open window `[start, endExclusive)` TOUCHES — which is
+ * the number of buckets `monthBuckets` will emit for it.
+ *
+ * NOT A MONTH-INDEX DIFFERENCE, and that distinction cost the chart its newest
+ * month. A `utcMonthsBetween` helper used to live here doing exactly that
+ * subtraction, and for a window ending on any day but the 1st — the normal case,
+ * since a `to` date is usually mid-month — it reports one fewer than the window
+ * covers: 2026-01-15 → 2026-03-10 is two by index and three months on a chart.
+ * `clampSpan` measured that way while `monthBuckets`' loop counted touched
+ * months, so a window clamped to exactly the limit needed one more bucket than
+ * the guard allowed. The helper is deleted rather than left beside this one: two
+ * functions answering almost the same question is how they got mixed up. The loop walks
+ * FORWARD from the start, so the bucket it dropped was the most recent one: a
+ * founder opening a ten-year report silently lost the current month, on a
+ * cash-flow chart, with a notice underneath telling them the range had been
+ * narrowed to something it had not.
+ *
+ * The last instant inside the window is what decides the final month. Both the
+ * clamp and the loop now ask this one function, so they cannot disagree again.
+ */
+function utcMonthsTouched(start: Date, endExclusive: Date): number {
+  if (endExclusive <= start) return 0;
+  return utcMonthIndex(new Date(endExclusive.getTime() - 1)) - utcMonthIndex(start) + 1;
+}
+
+/**
+ * `w`, narrowed to `MAX_REPORT_MONTHS` if it is wider — keeping the END the user
+ * asked for and moving the start forward, because the recent months are the ones
+ * a founder came to look at.
+ */
+function clampSpan(w: ReportWindow): ReportWindow {
+  if (utcMonthsTouched(w.start, w.endExclusive) <= MAX_REPORT_MONTHS) return w;
+  // Counted back from the LAST month the window touches, not from
+  // `endExclusive` itself: a window ending 2026-03-10 touches March, so the
+  // limit is March and the 119 months before it. Measuring from `endExclusive`
+  // produced MAX_REPORT_MONTHS + 1 touched months whenever the end was
+  // mid-month, which is the off-by-one this whole helper exists to close.
+  const lastMonth = startOfUtcMonth(new Date(w.endExclusive.getTime() - 1));
+  return {
+    start: startOfUtcMonth(lastMonth, -(MAX_REPORT_MONTHS - 1)),
+    endExclusive: w.endExclusive,
+    requestedStart: w.start,
+  };
+}
+
+/** `date` as the `yyyy-mm-dd` an `<input type="date">` speaks. */
+function isoDay(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+/**
+ * Absolute `min` / `max` for the two Custom date inputs (rep-009).
+ *
+ * They carried only RELATIVE bounds (`max={customTo}` / `min={customFrom}`), so
+ * nothing limited the absolute span — and `<input type="date">` accepts any year
+ * up to 275760. The clamp above makes an absurd range harmless; this stops the
+ * native picker offering one in the first place, which is the difference between
+ * a narrowed report and a report the user never had to have narrowed.
+ *
+ * The ceiling is the end of NEXT year rather than today: recurring rules post
+ * future-dated transactions, so a range that reaches ahead is legitimate.
+ */
+export function reportDateBounds(now: Date): { min: string; max: string } {
+  return {
+    // FounderFlow has no ledger older than this, and neither does any business
+    // this product is for. It exists to make a mistyped year fail at the input.
+    min: "2000-01-01",
+    max: isoDay(utcMidnight(now.getUTCFullYear() + 1, 11, 31)),
+  };
 }
 
 const PRESET_MONTHS: Record<string, number> = { "3m": 3, "6m": 6, "1y": 12 };
@@ -143,7 +267,9 @@ export function reportWindow(args: {
     // midnight, so date-fns `startOfDay`/`endOfDay` were shifting each edge by
     // the viewer's offset and silently clipping a day off one end of the range.
     const [from, to] = a <= b ? [a, b] : [b, a];
-    return { start: startOfUtcDay(from), endExclusive: endOfUtcDayExclusive(to) };
+    // Clamped AFTER un-reversing, so the cap applies to the ordered pair and not
+    // to whichever box happened to hold the older date (rep-009).
+    return clampSpan({ start: startOfUtcDay(from), endExclusive: endOfUtcDayExclusive(to) });
   }
 
   if (mode === "all") {
@@ -151,7 +277,9 @@ export function reportWindow(args: {
       const d = new Date(t.date);
       return d < min ? d : min;
     }, now);
-    return { start: startOfUtcMonth(earliest), endExclusive: startOfUtcMonth(now, 1) };
+    // Clamped too: the start comes from a stored row, and one mistyped or
+    // corrupt date opens "all time" a millennium back.
+    return clampSpan({ start: startOfUtcMonth(earliest), endExclusive: startOfUtcMonth(now, 1) });
   }
 
   const months = PRESET_MONTHS[mode] ?? 6;
@@ -181,29 +309,49 @@ export interface MonthBucket {
  */
 export function monthBuckets(txns: Transaction[], w: ReportWindow): MonthBucket[] {
   const out: MonthBucket[] = [];
+  // Keyed by absolute UTC month, so a row is placed by arithmetic instead of by
+  // re-filtering the ledger once per bucket (rep-009). The old shape was
+  // O(months x transactions): with the 0001→9999 range the customer could type
+  // and 5,000 rows per type, that measured 2.5 SECONDS of blocked main thread
+  // before recharts drew a single bar.
+  //
+  // The key is `year * 12 + month`, NOT the display label: `formatUtcMonthYear`
+  // is "MMM yy", which repeats every hundred years, so a label-keyed index would
+  // fold 1926-03 into 2026-03.
+  const byMonth: Record<number, MonthBucket> = {};
   let cursor = startOfUtcMonth(w.start);
   // Guard against a pathological window (endExclusive <= start): emit nothing
-  // rather than loop. `reportWindow` never produces one, but a caller could.
+  // rather than loop. `reportWindow` clamps every window it builds, but
+  // `monthBuckets` is exported and a caller can hand it anything.
   let guard = 0;
-  while (cursor < w.endExclusive && guard < 600) {
+  while (cursor < w.endExclusive && guard < MAX_REPORT_MONTHS) {
     guard += 1;
-    const next = startOfUtcMonth(cursor, 1);
-    const bucket = { start: cursor, endExclusive: next };
-    const inMonth = txns.filter((t) => inWindow(t.date, bucket));
-    const expenses = inMonth.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
-    const investments = inMonth
-      .filter((t) => t.type === "investment")
-      .reduce((s, t) => s + t.amount, 0);
-    const revenue = inMonth.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
-    out.push({
+    const bucket: MonthBucket = {
       month: formatUtcMonthYear(cursor),
-      expenses,
-      investments,
-      revenue,
-      netFlow: investments + revenue - expenses,
-    });
-    cursor = next;
+      expenses: 0,
+      investments: 0,
+      revenue: 0,
+      netFlow: 0,
+    };
+    out.push(bucket);
+    byMonth[utcMonthIndex(cursor)] = bucket;
+    cursor = startOfUtcMonth(cursor, 1);
   }
+
+  // One pass. A row whose month has no bucket — outside the window, or an
+  // unparseable date, whose index is NaN — is skipped, which is what the
+  // per-bucket `inWindow` filter did implicitly.
+  txns.forEach((t) => {
+    const bucket = byMonth[utcMonthIndex(new Date(t.date))];
+    if (!bucket) return;
+    if (t.type === "expense") bucket.expenses += t.amount;
+    else if (t.type === "investment") bucket.investments += t.amount;
+    else if (t.type === "income") bucket.revenue += t.amount;
+  });
+
+  out.forEach((b) => {
+    b.netFlow = b.investments + b.revenue - b.expenses;
+  });
   return out;
 }
 
@@ -391,6 +539,65 @@ function roleLabel(row: ContributorRow): string {
 }
 
 /**
+ * Zero-based index of the Description column in BOTH transaction tables. Named
+ * rather than written as a literal because `columnStyles` in the PDF keys on it,
+ * and a silently disagreeing number would widen the wrong column.
+ */
+export const TXN_DESCRIPTION_COL = 3;
+
+/**
+ * The Transaction History rows, for the PDF (rep-006).
+ *
+ * Extracted, and shared with `excelTransactionRows` below, because the two
+ * adjacent download buttons on this page described the SAME ledger differently:
+ * the PDF cut every description at 30 characters with an ellipsis while the
+ * .xlsx from the button beside it wrote it in full. Descriptions validate up to
+ * 500 characters (lib/schemas/transaction.ts), so "Cloud hosting renewal for the
+ * analytics…" was a routine length, not an outlier — and the PDF is the artefact
+ * the product sells as investor-ready, i.e. the one a customer can be held to.
+ *
+ * The truncation was never a layout necessity: jspdf-autotable wraps cell text
+ * on its own, and `exportPDF` now gives this column an explicit `cellWidth` so
+ * the wrap happens in the widest column instead of squeezing the amounts.
+ *
+ * `money` is passed in rather than imported: the formatter is bound to the
+ * workspace currency by `useMoney`, which is a hook.
+ */
+export function pdfTransactionRows(
+  txns: Transaction[],
+  money: (amount: number) => string
+): string[][] {
+  return txns.map((t) => [
+    // formatUtcDate, not date-fns `format`: Transaction.date is a date-only
+    // value stored at UTC midnight, so the local renderer printed the day
+    // BEFORE the one the customer typed, west of UTC.
+    formatUtcDate(t.date),
+    t.type,
+    t.category,
+    t.description,
+    t.addedByName,
+    `${t.type === "expense" ? "-" : "+"} ${money(t.amount)}`,
+  ]);
+}
+
+/**
+ * The same ledger for the Transactions sheet. Amounts stay NUMBERS (signed, so
+ * the column can be summed in Excel) and the date is the sheet's day format, but
+ * the description cell is the same string the PDF prints — which is the property
+ * tests/app/reports/reports-export-fidelity.test.ts pins.
+ */
+export function excelTransactionRows(txns: Transaction[]): (string | number)[][] {
+  return txns.map((t) => [
+    formatUtcDay(t.date),
+    t.type,
+    t.category,
+    t.description,
+    t.addedByName,
+    t.type === "expense" ? -t.amount : t.amount,
+  ]);
+}
+
+/**
  * The last day the window includes, for display. `endExclusive` is the day
  * AFTER it, so printing that directly would advertise a range one day longer
  * than the one the figures cover.
@@ -410,7 +617,16 @@ type Props = {
 };
 
 export function ReportsClient({ transactions, users, company, allTimeBalance }: Props) {
-  const money = useMoney();
+  // rep-011: the currency comes from the `company` row the Server Component
+  // already fetched, NOT from the store. `useMoney()` with no argument reads
+  // `currentCompany.currency`, which is filled by a two-hop async chain
+  // (providers.tsx → CompanyHydrator → getMyCompanyAction), and returned "PKR"
+  // until both hops resolved. Export PDF is clickable for that whole window, so a
+  // USD workspace's first paint after signup — or on a new device, or after
+  // /settings' "Reset local preferences" — produced an investor PDF denominated
+  // in rupees beside an .xlsx whose header said USD. The prop is authoritative
+  // and available on the first paint; see lib/hooks/useMoney.ts.
+  const money = useMoney(company.currency);
   const n = useNumberFormat();
   // Date window (F5): presets OR a custom from/to range. The whole report —
   // charts, category mix, per-founder totals — scopes to this window, so the
@@ -428,6 +644,10 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
   );
   /** The last day the range includes — what a human should be shown. */
   const rangeEndLabel = useMemo(() => lastIncludedDay(range), [range]);
+  /** Absolute floor/ceiling for the two Custom inputs (rep-009). The relative
+   *  `min`/`max` they already carried bound the two dates to each other and left
+   *  the absolute span unbounded. */
+  const dateBounds = useMemo(() => reportDateBounds(new Date()), []);
   /** One string, used by the PDF, the Excel sheet and the custom-range hint, so
    *  the three cannot describe different periods. */
   const rangeText = `${formatUtcDate(range.start)} – ${formatUtcDate(rangeEndLabel)}`;
@@ -555,21 +775,19 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
       autoTable(doc, {
         startY: 26,
         head: [["Date", "Type", "Category", "Description", "Added By", "Amount"]],
-        body: rangedTxns.map((t) => [
-          // formatUtcDate, not date-fns `format`: Transaction.date is a
-          // date-only value stored at UTC midnight, so the local renderer
-          // printed the day BEFORE the one the customer typed, west of UTC.
-          formatUtcDate(t.date),
-          t.type,
-          t.category,
-          t.description.length > 30 ? t.description.slice(0, 30) + "…" : t.description,
-          t.addedByName,
-          `${t.type === "expense" ? "-" : "+"} ${money(t.amount)}`,
-        ]),
+        body: pdfTransactionRows(rangedTxns, money),
         theme: "striped",
         headStyles: { fillColor: [77, 124, 15] },
         styles: { fontSize: 8 },
-        columnStyles: { 5: { halign: "right" } },
+        columnStyles: {
+          // rep-006. The description is no longer cut at 30 characters, so it
+          // needs room to WRAP instead of stealing width from the amount:
+          // autoTable distributes leftover width across unstyled columns, and a
+          // 500-character cell left to itself squeezes the figures. `cellWidth`
+          // fixes the widest column and lets autoTable wrap inside it.
+          [TXN_DESCRIPTION_COL]: { cellWidth: 60 },
+          5: { halign: "right" },
+        },
       });
 
       doc.save(
@@ -602,16 +820,9 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
         ["Transactions", rangedTxns.length],
       ];
 
-      const txnData = [
+      const txnData: (string | number)[][] = [
         ["Date", "Type", "Category", "Description", "Added By", `Amount (${company.currency})`],
-        ...rangedTxns.map((t) => [
-          formatUtcDay(t.date),
-          t.type,
-          t.category,
-          t.description,
-          t.addedByName,
-          t.type === "expense" ? -t.amount : t.amount,
-        ]),
+        ...excelTransactionRows(rangedTxns),
       ];
 
       // rep-004: `breakdown`, so the Team sheet's Investments column sums to the
@@ -713,7 +924,8 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
               <input
                 type="date"
                 value={customFrom}
-                max={customTo || undefined}
+                min={dateBounds.min}
+                max={customTo || dateBounds.max}
                 onChange={(e) => setCustomFrom(e.target.value)}
                 className="rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:border-primary/50 focus:outline-none"
               />
@@ -723,7 +935,8 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
               <input
                 type="date"
                 value={customTo}
-                min={customFrom || undefined}
+                min={customFrom || dateBounds.min}
+                max={dateBounds.max}
                 onChange={(e) => setCustomTo(e.target.value)}
                 className="rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:border-primary/50 focus:outline-none"
               />
@@ -738,6 +951,20 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
           </div>
         )}
       </div>
+
+      {/* rep-009. The clamp has to SAY SO. Silently redrawing a narrower range is
+          how the 600-bucket guard came to chart the first fifty years AD without
+          anyone noticing — a wrong chart that looks like a right one, on the page
+          the founder is about to export from. `requestedStart` is set only when
+          the span was actually narrowed, so this never announces a clamp that did
+          not happen. */}
+      {range.requestedStart && (
+        <p role="status" className="text-xs text-warning">
+          That range covers more than {MAX_REPORT_MONTHS / 12} years, which this report cannot
+          chart. Showing the most recent {MAX_REPORT_MONTHS} months instead:{" "}
+          <span className="font-mono">{rangeText}</span>.
+        </p>
+      )}
 
       <section className="rounded-2xl border border-border bg-surface p-6">
         <div className="mb-5 flex items-start justify-between gap-4">
@@ -754,7 +981,7 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
           </div>
         </div>
         <div className="h-80">
-          <CashFlowBarChart data={monthlyData} />
+          <CashFlowBarChart data={monthlyData} currency={company.currency} />
         </div>
       </section>
 
@@ -767,7 +994,7 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
           {categoryData.length > 0 ? (
             <div className="mt-5 grid grid-cols-1 items-center gap-4 md:grid-cols-2">
               <div className="h-64">
-                <CategoriesPieChart data={categoryData} />
+                <CategoriesPieChart data={categoryData} currency={company.currency} />
               </div>
               <ul className="space-y-2">
                 {categoryData.map((c, i) => {
@@ -807,7 +1034,7 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
           </p>
           <h3 className="mt-1 text-lg font-bold tracking-tight">Team contributions</h3>
           <div className="mt-5 h-64">
-            <FoundersHorizontalBar data={founderData} />
+            <FoundersHorizontalBar data={founderData} currency={company.currency} />
           </div>
         </section>
       </div>

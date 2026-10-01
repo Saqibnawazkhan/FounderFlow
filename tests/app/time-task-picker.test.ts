@@ -206,13 +206,51 @@ describe("/time's task picker reads two columns, not the board", () => {
     expect(element.props.tasks).toEqual([{ id: "k1", title: "Ship the invoice screen" }]);
   });
 
-  it("reads no tasks at all for a member, who never opens the edit modal", async () => {
+  /**
+   * time-002, and the test that encoded it.
+   *
+   * This case used to read "reads no tasks at all for a member, who never opens
+   * the edit modal", and asserted `props.tasks` was `[]`. The premise is false:
+   * `tasks` feeds TWO modals. The EDIT modal is admin/cofounder-only, but the
+   * "Log time" button is rendered for every role
+   * (app/(app)/time/time-client.tsx), `<ManualEntryModal>` receives the same
+   * `tasks` prop, and `createManualEntryAction` has no role gate at all — by
+   * design: "any member can log their own forgotten work with no elevated
+   * permission". So `canSeeTeam ? listTaskOptions() : Promise.resolve([])` left
+   * every member's Log-time dropdown with one option, "Untagged work".
+   *
+   * That is worse for a member than for anyone else, because a member is also the
+   * only role that cannot EDIT an entry (`canEditEntryTimes` excludes them): a
+   * member who mistimes a session has to delete it and re-log it, and re-logging
+   * strips the tag. Every member-logged hour landed as untagged work, which
+   * destroys the per-task and per-project reporting the feature exists for — the
+   * exact inverse of time-001, where the topbar widget showed a member too many
+   * tasks.
+   *
+   * `listTaskOptions` already self-scopes a member to their own tasks through the
+   * shared `taskScopeWhere`, so fetching unconditionally leaks nothing. The
+   * assertion below is that the member's own scope is what they get: not an empty
+   * list, and not the workspace's.
+   */
+  it("gives a member their OWN tasks, because Log time is a member feature", async () => {
     session.current = { ...session.current, userId: "u_member", role: "member" };
     const element = await renderTimePage();
 
-    expect(taskReads(), "a member cannot edit entry times, so the picker is never drawn").toEqual(
-      []
-    );
-    expect(element.props.tasks).toEqual([]);
+    const reads = taskReads();
+    expect(reads, "the Log time dropdown needs options for a member too").toHaveLength(1);
+    const where = (reads[0].args.where ?? {}) as Record<string, unknown>;
+    expect(
+      where.assignedTo,
+      "a member sees their own tasks and no teammate's — the global board's rule"
+    ).toBe("u_member");
+    expect(element.props.tasks).toEqual([{ id: "k1", title: "Ship the invoice screen" }]);
+  });
+
+  it("does not narrow an admin to their own tasks", async () => {
+    // The converse, so the fix above cannot be a blanket `assignedTo`: clocking
+    // time against a teammate's task is a founder capability the board grants.
+    await renderTimePage();
+    const where = (taskReads()[0].args.where ?? {}) as Record<string, unknown>;
+    expect(where.assignedTo).toBeUndefined();
   });
 });

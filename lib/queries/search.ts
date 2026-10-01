@@ -43,6 +43,7 @@ import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import { canSeeAllProjects } from "@/lib/auth/project-permissions";
 import { visibleChannelWhere } from "@/lib/auth/channel-permissions";
 import { SEARCH_GROUPS, SearchQuerySchema, type SearchGroup } from "@/lib/schemas/search";
+import { conversationTitle } from "@/lib/chat/dm";
 
 /** Hits per group. Five fits a palette section without scrolling it. */
 const GROUP_LIMIT = 5;
@@ -315,20 +316,26 @@ async function searchMessages(q: string, userId: string, companyId: string): Pro
     title:
       row.channelKind === "dm"
         ? `${row.authorName} in a direct message`
-        : `${row.authorName} in #${row.channelName}`,
+        : // See `conversationTitle`: a private channel is addressed by its bare
+          // name, because the hash is what a public room wears.
+          `${row.authorName} in ${conversationTitle(row.channelKind, row.channelName)}`,
     subtitle: stripHeadlineMarkup(row.snippet),
     // Matches the deep link `sendMessageAction` already writes into its
     // mention notifications — deliberately one shape, not two.
     //
-    // HONEST LIMITATION: nothing reads `?message=` yet. No file under
-    // app/(app)/chat/ or components/chat/ touches useSearchParams, so today
-    // this lands the reader at the bottom of the channel with the match
-    // nowhere on screen. Contrast `?taskId=`, which IS handled. The link is
-    // still correct and still better than none — it opens the right
-    // conversation — but "jumps to that message" is not yet true, and this
-    // comment previously claimed it was. Implementing it also has to handle a
-    // hit whose `parentId` is non-null: that message lives in a thread, so the
-    // panel must open rather than the timeline merely scrolling.
+    // AND IT IS READ, as of chat-010. This comment carried an "HONEST
+    // LIMITATION: nothing reads `?message=` yet" for as long as that was true,
+    // and it stopped being true in the same change that closed chat-010 —
+    // leaving the one place in the repo that told the next reader about this
+    // asserting the opposite of the code. app/(app)/chat/[slug]/chat-client.tsx
+    // reads the parameter, `nextAnchorStep` in lib/chat/anchor.ts decides what to
+    // do with it, and <MessageList> marks and scrolls to the row. The thread case
+    // this comment named as a prerequisite is handled too: a hit whose `parentId`
+    // is non-null opens the panel rather than scrolling the timeline.
+    //
+    // Still not done, so that the next reader is not misled the other way: an
+    // anchor older than the newest loaded page is NOT paged towards — it falls
+    // back to a line pointing at "Load earlier messages".
     href: `/chat/${row.channelSlug}?message=${row.id}`,
   }));
 }

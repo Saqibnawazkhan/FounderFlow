@@ -33,6 +33,7 @@ import { db } from "@/lib/db";
 import { requireScopedSession } from "@/lib/queries/session";
 import type { Role } from "@/lib/auth/role-gates";
 import {
+  canManageProject,
   canSeeAllProjects,
   canSeeProject,
   canSeeProjectFinances,
@@ -291,11 +292,12 @@ export async function listProjectsForUser(): Promise<ProjectListItem[]> {
         FROM "TimeEntry"
        WHERE "companyId" = ${companyId}
          AND "clockOutAt" IS NOT NULL
+         AND "deletedAt" IS NULL
          AND "projectId" IN (${Prisma.join(projectIds)})
        GROUP BY "projectId"
     `,
     db.timeEntry.findMany({
-      where: { companyId, projectId: { in: projectIds }, clockOutAt: null },
+      where: { companyId, projectId: { in: projectIds }, clockOutAt: null, deletedAt: null },
       select: { projectId: true, clockInAt: true, clockOutAt: true },
     }),
   ]);
@@ -386,14 +388,56 @@ export async function getProjectOverview(projectId: string): Promise<ProjectOver
     project: { supervisorId: project.supervisorId },
   });
 
+  /*
+   * THE TASK COUNTS ARE SCOPED THE SAME WAY THE BOARD IS, or the page
+   * contradicts itself.
+   *
+   * projects-017 narrowed the project's task LIST to the viewer's own work for
+   * anyone who cannot manage the project, and left these two counts project-wide.
+   * The result, found by adversarial verification: a member holding none of a
+   * twelve-task project's work read "8/12" in the Open-tasks KPI with "No tasks
+   * in this project yet." immediately beneath it. Two numbers about the same
+   * question, on the same screen, disagreeing.
+   *
+   * Scoped rather than relabelled, and rather than left as a product question.
+   * "Open tasks" sitting above a list of the viewer's tasks already means the
+   * viewer's tasks; making the aggregate say something else would need a label
+   * that explains it, and a KPI that needs explaining is worse than one that
+   * agrees with the list under it. A supervisor and a founder still see the
+   * project-wide figure, which is the escape hatch working.
+   *
+   * `canManageProject` is the same predicate `visibleProjectTasks` filters with,
+   * so the count and the list cannot drift into two answers.
+   */
+  const managesProject = canManageProject({
+    userId,
+    role,
+    project: { supervisorId: project.supervisorId },
+  });
+  const ownWorkOnly = managesProject ? {} : { assignedTo: userId };
+
   const now = new Date();
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
 
+  /*
+   * `deletedAt IS NULL` ON EVERY TimeEntry READ BELOW. time-004 switched this
+   * rollup on — before it, `TimeEntry.projectId` was never written by anybody, so
+   * the figure was always 0m and its correctness had never mattered. It is not
+   * tombstone-correct: `deleteTimeEntryAction` tombstones (data-integrity-001),
+   * so every hour a user deleted was about to start appearing in their project's
+   * "Hours tracked" total the moment the column began being populated. Found by
+   * adversarial verification, which is the only reason it did not ship that way.
+   *
+   * prisma/schema.prisma names this exact hazard: "a tombstone nobody filters on
+   * does not hide a row, it duplicates it."
+   */
   const [openTasks, totalTasks, spendSum, closedTimeRows, openTimeEntries, memberIds] =
     await Promise.all([
-      db.task.count({ where: { projectId, deletedAt: null, status: { not: "completed" } } }),
-      db.task.count({ where: { projectId, deletedAt: null } }),
+      db.task.count({
+        where: { projectId, deletedAt: null, status: { not: "completed" }, ...ownWorkOnly },
+      }),
+      db.task.count({ where: { projectId, deletedAt: null, ...ownWorkOnly } }),
       // `null` rather than a resolved zero-sum: the point is that the question is
       // not asked, and a reader of the recorded queries can see that.
       financeVisible
@@ -416,9 +460,10 @@ export async function getProjectOverview(projectId: string): Promise<ProjectOver
          WHERE "companyId" = ${companyId}
            AND "projectId" = ${projectId}
            AND "clockOutAt" IS NOT NULL
+           AND "deletedAt" IS NULL
       `,
       db.timeEntry.findMany({
-        where: { companyId, projectId, clockOutAt: null },
+        where: { companyId, projectId, clockOutAt: null, deletedAt: null },
         select: { clockInAt: true, clockOutAt: true },
       }),
       db.task.findMany({
@@ -503,6 +548,56 @@ export async function listProjectOptions(): Promise<{ id: string; name: string; 
     orderBy: { name: "asc" },
   });
   return projects;
+}
+
+/**
+ * Which of a project's tasks this caller may actually read. projects-017.
+ *
+ * THE RULE THE PRODUCT ALREADY STATES. lib/queries/tasks.ts, on the global
+ * board: "a member only ever sees tasks assigned to THEM — never a teammate's,
+ * admin's, or co-founder's work. Enforced here at the data boundary so it can't
+ * be unfiltered from the client."
+ *
+ * WHERE IT LEAKED. That clause is `role === "member" && !opts.projectId`, so it
+ * switches ITSELF OFF for a project-scoped read — and /projects/[id] is a
+ * project-scoped read. A plain member holding one task in a project therefore
+ * received every task in it: titles, assignee names, statuses, deadlines,
+ * priorities. In a workspace where most work lives in a handful of projects —
+ * the shape the `add_projects` migration's per-company "General" project
+ * produced — that is the whole company's board, reachable by clicking a link.
+ * The widening is defended in that file as preserving the supervisor escape
+ * hatch, but the supervisor is already covered by `canManageProject`; extending
+ * it to every ASSIGNED member is the part that was never argued.
+ *
+ * `canManageProject` IS THE WHOLE PREDICATE, and no `role === "member"` test is
+ * needed beside it: it is already true for admin and cofounder, and true for the
+ * supervisor whatever their company role. So "cannot manage this project" is
+ * exactly "sees only their own work in it", with one predicate to get right
+ * instead of two that can disagree.
+ *
+ * WHY IT LIVES HERE AND NOT ONLY IN `taskScopeWhere`. The narrowing belongs at
+ * the data boundary too, and that change is queued for lib/queries/tasks.ts.
+ * This is the second layer, at the page that renders the payload — the same
+ * discipline CLAUDE.md states for permission gates ("middleware … and server
+ * actions … Both must agree") rather than one deferring to the other. It is NOT
+ * redundant once the query narrows: a future caller of `getTasks({ projectId })`
+ * added for some other surface inherits the boundary rule, and this page keeps
+ * its own.
+ *
+ * Generic over the row so it can filter `TaskWithCount` without this module
+ * importing lib/queries/tasks and creating a cycle. Pure, and unit-tested
+ * through the page in tests/app/projects/project-task-visibility.test.ts.
+ */
+export function visibleProjectTasks<T extends { assignedTo: string }>(args: {
+  userId: string;
+  role: Role;
+  project: { supervisorId: string };
+  tasks: T[];
+}): T[] {
+  if (canManageProject({ userId: args.userId, role: args.role, project: args.project })) {
+    return args.tasks;
+  }
+  return args.tasks.filter((t) => t.assignedTo === args.userId);
 }
 
 /**

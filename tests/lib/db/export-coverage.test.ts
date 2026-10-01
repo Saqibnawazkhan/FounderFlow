@@ -183,3 +183,95 @@ describe("data-integrity-008 — every workspace table is exported or explicitly
     expect(body).toMatch(/notIncluded|omitted/);
   });
 });
+
+/**
+ * rep-005 — the BUTTON must not promise what the file does not contain.
+ *
+ * The declaration above, the schema-derived coverage check and `meta.notIncluded`
+ * all landed with data-integrity-008, and between them they close the "nobody
+ * noticed the chat tables" half of this finding. What they cannot reach is the
+ * sentence a customer actually reads before clicking, on /settings:
+ *
+ *   "Download a machine-readable JSON copy of EVERYTHING IN THIS WORKSPACE …"
+ *
+ * That is the promise the finding quotes, and it was still there — so the product
+ * disclosed the omission inside a file the customer opens AFTER deciding to trust
+ * the claim that there was nothing to disclose. A person exercising a portability
+ * request, or leaving, reads the card, not the JSON.
+ *
+ * WHY THIS TEST LIVES HERE rather than with the i18n tests: the subject is the
+ * same one the rest of this file is about — what the export contains and what it
+ * says it contains — and the two have to be checked together or they drift again.
+ * `EXPORT_EXCLUDED` growing by one entry is precisely the event that should force
+ * someone to re-read this copy.
+ */
+describe("rep-005 — the settings copy matches what the export contains", () => {
+  const STRINGS = join(ROOT, "lib", "i18n", "strings.ts");
+
+  /** The value of `key` in each locale block, in source order: [en, ur]. */
+  function copyFor(key: string): string[] {
+    const source = readFileSync(STRINGS, "utf8");
+    const out: string[] = [];
+    // The value is a single string or a `+`-joined run of them, as the file
+    // formats long copy. Comments are irrelevant here: a quoted string is the
+    // only thing this pattern can match.
+    const re = new RegExp(`\\b${key}:\\s*((?:"[^"]*"\\s*\\+?\\s*)+)`, "g");
+    let m = re.exec(source);
+    while (m !== null) {
+      out.push(
+        m[1]
+          .replace(/"\s*\+\s*"/g, "")
+          .replace(/^"|"$/g, "")
+          .trim()
+      );
+      m = re.exec(source);
+    }
+    return out;
+  }
+
+  /** "everything", as each dictionary spells it. */
+  const OVERCLAIM_EN = /\beverything\b/i;
+  const OVERCLAIM_UR = "ہر چیز";
+
+  it("finds the key in both dictionaries — guard the guard", () => {
+    // `Strings = typeof en` makes a missing Urdu key a type error, so two hits is
+    // the invariant. One hit would mean the regex broke and every assertion below
+    // silently stopped checking the Urdu card.
+    const copies = copyFor("exportWorkspaceDesc");
+    expect(copies).toHaveLength(2);
+    copies.forEach((c) => expect(c.length).toBeGreaterThan(40));
+  });
+
+  it("does not promise 'everything in this workspace', in either language", () => {
+    const [en, ur] = copyFor("exportWorkspaceDesc");
+    expect(en).not.toMatch(OVERCLAIM_EN);
+    expect(ur).not.toContain(OVERCLAIM_UR);
+  });
+
+  it("still enumerates what IS in the file, so the card stays useful", () => {
+    // The fix is a correction, not a retreat into vagueness: a card that says
+    // "some of your data" tells a departing founder nothing.
+    const [en] = copyFor("exportWorkspaceDesc");
+    for (const table of ["projects", "tasks", "transactions", "budgets", "comments"]) {
+      expect(en.toLowerCase()).toContain(table);
+    }
+  });
+
+  it("names the chat omission the route declares", () => {
+    // The one exclusion a customer would actually miss, and the one this finding
+    // was filed about. `EXPORT_EXCLUDED` also excuses BillingEvent, which is our
+    // own webhook-delivery ledger rather than the customer's data — naming that on
+    // a settings card would be noise, and the invoices it stands in for come from
+    // the LemonSqueezy portal linked two cards up.
+    const [en] = copyFor("exportWorkspaceDesc");
+    expect(en.toLowerCase()).toMatch(/chat|message/);
+    // …and the route really does exclude it, so the copy is not describing a
+    // decision that has since been reversed.
+    expect(Array.from(declaredExclusions().keys())).toContain("Message");
+  });
+
+  it("keeps the password-hash assurance, which was already true", () => {
+    const [en] = copyFor("exportWorkspaceDesc");
+    expect(en.toLowerCase()).toContain("password");
+  });
+});

@@ -38,11 +38,18 @@ import type { ChannelDetail, ChannelListItem, MessageClient } from "@/lib/querie
 /* ───────────────────────────── mocks ─────────────────────────────────── */
 
 const router = vi.hoisted(() => ({ refresh: vi.fn(), push: vi.fn() }));
+// The query string, as the island's `useSearchParams` sees it (chat-010). The
+// same seam tests/app/expenses-deep-link.test.tsx uses for `?transactionId=`.
+const nav = vi.hoisted(() => ({ params: new URLSearchParams() }));
 vi.mock("next/navigation", () => ({
   useRouter: () => router,
+  useSearchParams: () => nav.params,
 }));
 
-const toastMock = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
+// The DEFAULT export is callable as well as carrying .error/.success — chat-010
+// uses the plain form for its "couldn't jump there" notice, so the stub has to be
+// a function and not an object.
+const toastMock = vi.hoisted(() => Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }));
 vi.mock("react-hot-toast", () => ({ default: toastMock }));
 
 /**
@@ -77,6 +84,7 @@ vi.mock("@/lib/actions/chat", () => chatActions);
 const pageActions = vi.hoisted(() => ({
   loadOlderMessagesAction: vi.fn(),
   loadThreadAction: vi.fn(),
+  locateMessageAction: vi.fn(),
 }));
 vi.mock("@/app/(app)/chat/[slug]/actions", () => pageActions);
 
@@ -92,9 +100,31 @@ vi.mock("@/components/chat/channel-rail", () => ({
 vi.mock("@/components/chat/channel-header", () => ({
   ChannelHeader: ({ channel }: { channel: { name: string } }) => <header>{channel.name}</header>,
 }));
+// `onOpenThread` is exercised rather than dropped: it is the only way into
+// <ThreadPanel>, and chat-009 is entirely about what that panel is handed.
 vi.mock("@/components/chat/message-list", () => ({
-  MessageList: ({ disabled }: { disabled?: boolean }) => (
-    <div data-testid="message-list" data-disabled={disabled ? "true" : "false"} />
+  MessageList: ({
+    disabled,
+    messages,
+    onOpenThread,
+    anchoredMessageId,
+  }: {
+    disabled?: boolean;
+    messages?: { id: string }[];
+    onOpenThread?: (m: { id: string }) => void;
+    // chat-010: WHICH message this island tells the list to anchor is the whole
+    // of the finding on this side of the boundary.
+    anchoredMessageId?: string | null;
+  }) => (
+    <div
+      data-testid="message-list"
+      data-disabled={disabled ? "true" : "false"}
+      data-anchor={anchoredMessageId ?? ""}
+    >
+      <button type="button" onClick={() => onOpenThread?.((messages ?? [])[0] ?? { id: "m_root" })}>
+        Open thread
+      </button>
+    </div>
   ),
 }));
 // `canPostRunway` is surfaced as an attribute rather than swallowed, because
@@ -137,7 +167,16 @@ vi.mock("@/components/chat/new-dm-modal", () => ({
   NewDmModal: () => null,
 }));
 vi.mock("@/components/chat/thread-panel", () => ({
-  ThreadPanel: ({ open }: { open: boolean }) => (open ? <div role="dialog">Thread</div> : null),
+  // chat-009: `readOnly` is surfaced as an attribute rather than swallowed. The
+  // finding is precisely that this island computed `readOnly` for the timeline
+  // and forwarded nothing to the panel, so a stub that drops the prop cannot
+  // tell the fix from the bug.
+  ThreadPanel: ({ open, readOnly }: { open: boolean; readOnly?: boolean }) =>
+    open ? (
+      <div role="dialog" data-read-only={readOnly === undefined ? "absent" : String(readOnly)}>
+        Thread
+      </div>
+    ) : null,
 }));
 
 /* ──────────────────────────── fixtures ──────────────────────────────── */
@@ -186,8 +225,10 @@ function renderClient(
 }
 
 beforeEach(() => {
+  nav.params = new URLSearchParams();
   router.refresh.mockReset();
   router.push.mockReset();
+  toastMock.mockReset();
   toastMock.error.mockReset();
   chatActions.pollChannelActivityAction.mockReset();
   chatActions.addChannelMembersAction.mockReset();
@@ -648,5 +689,197 @@ describe("ChatClient — the conversation's kind reaches the composer", () => {
       })
     );
     expect(screen.getByTestId("composer")).toHaveAttribute("data-channel-kind", "dm");
+  });
+});
+
+/* ═════════ chat-009 — an archived conversation is read-only in the thread ══
+ *
+ * This island already computed `readOnly` from `canPostInChannel` and swapped the
+ * timeline's composer for "This channel is archived — it's read-only now." Then it
+ * rendered <ThreadPanel> and forwarded nothing, so the panel's composer and every
+ * reaction bar in it fell back to `disabled={false}`: an enabled Send button and a
+ * live emoji picker inside a conversation whose every write the server refuses. The
+ * optimistic reaction flips on and rolls back under the cursor.
+ *
+ * `readOnly` is FORWARDED, never recomputed inside the panel — `MessageClient`
+ * carries no `kind`, `isMember` or `archivedAt`, so a second copy of the rule there
+ * would be derived from a subset of the facts. These assertions are therefore about
+ * the wiring, which is the half that was missing; what the flag then DOES is pinned
+ * in tests/components/thread-panel.test.tsx against the real composer.
+ * ════════════════════════════════════════════════════════════════════════════ */
+describe("ChatClient — the thread panel inherits read-only (chat-009)", () => {
+  const openThread = async () => {
+    const user = userEvent.setup();
+    pageActions.loadThreadAction.mockResolvedValue({
+      success: true,
+      data: {
+        root: { id: "m_root", channelId: "ch_growth", reactions: [], segments: [] },
+        replies: [],
+      },
+    });
+    await user.click(screen.getByRole("button", { name: /open thread/i }));
+    return screen.findByRole("dialog");
+  };
+
+  beforeEach(() => {
+    pageActions.loadThreadAction.mockReset();
+  });
+
+  it("tells the panel the conversation is read-only when the channel is archived", async () => {
+    renderClient(channel({ isMember: true, archivedAt: "2026-09-20T00:00:00.000Z" }));
+
+    expect(await openThread()).toHaveAttribute("data-read-only", "true");
+  });
+
+  it("tells the panel the conversation is read-only for a non-member of a private channel", async () => {
+    // Reachable today, without archive having a button: an admin may SEE a
+    // private channel they were never added to (`canSeeChannel` lets the company
+    // role through) and so can open a thread in it, while `canPostInChannel`
+    // refuses the write.
+    signedInAs("admin");
+    renderClient(channel({ kind: "private", isMember: false }));
+
+    expect(await openThread()).toHaveAttribute("data-read-only", "true");
+  });
+
+  it("leaves the panel postable in a live channel", async () => {
+    // Guards the guard: forwarding a hard-coded `true` would pass both cases
+    // above and break replying everywhere in the product.
+    renderClient(channel({ kind: "public", isMember: true }));
+
+    expect(await openThread()).toHaveAttribute("data-read-only", "false");
+  });
+});
+
+/* ═════════ chat-010 — a mention notification lands ON its message ══════════
+ *
+ * `sendMessageAction` writes `/chat/<slug>?message=<id>` into every mention and
+ * DM notification and lib/queries/search.ts writes the same shape for a chat hit
+ * in the command palette. No file under app/(app)/chat/** or components/chat/**
+ * read the parameter, so each of those links dropped the reader at the bottom of
+ * a busy room with nothing anchored — and `?taskId=` and `?transactionId=` are
+ * both honoured on their own surfaces, which makes it look arbitrary rather than
+ * like a rule.
+ *
+ * THE CASE THE TIMELINE CANNOT SERVE AT ALL: a reply inside a thread has
+ * `parentId != null` and `getMessagesPage` excludes it, so the panel is the only
+ * place it renders. Before this, the notification that took someone to a thread
+ * reply was the one link that could not work at any scroll position.
+ *
+ * The decision itself is `nextAnchorStep` in lib/chat/anchor.ts and is pinned
+ * there; what is asserted here is that this island acts on it, and that it acts
+ * at most once per anchor — this component re-renders every five seconds from the
+ * activity poll.
+ * ════════════════════════════════════════════════════════════════════════════ */
+describe("ChatClient — the ?message= deep link (chat-010)", () => {
+  const timeline = [
+    { id: "m1", channelId: "ch_growth", createdAt: "2026-09-26T08:00:00.000Z" },
+    { id: "m2", channelId: "ch_growth", createdAt: "2026-09-26T08:05:00.000Z" },
+  ] as unknown as MessageClient[];
+
+  beforeEach(() => {
+    pageActions.loadThreadAction.mockReset();
+    pageActions.loadOlderMessagesAction.mockReset();
+    pageActions.locateMessageAction.mockReset();
+  });
+
+  it("anchors the named message when it is already in the loaded page", () => {
+    nav.params = new URLSearchParams("message=m2");
+    renderClient(channel({ isMember: true }), { initialMessages: timeline });
+
+    expect(screen.getByTestId("message-list")).toHaveAttribute("data-anchor", "m2");
+    // The common case — a mention from a minute ago is in the first page by
+    // definition — must cost no round trip at all.
+    expect(pageActions.locateMessageAction).not.toHaveBeenCalled();
+  });
+
+  it("anchors nothing when the link named no message", () => {
+    renderClient(channel({ isMember: true }), { initialMessages: timeline });
+
+    expect(screen.getByTestId("message-list")).toHaveAttribute("data-anchor", "");
+    expect(pageActions.locateMessageAction).not.toHaveBeenCalled();
+  });
+
+  it("ignores a junk message param instead of passing it on", () => {
+    // `parseMessageAnchor` refuses anything that is not an id shape, so nothing
+    // downstream — a DOM id, a server action — has to think about it.
+    nav.params = new URLSearchParams("message=%3Cscript%3E");
+    renderClient(channel({ isMember: true }), { initialMessages: timeline });
+
+    expect(screen.getByTestId("message-list")).toHaveAttribute("data-anchor", "");
+    expect(pageActions.locateMessageAction).not.toHaveBeenCalled();
+  });
+
+  it("asks the server where an unloaded message lives, exactly once", async () => {
+    nav.params = new URLSearchParams("message=m_elsewhere");
+    pageActions.locateMessageAction.mockResolvedValue({ success: true, data: { rootId: null } });
+
+    renderClient(channel({ isMember: true }), { initialMessages: timeline });
+
+    await waitFor(() => expect(pageActions.locateMessageAction).toHaveBeenCalled());
+    expect(pageActions.locateMessageAction).toHaveBeenCalledTimes(1);
+    expect(pageActions.locateMessageAction.mock.calls[0][0]).toMatchObject({
+      messageId: "m_elsewhere",
+      slug: "growth",
+    });
+  });
+
+  it("opens the thread panel when the named message is a REPLY", async () => {
+    // The case no amount of paging or scrolling could ever serve: the timeline
+    // excludes `parentId != null`, so before this the mention that took someone to
+    // a thread reply was the one link that could not work.
+    nav.params = new URLSearchParams("message=m_reply");
+    pageActions.locateMessageAction.mockResolvedValue({
+      success: true,
+      data: { rootId: "m_root" },
+    });
+    pageActions.loadThreadAction.mockResolvedValue({
+      success: true,
+      data: {
+        root: { id: "m_root", channelId: "ch_growth", reactions: [], segments: [] },
+        replies: [],
+      },
+    });
+
+    renderClient(channel({ isMember: true }), { initialMessages: timeline });
+
+    await waitFor(() => expect(pageActions.loadThreadAction).toHaveBeenCalled());
+    expect(pageActions.loadThreadAction.mock.calls[0][0]).toMatchObject({ rootId: "m_root" });
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("points the reader at the control that would reach an older root", async () => {
+    // Not silence. A link that lands somewhere and explains nothing is the bug
+    // being closed, and "Load earlier messages" is a button that already exists
+    // three lines up the page.
+    nav.params = new URLSearchParams("message=m_old");
+    pageActions.locateMessageAction.mockResolvedValue({ success: true, data: { rootId: null } });
+
+    renderClient(channel({ isMember: true }), {
+      initialMessages: timeline,
+      initialCursor: "cur1",
+    });
+
+    await waitFor(() => expect(toastMock).toHaveBeenCalled());
+    expect(String(toastMock.mock.calls[0][0])).toMatch(/load earlier messages/i);
+    // It does NOT fetch on the reader's behalf. That was tried, and it is recorded
+    // as scoped-out rather than left in half-working.
+    expect(pageActions.loadOlderMessagesAction).not.toHaveBeenCalled();
+  });
+
+  it("tells the reader when the message cannot be found at all", async () => {
+    // A deleted message, or an id from another workspace, or a channel this
+    // reader cannot see — `locateMessageAction` answers all three the same way.
+    nav.params = new URLSearchParams("message=m_gone");
+    pageActions.locateMessageAction.mockResolvedValue({
+      success: false,
+      error: "That message is no longer here",
+    });
+
+    renderClient(channel({ isMember: true }), { initialMessages: timeline });
+
+    await waitFor(() => expect(toastMock).toHaveBeenCalled());
+    expect(String(toastMock.mock.calls[0][0])).toMatch(/no longer here/i);
+    expect(pageActions.loadThreadAction).not.toHaveBeenCalled();
   });
 });

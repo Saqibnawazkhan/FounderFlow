@@ -3,6 +3,38 @@
  */
 
 import { z } from "zod";
+import { DEADLINE_HOUR_UTC, deadlineDayValue } from "@/lib/tasks/deadline";
+
+/**
+ * The oldest day the deadline refine will accept: YESTERDAY, in UTC.
+ *
+ * BOTH SIDES OF THE COMPARISON MUST BE IN THE SAME FRAME, and the first version
+ * of this bound was not. `deadlineDayValue` reads the day from UTC parts (that
+ * is the whole point of `lib/tasks/deadline.ts` — one module decides what day a
+ * stored instant names). The bound was built from LOCAL parts, so on every
+ * machine whose local date differs from the UTC date — which is most of the
+ * world for part of every day — the two disagreed by one, and the intended
+ * one-day slack silently became two days or none.
+ *
+ * It was green when written and went red hours later, from nothing but the
+ * clock moving: at TZ=America/Bogota after 19:00 the local day is still
+ * yesterday while UTC has rolled over, and a deadline two full days in the past
+ * landed exactly on the bound and was ACCEPTED. The test that caught it
+ * (`rejects a deadline properly in the past`) is time-of-day dependent by
+ * construction, so the regression test below freezes the clock instead.
+ */
+function pastDeadlineBound(): string {
+  const now = new Date();
+  // Date.UTC normalises the rollover, so the 1st of a month goes back to the
+  // last day of the previous one without special-casing. Noon rather than
+  // midnight for the same reason the stored instants use it: nothing lands on a
+  // boundary where a one-millisecond difference changes the day.
+  return deadlineDayValue(
+    new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, DEADLINE_HOUR_UTC)
+    )
+  );
+}
 
 export const NewTaskSchema = z.object({
   title: z.string().trim().min(1, "Title is required").max(200),
@@ -16,13 +48,39 @@ export const NewTaskSchema = z.object({
   deadline: z
     .string()
     .refine((v) => !Number.isNaN(Date.parse(v)), "Invalid deadline")
-    // Reject past deadlines (closes audit flaw #37 — HTML `min` was the only
-    // gate before, which doesn't fire if the user types or pastes a date).
-    // Compare against start-of-today so "due today" stays valid.
+    /*
+     * Reject past deadlines (audit flaw #37 — HTML `min` was the only gate, and
+     * it does not fire on a typed or pasted date).
+     *
+     * COMPARED AS CALENDAR DAYS, NOT AS INSTANTS, which is what
+     * tasks-and-comments-011 was about and what this refine was still getting
+     * wrong after the rest of that finding was fixed. `<input type="date">` hands
+     * over `"YYYY-MM-DD"`, and `new Date("2026-10-15")` is UTC midnight under the
+     * ES date-only rule — while `setHours(0,0,0,0)` is LOCAL midnight. West of
+     * Greenwich the picked day is therefore hours behind the comparison and "due
+     * today" was refused outright: at UTC-5, 00:00Z against 05:00Z. The form
+     * converts the day to a noon-UTC instant in `onSubmit`, but `zodResolver` runs
+     * THIS first and `handleSubmit` never reaches `onSubmit` when it fails, so the
+     * conversion could not help. Three comments elsewhere said this was fixed.
+     *
+     * `deadlineDayValue` reads the day from UTC parts, which is the one module
+     * that knows how a deadline is stored, so a date-only string and a stored
+     * noon-UTC instant both name the same day.
+     *
+     * AND THE BOUND IS YESTERDAY, NOT TODAY, deliberately. This schema runs on the
+     * client AND in the action, and the action runs on a UTC host: a customer at
+     * UTC-5 submitting their own "today" at 23:30 local is already tomorrow in the
+     * server's frame, so a today-bound would reject a legitimate date on the
+     * server after accepting it in the browser. No zone is stored for a user yet
+     * (the `timezone` column is the real fix and is out of scope), and the widest
+     * real offset is under 24h, so one day of slack makes a valid "today"
+     * impossible to refuse from any zone. Accepting a deadline one day stale is a
+     * smaller harm than blocking someone from scheduling work for today.
+     */
     .refine((v) => {
-      const startOfToday = new Date();
-      startOfToday.setHours(0, 0, 0, 0);
-      return new Date(v) >= startOfToday;
+      const day = deadlineDayValue(v);
+      if (day === "") return false;
+      return day >= pastDeadlineBound();
     }, "Deadline can't be in the past"),
 });
 

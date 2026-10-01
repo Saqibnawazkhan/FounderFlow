@@ -12,20 +12,44 @@ vi.mock("@/lib/actions/chat", () => ({
 }));
 
 // react-hot-toast is fire-and-forget; stub it so we don't render its portal.
-vi.mock("react-hot-toast", () => ({
-  default: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }),
-}));
+// Hoisted into a handle rather than anonymous, because chat-005 is entirely
+// about WHICH of these three the composer reaches for and with what words.
+const toastMock = vi.hoisted(() => Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }));
+vi.mock("react-hot-toast", () => ({ default: toastMock }));
 
 const USERS = [
   { id: "u1", name: "Sara Ahmed" },
   { id: "u2", name: "Ali Khan" },
 ];
 
-function ok(over: Partial<{ notifiedCount: number; mentionedUserIds: string[] }> = {}) {
+function ok(
+  over: Partial<{
+    notifiedCount: number;
+    mentionedUserIds: string[];
+    mentionAttempted: number;
+    mentionPingsFailed: boolean;
+  }> = {}
+) {
   return {
     success: true as const,
-    data: { id: "m1", mentionedUserIds: [], notifiedCount: 0, ...over },
+    data: {
+      id: "m1",
+      mentionedUserIds: [],
+      notifiedCount: 0,
+      mentionAttempted: 0,
+      mentionPingsFailed: false,
+      ...over,
+    },
   };
+}
+
+/** Every string this send put on screen, whichever of the three toasts it used. */
+function toastTexts(): string[] {
+  const out: string[] = [];
+  for (const call of toastMock.mock.calls) out.push(String(call[0]));
+  for (const call of toastMock.success.mock.calls) out.push(String(call[0]));
+  for (const call of toastMock.error.mock.calls) out.push(String(call[0]));
+  return out;
 }
 
 function renderComposer(props: Partial<React.ComponentProps<typeof MessageComposer>> = {}) {
@@ -50,6 +74,9 @@ describe("MessageComposer (the chat send box)", () => {
   beforeEach(() => {
     sendMessageAction.mockReset();
     sendMessageAction.mockResolvedValue(ok());
+    toastMock.mockReset();
+    toastMock.success.mockReset();
+    toastMock.error.mockReset();
   });
 
   it("sends the message when the author presses Enter", async () => {
@@ -211,8 +238,146 @@ describe("MessageComposer (the chat send box)", () => {
     expect(screen.getByRole("combobox", { name: "Message Ahmed Khan" })).toBeInTheDocument();
   });
 
-  it("still hashes a room in the placeholder and the label", () => {
-    renderComposer({ channelKind: "private", channelName: "hiring" });
+  it("still hashes a PUBLIC room in the placeholder and the label", () => {
+    renderComposer({ channelKind: "public", channelName: "hiring" });
     expect(screen.getByRole("combobox", { name: "Message #hiring" })).toBeInTheDocument();
+  });
+
+  /* This case used to be spelled with `channelKind: "private"` and asserted
+   * "Message #hiring" — it encoded the bug. A hash means "a room other people
+   * can be in", and the Lock this very screen draws in its header says the
+   * opposite, so the send box was contradicting the header in one viewport. See
+   * `conversationTitle` in lib/chat/dm.ts for the rule. */
+  it("does not hash a private channel in the placeholder or the label", () => {
+    renderComposer({ channelKind: "private", channelName: "pvt-hiring" });
+    expect(screen.getByRole("combobox", { name: "Message pvt-hiring" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox")).toHaveAttribute("placeholder", "Message pvt-hiring");
+  });
+});
+
+/* ═════════ chat-005 — the composer must not invent a failed delivery ══════
+ *
+ * THE TOAST THE AUTHOR GOT, on a send in which nothing went wrong:
+ *
+ *     Sent — couldn't send mention pings (1 attempted). The team has been notified.
+ *
+ * It fired on `else if (mentionedUserIds.length > 0)`, the PARSED list, so it
+ * fired whenever the server deliberately pinged nobody: in a private channel the
+ * membership filter empties the recipients, so EVERY @-mention produced it. Both
+ * halves of the sentence were false — nothing was attempted and nothing failed,
+ * and nothing was reported to anyone, because `captureServerError` runs only in
+ * the fan-out's catch.
+ *
+ * The composer now reads two more fields off the action (`mentionAttempted`,
+ * `mentionPingsFailed`) and has three outcomes instead of two. The suppression
+ * case gets an honest sentence rather than a warning, because the author typed a
+ * name expecting a ping and silence would leave them believing one went.
+ * ════════════════════════════════════════════════════════════════════════════ */
+describe("MessageComposer — what it says about mention pings (chat-005)", () => {
+  // Its own reset: the `beforeEach` above belongs to the sibling describe, so
+  // without this the toast calls accumulate across these cases and "says nothing"
+  // reads the previous test's output.
+  beforeEach(() => {
+    sendMessageAction.mockReset();
+    toastMock.mockReset();
+    toastMock.success.mockReset();
+    toastMock.error.mockReset();
+  });
+
+  async function send(result: ReturnType<typeof ok>) {
+    sendMessageAction.mockResolvedValue(result);
+    const user = userEvent.setup();
+    const { box } = renderComposer();
+    await user.type(box, "@ali thoughts?");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(sendMessageAction).toHaveBeenCalled());
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(""));
+  }
+
+  it("does not claim a failed delivery when the ping was deliberately suppressed", async () => {
+    // A private channel the mentioned teammate is not in: parsed 1, attempted 0.
+    await send(ok({ mentionedUserIds: ["u2"], mentionAttempted: 0, notifiedCount: 0 }));
+
+    const texts = toastTexts().join(" | ");
+    expect(texts).not.toMatch(/couldn't send mention pings/i);
+    // The second lie is the worse one: it promises an engineering follow-up that
+    // was never filed.
+    expect(texts).not.toMatch(/team has been notified/i);
+  });
+
+  it("explains truthfully why the mention did not ping, instead of staying silent", async () => {
+    // The author typed a name expecting a ping. Silence would leave them
+    // believing one went, so the suppression gets a sentence of its own — one
+    // that covers both reasons the server suppresses (not a member here, or
+    // muted), because the action does not distinguish them and the composer must
+    // not guess.
+    await send(ok({ mentionedUserIds: ["u2"], mentionAttempted: 0, notifiedCount: 0 }));
+
+    const texts = toastTexts().join(" | ");
+    expect(texts).toMatch(/no ping/i);
+    expect(texts).toMatch(/not in this conversation|muted/i);
+  });
+
+  it("names the mentions that were dropped even when some others were pinged", async () => {
+    // PARTIAL suppression, which said nothing at all until adversarial
+    // verification found it. Mention three people in a private channel where one
+    // is a member: the server filters two out before trying, so mentioned 3 /
+    // attempted 1. The old branch required `mentionAttempted === 0`, so the two
+    // people who got nothing were never mentioned to the author — the exact
+    // outcome the sibling case above argues against.
+    //
+    // The count has to be the SUBTRACTION. `mentionedUserIds.length` is 3 and
+    // would overstate it; `notifiedCount` cannot stand in either, because a
+    // recipient with in-app off and push on is notified without incrementing it.
+    await send(ok({ mentionedUserIds: ["u2", "u3", "u4"], mentionAttempted: 1, notifiedCount: 1 }));
+
+    const texts = toastTexts().join(" | ");
+    expect(texts, "partial suppression must not be silent").not.toBe("");
+    expect(texts).toMatch(/2 got no ping/i);
+    expect(texts).toMatch(/pinged 1/i);
+    // Not the mention count, which is 3.
+    expect(texts).not.toMatch(/3 got no ping/i);
+  });
+
+  it("still warns, and still says the team was told, when the fan-out really threw", async () => {
+    await send(
+      ok({
+        mentionedUserIds: ["u2"],
+        mentionAttempted: 1,
+        notifiedCount: 0,
+        mentionPingsFailed: true,
+      })
+    );
+
+    const texts = toastTexts().join(" | ");
+    expect(texts).toMatch(/couldn't send mention pings/i);
+    expect(texts).toMatch(/1 attempted/);
+    // True in this branch and only in this branch: the flag is set in the same
+    // catch as the Sentry capture.
+    expect(texts).toMatch(/team has been notified/i);
+  });
+
+  it("says nothing at all when the ping was attempted and reached nobody", async () => {
+    // `notifiedCount` is the fan-out's `dispatched` — distinct people it SENT to.
+    // Zero without a throw means everyone named has this event switched off on
+    // all three channels, or was deactivated between the parse and the send.
+    // Nothing failed, so there is nothing honest to say and nothing to report.
+    await send(ok({ mentionedUserIds: ["u2"], mentionAttempted: 1, notifiedCount: 0 }));
+
+    expect(toastTexts()).toEqual([]);
+  });
+
+  it("confirms the ping when it landed", async () => {
+    await send(ok({ mentionedUserIds: ["u2"], mentionAttempted: 1, notifiedCount: 1 }));
+
+    expect(toastTexts().join(" | ")).toMatch(/pinged 1/i);
+  });
+
+  it("says nothing for an ordinary message with no mentions", async () => {
+    // A toast per message in a chat app is a plague. Guards the guard: a fix that
+    // toasted on every send would satisfy the "explains truthfully" case above.
+    await send(ok());
+
+    expect(toastTexts()).toEqual([]);
   });
 });

@@ -4,7 +4,7 @@
  *
  * WHAT THIS IS *NOT* ABOUT. The original finding called this a brute-force hole
  * on a "128-character" token. It is neither. The token is two UUIDv4s with the
- * dashes stripped (lib/actions/team.ts:173) — 64 hex characters carrying ~244
+ * dashes stripped, where `inviteUserAction` mints it — 64 hex characters carrying ~244
  * bits of real entropy — so no attempt rate makes guessing it feasible, and
  * writing the fix up as anti-guessing is how the next reader over-builds it.
  * The "no sign-in required" half is deliberate and ratified elsewhere: the

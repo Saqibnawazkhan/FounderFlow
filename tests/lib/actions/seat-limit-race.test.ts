@@ -54,6 +54,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /* ── the fake workspace ─────────────────────────────────────────────────── */
 
+interface PendingRow {
+  email: string;
+  expiresAt: Date;
+  /** Optional so the cases that predate resend keep their two-field literals. */
+  id?: string;
+}
+
 const H = vi.hoisted(() => {
   const ADMIN = {
     id: "u_ayesha",
@@ -68,8 +75,17 @@ const H = vi.hoisted(() => {
     currentPeriodEnd: null as Date | null,
     /** COMMITTED active members of c_nimbus. */
     members: 1,
-    /** COMMITTED unused invite tokens, by address. */
-    pending: [] as string[],
+    /**
+     * COMMITTED unused invite tokens.
+     *
+     * Rows, not bare addresses, because `expiresAt` is load-bearing
+     * (team-and-invites-004): the seat count has to be able to tell a token
+     * somebody can still redeem from one nobody can. A fake that stored only
+     * the address could not distinguish them, so the finding would be
+     * untestable here and any fix for it invisible — the same hole A44 fell
+     * into before `txDeleted` existed.
+     */
+    pending: [] as PendingRow[],
     /** The deactivated teammate `reactivateUserAction` is asked about. */
     target: {
       id: "u_bilal",
@@ -79,6 +95,9 @@ const H = vi.hoisted(() => {
       deletedAt: new Date("2026-09-01T00:00:00Z") as Date | null,
     },
   };
+
+  /** A row's id, derived when a case did not bother to give it one. */
+  const rowId = (r: PendingRow): string => r.id ?? "inv-" + r.email;
 
   /** Every db call, in order, tagged with whether it ran inside a transaction. */
   const calls: Array<{ path: string; insideTx: boolean }> = [];
@@ -92,7 +111,7 @@ const H = vi.hoisted(() => {
 
   let insideTx = false;
   /** Tokens the open transaction has written but not committed. */
-  let txTokens: string[] = [];
+  let txTokens: PendingRow[] = [];
   /**
    * Addresses whose tokens the open transaction has DELETED but not committed.
    *
@@ -104,6 +123,16 @@ const H = vi.hoisted(() => {
    * could observe, which is how an invisible fix gets shipped.
    */
   let txDeleted = new Set<string>();
+  /**
+   * Expiry values the open transaction has WRITTEN but not committed, by row id.
+   *
+   * The third of the three (insert, delete, update), and it exists for the same
+   * reason: `resendInviteAction` revives a lapsed token and then asks the seat
+   * question, so a refusal has to roll the revive back. Applying the update to
+   * the committed world immediately would make that rollback unobservable — and
+   * a fix nothing can observe is the defect this repo keeps shipping.
+   */
+  let txUpdated = new Map<string, Date>();
 
   function note(path: string): void {
     calls.push({ path, insideTx });
@@ -117,7 +146,14 @@ const H = vi.hoisted(() => {
    */
   type FindArgs = { where?: { email?: string; id?: string } };
   type DeleteManyArgs = { where?: { email?: string } };
-  type CreateArgs = { data: { email: string } };
+  type CreateArgs = { data: { email: string; expiresAt: Date } };
+  /**
+   * `expiresAt` is optional here ON PURPOSE. It is exactly the shape of the
+   * unfixed code — a cap count with no expiry predicate — and the fake has to
+   * be able to represent it, or the test below could not watch the finding
+   * reproduce before the fix lands.
+   */
+  type CountArgs = { where?: { expiresAt?: { gt: Date } } };
 
   const db: Record<string, unknown> = {
     user: {
@@ -141,14 +177,29 @@ const H = vi.hoisted(() => {
       },
     },
     inviteToken: {
-      count: async () => {
+      count: async (args: CountArgs) => {
         note("inviteToken.count");
         // Committed rows, MINUS what this transaction has deleted, PLUS what it
         // has written — which is exactly what Postgres shows a transaction at
         // READ COMMITTED. The subtraction is what makes a resend at the cap
         // behave: the address's own outstanding invite must not count itself out
         // of the seat it is replacing.
-        return world.pending.filter((e) => !txDeleted.has(e)).length + txTokens.length;
+        //
+        // AND THE `expiresAt` PREDICATE IS HONOURED RATHER THAN IGNORED, which
+        // is the whole point of modelling rows. A caller that passes no
+        // predicate gets every unused token back, lapsed ones included — the
+        // behaviour team-and-invites-004 is about.
+        const gt = args?.where?.expiresAt?.gt;
+        const visible = world.pending
+          .filter((r) => !txDeleted.has(r.email))
+          // A transaction sees its own revive: the row this transaction just
+          // pushed forward is live to the count that follows it, which is what
+          // makes the resend overrun reproducible.
+          .map((r) => ({ ...r, expiresAt: txUpdated.get(rowId(r)) ?? r.expiresAt }))
+          .concat(txTokens);
+        return gt === undefined
+          ? visible.length
+          : visible.filter((r) => r.expiresAt.getTime() > gt.getTime()).length;
       },
       deleteMany: async (args: DeleteManyArgs) => {
         note("inviteToken.deleteMany");
@@ -158,17 +209,44 @@ const H = vi.hoisted(() => {
           // Deferred to COMMIT, so a throw after this point leaves the row
           // exactly where it was. The returned count is still what the caller
           // would see inside its own transaction.
-          const hit = world.pending.filter((e) => e === email && !txDeleted.has(e)).length;
+          const hit = world.pending.filter(
+            (r) => r.email === email && !txDeleted.has(r.email)
+          ).length;
           txDeleted.add(email);
           return { count: hit };
         }
         const before = world.pending.length;
-        world.pending = world.pending.filter((e) => e !== email);
+        world.pending = world.pending.filter((r) => r.email !== email);
         return { count: before - world.pending.length };
       },
       create: async (args: CreateArgs) => {
         note("inviteToken.create");
-        txTokens.push(args.data.email);
+        txTokens.push({ email: args.data.email, expiresAt: args.data.expiresAt });
+        return {};
+      },
+      findUnique: async (args: { where?: { id?: string } }) => {
+        note("inviteToken.findUnique");
+        const row = world.pending.find((r) => rowId(r) === args?.where?.id);
+        if (!row) return null;
+        return {
+          id: rowId(row),
+          companyId: "c_nimbus",
+          email: row.email,
+          name: row.email.split("@")[0],
+          role: "member",
+          usedAt: null,
+          token: "tok_" + rowId(row),
+          expiresAt: row.expiresAt,
+        };
+      },
+      update: async (args: { where: { id: string }; data: { expiresAt: Date } }) => {
+        note("inviteToken.update");
+        if (insideTx) {
+          txUpdated.set(args.where.id, args.data.expiresAt);
+          return {};
+        }
+        const row = world.pending.find((r) => rowId(r) === args.where.id);
+        if (row) row.expiresAt = args.data.expiresAt;
         return {};
       },
     },
@@ -196,6 +274,7 @@ const H = vi.hoisted(() => {
       insideTx = true;
       txTokens = [];
       txDeleted = new Set();
+      txUpdated = new Map();
       try {
         const out =
           typeof arg === "function"
@@ -206,12 +285,17 @@ const H = vi.hoisted(() => {
         // included, which is the property A44 turns on. Deletes are applied
         // before inserts so that replacing an address's invite in one
         // transaction leaves exactly one row, not zero.
-        world.pending = world.pending.filter((e) => !txDeleted.has(e));
+        world.pending = world.pending.filter((r) => !txDeleted.has(r.email));
+        world.pending.forEach((r) => {
+          const next = txUpdated.get(rowId(r));
+          if (next) r.expiresAt = next;
+        });
         world.pending.push(...txTokens);
         return out;
       } finally {
         txTokens = [];
         txDeleted = new Set();
+        txUpdated = new Map();
         insideTx = false;
       }
     },
@@ -219,7 +303,7 @@ const H = vi.hoisted(() => {
 
   const captureServerError = vi.fn();
 
-  return { ADMIN, world, calls, hooks, db, captureServerError };
+  return { ADMIN, world, calls, hooks, db, captureServerError, rowId };
 });
 
 /* ── module doubles ─────────────────────────────────────────────────────── */
@@ -256,11 +340,34 @@ vi.mock("bcryptjs", () => ({
   default: { hash: () => Promise.resolve("bcrypt$new"), compare: () => Promise.resolve(false) },
 }));
 
-import { inviteUserAction, reactivateUserAction } from "@/lib/actions/team";
+import { inviteUserAction, reactivateUserAction, resendInviteAction } from "@/lib/actions/team";
 
 /* ── helpers ────────────────────────────────────────────────────────────── */
 
 const NEW_HIRE = { name: "Zara Khan", email: "zara@nimbus.app", role: "member" as const };
+
+/**
+ * A token nobody can redeem any more, and one anybody can.
+ *
+ * Absolute instants rather than offsets from `Date.now()`: the action compares
+ * against its own `new Date()`, and both of these are far enough either side of
+ * any plausible run that nothing here depends on how long the suite takes.
+ */
+const LAPSED = new Date("2026-01-01T00:00:00.000Z");
+const LIVE = new Date("2099-01-01T00:00:00.000Z");
+
+function live(email: string): PendingRow {
+  return { email, expiresAt: LIVE };
+}
+
+function lapsed(email: string): PendingRow {
+  return { email, expiresAt: LAPSED };
+}
+
+/** The committed pending invites, as addresses, for the assertions that read them. */
+function pendingEmails(): string[] {
+  return H.world.pending.map((r) => r.email);
+}
 
 function pathsOf(): string[] {
   return H.calls.map((c) => c.path);
@@ -288,6 +395,80 @@ beforeEach(() => {
 
 /* ── 1. the invite gate decides where it writes ─────────────────────────── */
 
+describe("resendInviteAction — reviving a lapsed invite is a seat decision", () => {
+  /**
+   * THE REGRESSION THIS WAVE INTRODUCED, found by adversarial verification.
+   *
+   * team-and-invites-004 correctly stopped an EXPIRED token from holding a seat.
+   * That silently turned `resendInviteAction` into a fourth seat gate: while a
+   * lapsed token still counted, `members + unusedTokens <= limit` was an
+   * invariant here and reviving a row could not raise the total. Once lapsed rows
+   * are free, reviving one ADDS a live seat — and resend counted nothing.
+   *
+   * Two clicks in the UI, no race. On Free (cap 2) with one member and one expired
+   * invite, the next invite is allowed — that is 004 working. The Resend button
+   * renders on every pending row regardless of expiry, so resending the lapsed one
+   * leaves one member and two live invites against a cap of two.
+   */
+  const LAPSED = new Date("2026-09-01T00:00:00Z");
+  const LIVE = new Date("2099-01-01T00:00:00Z");
+
+  it("refuses when reviving the lapsed token would put the workspace over its cap", async () => {
+    H.world.plan = "free";
+    H.world.members = 1;
+    H.world.pending = [
+      { id: "inv-live", email: "live@nimbus.app", expiresAt: LIVE },
+      { id: "inv-lapsed", email: "lapsed@nimbus.app", expiresAt: LAPSED },
+    ];
+
+    const res = (await resendInviteAction("inv-lapsed")) as { success: boolean; error?: string };
+
+    expect(
+      res.success,
+      "reviving a lapsed invite took a seat nobody checked: one member plus two live " +
+        "invites on a cap of two, reachable with two clicks from the Team page"
+    ).toBe(false);
+    expect(res.error).toMatch(/limited to 2 members/);
+
+    // AND THE ROTATE ROLLED BACK. A refusal must not leave the invitee's link
+    // rotated out from under them — the A44 lesson, in the file A44 was fixed in.
+    const lapsed = H.world.pending.find((r) => r.id === "inv-lapsed");
+    expect(lapsed?.expiresAt.getTime()).toBe(LAPSED.getTime());
+  });
+
+  it("still resends an invite that is already live, even at the cap", async () => {
+    // The other half, so the fix cannot be "refuse every resend". One member and
+    // one LIVE invite is exactly two seats on a cap of two; reviving that same
+    // token changes nothing, so it must be allowed. This is why the comparison is
+    // `> limit` and not `>= limit`.
+    H.world.plan = "free";
+    H.world.members = 1;
+    H.world.pending = [{ id: "inv-live", email: "live@nimbus.app", expiresAt: LIVE }];
+
+    const res = (await resendInviteAction("inv-live")) as { success: boolean };
+
+    expect(res.success).toBe(true);
+  });
+
+  it("resends freely on Team, which pays for no count at all", async () => {
+    H.world.plan = "team";
+    H.world.subscriptionStatus = "active";
+    H.world.currentPeriodEnd = new Date("2099-01-01T00:00:00Z");
+    H.world.members = 25;
+    H.world.pending = [
+      { id: "inv-a", email: "a@nimbus.app", expiresAt: LIVE },
+      { id: "inv-lapsed", email: "lapsed@nimbus.app", expiresAt: LAPSED },
+    ];
+
+    const res = (await resendInviteAction("inv-lapsed")) as { success: boolean };
+
+    expect(res.success).toBe(true);
+    expect(pathsOf(), "an unlimited plan must not pay for a seat count").not.toContain(
+      "inviteToken.count"
+    );
+  });
+});
+
 describe("inviteUserAction — a refusal must not destroy an invite it did not send (A44)", () => {
   /**
    * The address already holds a live invite, and the workspace is now full.
@@ -309,14 +490,14 @@ describe("inviteUserAction — a refusal must not destroy an invite it did not s
    */
   it("leaves the address's existing invite in place when the seat check refuses", async () => {
     H.world.members = 2; // the Free cap, already full
-    H.world.pending = [NEW_HIRE.email]; // …and this address already has one
+    H.world.pending = [live(NEW_HIRE.email)]; // …and this address already has one
 
     const res = (await inviteUserAction(NEW_HIRE)) as { success: boolean; error?: string };
 
     expect(res.success).toBe(false);
     expect(res.error).toMatch(/limited to 2 members/);
     expect(
-      H.world.pending,
+      pendingEmails(),
       "The refusal rolled back, but the invitee's existing token was already gone: the " +
         "deleteMany ran before the transaction opened, so nothing could put it back. Their " +
         "live invite link is dead and the admin was told the invite was not sent."
@@ -328,12 +509,12 @@ describe("inviteUserAction — a refusal must not destroy an invite it did not s
     // One member on a cap of two, and the address holds an outstanding invite:
     // the resend must succeed, and must not leave two tokens for one address.
     H.world.members = 1;
-    H.world.pending = [NEW_HIRE.email];
+    H.world.pending = [live(NEW_HIRE.email)];
 
     const res = (await inviteUserAction(NEW_HIRE)) as { success: boolean };
 
     expect(res.success).toBe(true);
-    expect(H.world.pending.filter((e) => e === NEW_HIRE.email)).toHaveLength(1);
+    expect(pendingEmails().filter((e) => e === NEW_HIRE.email)).toHaveLength(1);
   });
 });
 
@@ -383,7 +564,7 @@ describe("inviteUserAction — the seat decision and the write are one step", ()
     expect(res.success).toBe(true);
     expect(res.data?.email).toBe("zara@nimbus.app");
     expect(createdTokens()).toBe(1);
-    expect(H.world.pending).toEqual(["zara@nimbus.app"]);
+    expect(pendingEmails()).toEqual(["zara@nimbus.app"]);
     // The shape, not just the outcome: both seat counts must run inside the
     // transaction that writes the token. A fix that only re-ordered the reads
     // outside it would pass the case above by luck of timing and fail here.
@@ -397,7 +578,7 @@ describe("inviteUserAction — the seat decision and the write are one step", ()
 
   it("refuses when members plus pending invites already fill the plan", async () => {
     H.world.members = 1;
-    H.world.pending = ["omar@nimbus.app"];
+    H.world.pending = [live("omar@nimbus.app")];
 
     const res = (await inviteUserAction(NEW_HIRE)) as { success: boolean; error?: string };
 
@@ -412,7 +593,7 @@ describe("inviteUserAction — the seat decision and the write are one step", ()
     // counts itself out of a seat. One member + Zara's own stale invite = 2,
     // which is the cap — and this must still go through.
     H.world.members = 1;
-    H.world.pending = ["zara@nimbus.app"];
+    H.world.pending = [live("zara@nimbus.app")];
 
     const res = (await inviteUserAction(NEW_HIRE)) as { success: boolean; error?: string };
 
@@ -421,7 +602,7 @@ describe("inviteUserAction — the seat decision and the write are one step", ()
       "Re-inviting the same address counted that address's own pending invite against the " +
         "cap, so a resend to the last seat refused itself."
     ).toBe(true);
-    expect(H.world.pending).toEqual(["zara@nimbus.app"]);
+    expect(pendingEmails()).toEqual(["zara@nimbus.app"]);
   });
 
   it("caps a workspace whose Team subscription has lapsed, not just one whose plan column says free", async () => {
@@ -538,5 +719,149 @@ describe("reactivateUserAction — restoring a teammate takes a seat", () => {
         "the UI calls this to refresh and would show a false plan error."
     ).toBe(true);
     expect(pathsOf().includes("user.update")).toBe(false);
+  });
+});
+
+/* ── 3. what a seat actually IS, and the two gates that disagreed ────────── */
+
+describe("team-and-invites-004 — a lapsed invite must not hold a seat", () => {
+  /**
+   * The cap counted `inviteToken.count({ where: { companyId, usedAt: null } })`
+   * with no `expiresAt` predicate, and nothing in the product ever clears an
+   * expired-but-unused token in a live workspace (the purge cron only deletes
+   * InviteToken rows inside a whole-company purge). So a solo founder whose
+   * first invite lapsed sat permanently at 1 member + 1 dead token = 2 on a cap
+   * of 2, and was told to buy the Team plan to fix it.
+   *
+   * The dead row is a row NOBODY CAN REDEEM: `acceptInviteAction` refuses an
+   * `expiresAt` in the past, and so does app/invite/[token]/page.tsx. So it was
+   * holding a seat that could not be filled, for ever, and the refusal named
+   * the plan rather than the invite.
+   */
+  it("issues the next invite when the seat is held only by an invite nobody can redeem", async () => {
+    H.world.members = 1; // the founder, alone
+    H.world.pending = [lapsed("omar@nimbus.app")]; // an invite that lapsed weeks ago
+
+    const res = (await inviteUserAction(NEW_HIRE)) as { success: boolean; error?: string };
+
+    expect(
+      res.success,
+      "An expired token cannot be accepted by anybody, so it is not occupying a seat. The " +
+        "founder was permanently one invite short and the refusal blamed their plan."
+    ).toBe(true);
+    expect(createdTokens()).toBe(1);
+  });
+
+  it("still refuses when the seat is held by an invite that can still be accepted", async () => {
+    // The guard against over-correcting into "never count invites at all",
+    // which would let an admin queue past the cap and strand the surplus.
+    H.world.members = 1;
+    H.world.pending = [live("omar@nimbus.app")];
+
+    const res = (await inviteUserAction(NEW_HIRE)) as { success: boolean; error?: string };
+
+    expect(res.success).toBe(false);
+    expect(createdTokens()).toBe(0);
+  });
+
+  it("names the pending invite, and the control that clears it, instead of only the plan", async () => {
+    // The second half of the finding: "the refusal blames the customer's plan
+    // instead of the dead invite". Recoverable only if the admin happens to
+    // notice the Revoke control on /team, and the message never pointed there.
+    H.world.members = 1;
+    H.world.pending = [live("omar@nimbus.app")];
+
+    const res = (await inviteUserAction(NEW_HIRE)) as { success: boolean; error?: string };
+
+    expect(res.error, "say that an invite is holding the seat").toMatch(/invite/i);
+    expect(res.error, "and name the control on /team that frees it").toMatch(/revoke/i);
+  });
+
+  it("still names only the plan when every seat is held by a real member", async () => {
+    // No invite is involved, so the message must not invent one to revoke.
+    H.world.members = 2;
+    H.world.pending = [];
+
+    const res = (await inviteUserAction(NEW_HIRE)) as { success: boolean; error?: string };
+
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/limited to 2 members/);
+    expect(res.error, "there is no invite to revoke here").not.toMatch(/revoke/i);
+  });
+});
+
+describe("A48 — the seat gates agree about what is holding a seat", () => {
+  /**
+   * The three gates agreed on the LIMIT and not on the COUNT. `inviteUserAction`
+   * counted members + pending invites; `reactivateUserAction` counted members
+   * only. So on a Free workspace at 1 member + 1 outstanding invite — which is
+   * the cap, and which the invite gate itself produced — pressing Reactivate
+   * saw "1 of 2" and cleared the tombstone. The workspace then held 2 members
+   * and a live token, and the person who paid was the INVITEE: their link still
+   * worked, still rendered the welcome, and `acceptInviteAction` refused them at
+   * the password step with "this workspace is already full".
+   *
+   * Nobody was told. The admin was not warned that restoring Bilal would spend
+   * the seat they had already promised somebody else, and the invitee found out
+   * by being turned away.
+   */
+  it("refuses a reactivation whose seat has already been promised to an invitee", async () => {
+    H.world.members = 1; // the founder
+    H.world.pending = [live("omar@nimbus.app")]; // …who already invited Omar
+
+    const res = (await reactivateUserAction(H.world.target.id)) as {
+      success: boolean;
+      error?: string;
+    };
+
+    expect(
+      res.success,
+      "Reactivate counted members only, so it spent the seat the admin had already promised " +
+        "to a pending invitee. The invitee was then refused at the password step."
+    ).toBe(false);
+    expect(
+      pathsOf().includes("user.update"),
+      "A refused reactivation must not clear the tombstone."
+    ).toBe(false);
+    expect(H.captureServerError).not.toHaveBeenCalled();
+  });
+
+  it("tells the admin an invite is in the way, and names the control that clears it", async () => {
+    H.world.members = 1;
+    H.world.pending = [live("omar@nimbus.app")];
+
+    const res = (await reactivateUserAction(H.world.target.id)) as { error?: string };
+
+    expect(res.error, "name what is holding the seat").toMatch(/invite/i);
+    expect(res.error, "and the control on /team that frees it").toMatch(/revoke/i);
+    expect(res.error, "and who the admin is trying to restore").toMatch(/Bilal/);
+  });
+
+  it("restores the teammate when the invite in the way has lapsed", async () => {
+    // 004 and A48 compose: a dead token must not block a reactivation either.
+    H.world.members = 1;
+    H.world.pending = [lapsed("omar@nimbus.app")];
+
+    const res = (await reactivateUserAction(H.world.target.id)) as { success: boolean };
+
+    expect(res.success).toBe(true);
+    expect(pathsOf().includes("user.update")).toBe(true);
+  });
+
+  it("counts the invites inside the transaction that clears the tombstone", async () => {
+    // Same property the member count already has: a seat COMMITTED by anyone
+    // else while this request is in flight must be seen.
+    H.world.members = 1;
+    H.hooks.onTransactionOpen = () => {
+      H.world.pending = [live("omar@nimbus.app")];
+    };
+
+    const res = (await reactivateUserAction(H.world.target.id)) as { success: boolean };
+
+    expect(res.success).toBe(false);
+    expect(
+      H.calls.filter((c) => c.insideTx && c.path === "inviteToken.count").length,
+      "the invite count has to be read inside the transaction, not before it"
+    ).toBe(1);
   });
 });

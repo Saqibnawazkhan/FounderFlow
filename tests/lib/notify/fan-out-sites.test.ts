@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { NOTIFY_EVENTS } from "@/lib/notify/fan-out";
+import { EVENT_DELIVERABLE_CHANNELS } from "@/lib/notify/events";
+import { stripComments } from "../harness/source-scan";
 
 /**
  * Structural guards over the notification fan-out.
@@ -119,5 +121,141 @@ describe("notification fan-out (the single write path)", () => {
 
     const unused = NOTIFY_EVENTS.filter((e) => !src.includes(`event: "${e}"`));
     expect(unused, `Declared but never raised: ${unused.join(", ")}`).toEqual([]);
+  });
+});
+
+/**
+ * `EVENT_DELIVERABLE_CHANNELS` must describe what the call sites actually do.
+ *
+ * Chat stopped writing in-app rows (`skipInApp`, lib/notify/fan-out.ts) so that
+ * a message announces itself on the sidebar's Chat badge instead of under the
+ * bell. That leaves the preferences matrix with a hazard: an "In app" checkbox
+ * for direct messages would save happily, read back correctly, and govern
+ * nothing. `EVENT_DELIVERABLE_CHANNELS` is what stops the matrix offering it —
+ * and a hand-maintained map of which events skip which channel is exactly the
+ * kind of thing that is true on the day it is written and quietly false a month
+ * later.
+ *
+ * So it is not trusted. This derives the answer from the call sites themselves:
+ * an event whose EVERY site passes `skipInApp: true` cannot deliver in-app, and
+ * one with even a single site that does not, can. `mention` is the case that
+ * makes the distinction matter — chat skips it, `createCommentAction` does not,
+ * so the switch stays honest and must stay offered.
+ *
+ * Comments are blanked before scanning. This very file, and the fan-out's own
+ * doc comment, contain the literal text `skipInApp: true` in prose; without
+ * that step the guard would read its own explanation as evidence.
+ */
+describe("the preferences matrix cannot offer a switch nothing honours", () => {
+  /** Every `notifyUsers({ ... })` argument literal in the tree, brace-balanced. */
+  function callSites(): Array<{ file: string; event: string; skipsInApp: boolean }> {
+    const out: Array<{ file: string; event: string; skipsInApp: boolean }> = [];
+    for (const f of scanned()) {
+      const file = rel(f);
+      if (file === "lib/notify/fan-out.ts") continue;
+      const src = stripComments(readFileSync(f, "utf8"));
+      let from = 0;
+      for (;;) {
+        const at = src.indexOf("notifyUsers({", from);
+        if (at === -1) break;
+        // Walk to the matching close brace so a second call in the same file
+        // cannot bleed into this one's body. Strings keep their contents here
+        // (the event name IS one), so a `{` inside a string could in principle
+        // skew the depth; none of the call sites has one, and the event
+        // assertion below would fail loudly rather than silently if that
+        // changed.
+        let depth = 0;
+        let end = at + "notifyUsers(".length;
+        for (; end < src.length; end++) {
+          if (src[end] === "{") depth++;
+          else if (src[end] === "}") {
+            depth--;
+            if (depth === 0) break;
+          }
+        }
+        const body = src.slice(at, end + 1);
+        const event = /event:\s*"([^"]+)"/.exec(body);
+        if (event) {
+          out.push({
+            file,
+            event: event[1]!,
+            skipsInApp: /skipInApp:\s*true/.test(body),
+          });
+        }
+        from = end + 1;
+      }
+    }
+    return out;
+  }
+
+  it("finds the call sites it is about to reason over", () => {
+    // Guards the guard twice. An empty list would make every assertion below
+    // pass vacuously, and a list with no suppressing site would mean the
+    // brace-walk silently stopped finding `skipInApp` — which reads as "the map
+    // is correct" rather than "the scan broke".
+    const sites = callSites();
+    expect(sites.length, "no notifyUsers call sites found — the scan is broken").toBeGreaterThan(7);
+    expect(
+      sites.filter((s) => s.skipsInApp).length,
+      "no call site was seen to skip the in-app row, so this guard is asserting nothing"
+    ).toBeGreaterThan(0);
+  });
+
+  it("marks in-app undeliverable for exactly the events that always skip it", () => {
+    const sites = callSites();
+    const wrong: string[] = [];
+
+    for (const event of NOTIFY_EVENTS) {
+      const mine = sites.filter((s) => s.event === event);
+      if (mine.length === 0) continue; // covered by the "never raised" test above
+      const everySiteSkips = mine.every((s) => s.skipsInApp);
+      const declared = EVENT_DELIVERABLE_CHANNELS[event].indexOf("inApp") !== -1;
+      if (everySiteSkips && declared) {
+        wrong.push(
+          `"${event}": every call site passes skipInApp, so no row is ever written — ` +
+            `remove "inApp" from EVENT_DELIVERABLE_CHANNELS or the settings page offers a dead switch`
+        );
+      }
+      if (!everySiteSkips && !declared) {
+        wrong.push(
+          `"${event}": ${mine
+            .filter((s) => !s.skipsInApp)
+            .map((s) => s.file)
+            .join(", ")} ` +
+            `still writes an in-app row, but the settings page no longer offers the switch for it`
+        );
+      }
+    }
+
+    expect(wrong, wrong.join("\n")).toEqual([]);
+  });
+
+  it("suppresses the in-app row for direct messages and NOTHING else", () => {
+    // The scope of the suppression, pinned. It was briefly wider: chat's mention
+    // ping skipped its row too, which left a reader whose only enabled channel
+    // is in-app with no way to learn they had been named — a badge counts
+    // messages and cannot say that one of them was addressed to you. Narrowing
+    // it back to DMs is the decision this asserts, in both directions, because
+    // either half drifting alone is a silent product change.
+    const sites = callSites();
+    const skipping = sites.filter((s) => s.skipsInApp);
+    expect(
+      Array.from(new Set(skipping.map((s) => s.event))),
+      "only the dm event may suppress its in-app row"
+    ).toEqual(["dm"]);
+    expect(
+      skipping.length,
+      "both DM fan-outs skip: the send path and the runway card"
+    ).toBeGreaterThan(1);
+  });
+
+  it("keeps the in-app switch on `mention`, in chat as well as in comments", () => {
+    const mention = callSites().filter((s) => s.event === "mention");
+    expect(mention.length, "expected a chat site and a comments site").toBeGreaterThan(1);
+    expect(
+      mention.every((s) => !s.skipsInApp),
+      "an @mention names a person and must stay in the durable list"
+    ).toBe(true);
+    expect(EVENT_DELIVERABLE_CHANNELS.mention.indexOf("inApp")).not.toBe(-1);
   });
 });

@@ -221,9 +221,8 @@ describe("isDmKind (one spelling of the kind check, for every surface)", () => {
 });
 
 describe("conversationTitle (how a conversation is addressed in prose)", () => {
-  it("hashes a room", () => {
+  it("hashes a public room", () => {
     expect(conversationTitle("public", "general")).toBe("#general");
-    expect(conversationTitle("private", "hiring")).toBe("#hiring");
   });
 
   it("never hashes a direct message", () => {
@@ -233,13 +232,70 @@ describe("conversationTitle (how a conversation is addressed in prose)", () => {
   });
 });
 
+/* ── A PRIVATE CHANNEL IS NOT A HASH ROOM ─────────────────────────────
+ *
+ * The assertion `conversationTitle("private", "hiring") === "#hiring"` used to
+ * live in "hashes a room" above, and it encoded the bug rather than the
+ * contract — this repo's most recurrent defect class.
+ *
+ * Every ICON surface in chat already disagreed with it. ChannelRail and
+ * ChannelHeader draw a Lock for a private channel and a Hash only for a public
+ * one, and ChatClient's own "Add people to …" dialog title drops the hash for
+ * a private channel. Only the prose surfaces that route through this function
+ * — the browser tab, the composer placeholder and the composer's sr-only label
+ * — still claimed "#pvt-hiring". In this product a hash means "a room other
+ * people can be in", which is the opposite of what a private channel promises,
+ * so the tab and the send box were contradicting the Lock next to them in the
+ * same viewport.
+ *
+ * The rule the fix installs: a hash appears in prose exactly where a Hash icon
+ * appears beside the name.
+ * ───────────────────────────────────────────────────────────────── */
+describe("conversationTitle — a private channel is not a hash room", () => {
+  it("does not hash a private channel", () => {
+    expect(conversationTitle("private", "pvt-hiring")).toBe("pvt-hiring");
+  });
+
+  it("is as casing-defensive about private as isDmKind is about dm", () => {
+    // `Channel.kind` is a plain String column, so the casing is whatever the
+    // writer stored — and `isPrivateKind` normalises it. That predicate used to
+    // be a private copy inside channel-rail.tsx, which the same change that added
+    // this case deleted; the one spelling now lives in lib/chat/dm.ts and every
+    // surface calls it. A privacy claim that depends on how a row happened to be
+    // spelled is not a claim at all.
+    for (const kind of ["private", "PRIVATE", "Private"]) {
+      expect(conversationTitle(kind, "raise")).toBe("raise");
+    }
+  });
+
+  it("withholds the hash from a kind it does not recognise", () => {
+    // Fail-closed on the PRIVACY claim, not on the render. A hash asserts
+    // "other people can be in here"; a kind this module has never heard of is
+    // not grounds to assert that on the app's behalf.
+    expect(conversationTitle("announcement", "launch")).toBe("launch");
+  });
+
+  it("still hashes a public room whatever the casing", () => {
+    for (const kind of ["public", "PUBLIC", "Public"]) {
+      expect(conversationTitle(kind, "general")).toBe("#general");
+    }
+  });
+});
+
 describe("composerPlaceholder (what the send box invites you to do)", () => {
-  it("names a room with its hash", () => {
+  it("names a public room with its hash", () => {
     expect(composerPlaceholder("public", "finance")).toBe("Message #finance");
   });
 
   it("names a person without one", () => {
     expect(composerPlaceholder("dm", "Ahmed Khan")).toBe("Message Ahmed Khan");
+  });
+
+  it("names a private channel without one", () => {
+    // The composer uses this string TWICE — placeholder and sr-only label — so
+    // this is also the wording a screen-reader user hears about the privacy of
+    // the room they are typing into.
+    expect(composerPlaceholder("private", "pvt-hiring")).toBe("Message pvt-hiring");
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { UNREAD_CAP, capUnread, isUnreadCapped } from "@/lib/chat/unread";
+import { UNREAD_CAP, capUnread, isUnreadCapped, unreadLabel } from "@/lib/chat/unread";
 
 describe("capUnread (what the rail badge is allowed to say)", () => {
   it("passes an ordinary count straight through", () => {
@@ -74,5 +74,40 @@ describe("isUnreadCapped (whether the badge earns its plus sign)", () => {
     for (let n = UNREAD_CAP - 2; n <= UNREAD_CAP + 2; n++) {
       expect(isUnreadCapped(n)).toBe(capUnread(n) !== n);
     }
+  });
+});
+
+/**
+ * `unreadLabel` — the printed form, shared by the channel rail and the
+ * sidebar's Chat row.
+ *
+ * It exists because those two surfaces each owned a copy of "when does 99
+ * become 99+", against two separate copies of the cap constant. They agreed by
+ * coincidence, and a badge that disagrees with the list it summarises is worse
+ * than no badge.
+ *
+ * THE INPUT IS ALREADY CAPPED. Both query paths run `capUnread` server-side, so
+ * 99 arriving here means "99 or more" and must print "99+". That is why this
+ * cannot be written in terms of `isUnreadCapped`, which asks about the RAW
+ * count: it would print a clipped 400 as a flat "99".
+ */
+describe("unreadLabel", () => {
+  it("prints small counts as themselves", () => {
+    expect(unreadLabel(1)).toBe("1");
+    expect(unreadLabel(42)).toBe("42");
+    expect(unreadLabel(98)).toBe("98");
+  });
+
+  it("prints the cap as 99+, because a capped 99 means 'at least'", () => {
+    expect(unreadLabel(UNREAD_CAP)).toBe("99+");
+  });
+
+  it("prints a raw over-cap count as 99+ too, if one ever reaches it uncapped", () => {
+    expect(unreadLabel(400)).toBe("99+");
+  });
+
+  it("collapses nonsense to 0 rather than rendering NaN in a badge", () => {
+    expect(unreadLabel(Number.NaN)).toBe("0");
+    expect(unreadLabel(-3)).toBe("0");
   });
 });

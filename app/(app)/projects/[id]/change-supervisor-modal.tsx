@@ -4,7 +4,7 @@
  * Change-supervisor modal. Admin/cofounder only — server action re-verifies.
  */
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import toast from "react-hot-toast";
@@ -33,6 +33,7 @@ export function ChangeSupervisorModal({ open, onClose, project, users, onSaved }
   const {
     register,
     handleSubmit,
+    reset,
     formState: { errors },
   } = useForm<ChangeSupervisorInput>({
     resolver: zodResolver(ChangeSupervisorSchema),
@@ -41,6 +42,38 @@ export function ChangeSupervisorModal({ open, onClose, project, users, onSaved }
       supervisorId: project.supervisorId,
     },
   });
+
+  /**
+   * RESEED ON OPEN — projects-008, and the same defect EditProjectModal was
+   * fixed for. Worse here, because this form has one field: a stale value is not
+   * a stale detail, it is the whole instruction.
+   *
+   * project-detail-client.tsx mounts this component for the page's whole
+   * lifetime (`{canReassign && <ChangeSupervisorModal open={supOpen} … />}`), so
+   * `useForm` above runs ONCE, at page load, and `defaultValues` is a snapshot
+   * from then. Radix unmounts the dialog's DOM on close but react-hook-form's
+   * state lives up here and survives it, and the parent's `onSaved` calls
+   * `router.refresh()` without remounting or resetting — so after a successful
+   * reassignment the `<select>` still carried the PREVIOUS supervisor's id.
+   *
+   * That was not merely cosmetic. `onSubmit` returns early when the chosen id
+   * equals `project.supervisorId`, and the prop is by then the NEW id while the
+   * form holds the OLD one — so they differ, the no-op guard reads the stale
+   * value as a deliberate change, and one press of Save handed the project back
+   * to the person it had just been taken from, with a second notification to the
+   * wrong person and an activity row narrating it.
+   *
+   * Only on the false→true transition, for the reason EditProjectModal gives:
+   * reseeding on every `project` change would discard a half-made choice the
+   * moment anything else on the page fired a refresh with the dialog open.
+   */
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      reset({ projectId: project.id, supervisorId: project.supervisorId });
+    }
+    wasOpen.current = open;
+  }, [open, project.id, project.supervisorId, reset]);
 
   async function onSubmit(data: ChangeSupervisorInput) {
     if (data.supervisorId === project.supervisorId) {

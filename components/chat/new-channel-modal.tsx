@@ -33,6 +33,7 @@ import {
   NewChannelSchema,
   type NewChannelInput,
 } from "@/lib/schemas/chat";
+import { conversationTitle } from "@/lib/chat/dm";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -113,7 +114,11 @@ export function NewChannelModal({ open, onClose, onCreated }: Props) {
       toast.error(res.error);
       return;
     }
-    toast.success(`#${data.name} created`);
+    // `conversationTitle`, so the confirmation addresses the room the way every
+    // other surface will: `#general` for a public one, a bare `pvt-hiring` for a
+    // private one. Hashing it here told the creator their private channel was a
+    // public room in the same breath as creating it.
+    toast.success(`${conversationTitle(data.kind, data.name)} created`);
     reset(EMPTY);
     onCreated(res.data.slug);
   }

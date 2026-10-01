@@ -20,7 +20,6 @@
  */
 
 import { revalidatePath } from "next/cache";
-import { format } from "date-fns";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import {
@@ -32,6 +31,8 @@ import {
 } from "@/lib/schemas/task";
 import { limiters } from "@/lib/rate-limit";
 import { canManageProject } from "@/lib/auth/project-permissions";
+import { canEditTask } from "@/lib/tasks/task-permissions";
+import { formatDeadlineDay } from "@/lib/tasks/deadline";
 import { captureServerError } from "@/lib/sentry-server";
 import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
 import type { Role } from "@/lib/auth/role-gates";
@@ -123,8 +124,13 @@ function bulkSelectionTooLargeError(input: unknown): string | null {
 }
 
 function formatDeadline(deadline: Date): string {
-  const utcDay = new Date(deadline.getUTCFullYear(), deadline.getUTCMonth(), deadline.getUTCDate());
-  return format(utcDay, "MMM dd, yyyy");
+  // Delegated to lib/tasks/deadline.ts (tasks-and-comments-011), which is the
+  // same function every CLIENT surface now reads the day through. The UTC-parts
+  // rebuild below was correct and was the only place that did it; the card, the
+  // list row, the detail modal and the calendar all formatted the raw instant in
+  // the viewer's zone, so the email and the board stated different due dates for
+  // one task. Keeping the rule in one module is what makes them agree.
+  return formatDeadlineDay(deadline, "MMM dd, yyyy");
 }
 
 function toClient(t: {
@@ -332,10 +338,16 @@ export async function updateTaskStatusAction(input: unknown): Promise<ActionResu
   if (task.companyId !== session.user.companyId) {
     return { success: false, error: "Not authorized" };
   }
-  const canEdit =
-    task.assignedTo === session.user.id ||
-    task.assignedBy === session.user.id ||
-    session.user.role === "admin";
+  // The board offers a status `<select>` and a drag handle on every card, so
+  // this predicate is shared with app/(app)/tasks/tasks-client.tsx rather than
+  // stated twice (tasks-and-comments-009). A cofounder is NOT in the set, which
+  // is why the control has to be disabled there instead of hoping nobody uses
+  // it: the drag path applies its move optimistically first, so a refusal here
+  // showed as a card jumping back.
+  const canEdit = canEditTask({
+    actor: { userId: session.user.id, role: session.user.role as Role },
+    task,
+  });
   if (!canEdit) return { success: false, error: "Not authorized" };
 
   const me = await db.user.findUnique({ where: { id: session.user.id } });
@@ -421,10 +433,12 @@ export async function reorderTaskAction(input: unknown): Promise<ActionResult> {
     if (task.companyId !== session.user.companyId) {
       return { success: false, error: "Not authorized" };
     }
-    const canEdit =
-      task.assignedTo === session.user.id ||
-      task.assignedBy === session.user.id ||
-      session.user.role === "admin";
+    // Same predicate as updateTaskStatusAction and as the board's own
+    // affordances — see lib/tasks/task-permissions.ts (tasks-and-comments-009).
+    const canEdit = canEditTask({
+      actor: { userId: session.user.id, role: session.user.role as Role },
+      task,
+    });
     if (!canEdit) return { success: false, error: "Not authorized" };
 
     await db.task.update({ where: { id }, data: { order } });
@@ -529,6 +543,12 @@ export async function deleteTaskAction(id: string): Promise<ActionResult> {
  * per task, we push the same rule the single-task actions enforce into the
  * SQL: an admin can touch any company task; everyone else only tasks they're
  * the assignee or creator of. deletedAt: null keeps tombstoned rows out.
+ *
+ * This is `canEditTask` (lib/tasks/task-permissions.ts) expressed as a Prisma
+ * filter. It cannot call that function — the whole point is that the rule runs
+ * inside one `updateMany` rather than per row — so the two are a mirror, and
+ * `tests/app/tasks/task-permissions.test.ts` drives the predicate over the same
+ * role/ownership matrix this clause implies.
  * Anything the caller isn't allowed to touch is simply not matched — a bulk
  * op silently skips forbidden rows rather than failing the whole batch.
  */

@@ -39,6 +39,27 @@ export function AcceptInviteClient({
   const hydrated = useHydrated();
   const pwId = useId();
   const [showPassword, setShowPassword] = useState(false);
+  /**
+   * The refusal, kept on the screen (A47).
+   *
+   * Every sentence `acceptInviteAction` can return here asks the reader to DO
+   * something — ask their admin for a fresh invite, ask them to restore a
+   * deactivated account, ask them to upgrade, or sign in by hand — and this
+   * surface delivered all of them through a 3500ms toast and nothing else. The
+   * reader is not a signed-in admin with a roster behind the toast; the whole
+   * page is a heading, their own email and this password box, so once the toast
+   * goes the screen says nothing about what happened.
+   *
+   * The worst of the set is "Account created, but auto-sign-in failed. Sign in
+   * manually.": the User row exists and the token is burnt, so re-submitting
+   * cannot work, and that sentence is the only instruction anywhere in the
+   * product for the state they are now in.
+   *
+   * Same shape as app/signup/page.tsx and app/forgot-password/page.tsx — persist
+   * it AND toast it, because the toast is what pulls the eye and the text is what
+   * survives being read slowly.
+   */
+  const [formError, setFormError] = useState<string | null>(null);
 
   const {
     register,
@@ -50,6 +71,9 @@ export function AcceptInviteClient({
   });
 
   async function onSubmit(data: AcceptInviteInput) {
+    // Cleared on every attempt, so a sentence on screen always belongs to the
+    // press that produced it rather than to the previous one.
+    setFormError(null);
     try {
       const res = await acceptInviteAction(data);
       if (res.success) {
@@ -57,10 +81,17 @@ export function AcceptInviteClient({
         window.location.href = "/dashboard";
         return;
       }
-      toast.error(res.error || "Couldn't accept invite");
+      const message = res.error || "Couldn't accept invite";
+      setFormError(message);
+      toast.error(message);
     } catch (err) {
       console.error("acceptInviteAction threw:", err);
-      toast.error("We couldn't reach the server. Try again.");
+      // Persisted for the same reason as the refusal above: the button has gone
+      // back to reading "Accept & sign in" by the time the toast expires, so a
+      // toast-only delivery leaves a form that looks like it was never submitted.
+      const message = "We couldn't reach the server. Try again.";
+      setFormError(message);
+      toast.error(message);
     }
   }
 
@@ -122,6 +153,18 @@ export function AcceptInviteClient({
           </p>
         )}
       </div>
+
+      {/* The server's refusal, where it can be re-read (A47). `role="alert"`
+          matches app/signup/page.tsx and app/forgot-password/page.tsx: this is a
+          failure the reader just caused by pressing the button, so interrupting
+          them with it is correct. Above the button rather than below it, because
+          on a phone — this form's most likely device, opened from an email
+          client — anything under the CTA is off-screen. */}
+      {formError && (
+        <p role="alert" className="text-sm font-medium text-danger">
+          {formError}
+        </p>
+      )}
 
       {/* Inert until hydrated — closes both the click and the Enter-key path.
           Styling stays normal in that window; see app/login/page.tsx. */}

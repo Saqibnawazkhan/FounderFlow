@@ -167,22 +167,98 @@ export function MessageComposer({
     setBody("");
     mentions.dismiss();
 
-    // Honest fan-out reporting, same contract as <CommentThread>:
-    // notifiedCount comes from the actual createMany result, mentionedUserIds
-    // is the PARSED list. If we parsed mentions but notified nobody, the
-    // fan-out failed and the author deserves to know rather than assume their
-    // teammate was pinged.
-    const { notifiedCount, mentionedUserIds } = result.data;
-    if (notifiedCount > 0) {
-      toast.success(`Sent — pinged ${notifiedCount} teammate(s)`);
-    } else if (mentionedUserIds.length > 0) {
+    /* ── chat-005: THREE OUTCOMES, NOT TWO ───────────────────────────────
+     *
+     * The warning below used to fire on `mentionedUserIds.length > 0` — the
+     * PARSED list — so it fired whenever the server had deliberately pinged
+     * nobody. In a private channel the membership filter empties the recipients,
+     * so every single @-mention produced:
+     *
+     *   Sent — couldn't send mention pings (1 attempted). The team has been notified.
+     *
+     * Both halves were false. Nothing was attempted, nothing failed, and nothing
+     * was reported to anyone — `captureServerError` runs only in the fan-out's
+     * catch. Users learn to distrust the one toast in this composer that is
+     * supposed to mean something.
+     *
+     * WHY A FLAG AND NOT A COMPARISON. `notifiedCount` is how many distinct
+     * people the fan-out actually delivered something to, and it is legitimately
+     * 0 without anything going wrong: a recipient who has turned this event off
+     * on all three channels, or who was deactivated between the mention being
+     * parsed and the ping being sent, was attempted and reached nobody. So
+     * "notified nobody" cannot stand in for "the fan-out failed", and
+     * `mentionPingsFailed` is set in the same catch as the Sentry capture that
+     * makes "The team has been notified" a true sentence.
+     *
+     * THIS USED TO BE THE IN-APP ROW COUNT. A mention still writes one, so that
+     * number is not always zero — but it stopped being the whole story when the
+     * DM fan-out was suppressed, and it never covered a recipient reached only
+     * by push. The server switched to the fan-out's `dispatched`, which counts
+     * distinct people SENT to on any channel. That is what was sent, not what
+     * arrived — a push to a device with no live subscription counts — so this
+     * toast claims only what the server actually did, which is the most it can
+     * know.
+     *
+     * The suppression case gets a sentence rather than silence: the author typed
+     * a name expecting a ping, and saying nothing leaves them believing one went.
+     * It names BOTH reasons the server suppresses — not a member of this
+     * conversation, or muted it — because the action does not distinguish them
+     * and this component must not guess which one applied.
+     * ───────────────────────────────────────────────────────────────────── */
+    const { notifiedCount, mentionedUserIds, mentionAttempted, mentionPingsFailed } = result.data;
+    /*
+     * THE SUPPRESSED COUNT IS A SUBTRACTION, not the mention count.
+     *
+     * This read `mentionedUserIds.length` under the name `suppressed`, and the
+     * branch below required `mentionAttempted === 0` — so PARTIAL suppression
+     * said nothing at all. Mention three people in a private channel where one is
+     * a member: mentioned 3, attempted 1, and the author was told nothing about
+     * the two the server dropped. That is the case the comment above argues
+     * hardest against ("saying nothing leaves them believing one went"), which is
+     * how it survived: the reasoning was right and the condition did not
+     * implement it. Found by adversarial verification.
+     *
+     * `mentioned - attempted` is the only figure here that is certain. Those are
+     * the ids the server filtered out BEFORE trying, so they definitely got
+     * nothing. `notifiedCount` still cannot fill that role in either direction:
+     * it counts DELIVERIES, so it cannot separate "the server never tried" from
+     * "it tried and this person has every channel switched off" — and those two
+     * want opposite sentences, because only the first is something the author
+     * can act on.
+     */
+    const mentioned = mentionedUserIds.length;
+    const suppressed = Math.max(0, mentioned - mentionAttempted);
+    const noPingReason = "not in this conversation, or they've muted it";
+
+    if (mentionPingsFailed) {
+      // First, even when some pings landed: a fan-out that threw is the only
+      // outcome here with a Sentry event behind it, and the only one where "The
+      // team has been notified" is a true sentence.
       toast(
-        `Sent — couldn't send mention pings (${mentionedUserIds.length} attempted). The team has been notified.`,
+        `Sent — couldn't send mention pings (${mentionAttempted} attempted). The team has been notified.`,
         { icon: "⚠️" }
       );
+    } else if (suppressed > 0 && notifiedCount > 0) {
+      toast(`Sent — pinged ${notifiedCount}, but ${suppressed} got no ping: ${noPingReason}.`, {
+        icon: "ℹ️",
+      });
+    } else if (suppressed > 0) {
+      toast(
+        suppressed === 1
+          ? `Sent — no ping: they're ${noPingReason}.`
+          : `Sent — no pings: the ${suppressed} people you mentioned are ${noPingReason}.`,
+        { icon: "ℹ️" }
+      );
+    } else if (notifiedCount > 0) {
+      toast.success(`Sent — pinged ${notifiedCount} teammate(s)`);
     }
-    // No toast for an ordinary message: the message appearing in the timeline
-    // IS the confirmation, and a toast per message in a chat app is a plague.
+    // Otherwise nothing. An ordinary message needs no toast — the message
+    // appearing in the timeline IS the confirmation, and a toast per message in a
+    // chat app is a plague — and neither does a mention that was attempted and
+    // sent to nobody, which means the people named have this event switched off
+    // on all three channels. That is their setting, not this author's business,
+    // and they will still see the message on their Chat badge next time they
+    // look.
 
     onSent?.();
   }

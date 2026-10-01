@@ -31,6 +31,7 @@ import {
   startOfMonth,
   startOfWeek,
 } from "date-fns";
+import { deadlineDay } from "@/lib/tasks/deadline";
 import type { Task } from "@/lib/types";
 
 /** Monday-start weeks. Shared with the weekly timesheet. */
@@ -69,8 +70,14 @@ export function buildMonthGrid<T extends Pick<Task, "deadline" | "priority" | "o
     date,
     inMonth: isSameMonth(date, month),
     isToday: isSameDay(date, now),
+    // `deadlineDay`, not `new Date(t.deadline)`: the grid is PAGED by
+    // `startOfMonth(deadlineDay(...))` in components/tasks/task-calendar.tsx, so
+    // bucketing by the viewer's local day made one component read the day two
+    // different ways. For every pre-existing midnight-UTC row at UTC-5 the card
+    // text said Oct 15 and the chip sat in the Oct 14 cell — the page and the
+    // contents disagreeing inside the same view.
     tasks: tasks
-      .filter((t) => isSameDay(new Date(t.deadline), date))
+      .filter((t) => isSameDay(deadlineDay(t.deadline), date))
       .sort(
         (a, b) =>
           (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9) || a.order - b.order

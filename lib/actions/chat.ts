@@ -61,10 +61,11 @@ import {
   dmKeyFor,
 } from "@/lib/auth/channel-permissions";
 import { getTransactions } from "@/lib/queries/transactions";
+import { unreadChatTotal } from "@/lib/queries/chat";
 import { subMonths } from "date-fns";
 import { extractMentions } from "@/lib/comments/mentions";
 import { slugifyChannelName, uniqueChannelSlug } from "@/lib/chat/slug";
-import { dmSlugFor } from "@/lib/chat/dm";
+import { conversationTitle, dmSlugFor } from "@/lib/chat/dm";
 import type { Role } from "@/lib/auth/role-gates";
 
 import type { ActionResult } from "@/lib/actions/types";
@@ -175,9 +176,49 @@ export async function sendMessageAction(input: unknown): Promise<
     id: string;
     /** Who the parser RESOLVED from the body — "we tried to ping these". */
     mentionedUserIds: string[];
-    /** Who was ACTUALLY notified. Lower when someone muted the channel, opted
-     *  out of mention notifications, or the fan-out threw. */
+    /**
+     * How many distinct people the fan-out SENT something to, by push or email.
+     * Dispatch, not delivery: a push to an unsubscribed device counts, because
+     * nothing synchronous can know otherwise (see `dispatched` in
+     * lib/notify/fan-out.ts). Lower than `mentionedUserIds` when someone muted the
+     * channel, is not in it, has the event switched off on every channel, or
+     * the fan-out threw.
+     *
+     * NOT the in-app row count, which is what this was until the DM fan-out
+     * stopped writing rows: an ordinary message now announces itself on the
+     * sidebar's Chat badge instead of under the bell. @mentions still write a
+     * row (they name a person; a badge cannot), so this number is a mix of both
+     * and the row count alone would under-report it. It reports the fan-out's
+     * `dispatched` — see the composer, which turns this into "pinged N".
+     */
     notifiedCount: number;
+    /**
+     * How many people the mention fan-out was actually ASKED to notify —
+     * `mentionedUserIds` AFTER the membership and mute filters (chat-005).
+     *
+     * The composer needs the difference between this and `mentionedUserIds` to
+     * tell a delivery failure from a deliberate suppression. It had only the
+     * parsed list, so in a private channel — where the membership filter empties
+     * the recipients — every @-mention drew "couldn't send mention pings (1
+     * attempted)" over a send in which nothing was attempted and nothing failed.
+     */
+    mentionAttempted: number;
+    /**
+     * Did the mention fan-out THROW, and get reported to Sentry? (chat-005)
+     *
+     * A count cannot answer this. `notifyUsers` returns `notified: 0` without
+     * throwing whenever every recipient has in-app notifications switched off —
+     * they may well have had a push or an email — so `notifiedCount === 0` does
+     * not imply an incident. The composer's warning claims "The team has been
+     * notified", and the only thing that makes that sentence true is the
+     * `captureServerError` in the fan-out's catch. This flag is set in the same
+     * place, so the copy cannot outlive the report.
+     *
+     * Scoped to the MENTION fan-out, not the DM one: the toast this feeds says
+     * "mention pings". A DM fan-out failure is still captured for on-call, and
+     * still leaves the message itself delivered.
+     */
+    mentionPingsFailed: boolean;
   }>
 > {
   const session = await auth();
@@ -324,6 +365,10 @@ export async function sendMessageAction(input: unknown): Promise<
     // the parsed list instead would silence people the mention path had
     // already dropped (muted, or not a member), which is the opposite bug.
     let mentionRecipients: string[] = [];
+    // Set in the mention fan-out's catch, beside the `captureServerError` that
+    // makes "The team has been notified" a true sentence. See
+    // `mentionPingsFailed` on the return type.
+    let mentionPingsFailed = false;
     if (mentionedUserIds.length > 0) {
       let recipients = mentionedUserIds;
       if (channel.kind !== "public") {
@@ -346,8 +391,20 @@ export async function sendMessageAction(input: unknown): Promise<
 
       if (recipients.length > 0) {
         try {
-          const { notified } = await notifyUsers({
+          const { dispatched } = await notifyUsers({
             event: "mention",
+            // NO `skipInApp` here, deliberately, and this is the one place in
+            // chat that still writes a notification row.
+            //
+            // The DM path below suppresses it, because ordinary conversation
+            // belongs on the Chat badge and not in a list beside budget alerts
+            // and role changes. An @mention is a different event: it names one
+            // person and waits for them. The badge cannot carry that — it says
+            // "3 unread" whether those three messages named you or not — so
+            // suppressing this one too would leave someone whose only enabled
+            // channel is in-app with no way to learn they had been addressed.
+            // The durable row is the only surface that distinguishes being
+            // named from being present.
             userIds: recipients,
             exclude: userId,
             companyId,
@@ -360,7 +417,11 @@ export async function sendMessageAction(input: unknown): Promise<
             title:
               channel.kind === "dm"
                 ? `${author.name} mentioned you in a direct message`
-                : `${author.name} mentioned you in #${channel.name}`,
+                : // `conversationTitle`, not `#${name}`: a hash in this product
+                  // means "a room other people can be in", and this line was
+                  // telling a member of a PRIVATE channel they were mentioned in
+                  // "#pvt-hiring" while every icon beside that name is a Lock.
+                  `${author.name} mentioned you in ${conversationTitle(channel.kind, channel.name)}`,
             message: truncated,
             // Chat is a people surface, not a money or task one. "team" is the
             // category a member is allowed to see; "finance" would be stripped
@@ -368,8 +429,15 @@ export async function sendMessageAction(input: unknown): Promise<
             category: "team",
             link: `/chat/${channel.slug}?message=${created.id}`,
           });
-          notifiedCount = notified;
+          // `dispatched`, not `notified`: with the in-app row suppressed, the
+          // number of ROWS WRITTEN is now always zero, and reporting that to
+          // the composer would have every successful mention draw "pinged 0".
+          // `dispatched` counts distinct people this call SENT to — see its
+          // definition in lib/notify/fan-out.ts for why that is dispatch and
+          // not delivery, and why no synchronous number here could be delivery.
+          notifiedCount = dispatched;
         } catch (notifyErr) {
+          mentionPingsFailed = true;
           captureServerError(notifyErr, {
             action: "sendMessageAction.fanout",
             companyId,
@@ -412,8 +480,15 @@ export async function sendMessageAction(input: unknown): Promise<
         const dmRecipients = others.map((m) => m.userId).filter((id) => !alreadyPinged.has(id));
 
         if (dmRecipients.length > 0) {
-          const { notified } = await notifyUsers({
+          const { dispatched } = await notifyUsers({
             event: "dm",
+            // THE SITE THE CHANGE WAS REPORTED FOR: every DM wrote a
+            // notification row, so a two-line exchange put two entries under
+            // the bell and nothing at all next to the word "Chat". Unlike the
+            // mention path above, nothing here needs a durable row — a DM's
+            // unread count IS the fact that someone messaged you, and the Chat
+            // badge carries it.
+            skipInApp: true,
             userIds: dmRecipients,
             exclude: userId,
             companyId,
@@ -427,9 +502,9 @@ export async function sendMessageAction(input: unknown): Promise<
             link: `/chat/${channel.slug}?message=${created.id}`,
           });
           // Added, not assigned: the returned count is "how many people this
-          // message actually reached", and in a DM that was also an @mention
-          // both paths can legitimately contribute.
-          notifiedCount += notified;
+          // message was sent to", and in a DM that was also an @mention both
+          // paths can legitimately contribute.
+          notifiedCount += dispatched;
         }
       } catch (notifyErr) {
         captureServerError(notifyErr, {
@@ -444,7 +519,16 @@ export async function sendMessageAction(input: unknown): Promise<
     revalidatePath("/chat");
     revalidatePath(`/chat/${channel.slug}`);
 
-    return { success: true, data: { id: created.id, mentionedUserIds, notifiedCount } };
+    return {
+      success: true,
+      data: {
+        id: created.id,
+        mentionedUserIds,
+        notifiedCount,
+        mentionAttempted: mentionRecipients.length,
+        mentionPingsFailed,
+      },
+    };
   } catch (e) {
     captureServerError(e, { action: "sendMessageAction" });
     return { success: false, error: "Couldn't send that message right now." };
@@ -839,6 +923,36 @@ export async function deleteMessageAction(input: unknown): Promise<ActionResult>
 }
 
 /**
+ * How many unread chat messages the caller has, in total.
+ *
+ * Exists because the sidebar is a client component and cannot call a query
+ * module directly. It is a thin pass-through to `unreadChatTotal()`, which
+ * owns the counting rules — a second copy of "what counts as unread" is how
+ * the nav badge and the channel rail would come to disagree.
+ *
+ * DELIBERATELY NOT RATE LIMITED, for the reason `markChannelReadAction` gives
+ * below at greater length: this is a 30-second poll in every open tab, and
+ * putting it under `limiters.write` (shared across all of a user's writes)
+ * would make the badge's own polling reject the user's next real message. It
+ * is two indexed reads and returns one integer.
+ */
+export async function unreadChatCountAction(): Promise<ActionResult<{ count: number }>> {
+  const session = await auth();
+  if (!session?.user?.companyId || !session.user.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+  try {
+    const count = await unreadChatTotal();
+    return { success: true, data: { count } };
+  } catch (e) {
+    captureServerError(e, { action: "unreadChatCountAction" });
+    // A failed poll must not surface as a toast — the sidebar simply keeps the
+    // number it has and tries again in thirty seconds.
+    return { success: false, error: "Couldn't read your unread count right now." };
+  }
+}
+
+/**
  * Move my read watermark to now.
  *
  * DELIBERATELY NOT RATE LIMITED. This fires on every channel open and every
@@ -897,7 +1011,16 @@ export async function markChannelReadAction(input: unknown): Promise<ActionResul
       data: { lastReadAt: new Date(), lastReadMessageId: newest?.id ?? null },
     });
 
+    // BOTH paths, matching every other write in this file (chat-007). The
+    // unread badge is drawn by <ChannelRail>, which is rendered from
+    // `listChannelsForUser()` inside app/(app)/chat/[slug]/page.tsx — so the
+    // cached render that has to go is the one for the channel the reader is
+    // LOOKING AT. Revalidating "/chat" alone moved the watermark in the database
+    // and left the badge beside their own cursor still claiming unread messages
+    // until they navigated away and back, which teaches people to ignore the one
+    // signal the rail exists to carry.
     revalidatePath("/chat");
+    revalidatePath(`/chat/${channel.slug}`);
     return { success: true, data: undefined };
   } catch (e) {
     captureServerError(e, { action: "markChannelReadAction" });
@@ -1403,6 +1526,10 @@ export async function postRunwayCardAction(input: unknown): Promise<ActionResult
         if (others.length > 0) {
           await notifyUsers({
             event: "dm",
+            // As the send path: the card shows up as an unread message on the
+            // Chat badge. A row under the bell would be a second, duplicate
+            // announcement of the same thing.
+            skipInApp: true,
             userIds: others.map((m) => m.userId),
             exclude: userId,
             companyId,

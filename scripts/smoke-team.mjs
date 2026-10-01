@@ -11,6 +11,20 @@
 import puppeteer from "puppeteer-core";
 import { localDb } from "./_local-db.mjs";
 
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.24";
+
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const BASE = process.env.BASE ?? "http://localhost:3009";
 const OUT = "C:/Users/USER/AppData/Local/Temp/ff-screenshots";
@@ -28,6 +42,7 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox", "--no-proxy-server", "--proxy-bypass-list=*", "--disable-gpu"],
 });
 const page = await browser.newPage();
+await page.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
 page.on("pageerror", (e) => console.error("PAGEERROR:", e.message));
 
 const stamp = Date.now();
@@ -35,7 +50,16 @@ const inviteEmail = `smoke-${stamp}@founderflow.app`;
 const inviteName = `Smoke User ${stamp}`;
 const acceptPassword = `smoke-pw-${stamp}`;
 
-const beforeUsers = await db.user.count();
+/**
+ * THE TENANT THIS SCRIPT OWNS, and both user counts are scoped to it
+ * (audit harness-012). They were bare `db.user.count()` -- every tenant in the
+ * database at once -- so `afterRemoveUsers === beforeUsers` could be satisfied by
+ * another script's signup landing while the removal under test silently failed.
+ */
+const COMPANY_ID = "demo-nimbus";
+const userScope = { where: { companyId: COMPANY_ID } };
+
+const beforeUsers = await db.user.count(userScope);
 console.log(`DB before: users=${beforeUsers}`);
 
 /* ── sign in as admin ─────────────────────────────────────────────────── */
@@ -135,6 +159,7 @@ if (!token) {
 // the recipient isn't authorized to manage anyone.
 const recipientContext = await browser.createBrowserContext();
 const recipient = await recipientContext.newPage();
+await recipient.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
 await recipient.goto(`${BASE}/invite/${token.token}`, { waitUntil: "networkidle2" });
 await recipient.waitForSelector("input[type=password]", { timeout: 10_000 });
 await new Promise((r) => setTimeout(r, 300));
@@ -229,7 +254,7 @@ await page
 const removed = await db.user.findUnique({ where: { id: invited.id } });
 console.log(removed ? `❌ user still in DB` : "✅ user removed from DB");
 
-const afterRemoveUsers = await db.user.count();
+const afterRemoveUsers = await db.user.count(userScope);
 const removeOk = !removed && afterRemoveUsers === beforeUsers;
 console.log(`DB after remove: users=${afterRemoveUsers} ${removeOk ? "✅" : "❌"}`);
 

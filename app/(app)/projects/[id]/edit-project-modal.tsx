@@ -27,6 +27,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import toast from "react-hot-toast";
 import { Save } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
+import { STATUS_LABEL_KEY } from "@/components/projects/project-card";
 import { updateProjectAction } from "@/lib/actions/projects";
 import {
   PROJECT_COLORS,
@@ -187,11 +188,12 @@ export function EditProjectModal({ open, onClose, project, onSaved }: Props) {
         <Field id={statusId} label={t.projects.status} error={errors.status?.message}>
           <select id={statusId} {...register("status")} className={inputClass(!!errors.status)}>
             {PROJECT_STATUSES.map((s) => {
-              const key = `status${s.charAt(0).toUpperCase()}${s.slice(1).replace("_", "")}` as
-                | "statusActive"
-                | "statusOnHold"
-                | "statusCompleted"
-                | "statusArchived";
+              // A LOOKUP, not a key built from the slug — projects-002. The
+              // derivation yielded "statusOnhold" for "on_hold" (lowercase h),
+              // which is not a key lib/i18n/strings.ts defines, so this
+              // `<option>` rendered with NO TEXT — selectable, and changing the
+              // project's lifecycle state with nothing on screen saying which.
+              const key = STATUS_LABEL_KEY[s];
               return (
                 <option key={s} value={s} className="bg-bg">
                   {t.projects[key]}

@@ -30,10 +30,19 @@
  * edited so clock-out precedes clock-in contributed 0 there; without GREATEST it
  * would contribute a NEGATIVE here and quietly eat other entries' hours.
  *
- * Note the credit for an OPEN entry is uncapped, which is what `durationMs`
- * actually does — its own doc comment claims it caps at the auto-close horizon
- * and the code does not. This mirrors the behaviour, not the comment; see the
- * cross-file note in the delivery follow-ups.
+ * THE OPEN-ENTRY CREDIT IS CAPPED, and this paragraph used to say the opposite.
+ * It read "the credit for an OPEN entry is uncapped, which is what `durationMs`
+ * actually does — its own doc comment claims it caps and the code does not. This
+ * mirrors the behaviour, not the comment." That was true and load-bearing: the
+ * invariant it declared is that this SQL and `durationMs` answer the same
+ * question. time-015 then made `durationMs` honour its docstring and cap an open
+ * entry at `AUTO_CLOSE_MS`, which broke the invariant and left this comment
+ * asserting the reverse of the truth — so /settings credited a running 40-hour
+ * session in full while /time showed 12.5h of it.
+ *
+ * The `CASE` below mirrors `durationMs` branch for branch: a CLOSED entry is
+ * recorded history and is never clamped; an OPEN one is a guess about a tab and is
+ * capped. Found by adversarial verification.
  *
  * `::double precision` / `::int` casts are load-bearing: `EXTRACT(EPOCH …)`
  * returns `numeric` (Prisma → `Prisma.Decimal`) and `COUNT(*)` returns int8
@@ -49,6 +58,7 @@
 
 import { db } from "@/lib/db";
 import { requireScopedSession } from "@/lib/queries/session";
+import { AUTO_CLOSE_MS } from "@/lib/time/thresholds";
 
 export interface AccountStats {
   totalTrackedMs: number;
@@ -77,12 +87,19 @@ export async function getAccountStats(): Promise<AccountStats> {
       SELECT
         COALESCE(
           SUM(
-            GREATEST(
-              EXTRACT(
-                EPOCH FROM (COALESCE("clockOutAt", (NOW() AT TIME ZONE 'UTC')) - "clockInAt")
-              ) * 1000,
-              0
-            )
+            CASE
+              WHEN "clockOutAt" IS NULL THEN LEAST(
+                ${AUTO_CLOSE_MS}::double precision,
+                GREATEST(
+                  EXTRACT(EPOCH FROM ((NOW() AT TIME ZONE 'UTC') - "clockInAt")) * 1000,
+                  0
+                )
+              )
+              ELSE GREATEST(
+                EXTRACT(EPOCH FROM ("clockOutAt" - "clockInAt")) * 1000,
+                0
+              )
+            END
           ),
           0
         )::double precision AS "totalTrackedMs",

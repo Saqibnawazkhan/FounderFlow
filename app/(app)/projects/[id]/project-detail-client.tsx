@@ -40,8 +40,9 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { deleteProjectAction, updateProjectAction } from "@/lib/actions/projects";
 import { canManageProject, canReassignSupervisor } from "@/lib/auth/project-permissions";
+import { COLOR_CLASSES, STATUS_LABEL_KEY } from "@/components/projects/project-card";
 import type { ProjectStatus } from "@/lib/schemas/project";
-import type { Role } from "@/lib/auth/role-gates";
+import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/time/thresholds";
 import { useDateFormat, useT, useNumberFormat } from "@/lib/i18n/use-t";
@@ -68,14 +69,24 @@ type Props = {
   currentUserRole: Role;
 };
 
-const COLOR_STRIPE: Record<string, string> = {
-  primary: "bg-primary",
-  forest: "bg-forest",
-  mint: "bg-mint",
-  warning: "bg-warning",
-  info: "bg-info",
-};
-
+/**
+ * The header stripe's colour comes from COLOR_CLASSES in
+ * components/projects/project-card.tsx — the same table the grid card paints
+ * from — and this file deliberately keeps no second copy. projects-004.
+ *
+ * WHAT WAS WRONG. A local `COLOR_STRIPE` map lived here, keyed
+ * `primary | forest | mint | warning | info`: the slugs the
+ * `20260923000000_rebrand_project_colors` migration RETIRED. `PROJECT_COLORS`
+ * (lib/schemas/project.ts) is `emerald | forest | mint | slate | warning`, so
+ * the map had no `slate` entry and no `emerald` one, plus two slugs nothing can
+ * store any more. A slate project therefore painted a slate stripe on the grid
+ * and the brand green in its own header — the colour tag meaning two different
+ * things on the two screens a customer clicks between. Emerald was masked by
+ * luck, because the `?? primary` fallback happens to be the emerald token.
+ *
+ * Importing rather than re-listing is the point: a sixth palette entry is now a
+ * one-file change that cannot land on one surface only.
+ */
 const STATUS_CLASSES: Record<string, string> = {
   active: "border-primary/30 bg-primary/10 text-primary-strong",
   on_hold: "border-warning/30 bg-warning/10 text-warning-strong",
@@ -98,7 +109,7 @@ export function ProjectDetailClient({
   const d = useDateFormat();
   const router = useRouter();
   const confirm = useConfirm();
-  const [, startTransition] = useTransition();
+  const [refreshing, startTransition] = useTransition();
 
   const canManage = canManageProject({
     userId: currentUserId,
@@ -106,6 +117,22 @@ export function ProjectDetailClient({
     project: { supervisorId: project.supervisorId },
   });
   const canReassign = canReassignSupervisor(currentUserRole);
+  /**
+   * May this viewer reach the COMPANY-WIDE /budgets page? Deliberately the
+   * company predicate and not `canSeeBudgets`, which is per-project.
+   * projects-003.
+   *
+   * `canSeeProjectFinances` grants a member who supervises this project the
+   * escape hatch, and that is what `canSeeBudgets` carries — correctly, for the
+   * figures on this page. But `/budgets` is in MEMBER_BLOCKED_ROUTES
+   * (lib/auth/role-gates.ts) and `authorized()` in auth.config.ts sends
+   * role="member" to `homeRouteForRole("member")` = /tasks. So the one role the
+   * escape hatch exists to serve was the one role for which "All company
+   * budgets →" silently landed somewhere else. The hatch is documented as
+   * per-project only, in lib/auth/project-permissions.ts; this makes the link
+   * agree with that.
+   */
+  const canSeeCompanyFinances = canSeeFinances(currentUserRole);
 
   const [editOpen, setEditOpen] = useState(false);
   const [supOpen, setSupOpen] = useState(false);
@@ -121,8 +148,84 @@ export function ProjectDetailClient({
   }, [tasks, detailTask]);
   const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
 
+  /**
+   * Is one of the header's write paths already running? projects-012.
+   *
+   * TWO THINGS, because they answer different questions.
+   *
+   * `busyRef` is the GUARD, and it is a ref because a real double-click puts
+   * both `click` handlers in the SAME task: `setBusy(true)` from the first has
+   * not re-rendered when the second starts, so a `disabled` attribute derived
+   * from state is not on the element yet and the second handler runs to
+   * completion. A ref is written synchronously, so it is already true. Both
+   * clicks previously reached `updateProjectAction`, which archived twice and
+   * wrote two Activity rows for one user action.
+   *
+   * `busy` is what the USER sees — it is state because only state re-renders —
+   * and it is ORed with the `useTransition` pending flag below, which covers the
+   * second window the finding names: after a successful write the `project` prop
+   * is stale until `router.refresh()` lands, so `handleStatusChange`'s
+   * `status === project.status` no-op guard is comparing against the old value.
+   * Staying disabled through the refresh is what closes that, and it ends by
+   * itself when the fresh props arrive rather than needing a timer.
+   */
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const headerBusy = busy || refreshing;
+
+  /** Claim the header for one write. `false` means another one already has it. */
+  function claim(): boolean {
+    if (busyRef.current) return false;
+    busyRef.current = true;
+    setBusy(true);
+    return true;
+  }
+
+  /** Give it back — on a cancelled confirm, or a write that failed. A write that
+   *  SUCCEEDED releases via the refresh instead, so the stale-prop window above
+   *  is not left open. */
+  function release() {
+    busyRef.current = false;
+    setBusy(false);
+  }
+
+  /**
+   * Run a claimed header write, and release the header if the call REJECTS.
+   *
+   * The four handlers below each release on an explicit `!res.success`, and none
+   * of them released on a thrown promise — so a network failure or a 500 at the
+   * action boundary left `busyRef` and `busy` true for ever: the status menu,
+   * Archive, Restore and Delete all stayed `disabled`, with no toast, until the
+   * page was reloaded. Before the double-click guard existed the reader could
+   * simply click again, so the guard made a transient failure permanent. Found by
+   * adversarial verification.
+   *
+   * app/verify-email-change/page.tsx is this repo's precedent for the same
+   * release-on-error shape, and the reason it is a wrapper rather than four
+   * try/catch blocks is that a fifth handler added later inherits it.
+   */
+  async function runClaimed<T>(call: () => Promise<T>): Promise<T | null> {
+    try {
+      return await call();
+    } catch {
+      release();
+      // `t.auth.networkErrorToast` — an existing key with an Urdu translation
+      // already written, reused rather than minting a new one. `lib/i18n/strings.ts`
+      // belongs to another slice this wave and the standing rule is not to ship
+      // Urdu nobody can read; the sentence ("We couldn't reach the server. Check
+      // your connection and try again.") is exactly what a rejected action means,
+      // and app/login and app/signup already use it for the same thing.
+      toast.error(t.auth.networkErrorToast);
+      return null;
+    }
+  }
+
   function refresh() {
     startTransition(() => router.refresh());
+    // The transition's pending flag now holds the buttons; this hands the guard
+    // over to it rather than dropping it.
+    busyRef.current = false;
+    setBusy(false);
   }
 
   async function handleTaskStatusChange(id: string, status: TaskStatus) {
@@ -151,13 +254,19 @@ export function ProjectDetailClient({
   }
 
   async function handleArchive() {
+    // Claimed BEFORE the confirm dialog: the second click of a double-click
+    // gets its own dialog otherwise, and two yeses are two writes.
+    if (!claim()) return;
     const ok = await confirm({
       title: t.projects.archiveConfirmTitle,
       description: t.projects.archiveConfirmDesc,
       confirmLabel: t.projects.archiveProject,
       tone: "primary",
     });
-    if (!ok) return;
+    if (!ok) {
+      release();
+      return;
+    }
     // STATUS ONLY — projects-010. This button is not trying to change a name, a
     // description, a colour or a date, so it does not send them. It used to send
     // all four, read from the props this page was MOUNTED with, and
@@ -166,12 +275,13 @@ export function ProjectDetailClient({
     // the description and the target date, with no error and no toast. The
     // action now leaves a column alone when the payload does not mention it, and
     // these three handlers are what makes that reachable.
-    const res = await updateProjectAction({
-      projectId: project.id,
-      status: "archived",
-    });
+    const res = await runClaimed(() =>
+      updateProjectAction({ projectId: project.id, status: "archived" })
+    );
+    if (!res) return;
     if (!res.success) {
       toast.error(res.error);
+      release();
       return;
     }
     toast.success(t.projects.projectArchivedToast);
@@ -182,12 +292,14 @@ export function ProjectDetailClient({
     // Reactivate straight to "active" — the confirm modal would be friction
     // here; the header's delete/archive buttons are the destructive path.
     // Status only — see handleArchive.
-    const res = await updateProjectAction({
-      projectId: project.id,
-      status: "active",
-    });
+    if (!claim()) return;
+    const res = await runClaimed(() =>
+      updateProjectAction({ projectId: project.id, status: "active" })
+    );
+    if (!res) return;
     if (!res.success) {
       toast.error(res.error);
+      release();
       return;
     }
     toast.success(t.projects.projectRestoredToast);
@@ -198,16 +310,19 @@ export function ProjectDetailClient({
   // mark a project Completed / On hold / Active without digging into Edit.
   // Reuses updateProjectAction (same path as archive/unarchive).
   async function handleStatusChange(status: ProjectStatus) {
+    // `project.status` is the prop this render was given, which is stale between
+    // a successful write and the refresh landing — so this no-op check cannot be
+    // the double-fire guard on its own. `claim()` is. See busyRef.
     if (status === project.status) return;
+    if (!claim()) return;
     // Status only — see handleArchive. This was the headline case in
     // projects-010: a cofounder clicking "Completed" in a stale tab reverted a
     // founder's rename.
-    const res = await updateProjectAction({
-      projectId: project.id,
-      status,
-    });
+    const res = await runClaimed(() => updateProjectAction({ projectId: project.id, status }));
+    if (!res) return;
     if (!res.success) {
       toast.error(res.error);
+      release();
       return;
     }
     toast.success(t.projects.projectSavedToast);
@@ -215,25 +330,47 @@ export function ProjectDetailClient({
   }
 
   async function handleDelete() {
+    if (!claim()) return;
     const ok = await confirm({
       title: t.projects.deleteConfirmTitle,
       description: t.projects.deleteConfirmDesc,
       confirmLabel: t.projects.deleteProject,
       tone: "danger",
     });
-    if (!ok) return;
-    const res = await deleteProjectAction(project.id);
+    if (!ok) {
+      release();
+      return;
+    }
+    const res = await runClaimed(() => deleteProjectAction(project.id));
+    if (!res) return;
     if (!res.success) {
       toast.error(res.error);
+      release();
       return;
     }
     toast.success(t.projects.projectDeletedToast);
+    // No release: this navigates away, and re-enabling a Delete button on a
+    // project that has just been deleted only invites a second, failing call.
     router.push("/projects");
   }
 
-  const statusKey = `status${project.status.charAt(0).toUpperCase()}${project.status
-    .slice(1)
-    .replace("_", "")}` as "statusActive" | "statusOnHold" | "statusCompleted" | "statusArchived";
+  /**
+   * A LOOKUP, not a string built from the slug. projects-002 left this behind.
+   *
+   * `status${s.charAt(0).toUpperCase()}${s.slice(1).replace("_","")}` produces
+   * "statusOnhold" for "on_hold" — lowercase h, because `.replace("_","")`
+   * deletes the underscore without capitalising what follows. lib/i18n/strings.ts
+   * defines `statusOnHold` and nothing named `statusOnhold`, so the lookup was
+   * `undefined` and React rendered an EMPTY pill: the header of a paused project
+   * did not say it was paused, in English or in Urdu. The `as` cast on the
+   * computed string is why neither `tsc` nor `next build` objected — an assertion
+   * is not a check.
+   *
+   * STATUS_LABEL_KEY was extracted from this exact bug and exported so, in its
+   * own words, "the other three sites import one source of truth". None of the
+   * three did; this is one of them.
+   */
+  const statusKey = STATUS_LABEL_KEY[project.status] ?? STATUS_LABEL_KEY.active;
 
   const isOverdue =
     project.status === "active" &&
@@ -245,7 +382,10 @@ export function ProjectDetailClient({
       <header className="overflow-hidden rounded-2xl border border-border bg-surface">
         <span
           aria-hidden="true"
-          className={cn("block h-1 w-full", COLOR_STRIPE[project.color] ?? COLOR_STRIPE.primary)}
+          className={cn(
+            "block h-1 w-full",
+            (COLOR_CLASSES[project.color] ?? COLOR_CLASSES.emerald).stripe
+          )}
         />
         <div className="flex flex-col gap-4 p-6 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
@@ -296,7 +436,11 @@ export function ProjectDetailClient({
           </div>
           {canManage && project.status !== "archived" && (
             <div className="flex flex-wrap items-center gap-2">
-              <StatusMenu current={project.status} onSelect={handleStatusChange} />
+              <StatusMenu
+                current={project.status}
+                onSelect={handleStatusChange}
+                disabled={headerBusy}
+              />
               <button
                 onClick={() => setEditOpen(true)}
                 className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg-muted transition hover:bg-surface-hover hover:text-fg"
@@ -306,14 +450,16 @@ export function ProjectDetailClient({
               </button>
               <button
                 onClick={handleArchive}
-                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg-muted transition hover:bg-surface-hover hover:text-fg"
+                disabled={headerBusy}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg-muted transition hover:bg-surface-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Archive className="h-3.5 w-3.5" aria-hidden="true" />
                 {t.projects.archiveProject}
               </button>
               <button
                 onClick={handleDelete}
-                className="inline-flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs font-medium text-danger transition hover:bg-danger/20"
+                disabled={headerBusy}
+                className="inline-flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs font-medium text-danger transition hover:bg-danger/20 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                 {t.projects.deleteProject}
@@ -324,14 +470,16 @@ export function ProjectDetailClient({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={handleUnarchive}
-                className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary-strong transition hover:bg-primary/20"
+                disabled={headerBusy}
+                className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary-strong transition hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <ArchiveRestore className="h-3.5 w-3.5" aria-hidden="true" />
                 {t.projects.unarchiveProject}
               </button>
               <button
                 onClick={handleDelete}
-                className="inline-flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs font-medium text-danger transition hover:bg-danger/20"
+                disabled={headerBusy}
+                className="inline-flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs font-medium text-danger transition hover:bg-danger/20 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                 {t.projects.deleteProject}
@@ -370,7 +518,12 @@ export function ProjectDetailClient({
             {t.projects.tasks}
           </h2>
           <div className="flex items-center gap-3">
-            {project.status !== "archived" && (
+            {/* projects-007: `canManage` as well as the status, because that is
+                the gate `addTaskAction` enforces ("Only the supervisor or a
+                founder can add tasks here"). Behind the status alone, every
+                member holding one task here was invited to fill in a five-field
+                form and then refused. */}
+            {canManage && project.status !== "archived" && (
               <button
                 onClick={() => setNewTaskOpen(true)}
                 className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-bold text-primary-fg shadow-[0_0_20px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.03] active:scale-95"
@@ -433,12 +586,17 @@ export function ProjectDetailClient({
             <h2 className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-fg-muted">
               {t.projects.budgets}
             </h2>
-            <Link
-              href="/budgets"
-              className="text-xs font-medium text-primary-strong hover:underline"
-            >
-              All company budgets →
-            </Link>
+            {/* projects-003 — see canSeeCompanyFinances. The section above is
+                gated per-project; this link is company-wide, so it is gated
+                company-wide. */}
+            {canSeeCompanyFinances && (
+              <Link
+                href="/budgets"
+                className="text-xs font-medium text-primary-strong hover:underline"
+              >
+                All company budgets →
+              </Link>
+            )}
           </header>
           {budgets.length === 0 ? (
             <p className="text-sm text-fg-muted">No budgets set for this project yet.</p>
@@ -590,9 +748,12 @@ function Kpi({
 function StatusMenu({
   current,
   onSelect,
+  disabled,
 }: {
   current: ProjectStatus;
   onSelect: (status: ProjectStatus) => void;
+  /** True while a header write is in flight — see `headerBusy`. */
+  disabled?: boolean;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -626,9 +787,10 @@ function StatusMenu({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
+        disabled={disabled}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg-muted transition hover:bg-surface-hover hover:text-fg"
+        className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg px-3 py-1.5 text-xs font-medium text-fg-muted transition hover:bg-surface-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-60"
       >
         <span
           className={cn("h-2 w-2 rounded-full", currentOpt?.dot ?? "bg-fg-muted")}

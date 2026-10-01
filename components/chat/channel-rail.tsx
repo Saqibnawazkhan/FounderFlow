@@ -48,30 +48,15 @@ import { Avatar } from "@/components/ui/avatar";
 // that is how chat-008 happened: the rail learned that a DM is a person while
 // the channel header, the browser tab and the composer placeholder kept drawing
 // a hash. One spelling, four surfaces.
-import { isDmKind } from "@/lib/chat/dm";
+import { isDmKind, isPrivateKind } from "@/lib/chat/dm";
+// The label, and the cap it enforces, moved to lib/chat/unread.ts when the
+// sidebar's Chat row grew a total badge. Two renderers of the same unread
+// messages must not each own a copy of "when does 99 become 99+" — this file
+// held a SECOND cap constant beside the one in lib/chat/unread.ts, and they
+// agreed only by coincidence.
+import { unreadLabel } from "@/lib/chat/unread";
 import { cn } from "@/lib/utils";
 import type { ChannelListItem } from "@/lib/queries/chat";
-
-/**
- * The server caps `unreadCount` at 99, so 99 is "99 or more" — never a literal
- * ninety-nine. Rendering a bare "99" would quietly under-report a channel with
- * four hundred unread messages, so the cap value renders as "99+".
- */
-export const UNREAD_DISPLAY_CAP = 99;
-
-export function unreadLabel(count: number): string {
-  return count >= UNREAD_DISPLAY_CAP ? `${UNREAD_DISPLAY_CAP}+` : String(count);
-}
-
-/**
- * `kind` is normalised rather than compared literally: the query layer may
- * hand back either the Prisma enum casing ("PRIVATE") or a lowercased union
- * ("private"), and picking the wrong icon on a private channel is a privacy
- * signal we'd be getting wrong, not a cosmetic slip.
- */
-function isPrivateKind(kind: ChannelListItem["kind"]): boolean {
-  return String(kind).toLowerCase().includes("private");
-}
 
 type Props = {
   channels: ChannelListItem[];
@@ -158,7 +143,7 @@ function ChannelRow({
   onNavigate?: () => void;
 }) {
   const dm = isDmKind(String(channel.kind));
-  const isPrivate = isPrivateKind(channel.kind);
+  const isPrivate = isPrivateKind(String(channel.kind));
   const Icon = isPrivate ? Lock : Hash;
 
   return (

@@ -23,7 +23,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import toast from "react-hot-toast";
-import { format, isPast, isToday } from "date-fns";
 import {
   DndContext,
   DragOverlay,
@@ -60,6 +59,14 @@ import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
 import { TaskDetailModal } from "@/components/tasks/task-detail-modal";
 import { TaskCalendar } from "@/components/tasks/task-calendar";
 import { cn } from "@/lib/utils";
+import { canDeleteTask, canEditTask } from "@/lib/tasks/task-permissions";
+import {
+  formatDeadlineDay,
+  isDeadlineOverdue,
+  isDeadlineToday,
+  isDeadlineWithinDays,
+} from "@/lib/tasks/deadline";
+import type { MentionUser } from "@/lib/comments/mentions";
 import type { TaskStatus, TaskPriority, User } from "@/lib/types";
 import type { TaskWithCount } from "@/lib/queries/tasks";
 import { useNumberFormat } from "@/lib/i18n/use-t";
@@ -106,8 +113,35 @@ const PRIORITY_ICONS: Record<TaskPriority, LucideIcon> = {
 
 type Props = {
   initialTasks: TaskWithCount[];
+  /** Assignee picker + avatars. Carries no `handle` — see `mentionUsers`. */
   users: User[];
+  /**
+   * The roster the comment composer resolves @mentions against, WITH `handle`
+   * (tasks-and-comments-002).
+   *
+   * Separate from `users` because the `User` DTO has no handle field, so this
+   * page used to hand the thread `users.map((u) => ({ id, name }))` and
+   * `mentionToken` fell back to the name slug every time: no handle could ever
+   * be offered or inserted, and a teammate whose display name carries no ASCII
+   * letters ("مہوش زیدی" slugifies to `"-"`, which the token grammar cannot
+   * produce) had no row in the dropdown at all — the very person the handle
+   * column was added for.
+   */
+  mentionUsers: MentionUser[];
+  /**
+   * Every project the caller may SEE — the toolbar's Project filter. Includes
+   * projects a member merely holds a task in, because they need to filter their
+   * own work by them.
+   */
   projects: { id: string; name: string }[];
+  /**
+   * The projects the caller may FILE A TASK INTO — the new-task form's picker,
+   * and the precondition for offering its CTA at all
+   * (tasks-and-comments-008). A strict subset of `projects`: for a member it is
+   * only the ones they supervise, which is what `addTaskAction` accepts. When it
+   * is empty there is nowhere to file, so the CTAs are not rendered.
+   */
+  filableProjects: { id: string; name: string }[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
 };
@@ -115,7 +149,9 @@ type Props = {
 export function TasksClient({
   initialTasks,
   users,
+  mentionUsers,
   projects,
+  filableProjects,
   currentUserId,
   currentUserRole,
 }: Props) {
@@ -205,7 +241,6 @@ export function TasksClient({
   // comments inline), while the comment icon still jumps straight to the
   // thread for people who know what they want.
   const [detailTask, setDetailTask] = useState<TaskWithCount | null>(null);
-  const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
   // Keep the detail modal's task snapshot in sync with the RSC prop after a
   // status change or comment write — otherwise the modal would keep showing
   // the stale row until the user closed and reopened it.
@@ -219,7 +254,37 @@ export function TasksClient({
     startTransition(() => router.refresh());
   }
 
+  /* ── WHAT THIS VIEWER CAN ACTUALLY DO (tasks-and-comments-009) ─────────────
+   *
+   * `canEditTask` / `canDeleteTask` (lib/tasks/task-permissions.ts) are the same
+   * functions `updateTaskStatusAction`, `reorderTaskAction` and
+   * `deleteTaskAction` apply, so a control this page offers is a control the
+   * server will honour. Before this, only DELETE was threaded through: every
+   * card rendered an enabled status `<select>` and a drag handle for every
+   * viewer, and a cofounder — who is not in the server's edit set — was handed
+   * the whole kanban and could move nothing that was not their own. The drag
+   * applies optimistically first, so the card moved, a toast fired, and it
+   * snapped back.
+   */
+  const actor = useMemo(
+    () => ({ userId: currentUserId, role: currentUserRole }),
+    [currentUserId, currentUserRole]
+  );
+  const mayEdit = (task: TaskWithCount) => canEditTask({ actor, task });
+  const mayDelete = (task: TaskWithCount) => canDeleteTask({ actor, task });
+
   const [modalOpen, setModalOpen] = useState(false);
+  /**
+   * Is there anywhere for this person to file a task? (tasks-and-comments-008.)
+   *
+   * `addTaskAction` needs a project it will accept, so with no filable project
+   * the form cannot succeed for any input and the CTA is a dead end — a member
+   * filled in four fields and got "Only the supervisor or a founder can add
+   * tasks here". Hidden rather than disabled: there is no action the reader could
+   * take to enable it, so a tooltip would only explain a button that should not
+   * be there. The empty state says what WILL appear instead.
+   */
+  const canFileTask = filableProjects.length > 0;
   // View + filter live in localStorage so a user's chosen slice survives a
   // page refresh. Reads happen behind a hydration effect so SSR + first
   // client paint agree; without the effect gate we'd hit a hydration diff.
@@ -256,7 +321,7 @@ export function TasksClient({
     setProjectFilter(next);
     persist("ff.tasks.project", next);
   }
-  function chooseDue(next: "all" | "overdue" | "today" | "week" | "none") {
+  function chooseDue(next: "all" | "overdue" | "today" | "week") {
     setDueFilter(next);
     persist("ff.tasks.due", next);
   }
@@ -265,7 +330,16 @@ export function TasksClient({
   // Secondary filters (T4) — stack on top of the relationship filter above.
   const [priorityFilter, setPriorityFilter] = useState<"all" | TaskPriority>("all");
   const [projectFilter, setProjectFilter] = useState<string>("all");
-  const [dueFilter, setDueFilter] = useState<"all" | "overdue" | "today" | "week" | "none">("all");
+  // NO "none" MEMBER (tasks-and-comments-012). `Task.deadline` is a
+  // non-nullable `DateTime`, `NewTaskSchema` demands a parseable date and
+  // `toClient` always emits an ISO string, so an "undated" bucket matches no row
+  // that can exist — components/tasks/task-calendar.tsx states the same
+  // invariant. The option and its `!t.deadline` branch shipped anyway, so
+  // choosing it always answered "No tasks match this filter", which a user
+  // cannot tell from a genuinely empty result. If undated tasks are ever wanted,
+  // `Task.deadline` has to become nullable first; until then this union is the
+  // complete set.
+  const [dueFilter, setDueFilter] = useState<"all" | "overdue" | "today" | "week">("all");
   useEffect(() => {
     try {
       const savedView = localStorage.getItem("ff.tasks.view");
@@ -289,12 +363,14 @@ export function TasksClient({
         setPriorityFilter(savedPriority);
       }
       if (savedProject) setProjectFilter(savedProject);
+      // A stored "none" from before tasks-and-comments-012 is not restored: it
+      // is no longer a value this filter has, and reviving it would restore the
+      // empty board it used to produce.
       if (
         savedDue === "all" ||
         savedDue === "overdue" ||
         savedDue === "today" ||
-        savedDue === "week" ||
-        savedDue === "none"
+        savedDue === "week"
       ) {
         setDueFilter(savedDue);
       }
@@ -334,23 +410,75 @@ export function TasksClient({
     if (projectFilter !== "all") rows = rows.filter((t) => t.projectId === projectFilter);
 
     if (dueFilter !== "all") {
+      // Whole DAYS, from UTC parts (tasks-and-comments-011). These used to
+      // compare the stored instant in the viewer's zone, so at UTC-5 every
+      // bucket was a day out: "Overdue" caught tasks due today, "Due today"
+      // caught tomorrow's, and "Next 7 days" — which compared against `now`
+      // rather than the start of today — silently excluded everything due today.
       rows = rows.filter((t) => {
-        if (dueFilter === "none") return !t.deadline;
+        // `!t.deadline` is still checked, and is still not an "undated" bucket:
+        // the column is non-nullable, so this only catches a malformed payload,
+        // which is hidden rather than crashed on.
         if (!t.deadline) return false;
-        const d = new Date(t.deadline);
-        if (Number.isNaN(d.getTime())) return false;
-        if (dueFilter === "overdue") return isPast(d) && !isToday(d);
-        if (dueFilter === "today") return isToday(d);
-        if (dueFilter === "week") {
-          const now = new Date();
-          const weekAhead = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-          return d >= now && d <= weekAhead;
-        }
+        if (dueFilter === "overdue") return isDeadlineOverdue(t.deadline);
+        if (dueFilter === "today") return isDeadlineToday(t.deadline);
+        if (dueFilter === "week") return isDeadlineWithinDays(t.deadline, 7);
         return true;
       });
     }
     return rows;
   }, [tasks, filter, priorityFilter, projectFilter, dueFilter, currentUserId]);
+
+  /* ── A TASK DEEP LINK OUTRANKS THE REMEMBERED SLICE (tasks-and-comments-013) ─
+   *
+   * Both task notifications link here — `task_assigned` and `task_completed`,
+   * lib/actions/tasks.ts — and five filter values are restored from
+   * localStorage on mount. Nothing reconciled the two, so a reader who once
+   * chose "Urgent" (or a project, or "Assigned to me") got "No tasks match this
+   * filter" for every later ping about anything else: `scrollRefs` held no node
+   * for the linked id and the scroll effect silently did nothing. The calendar
+   * view already goes to real lengths for the same promise, paging itself to the
+   * task's month and expanding a collapsed "+N more".
+   *
+   * WHY THIS IS A SEPARATE EFFECT AND NOT A CHECK INSIDE THE SCROLL EFFECT.
+   * Effects run in declaration order, and the scroll effect is declared above
+   * the localStorage restore. On mount it therefore runs while every filter is
+   * still "all" — the linked task is visible at that instant and hidden a
+   * moment later. Keying on `filtered` instead means the decision is taken
+   * against the slice the user will actually see, whether the filters arrived
+   * from storage on mount or were already applied when the bell was clicked
+   * from this very page (a client-side navigation that never unmounts this
+   * island, which is the common way these links are followed).
+   *
+   * WHY IT WIDENS RATHER THAN REFUSING. The link names one task; that is a
+   * stronger statement of intent than a filter set days ago. But it writes the
+   * WIDENED VALUES THROUGH THE RAW SETTERS, not through `chooseX`, so nothing is
+   * persisted: the reader's saved slice is intact and returns on their next
+   * visit. `deepLinkWidened` says so on screen, because a toolbar that silently
+   * resets itself is its own bug report.
+   *
+   * `widenedForRef` makes it once-per-id. Without it the effect would fight a
+   * user who deliberately re-filters while `?taskId=` is still in the URL.
+   * It is never cleared: a second widening for the same link is exactly the
+   * behaviour worth refusing.
+   */
+  const widenedForRef = useRef<string | null>(null);
+  const [deepLinkWidened, setDeepLinkWidened] = useState(false);
+  useEffect(() => {
+    const id = highlightIdParam;
+    if (!id) return;
+    if (widenedForRef.current === id) return;
+    // Not on this page at all — beyond the page window, or not visible to this
+    // reader. Clearing filters would empty the board for nothing.
+    if (!tasks.some((t) => t.id === id)) return;
+    if (filtered.some((t) => t.id === id)) return;
+    widenedForRef.current = id;
+    setFilter("all");
+    setPriorityFilter("all");
+    setProjectFilter("all");
+    setDueFilter("all");
+    setDeepLinkWidened(true);
+  }, [highlightIdParam, tasks, filtered]);
 
   // Bulk selection (list view). `selected` holds task ids; we prune any that
   // fall out of the filtered set so the action bar count never lies after a
@@ -558,12 +686,14 @@ export function TasksClient({
             Assign work, set deadlines, and ship.
           </p>
         </div>
-        <button
-          onClick={() => setModalOpen(true)}
-          className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
-        >
-          <Plus className="h-4 w-4" aria-hidden="true" /> New task
-        </button>
+        {canFileTask && (
+          <button
+            onClick={() => setModalOpen(true)}
+            className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" /> New task
+          </button>
+        )}
       </header>
 
       <div className="-mt-3 border-b border-border">
@@ -604,6 +734,28 @@ export function TasksClient({
         />
       </div>
 
+      {/* tasks-and-comments-013: the deep link widened a filter, so say so.
+          `role="status"` rather than an alert — it reports something already
+          done, and nothing is waiting on the reader. */}
+      {deepLinkWidened && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-primary/30 bg-primary/[0.06] px-4 py-2.5 text-xs text-fg"
+        >
+          <span>
+            Cleared your filters to show this task. Your saved filters are back next time you open
+            Tasks.
+          </span>
+          <button
+            type="button"
+            onClick={() => setDeepLinkWidened(false)}
+            className="font-semibold text-fg-muted underline underline-offset-2 transition-colors hover:text-fg"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Secondary filters (T4): priority · project · due date. Stack on top
           of the relationship filter; each persists to localStorage. */}
       <div className="flex flex-wrap items-center gap-2">
@@ -637,7 +789,6 @@ export function TasksClient({
             { value: "overdue", label: "Overdue" },
             { value: "today", label: "Due today" },
             { value: "week", label: "Next 7 days" },
-            { value: "none", label: "No deadline" },
           ]}
         />
         {secondaryActive && (
@@ -660,16 +811,22 @@ export function TasksClient({
             title={tasks.length === 0 ? "No tasks yet" : "No tasks match this filter"}
             description={
               tasks.length === 0
-                ? "Create your first task to start coordinating work across your team."
-                : "Switch filters or create a new task."
+                ? canFileTask
+                  ? "Create your first task to start coordinating work across your team."
+                  : "Work assigned to you will appear here. Ask a founder, or the supervisor of your project, to file a task."
+                : canFileTask
+                  ? "Switch filters or create a new task."
+                  : "Switch filters to see other work."
             }
             action={
-              <button
-                onClick={() => setModalOpen(true)}
-                className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
-              >
-                <Plus className="h-4 w-4" aria-hidden="true" /> Create task
-              </button>
+              canFileTask ? (
+                <button
+                  onClick={() => setModalOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.02] active:scale-95"
+                >
+                  <Plus className="h-4 w-4" aria-hidden="true" /> Create task
+                </button>
+              ) : undefined
             }
           />
         </div>
@@ -691,9 +848,8 @@ export function TasksClient({
                   onDelete={handleDelete}
                   onOpenComments={setCommentingTask}
                   onOpenDetail={setDetailTask}
-                  canDeleteTask={(task) =>
-                    currentUserId === task.assignedBy || currentUserRole === "admin"
-                  }
+                  canDeleteTask={mayDelete}
+                  canEditTask={mayEdit}
                   isDragActive={draggingTask !== null}
                   highlightId={highlightId}
                   registerRef={registerRef}
@@ -708,6 +864,9 @@ export function TasksClient({
                 onStatusChange={handleStatusChange}
                 onDelete={handleDelete}
                 canDelete={false}
+                // Only a card this viewer may move can be dragging at all, so the
+                // clone keeps the live look rather than painting itself disabled.
+                canEdit
                 isOverlay
               />
             )}
@@ -780,7 +939,7 @@ export function TasksClient({
               </thead>
               <tbody>
                 {filtered.map((task) => {
-                  const overdue = isPast(new Date(task.deadline)) && task.status !== "completed";
+                  const overdue = isDeadlineOverdue(task.deadline) && task.status !== "completed";
                   const isHighlighted = highlightId === task.id;
                   const isSelected = selected.has(task.id);
                   return (
@@ -831,11 +990,20 @@ export function TasksClient({
                         <select
                           id={`status-${task.id}`}
                           value={task.status}
+                          disabled={!mayEdit(task)}
+                          title={
+                            mayEdit(task)
+                              ? undefined
+                              : "Only the assignee, the person who filed it, or an admin can move this task"
+                          }
                           onChange={(e) =>
                             handleStatusChange(task.id, e.target.value as TaskStatus)
                           }
                           onClick={(e) => e.stopPropagation()}
-                          className="rounded-full border border-border bg-bg px-3 py-1 text-xs font-medium text-fg focus:border-primary/50 focus:outline-none"
+                          className={cn(
+                            "rounded-full border border-border bg-bg px-3 py-1 text-xs font-medium text-fg focus:border-primary/50 focus:outline-none",
+                            mayEdit(task) || "cursor-not-allowed opacity-60"
+                          )}
                         >
                           <option value="pending">Pending</option>
                           <option value="in_progress">In progress</option>
@@ -870,9 +1038,15 @@ export function TasksClient({
                           )}
                         >
                           {overdue && (
-                            <AlertCircle className="me-1 inline h-3 w-3" aria-hidden="true" />
+                            <>
+                              <AlertCircle className="me-1 inline h-3 w-3" aria-hidden="true" />
+                              {/* The overdue state was colour + an aria-hidden
+                                  icon only, so it did not exist for a screen
+                                  reader. */}
+                              <span className="sr-only">Overdue — </span>
+                            </>
                           )}
-                          {format(new Date(task.deadline), "MMM dd, yyyy")}
+                          {formatDeadlineDay(task.deadline, "MMM dd, yyyy")}
                         </span>
                       </td>
                       <td className="px-6 py-4 text-end">
@@ -901,7 +1075,7 @@ export function TasksClient({
                               </span>
                             )}
                           </button>
-                          {(currentUserId === task.assignedBy || currentUserRole === "admin") && (
+                          {mayDelete(task) && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -982,7 +1156,9 @@ export function TasksClient({
       >
         <TaskForm
           users={users}
-          projects={projects}
+          // The filable subset, not `projects` (tasks-and-comments-008): the
+          // picker must not offer a project the action will refuse.
+          projects={filableProjects}
           currentUserId={currentUserId}
           onClose={() => setModalOpen(false)}
           onSuccess={refresh}
@@ -1022,7 +1198,8 @@ export function TasksClient({
           currentUserId={currentUserId}
           currentUserRole={currentUserRole}
           companyUsers={mentionUsers}
-          canDelete={detailTask.assignedBy === currentUserId || currentUserRole === "admin"}
+          canDelete={mayDelete(detailTask)}
+          canEdit={mayEdit(detailTask)}
           onStatusChange={handleStatusChange}
           onDelete={handleDelete}
           onCommentsChanged={() => {
@@ -1180,6 +1357,7 @@ function DroppableColumn({
   onOpenComments,
   onOpenDetail,
   canDeleteTask,
+  canEditTask: canEditTaskFn,
   isDragActive,
   highlightId,
   registerRef,
@@ -1191,6 +1369,8 @@ function DroppableColumn({
   onOpenComments: (task: TaskWithCount) => void;
   onOpenDetail: (task: TaskWithCount) => void;
   canDeleteTask: (task: TaskWithCount) => boolean;
+  /** Whether this viewer may change the task's status or board order. */
+  canEditTask: (task: TaskWithCount) => boolean;
   isDragActive: boolean;
   highlightId: string | null;
   registerRef: (id: string) => (el: HTMLElement | null) => void;
@@ -1255,6 +1435,7 @@ function DroppableColumn({
                 onOpenComments={onOpenComments}
                 onOpenDetail={onOpenDetail}
                 canDelete={canDeleteTask(task)}
+                canEdit={canEditTaskFn(task)}
                 highlighted={highlightId === task.id}
                 externalRef={registerRef(task.id)}
               />
@@ -1281,6 +1462,7 @@ function TaskCard({
   onOpenComments,
   onOpenDetail,
   canDelete,
+  canEdit,
   highlighted = false,
   externalRef,
 }: {
@@ -1290,11 +1472,17 @@ function TaskCard({
   onOpenComments?: (task: TaskWithCount) => void;
   onOpenDetail?: (task: TaskWithCount) => void;
   canDelete: boolean;
+  canEdit: boolean;
   highlighted?: boolean;
   externalRef?: (el: HTMLElement | null) => void;
 }) {
+  // `draggable` only (tasks-and-comments-009). A blanket `disabled: true` would
+  // also take the card OUT of the droppable set, so a teammate's card would stop
+  // being a valid drop position and reordering the cards around it would break.
+  // What the viewer may not do is pick this one up.
   const { attributes, listeners, setNodeRef, isDragging, transform, transition } = useSortable({
     id: task.id,
+    disabled: { draggable: !canEdit, droppable: false },
   });
 
   const dragHandle = (
@@ -1320,6 +1508,7 @@ function TaskCard({
       onOpenComments={onOpenComments}
       onOpenDetail={onOpenDetail}
       canDelete={canDelete}
+      canEdit={canEdit}
       highlighted={highlighted}
       rootRef={(el) => {
         setNodeRef(el);
@@ -1327,7 +1516,10 @@ function TaskCard({
       }}
       rootStyle={{ transform: CSS.Transform.toString(transform), transition }}
       dragging={isDragging}
-      dragHandle={dragHandle}
+      // No handle at all rather than a disabled one: a grip that cannot grip is
+      // a second thing to explain, and the keyboard sensor is bound to these
+      // listeners, so withholding them is what actually stops the drag.
+      dragHandle={canEdit ? dragHandle : undefined}
       isOverlay={false}
     />
   );
@@ -1342,6 +1534,7 @@ function TaskCardView({
   onOpenComments,
   onOpenDetail,
   canDelete,
+  canEdit,
   highlighted = false,
   rootRef,
   rootStyle,
@@ -1355,6 +1548,8 @@ function TaskCardView({
   onOpenComments?: (task: TaskWithCount) => void;
   onOpenDetail?: (task: TaskWithCount) => void;
   canDelete: boolean;
+  /** False disables the status select — the server would refuse the write. */
+  canEdit: boolean;
   highlighted?: boolean;
   rootRef?: (el: HTMLElement | null) => void;
   rootStyle?: React.CSSProperties;
@@ -1363,9 +1558,13 @@ function TaskCardView({
   isOverlay?: boolean;
 }) {
   const n = useNumberFormat();
-  const deadline = new Date(task.deadline);
-  const overdue = isPast(deadline) && task.status !== "completed";
-  const dueToday = isToday(deadline);
+  // The DAY the assigner picked, read from UTC parts (tasks-and-comments-011).
+  // `format(new Date(task.deadline), "MMM dd")` rendered the stored instant in
+  // the viewer's zone, so at UTC-5 the card said one day and the assignment
+  // email said another; `isPast` on the same instant also flagged a task due
+  // today as overdue, in PKT as well.
+  const overdue = isDeadlineOverdue(task.deadline) && task.status !== "completed";
+  const dueToday = isDeadlineToday(task.deadline);
 
   const style: React.CSSProperties = isOverlay
     ? { boxShadow: "0 20px 50px rgb(0 0 0 / 0.30)", transform: "rotate(-1.5deg)" }
@@ -1453,8 +1652,14 @@ function TaskCardView({
                 : "text-fg-muted"
           )}
         >
-          {overdue && <AlertCircle className="me-0.5 inline h-3 w-3" aria-hidden="true" />}
-          {format(deadline, "MMM dd")}
+          {overdue && (
+            <>
+              <AlertCircle className="me-0.5 inline h-3 w-3" aria-hidden="true" />
+              <span className="sr-only">Overdue — </span>
+            </>
+          )}
+          {dueToday && !overdue && <span className="sr-only">Due today — </span>}
+          {formatDeadlineDay(task.deadline, "MMM dd")}
         </span>
       </div>
 
@@ -1495,9 +1700,18 @@ function TaskCardView({
           <select
             id={`board-status-${task.id}`}
             value={task.status}
+            disabled={!canEdit}
+            title={
+              canEdit
+                ? undefined
+                : "Only the assignee, the person who filed it, or an admin can move this task"
+            }
             onChange={(e) => onStatusChange(task.id, e.target.value as TaskStatus)}
             onClick={(e) => e.stopPropagation()}
-            className="cursor-pointer rounded-md border border-border bg-bg px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg focus:border-primary/50 focus:outline-none"
+            className={cn(
+              "rounded-md border border-border bg-bg px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-wider text-fg focus:border-primary/50 focus:outline-none",
+              canEdit ? "cursor-pointer" : "cursor-not-allowed opacity-60"
+            )}
           >
             <option value="pending">Pending</option>
             <option value="in_progress">In progress</option>

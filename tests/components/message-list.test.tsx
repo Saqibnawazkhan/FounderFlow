@@ -318,6 +318,50 @@ describe("MessageList (the conversation scrollport)", () => {
     );
   });
 
+  /*
+   * THE PRODUCER HALF OF THE ff-chat-read CONTRACT.
+   *
+   * The sidebar's Chat badge listens for this event so it refreshes the moment a
+   * channel is read, instead of up to thirty seconds later with the pill still
+   * claiming unread messages the reader is looking at — the same "teaches people
+   * to ignore the badge" failure chat-007 fixed one surface down, in the rail.
+   *
+   * tests/components/sidebar-chat-badge.test.tsx covers the LISTENER by
+   * dispatching the event by hand, which passes whether or not anything ever
+   * fires it. Without these two, deleting the dispatch below leaves a fully
+   * green suite and a stale badge in the product.
+   */
+  it("announces the read so the sidebar's Chat badge can refresh at once", async () => {
+    const seen: string[] = [];
+    const onRead = () => seen.push("ff-chat-read");
+    window.addEventListener("ff-chat-read", onRead);
+    try {
+      renderList([msg({ id: "m1" })]);
+      await waitFor(() => expect(seen).toContain("ff-chat-read"));
+    } finally {
+      window.removeEventListener("ff-chat-read", onRead);
+    }
+  });
+
+  it("stays quiet when the server refused the read", async () => {
+    // A failed read receipt moved no watermark, so the count has not changed and
+    // announcing one would spend a round trip to learn nothing. This is also the
+    // shape the test mocks produce (`undefined`), which is why the dispatch is
+    // guarded on a real success rather than on the promise merely settling.
+    markChannelReadAction.mockResolvedValue({ success: false, error: "nope" });
+    const seen: string[] = [];
+    const onRead = () => seen.push("ff-chat-read");
+    window.addEventListener("ff-chat-read", onRead);
+    try {
+      renderList([msg({ id: "m1" })]);
+      await waitFor(() => expect(markChannelReadAction).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 10));
+      expect(seen).toEqual([]);
+    } finally {
+      window.removeEventListener("ff-chat-read", onRead);
+    }
+  });
+
   it("does not mark the channel read while the reader is scrolled up", async () => {
     // Scrolled-up reading is not "I've seen the newest message".
     const { scroller } = renderList([msg({ id: "m1" })]);
@@ -338,5 +382,170 @@ describe("MessageList (the conversation scrollport)", () => {
     stubLayout(scroller, { scrollHeight: 1000, clientHeight: 400, scrollTop: 10 });
     fireEvent.scroll(scroller);
     expect(onLoadOlder).toHaveBeenCalled();
+  });
+});
+
+/* ═════════ chat-010 — the message a notification was about ════════════════
+ *
+ * `sendMessageAction` writes `/chat/<slug>?message=<id>` into every mention and
+ * DM notification, and lib/queries/search.ts writes the same shape for a chat hit
+ * in the command palette. Nothing in the chat surface read it, so all of them
+ * dropped the reader at the bottom of a busy room with nothing anchored.
+ *
+ * WHAT THESE TESTS CAN AND CANNOT SEE. Per this file's header, jsdom has no
+ * layout engine, so "did the viewport end up in the right place" is not
+ * assertable here and belongs in the puppeteer smoke. What IS assertable, and is
+ * the whole of the DOM contract, is that exactly one row is marked, that it is
+ * the right one, that every row carries a stable id a link can point at, and that
+ * the list asks the browser to bring that row into view instead of pinning to the
+ * bottom as it does on an ordinary open.
+ * ════════════════════════════════════════════════════════════════════════════ */
+describe("MessageList — the anchored message from a deep link (chat-010)", () => {
+  beforeEach(() => {
+    markChannelReadAction.mockReset();
+    markChannelReadAction.mockResolvedValue({ success: true });
+  });
+
+  it("gives every row an id a deep link can point at", () => {
+    renderList([msg({ id: "m1" }), msg({ id: "m2" })]);
+
+    expect(document.getElementById("message-m1")).not.toBeNull();
+    expect(document.getElementById("message-m2")).not.toBeNull();
+  });
+
+  it("marks the anchored row, and only that row", () => {
+    renderList([msg({ id: "m1" }), msg({ id: "m2" }), msg({ id: "m3" })], {
+      anchoredMessageId: "m2",
+    });
+
+    const marked = document.querySelectorAll('[data-anchored="true"]');
+    expect(marked).toHaveLength(1);
+    expect(document.getElementById("message-m2")).toHaveAttribute("data-anchored", "true");
+  });
+
+  it("marks nothing when the link named no message", () => {
+    renderList([msg({ id: "m1" }), msg({ id: "m2" })]);
+
+    expect(document.querySelectorAll('[data-anchored="true"]')).toHaveLength(0);
+  });
+
+  it("marks nothing when the anchored id is not in the loaded page", () => {
+    // The paging is <ChatClient>'s job; this list must not guess. Marking a
+    // neighbouring row would be worse than marking none — it would assert that
+    // the wrong message was the one somebody was mentioned in.
+    renderList([msg({ id: "m1" })], { anchoredMessageId: "m_elsewhere" });
+
+    expect(document.querySelectorAll('[data-anchored="true"]')).toHaveLength(0);
+  });
+
+  it("asks the browser to bring the anchored row into view", () => {
+    // `Element.prototype.scrollIntoView` is stubbed globally in tests/setup.ts —
+    // jsdom does not implement it — so this spies on that stub. It asserts the
+    // REQUEST, not the resulting position, which jsdom cannot have.
+    const spy = vi.spyOn(Element.prototype, "scrollIntoView");
+    spy.mockClear();
+
+    renderList([msg({ id: "m1" }), msg({ id: "m2" })], { anchoredMessageId: "m2" });
+
+    expect(spy).toHaveBeenCalled();
+    // `contains` rather than an id equality check: the list scrolls the row
+    // WRAPPER (which also carries the day divider, so the date stays visible),
+    // and `contains` includes the node itself, so this stays true if a later
+    // implementation scrolls the <article> directly.
+    const target = spy.mock.instances[0] as HTMLElement;
+    expect(target.contains(document.getElementById("message-m2"))).toBe(true);
+    spy.mockRestore();
+  });
+
+  it("still opens at the live edge when the anchored id is not in the loaded page", () => {
+    // THE REGRESSION chat-010 SHIPPED, found by adversarial verification.
+    //
+    // The mount bottom-pin was suppressed on the RAW prop, while the anchor
+    // scroll effect returns early on the DERIVED value — null whenever the id is
+    // not in `messages`. So for three of this feature's own outcomes (a thread
+    // reply, which is never in the timeline by design; a root older than the
+    // loaded page; an id that resolves to nothing) neither ran, and the reader
+    // landed at the TOP of the loaded history: no anchor, and not the live edge
+    // they would have had with no link at all. Strictly worse than not shipping
+    // the feature.
+    //
+    // OBSERVED AT THE PROTOTYPE, because the pin happens inside the FIRST layout
+    // effect — before `renderList` has returned the element `stubLayout` would
+    // attach to. My first attempt asserted the new-messages pill instead and was
+    // VACUOUS: `atBottomRef` initialises to true, so the broken path also reports
+    // "at the bottom" and no pill appears either way. It passed with the fix
+    // reverted, which is the only reason I know.
+    const writes: number[] = [];
+    const scrollTopDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    const scrollHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get: () => 999,
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get: () => 0,
+      set: (v: number) => {
+        writes.push(v);
+      },
+    });
+
+    try {
+      renderList([msg({ id: "m1" }), msg({ id: "m2" })], {
+        anchoredMessageId: "m-not-in-this-page",
+      });
+
+      expect(
+        writes,
+        "the mount pin was skipped for an anchor that is not in the loaded page, so " +
+          "nothing positioned the scrollport: the reader lands at the top of the " +
+          "history with no anchor and not at the live edge either"
+      ).toContain(999);
+    } finally {
+      if (scrollTopDesc) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTopDesc);
+      if (scrollHeightDesc)
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDesc);
+    }
+  });
+
+  it("leaves the mount pin alone when the anchored id IS in the loaded page", () => {
+    // The other side, so the fix is not "always pin" — which would undo the whole
+    // feature by yanking a deep-linked reader to the live edge.
+    const writes: number[] = [];
+    const scrollTopDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    const scrollHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get: () => 999,
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get: () => 0,
+      set: (v: number) => {
+        writes.push(v);
+      },
+    });
+
+    try {
+      renderList([msg({ id: "m1" }), msg({ id: "m2" })], { anchoredMessageId: "m1" });
+      expect(writes).not.toContain(999);
+    } finally {
+      if (scrollTopDesc) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTopDesc);
+      if (scrollHeightDesc)
+        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDesc);
+    }
+  });
+
+  it("does not ask for any scroll when there is no anchor", () => {
+    // Guards the guard: an implementation that called scrollIntoView on mount
+    // unconditionally would satisfy the case above and would fight rule 1 of
+    // this component (a channel opens at the bottom).
+    const spy = vi.spyOn(Element.prototype, "scrollIntoView");
+    spy.mockClear();
+
+    renderList([msg({ id: "m1" }), msg({ id: "m2" })]);
+
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

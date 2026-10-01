@@ -8,6 +8,42 @@
 import puppeteer from "puppeteer-core";
 import { localDb } from "./_local-db.mjs";
 
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.26";
+
+/**
+ * THE TENANT THIS SCRIPT OWNS, and every count below is scoped to it
+ * (audit harness-012).
+ *
+ * The reads used to be bare `db.<model>.count()` -- every tenant in the database
+ * at once -- and the pass criterion was `after === before + 1`. Sequentially that
+ * is merely fragile; run two scripts against one server, which the QA harness
+ * does, and another tenant's insert satisfies the arithmetic while the write
+ * under test silently failed. A false pass is the most expensive thing a
+ * pre-launch harness can produce, because it ends the investigation.
+ */
+const COMPANY_ID = "demo-nimbus";
+
+/**
+ * A description only this run could have written, so the row can be looked up
+ * rather than guessed at. It used to be a fixed literal plus `findFirst({
+ * orderBy: { createdAt: "desc" } })`, which returns whoever wrote last -- so the
+ * log printed another tenant's transaction as corroboration for a false pass.
+ */
+const STAMP = Date.now().toString().slice(-6);
+const TXN_DESCRIPTION = `Smoke-test expense from puppeteer ${STAMP}`;
+
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const BASE = process.env.BASE ?? "http://localhost:3008";
 const OUT = "C:/Users/USER/AppData/Local/Temp/ff-screenshots";
@@ -25,10 +61,12 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox", "--no-proxy-server", "--proxy-bypass-list=*", "--disable-gpu"],
 });
 const page = await browser.newPage();
+await page.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
 page.on("pageerror", (e) => console.error("PAGEERROR:", e.message));
 
-// --- baseline DB count ---
-const beforeDb = await db.transaction.count();
+// --- baseline DB count, scoped to this script's tenant ---
+const scope = { where: { companyId: COMPANY_ID } };
+const beforeDb = await db.transaction.count(scope);
 console.log(`DB rows before: ${beforeDb}`);
 
 // --- 1. sign in ---
@@ -65,7 +103,7 @@ await page.waitForSelector('[role="dialog"] input[type="number"]', { timeout: 50
 // some Chromium / RHF combinations for number inputs even after focus().
 // Setting via the descriptor + dispatching `input` is the canonical way to
 // drive a controlled/registered field.
-await page.evaluate(() => {
+await page.evaluate((txnDescription) => {
   const dialog = document.querySelector('[role="dialog"]');
   const amount = dialog?.querySelector('input[type="number"]');
   const desc = dialog?.querySelector("textarea");
@@ -83,8 +121,8 @@ await page.evaluate(() => {
     el.dispatchEvent(new Event("input", { bubbles: true }));
   };
   setInput(amount, "12345");
-  setTextarea(desc, "Smoke-test expense from puppeteer");
-});
+  setTextarea(desc, txnDescription);
+}, TXN_DESCRIPTION);
 await page.screenshot({ path: `${OUT}/txn-02-modal.png` });
 
 await page.evaluate(() => {
@@ -113,19 +151,26 @@ console.log(`/expenses rows (hard reload):     ${rowsAfterReload}`);
 await page.screenshot({ path: `${OUT}/txn-04-after-reload.png` });
 const rowsAfter = rowsAfterReload;
 
-// --- 5. verify in Supabase ---
-const afterDb = await db.transaction.count();
+// --- 5. verify in the database ---
+const afterDb = await db.transaction.count(scope);
 console.log(`DB rows after:  ${afterDb}`);
-const latest = await db.transaction.findFirst({ orderBy: { createdAt: "desc" } });
+// The row this run wrote, found by the description this run generated.
+const created = await db.transaction.findFirst({
+  where: { companyId: COMPANY_ID, description: TXN_DESCRIPTION },
+});
 console.log(
-  `latest DB row: ${latest ? `${latest.type} ${latest.amount} "${latest.description}"` : "none"}`
+  `created DB row: ${created ? `${created.type} ${created.amount} "${created.description}"` : "NONE"}`
 );
 
+// `created !== null` is the assertion no other writer can satisfy on this
+// script's behalf; the deltas are corroboration, not the proof.
+const ok = created !== null && rowsAfter === rowsBefore + 1 && afterDb === beforeDb + 1;
 console.log(
-  rowsAfter === rowsBefore + 1 && afterDb === beforeDb + 1
+  ok
     ? "✅ transaction round-trip succeeded"
-    : "❌ counts don't line up — check the screenshots"
+    : "❌ transaction round-trip failed — check the screenshots"
 );
+if (!ok) process.exitCode = 1;
 
 await browser.close();
 await db.$disconnect();

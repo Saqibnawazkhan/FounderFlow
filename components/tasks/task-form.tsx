@@ -6,6 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import toast from "react-hot-toast";
 import { addTaskAction } from "@/lib/actions/tasks";
 import { NewTaskSchema, type NewTaskInput } from "@/lib/schemas/task";
+import { deadlineInstantForDay } from "@/lib/tasks/deadline";
 import type { TaskPriority, TaskStatus, User } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -100,7 +101,13 @@ export function TaskForm({
       ...data,
       title: data.title.trim(),
       description: data.description.trim(),
-      deadline: new Date(data.deadline).toISOString(),
+      // `deadlineInstantForDay`, not `new Date(value).toISOString()`
+      // (tasks-and-comments-011). Both store the picked calendar day, but this
+      // one stores it at NOON UTC instead of midnight, which is what keeps the
+      // zod refine in lib/schemas/task.ts from rejecting "due today" for every
+      // viewer west of Greenwich, and what puts the task in the right calendar
+      // cell for them. lib/tasks/deadline.ts has the whole argument.
+      deadline: deadlineInstantForDay(data.deadline),
     });
     if (!result.success) {
       toast.error(result.error);

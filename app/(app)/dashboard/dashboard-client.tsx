@@ -32,7 +32,7 @@ import { useDateFormat, useNumberFormat } from "@/lib/i18n/use-t";
 // and `Transaction.date` is a date-only value stored at UTC midnight, so a local
 // boundary filed a row dated the 1st under the previous month for every viewer
 // west of UTC while /budgets counted it in the current one (money-007).
-import { isPast, isToday } from "date-fns";
+import { isDeadlineOverdue } from "@/lib/tasks/deadline";
 import { isInUtcMonth, utcMonthShortLabel, utcMonthWindow, utcMonthsAgo } from "@/lib/date-range";
 // From a plain module, NOT re-exported from here: page.tsx is a Server
 // Component and needs the same two numbers. An export from this file would
@@ -383,11 +383,18 @@ export function DashboardClient({
     [tasks, currentUserId]
   );
   const myOpenCount = myOpenTasks.length;
+  // THE FIFTH CLIENT SURFACE, and for a while the only one still wrong.
+  //
+  // tasks-and-comments-011 moved four surfaces onto `lib/tasks/deadline.ts`,
+  // which reads a deadline's calendar day from UTC parts because that is how the
+  // day is stored. This one kept `isPast(new Date(...)) && !isToday(...)`, which
+  // reads the instant in the VIEWER's zone: at UTC-5 a legacy midnight-UTC row due
+  // today is "past and not today", so the dashboard said "1 overdue" while /tasks
+  // said nothing was. Before that wave the two agreed and were both wrong;
+  // afterwards they disagreed, which is worse — a customer cannot tell which
+  // screen to believe, and the stat chip turns red to insist on the wrong one.
   const myOverdueCount = useMemo(
-    () =>
-      myOpenTasks.filter(
-        (t) => t.deadline && isPast(new Date(t.deadline)) && !isToday(new Date(t.deadline))
-      ).length,
+    () => myOpenTasks.filter((t) => t.deadline && isDeadlineOverdue(t.deadline)).length,
     [myOpenTasks]
   );
   const stats: DashboardStatProps[] = [

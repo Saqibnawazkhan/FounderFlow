@@ -68,6 +68,7 @@ vi.mock("@/lib/db", () => ({ db: H.db }));
 vi.mock("@/lib/auth", () => ({ auth: async () => H.session.value }));
 
 import { getAccountStats } from "@/lib/queries/stats";
+import { AUTO_CLOSE_MS } from "@/lib/time/thresholds";
 
 function callsTo(path: string): Array<{ path: string; args: unknown[] }> {
   return H.calls.filter((c) => c.path === path);
@@ -115,7 +116,33 @@ describe("getAccountStats() — the time sum (perf-003)", () => {
     // Open entries accrue up to now — the JS version credited them via
     // `durationMs(clockInAt, null, now)`, and dropping that would silently
     // zero out the card of anyone currently on the clock.
-    expect(sql).toContain('COALESCE("clockOutAt"');
+    //
+    // ASSERTED AS A PROPERTY, not as the `COALESCE("clockOutAt", …)` idiom this
+    // line used to name. time-015 split the expression into a CASE so an OPEN
+    // entry can be capped and a CLOSED one cannot, which is what `durationMs`
+    // does — and the old assertion failed on a change that made the two agree
+    // MORE closely. A test that pins a spelling blocks a correct refactor and
+    // says nothing about the behaviour.
+    expect(sql, "a running entry must still accrue to now").toMatch(/NOW\(\)/);
+    expect(sql, "an open entry is distinguished from a closed one").toMatch(
+      /"clockOutAt"\s+IS\s+NULL/
+    );
+  });
+
+  it("caps an OPEN entry the way durationMs does, and leaves a CLOSED one alone", async () => {
+    // The invariant this file exists to hold: this SQL and `durationMs` answer the
+    // same question. time-015 made `durationMs` honour its own docstring and cap a
+    // running entry at AUTO_CLOSE_MS; for a while this query still credited one in
+    // full, so /settings showed a 40-hour session and /time showed 12.5h of it.
+    //
+    // The cap is bound, not interpolated, so the number cannot drift from the
+    // constant: `LEAST` proves the shape and the parameter proves the value.
+    await getAccountStats();
+    const sql = sqlText();
+    expect(sql, "an open entry must be clamped to the auto-close horizon").toContain("LEAST");
+    expect(sqlParams(), "the horizon is bound from lib/time/thresholds, not typed in").toContain(
+      AUTO_CLOSE_MS
+    );
   });
 
   it("binds the user id instead of interpolating it", async () => {

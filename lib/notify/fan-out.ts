@@ -74,6 +74,33 @@ export type NotifyInput = {
    * so both `db` and a `$transaction` callback's `tx` satisfy it.
    */
   tx?: Pick<typeof db, "notification" | "notificationPreference" | "user">;
+  /**
+   * Refuse the in-app row for this call, whatever each recipient's preference
+   * says. Push and email are untouched.
+   *
+   * For the ONE case where a surface owns its own unread signal and a
+   * notification row would be a duplicate of it: a direct message. A DM used to
+   * write a row that sat under the bell, next to budget alerts and task
+   * assignments, while the word "Chat" in the sidebar showed nothing — so the
+   * app's most conversational event was announced in its least conversational
+   * place, and there was no way to tell "I have unread messages" from "someone
+   * changed a role" without opening both. The Chat row's badge replaced it.
+   *
+   * NOT used for chat @mentions, which still write their row. The badge counts
+   * messages and cannot say that one of them named you, so for the event that
+   * names a person the durable row is the only surface that carries the fact.
+   *
+   * NOT a preference and not a default, so it cannot silently swallow anyone
+   * else's notifications: it is per-call, and `EVENT_DELIVERABLE_CHANNELS` in
+   * lib/notify/events.ts records which events are affected so the preferences
+   * matrix cannot go on offering a switch for a row that is never written.
+   *
+   * Push and email deliberately survive it. "Don't put it in my notification
+   * list" and "don't tell me a teammate messaged me while I was away" are
+   * different requests, and the second one already has a control: mute the
+   * channel, or turn the event off in settings.
+   */
+  skipInApp?: boolean;
 };
 
 /**
@@ -84,14 +111,34 @@ export type NotifyInput = {
  * honestly rather than claiming a ping they did not send (see
  * `createCommentAction`'s toast). Someone who has muted in-app for this event
  * is not counted, which is correct: they were not notified.
+ *
+ * ALSO RETURNS `dispatched`: how many distinct live people this call SENT
+ * something to, on any of the three channels. `notified` cannot answer that,
+ * and a caller that suppresses the in-app row (`skipInApp`) would otherwise
+ * have to report "pinged 0" over a message that went out to everyone by push.
+ * The two are deliberately separate numbers rather than one redefined one:
+ * every existing caller means "in-app rows written" by `notified`, and quietly
+ * widening it would make each of those claims say something it was not written
+ * to say.
+ *
+ * IT IS DISPATCH, NOT DELIVERY, and the name says so on purpose. Its in-app
+ * share is real — those rows are written before this returns. Push and email
+ * are not: `firePush` and `fireNotificationEmails` are both fire-and-forget
+ * behind a dynamic import, so a recipient who has push on but no subscribed
+ * device, or whose mail falls outside the daily budget, still counts here.
+ * Synchronously, dispatch is the strongest fact this function has. An earlier
+ * draft called it `reached`, which promises a delivery receipt nothing in this
+ * path can produce.
  */
-export async function notifyUsers(input: NotifyInput): Promise<{ notified: number }> {
+export async function notifyUsers(
+  input: NotifyInput
+): Promise<{ notified: number; dispatched: number }> {
   const excluded = new Set(
     input.exclude == null ? [] : Array.isArray(input.exclude) ? input.exclude : [input.exclude]
   );
 
   const recipients = Array.from(new Set(input.userIds)).filter((id) => id && !excluded.has(id));
-  if (recipients.length === 0) return { notified: 0 };
+  if (recipients.length === 0) return { notified: 0, dispatched: 0 };
 
   const client = input.tx ?? db;
 
@@ -102,7 +149,13 @@ export async function notifyUsers(input: NotifyInput): Promise<{ notified: numbe
     select: { userId: true, event: true, inApp: true, email: true, push: true },
   });
 
-  const channels = splitByChannel(input.event, recipients, stored);
+  const resolved = splitByChannel(input.event, recipients, stored);
+  // Applied HERE, before the reachability test below, so the suppression is
+  // expressed once and every later step agrees with it: someone whose only
+  // enabled channel is in-app now correctly counts as unreachable, the finance
+  // filter and the tombstone read are not spent on them, and `notified` comes
+  // out 0 because no row was written rather than because one was discarded.
+  const channels = input.skipInApp ? { ...resolved, inApp: [] } : resolved;
 
   // Everyone some channel would actually reach. Nothing is going anywhere when
   // this is empty, so don't spend a round trip — and don't ask the finance rule
@@ -113,7 +166,7 @@ export async function notifyUsers(input: NotifyInput): Promise<{ notified: numbe
       channels.push.indexOf(id) !== -1 ||
       channels.email.indexOf(id) !== -1
   );
-  if (reachable.length === 0) return { notified: 0 };
+  if (reachable.length === 0) return { notified: 0, dispatched: 0 };
 
   // THE FINANCE ENTITLEMENT FILTER (sec-005).
   //
@@ -158,7 +211,7 @@ export async function notifyUsers(input: NotifyInput): Promise<{ notified: numbe
       // would read as "no opinion" to anything stricter added later.
       projectId: input.projectId ?? null,
     });
-    if (allowed.length === 0) return { notified: 0 };
+    if (allowed.length === 0) return { notified: 0, dispatched: 0 };
   }
 
   // THE TOMBSTONE FILTER, FOR EVERY CHANNEL (data-integrity-004).
@@ -184,7 +237,7 @@ export async function notifyUsers(input: NotifyInput): Promise<{ notified: numbe
     where: { id: { in: allowed }, deletedAt: null },
     select: { id: true, name: true, email: true },
   });
-  if (live.length === 0) return { notified: 0 };
+  if (live.length === 0) return { notified: 0, dispatched: 0 };
   const liveIds = new Set(live.map((u) => u.id));
   const inAppTo = channels.inApp.filter((id) => liveIds.has(id));
   const pushTo = channels.push.filter((id) => liveIds.has(id));
@@ -226,5 +279,13 @@ export async function notifyUsers(input: NotifyInput): Promise<{ notified: numbe
     });
   }
 
-  return { notified };
+  // Distinct PEOPLE, not deliveries: someone with in-app, push and email all on
+  // is one person dispatched, not three. Built with a Set rather than a spread of
+  // one — this repo's tsconfig sets `lib` but no `target`, so `[...aSet]` is a
+  // typecheck error that vitest's esbuild transpile does not reproduce.
+  const dispatchedIds = new Set<string>(inAppTo);
+  for (const id of pushTo) dispatchedIds.add(id);
+  for (const u of emailTo) dispatchedIds.add(u.id);
+
+  return { notified, dispatched: dispatchedIds.size };
 }

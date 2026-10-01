@@ -45,6 +45,7 @@
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
+import { codeOnly, stripComments } from "../harness/source-scan";
 
 const ROOT = process.cwd();
 
@@ -79,102 +80,14 @@ const ALLOWED_NON_ACTION_EXPORTS = new Set<string>([
 /** Pinned so growth is deliberate, not incidental. */
 const ALLOWED_COUNT = 0;
 
-/**
- * Blank out comments and, when `keepStrings` is false, the CONTENTS of string
- * literals — preserving length, so every offset into the result still lines up
- * with the original.
- *
- * Both halves are needed, for opposite reasons:
- *   - Comments must go, or a module that only DISCUSSES `"use server"` is
- *     mistaken for one. `lib/queries/transactions.ts` opens with a doc comment
- *     explaining that it is deliberately NOT a `"use server"` module; a naive
- *     `includes("use server")` picks it up and then reports every helper in it.
- *   - String contents must go when looking for code, or a name mentioned
- *     inside a string counts as a declaration.
- * The directive check itself is the one place that needs strings intact, since
- * the directive IS a string.
- */
-function neutralize(src: string, keepStrings: boolean): string {
-  const out = src.split("");
-  const n = src.length;
-  const BACKSLASH = String.fromCharCode(92);
-  let i = 0;
-  let state: "code" | "line" | "block" | "string" = "code";
-  let quote = "";
-
-  while (i < n) {
-    const c = src[i];
-    const c2 = src[i + 1];
-
-    if (state === "code") {
-      if (c === "/" && c2 === "/") {
-        out[i] = " ";
-        out[i + 1] = " ";
-        i += 2;
-        state = "line";
-        continue;
-      }
-      if (c === "/" && c2 === "*") {
-        out[i] = " ";
-        out[i + 1] = " ";
-        i += 2;
-        state = "block";
-        continue;
-      }
-      if (c === '"' || c === "'" || c === "`") {
-        quote = c;
-        i += 1;
-        state = "string";
-        continue;
-      }
-      i += 1;
-      continue;
-    }
-
-    if (state === "line") {
-      if (c === "\n") {
-        state = "code";
-        i += 1;
-        continue;
-      }
-      out[i] = " ";
-      i += 1;
-      continue;
-    }
-
-    if (state === "block") {
-      if (c === "*" && c2 === "/") {
-        out[i] = " ";
-        out[i + 1] = " ";
-        i += 2;
-        state = "code";
-        continue;
-      }
-      if (c !== "\n") out[i] = " ";
-      i += 1;
-      continue;
-    }
-
-    // inside a string literal
-    if (c === BACKSLASH) {
-      if (!keepStrings) {
-        out[i] = " ";
-        if (i + 1 < n) out[i + 1] = " ";
-      }
-      i += 2;
-      continue;
-    }
-    if (c === quote) {
-      state = "code";
-      i += 1;
-      continue;
-    }
-    if (!keepStrings && c !== "\n") out[i] = " ";
-    i += 1;
-  }
-
-  return out.join("");
-}
+// `codeOnly` (comments and string CONTENTS blanked) and `stripComments`
+// (comments only, so the `"use server"` directive is still a readable string)
+// come from tests/lib/harness/source-scan.ts, shared with the two sibling
+// guards. The copy that used to live here had audit A49 in it: a `"` inside a
+// regex literal read as the start of a string and blanked the rest of the
+// module, so an export declared below a shape-check regex vanished from this
+// sweep entirely. See `still sees an export declared below a regex literal with
+// a quote`.
 
 function sourceFiles(dir: string, found: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -209,9 +122,9 @@ function serverModules(): ServerModule[] {
   return SCAN_ROOTS.flatMap((root) => sourceFiles(join(ROOT, root)))
     .map((file) => {
       const raw = readFileSync(file, "utf8");
-      return { rel: rel(file), raw, code: neutralize(raw, false) };
+      return { rel: rel(file), raw, code: codeOnly(raw) };
     })
-    .filter(({ raw }) => hasServerDirective(neutralize(raw, true)))
+    .filter(({ raw }) => hasServerDirective(stripComments(raw)))
     .map(({ rel: r, code }) => ({ rel: r, code }));
 }
 
@@ -377,7 +290,7 @@ export async function sweepAutoCloseEntries(): Promise<SweepResult> {
 
   const asModule = (source: string): ServerModule => ({
     rel: "lib/actions/fixture.ts",
-    code: neutralize(source, false),
+    code: codeOnly(source),
   });
 
   it("reports the cron helper that shipped as a public endpoint", () => {
@@ -407,15 +320,15 @@ export async function listTransactions() {
   return [];
 }
 `;
-    expect(hasServerDirective(neutralize(discussesOnly, true))).toBe(false);
-    expect(hasServerDirective(neutralize(TIME_TS_AS_IT_SHIPPED, true))).toBe(true);
+    expect(hasServerDirective(stripComments(discussesOnly))).toBe(false);
+    expect(hasServerDirective(stripComments(TIME_TS_AS_IT_SHIPPED))).toBe(true);
   });
 
   it("reads past a leading directive that is not first, but still module-level", () => {
     // `"use client"` first would mean this is not a server module at all; a
     // stray semicolon or blank line before the directive must not hide it.
-    expect(hasServerDirective(neutralize(`\n\n  "use server";\nexport {};\n`, true))).toBe(true);
-    expect(hasServerDirective(neutralize(`"use client";\n"use server";\n`, true))).toBe(false);
+    expect(hasServerDirective(stripComments(`\n\n  "use server";\nexport {};\n`))).toBe(true);
+    expect(hasServerDirective(stripComments(`"use client";\n"use server";\n`))).toBe(false);
   });
 
   it("catches the export forms that hide a name", () => {
@@ -451,6 +364,20 @@ export async function listTransactions() {
       `"use server";\nasync function sweep() {}\nexport { sweep as sweepAction };\n`
     );
     expect(exportOffenders(viaAlias)).toEqual([]);
+  });
+
+  it("still sees an export declared below a regex literal with a quote", () => {
+    // Audit A49. The scanner read the double quote inside the character class
+    // as the start of a string literal and blanked the rest of the module, so
+    // the export below it vanished and this guard — the one whose whole job is
+    // to notice a helper published as a public POST endpoint — reported nothing.
+    const withRegex = asModule(`"use server";
+const SAFE_LABEL = /[^<>"@]+/;
+export async function sweepEntries() {}
+`);
+    expect(exportOffenders(withRegex)).toEqual([
+      'lib/actions/fixture.ts: export "sweepEntries" is not named *Action',
+    ]);
   });
 
   it("does not credit a name that only appears inside a string", () => {

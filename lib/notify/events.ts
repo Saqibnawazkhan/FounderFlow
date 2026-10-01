@@ -89,3 +89,42 @@ export const EVENT_COPY: Record<
     actionLabel: "Go to the workspace",
   },
 };
+
+/**
+ * Which of the three channels an event can ACTUALLY be delivered on.
+ *
+ * Exists because "every event × every channel" stopped being true. The DM
+ * fan-out passes `skipInApp` (lib/notify/fan-out.ts), so no in-app row is ever
+ * written for a direct message — its unread signal is the badge on the
+ * sidebar's Chat row instead. Without this map the preferences matrix would go
+ * on rendering an "In app" checkbox for direct messages: a control that saves
+ * happily, reads back correctly, and governs nothing. This codebase has shipped
+ * that shape of defect often enough to name it.
+ *
+ * `mention` keeps all three, and not as an oversight. A badge counts messages;
+ * it cannot say that one of them named you. So an @mention still writes its
+ * row — in chat as well as in task and transaction comments — and the switch
+ * for it stays honest because every source of the event still honours it.
+ *
+ * `tests/lib/notify/fan-out-sites.test.ts` derives the truth from the call
+ * sites and fails if this map disagrees, so it cannot rot into decoration.
+ */
+export const EVENT_DELIVERABLE_CHANNELS: Record<NotifyEvent, readonly NotifyChannel[]> = {
+  mention: NOTIFY_CHANNELS,
+  dm: ["email", "push"],
+  task_assigned: NOTIFY_CHANNELS,
+  task_completed: NOTIFY_CHANNELS,
+  project_supervisor: NOTIFY_CHANNELS,
+  budget_alert: NOTIFY_CHANNELS,
+  transaction_logged: NOTIFY_CHANNELS,
+  team_change: NOTIFY_CHANNELS,
+};
+
+/**
+ * Why a channel is unavailable, in the words of the person reading the
+ * settings page. Shown in the cell where the checkbox would have been, because
+ * a blank cell reads as a rendering bug.
+ */
+export const EVENT_CHANNEL_NOTE: Partial<Record<NotifyEvent, string>> = {
+  dm: "Direct messages appear on the Chat badge in the sidebar, not in your notifications.",
+};

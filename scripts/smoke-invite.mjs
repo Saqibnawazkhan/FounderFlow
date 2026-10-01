@@ -9,8 +9,27 @@
 import puppeteer from "puppeteer-core";
 import { localDb } from "./_local-db.mjs";
 
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.11";
+
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
-const BASE = process.env.BASE ?? "http://localhost:3009";
+// 3000, not 3009 (team-and-invites-009). CLAUDE.md's "Local development from
+// scratch" runs `npm run dev` on 3000, so the old default meant a run with no
+// BASE in the environment failed at the first goto and never reached step 3.
+// Override it when the port is taken — and override AUTH_URL to match, or the
+// auth redirect breaks.
+const BASE = process.env.BASE ?? "http://localhost:3000";
 
 // Pinned to the local docker Postgres. A bare `new PrismaClient()` here
 // auto-loads the ROOT .env, which points at production Supabase — see
@@ -28,14 +47,45 @@ const browser = await puppeteer.launch({
 const stamp = Date.now();
 const inviteEmail = `invite-${stamp}@founderflow.app`;
 const inviteName = `Invite Test ${stamp}`;
-const newPassword = `claim-${stamp}`;
+// CAPITAL C, and it is the whole of team-and-invites-009's first half. This was
+// `claim-${stamp}`: lowercase letters and digits, no uppercase. PasswordSchema
+// (lib/schemas/password.ts) requires lowercase AND uppercase AND a digit, and
+// AcceptInviteSchema embeds it, so acceptInviteAction answered "Password needs
+// an uppercase letter" on every run and step 3 could never succeed.
+// tests/ops/smoke-invite-contract.test.ts pushes this literal through the real
+// schema so it cannot rot again.
+const newPassword = `Claim-${stamp}`;
 
-const beforeUsers = await db.user.count();
-const beforeTokens = await db.inviteToken.count();
-console.log(`DB before: users=${beforeUsers} invite_tokens=${beforeTokens}`);
+// THE WORKSPACE UNDER TEST, and every count below is scoped to it. These two
+// reads were `db.user.count()` and `db.inviteToken.count()` — every tenant in the
+// database at once, which is unsound as a before/after comparison the moment
+// anything else is writing and meaningless as context.
+//
+// STILL THE SEEDED DEMO WORKSPACE, not a throwaway tenant of its own. That is the
+// remaining half of team-and-invites-009: a run adds an Activity row and a
+// #general membership that the cleanup below does not remove. Fixing it properly
+// means signing up a fresh workspace through the UI and tearing the whole tenant
+// down afterwards, which is a rewrite of this script.
+const ADMIN_EMAIL = "demo@founderflow.app";
+const admin = await db.user.findUnique({
+  where: { email: ADMIN_EMAIL },
+  select: { companyId: true },
+});
+if (!admin) {
+  console.error(`❌ no ${ADMIN_EMAIL} in the local database — seed it first`);
+  await browser.close();
+  await db.$disconnect();
+  process.exit(1);
+}
+const companyId = admin.companyId;
+
+const beforeUsers = await db.user.count({ where: { companyId } });
+const beforeTokens = await db.inviteToken.count({ where: { companyId } });
+console.log(`DB before (${companyId}): users=${beforeUsers} invite_tokens=${beforeTokens}`);
 
 /* ── 1. Admin logs in + sends the invite ──────────────────────────────── */
 const adminPage = await browser.newPage();
+await adminPage.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
 adminPage.on("pageerror", (e) => console.error("ADMIN PAGEERROR:", e.message));
 
 await adminPage.goto(`${BASE}/login`, { waitUntil: "networkidle2" });
@@ -93,7 +143,7 @@ await adminPage
   .catch(() => {});
 
 const tokenRow = await db.inviteToken.findFirst({
-  where: { email: inviteEmail },
+  where: { email: inviteEmail, companyId },
   orderBy: { createdAt: "desc" },
 });
 console.log(
@@ -116,6 +166,7 @@ console.log(
 
 /* ── 2. Recipient visits /invite/[token] in a fresh browser context ──── */
 const recipientPage = await browser.newPage();
+await recipientPage.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
 recipientPage.on("pageerror", (e) => console.error("RECIPIENT PAGEERROR:", e.message));
 
 const inviteUrl = `${BASE}/invite/${tokenRow.token}`;
@@ -188,7 +239,23 @@ if (createdUser) {
 }
 await db.inviteToken.delete({ where: { id: tokenRow.id } });
 
-const ok = isWelcome && !!createdUser && !!tokenAfter?.usedAt && reuseRejected;
+/* ── 6. Residue: this run's own rows, by address, not a global total ───── */
+// Scoped to the address this run invented, so it cannot be confused by anything
+// else writing to the workspace — which is what a before/after count of the
+// whole table would have been.
+const residueUser = await db.user.findUnique({ where: { email: inviteEmail } });
+const residueTokens = await db.inviteToken.count({ where: { companyId, email: inviteEmail } });
+const cleanedUp = residueUser === null && residueTokens === 0;
+console.log(
+  cleanedUp
+    ? "✅ no residue: this run's user + token are gone"
+    : `❌ residue left behind: user=${residueUser ? "present" : "gone"} tokens=${residueTokens}`
+);
+const afterUsers = await db.user.count({ where: { companyId } });
+const afterTokens = await db.inviteToken.count({ where: { companyId } });
+console.log(`DB after (${companyId}): users=${afterUsers} invite_tokens=${afterTokens}`);
+
+const ok = isWelcome && !!createdUser && !!tokenAfter?.usedAt && reuseRejected && cleanedUp;
 console.log("");
 console.log(ok ? "✅ invite flow round-trip succeeded" : "❌ invite flow has failures");
 

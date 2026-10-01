@@ -46,6 +46,9 @@
 
 import { db } from "@/lib/db";
 import { requireScopedSession } from "@/lib/queries/session";
+import { INACTIVE_PROJECT_STATUSES } from "@/lib/queries/projects";
+import { canSeeAllProjects } from "@/lib/auth/project-permissions";
+import type { Role } from "@/lib/auth/role-gates";
 import type { Task, TaskStatus } from "@/lib/types";
 
 // Includes the comment count so the kanban / list can render a "💬 N"
@@ -302,5 +305,50 @@ export async function listTaskOptions(
     orderBy: [{ createdAt: "desc" }, { id: "asc" }],
     take,
     select: { id: true, title: true },
+  });
+}
+
+/**
+ * The projects this caller may actually FILE A TASK INTO.
+ *
+ * Deliberately NOT `listProjectOptions` (tasks-and-comments-008). That function
+ * answers "which projects may this caller SEE", which for a member is every
+ * project they supervise OR hold a task in — and /tasks used it to fill the
+ * new-task form's picker. `addTaskAction` gates on `canManageProject`, which for
+ * a member is supervisor-only. So the most ordinary case in the product — a
+ * member with tasks in a project they do not supervise — was offered the CTA,
+ * the whole form and the project in the dropdown, and was refused on submit
+ * with "Only the supervisor or a founder can add tasks here", after typing a
+ * title, a description, an assignee and a deadline.
+ *
+ * This is the SAME predicate the action applies, expressed as a `where` so the
+ * page can also answer "can this person file anywhere at all" and hide the CTA
+ * when the answer is no. `canManageProject` cannot be called here for the same
+ * reason `bulkTaskScope` cannot call `canEditTask` — the rule has to run in SQL
+ * — so the correspondence is: admin/cofounder ⇒ every project, otherwise
+ * `supervisorId === userId`.
+ *
+ * `status` excludes `INACTIVE_PROJECT_STATUSES` rather than only `"archived"`
+ * (which is all `addTaskAction` refuses). That is intentional and matches what
+ * the picker has always offered — `listProjectOptions` excludes completed
+ * projects too, and shares this same constant, which is what
+ * tests/lib/queries/projects-scope.test.ts pins for it. Offering a COMPLETED
+ * project here would let a task be filed where the global board would then hide
+ * it: the bug that constant was extracted to fix.
+ */
+export async function listFilableProjectOptions(): Promise<{ id: string; name: string }[]> {
+  const { userId, companyId, role } = await requireScopedSession();
+  const manageableWhere = canSeeAllProjects(role as Role) ? {} : { supervisorId: userId };
+  return db.project.findMany({
+    where: {
+      companyId,
+      deletedAt: null,
+      // Spread, not the constant: Prisma's `notIn` takes a mutable `string[]`
+      // and the constant is `readonly`.
+      status: { notIn: [...INACTIVE_PROJECT_STATUSES] },
+      ...manageableWhere,
+    },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
   });
 }

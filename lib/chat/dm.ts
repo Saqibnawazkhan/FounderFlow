@@ -90,14 +90,68 @@ export function isDmKind(kind: string): boolean {
 }
 
 /**
+ * Is this `Channel.kind` a private channel — a room whose membership IS its
+ * access control?
+ *
+ * Lives here for the reason `isDmKind` does: ONE SPELLING, FOR EVERY SURFACE.
+ * This predicate existed as a private copy in channel-rail.tsx and a third
+ * inline re-spelling in channel-header.tsx, and both now call this function.
+ *
+ * `includes("private")` rather than `=== "private"`, which is the shape the
+ * rail's copy already had: `Channel.kind` is a plain String column with no
+ * enum behind it, and a privacy decision that flips on how a row happened to
+ * be capitalised is not a decision. Substring rather than equality so a future
+ * `"private-archive"` still reads as private — the safe direction for this
+ * question is to over-recognise privacy, never to under-recognise it.
+ */
+export function isPrivateKind(kind: string): boolean {
+  return kind.toLowerCase().includes("private");
+}
+
+/**
  * How a conversation is ADDRESSED in prose — the browser tab, a heading, the
  * subject of a sentence.
  *
- * `#general` for a room. `Ahmed Khan` for a direct message, with no hash,
- * because a DM is addressed to a person. Before this existed,
- * `generateMetadata` titled every kind `#${channel.name}` and a two-person
- * conversation showed up in the tab, the history and every bookmark as
- * "#Ahmed Khan".
+ * `#general` for a PUBLIC room. A bare name for everything else: `Ahmed Khan`
+ * for a direct message, `pvt-hiring` for a private channel. Before this
+ * existed, `generateMetadata` titled every kind `#${channel.name}` and a
+ * two-person conversation showed up in the tab, the history and every bookmark
+ * as "#Ahmed Khan".
+ *
+ * ── WHY A PRIVATE CHANNEL LOSES THE HASH TOO ────────────────────────────
+ *
+ * THE RULE: a hash appears in prose exactly where a Hash ICON appears beside
+ * the name. ChannelRail and ChannelHeader both draw a Lock for a private
+ * channel and a Hash only for a public one, and ChatClient's "Add people to …"
+ * dialog title already omitted the hash for a private channel, so the browser
+ * tab and the send box contradicted the Lock sitting next to them in the same
+ * viewport.
+ *
+ * THREE PROSE SURFACES DID NOT ROUTE THROUGH HERE, and an earlier version of
+ * this comment claimed only the routed ones were affected. Found by adversarial
+ * verification; all three now call this function:
+ *   - lib/actions/chat.ts, the mention notification title — a member of
+ *     pvt-hiring was told "Bilal mentioned you in #pvt-hiring";
+ *   - lib/queries/search.ts, the command-palette row ("Bilal in #pvt-hiring");
+ *   - components/chat/new-channel-modal.tsx, the created toast.
+ * A statement about which call sites exist is a claim about the whole repo, and
+ * this one was made without grepping it.
+ *
+ * That contradiction is not cosmetic: in this product a hash means "a room
+ * other people can be in", which is the opposite of what a private channel
+ * promises. It is the same class of mistake as drawing a Hash on a DM.
+ *
+ * A bare name rather than a padlock EMOJI in front of it, because this string
+ * is also the composer's sr-only <label>, and a screen reader reads that emoji
+ * aloud as "locked" — "Message locked pvt-hiring" is a worse sentence than the
+ * one it replaces. The kind is signalled by the icon beside the name, which is
+ * where a glyph belongs. The cost, stated rather than discovered later: in the
+ * browser tab, where no icon is rendered, a private channel and a DM now read
+ * alike.
+ *
+ * An UNRECOGNISED kind gets no hash. Fail-closed on the privacy CLAIM: a hash
+ * asserts "other people can be in here", and a kind this module has never
+ * heard of is not grounds to assert that on the app's behalf.
  *
  * `name` is expected to be the value lib/queries/chat.ts already resolved — for
  * a DM that is the VIEWER-RELATIVE counterpart name from `dmDisplayName`, never
@@ -106,7 +160,7 @@ export function isDmKind(kind: string): boolean {
  * surfaces come to disagree.
  */
 export function conversationTitle(kind: string, name: string): string {
-  return isDmKind(kind) ? name : `#${name}`;
+  return kind.toLowerCase() === "public" ? `#${name}` : name;
 }
 
 /**

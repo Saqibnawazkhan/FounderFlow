@@ -33,6 +33,8 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { rateLimiter } from "@/lib/rate-limit";
+import { EXPORT_LIMITER_NAME, EXPORT_RATE_LIMIT } from "@/app/api/export/rate-limit";
 import type { ScopedSession } from "@/lib/queries/session";
 
 /* ─────────────────────────── the fake Prisma client ─────────────────────── */
@@ -228,10 +230,21 @@ async function get(url?: string) {
 const ME = "https://app.founderflow.test/api/export?scope=me";
 const WORKSPACE = "https://app.founderflow.test/api/export?scope=workspace";
 
+/**
+ * rep-010 gave /api/export a rate limiter, and its bucket lives on `globalThis`
+ * keyed by name — so it accumulates across the cases in this file. Without this
+ * reset the later tests are refused with 429 and ZERO database reads, and every
+ * "expected a user.findFirst call, saw none" that follows looks like a scoping
+ * regression instead of a spent budget. `rateLimiter` returns a handle onto the
+ * same store for the same name, whatever options it is given.
+ */
+const exportBucket = rateLimiter(EXPORT_LIMITER_NAME, EXPORT_RATE_LIMIT);
+
 beforeEach(() => {
   prisma.calls.length = 0;
   prisma.answers.clear();
   sentry.captureServerError.mockClear();
+  exportBucket.reset();
   asRole("admin", "u_admin");
 });
 

@@ -5,6 +5,43 @@
 import puppeteer from "puppeteer-core";
 import { localDb } from "./_local-db.mjs";
 
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.23";
+
+/**
+ * THE TENANT THIS SCRIPT OWNS, and every count below is scoped to it
+ * (audit harness-012).
+ *
+ * The reads used to be bare `db.<model>.count()` -- every tenant in the database
+ * at once -- and the pass criterion was `after === before + 1`. Sequentially that
+ * is merely fragile; run two scripts against one server, which the QA harness
+ * does, and another tenant's insert satisfies the arithmetic while the write
+ * under test silently failed. A false pass is the most expensive thing a
+ * pre-launch harness can produce, because it ends the investigation.
+ */
+const COMPANY_ID = "demo-nimbus";
+
+/**
+ * A title only this run could have written, so the assertion below is a lookup
+ * that can only match this script's row. It used to be the fixed literal "Smoke
+ * task from puppeteer" plus `findFirst({ orderBy: { createdAt: "desc" } })`,
+ * which returns whoever wrote last -- so the log corroborated a false pass with
+ * another tenant's task.
+ */
+const STAMP = Date.now().toString().slice(-6);
+const TASK_TITLE = `Smoke task from puppeteer ${STAMP}`;
+
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const BASE = process.env.BASE ?? "http://localhost:3009";
 const OUT = "C:/Users/USER/AppData/Local/Temp/ff-screenshots";
@@ -22,14 +59,16 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox", "--no-proxy-server", "--proxy-bypass-list=*", "--disable-gpu"],
 });
 const page = await browser.newPage();
+await page.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
 page.on("pageerror", (e) => console.error("PAGEERROR:", e.message));
 page.on("console", (m) => {
   if (m.type() === "error") console.error("CONSOLE.error:", m.text());
 });
 
-const beforeTasks = await db.task.count();
-const beforeActs = await db.activity.count();
-const beforeNotifs = await db.notification.count();
+const scope = { where: { companyId: COMPANY_ID } };
+const beforeTasks = await db.task.count(scope);
+const beforeActs = await db.activity.count(scope);
+const beforeNotifs = await db.notification.count(scope);
 console.log(`DB before: tasks=${beforeTasks} activities=${beforeActs} notifs=${beforeNotifs}`);
 
 // sign in — wait for the URL to leave /login rather than guess a timeout.
@@ -67,7 +106,7 @@ await new Promise((r) => setTimeout(r, 500));
 
 // Fill the form. Title is the first non-typed input inside the dialog;
 // description is the textarea. Assignee defaults to current user.
-await page.evaluate(() => {
+await page.evaluate((taskTitle) => {
   const dialog = document.querySelector('[role="dialog"]');
   const title = dialog?.querySelector("input:not([type=date]):not([type=number])");
   const desc = dialog?.querySelector("textarea");
@@ -75,7 +114,7 @@ await page.evaluate(() => {
     title.focus();
     Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set?.call(
       title,
-      "Smoke task from puppeteer"
+      taskTitle
     );
     title.dispatchEvent(new Event("input", { bubbles: true }));
   }
@@ -87,7 +126,7 @@ await page.evaluate(() => {
     );
     desc.dispatchEvent(new Event("input", { bubbles: true }));
   }
-});
+}, TASK_TITLE);
 await page.screenshot({ path: `${OUT}/task-02-modal.png` });
 
 // submit
@@ -101,23 +140,38 @@ await page.screenshot({ path: `${OUT}/task-03-after.png` });
 const cardsAfter = await page.evaluate(() => document.querySelectorAll("h4").length);
 console.log(`/tasks visible card titles after:  ${cardsAfter}`);
 
-const afterTasks = await db.task.count();
-const afterActs = await db.activity.count();
-const afterNotifs = await db.notification.count();
+const afterTasks = await db.task.count(scope);
+const afterActs = await db.activity.count(scope);
+const afterNotifs = await db.notification.count(scope);
 console.log(`DB after:  tasks=${afterTasks} activities=${afterActs} notifs=${afterNotifs}`);
 
-const latest = await db.task.findFirst({ orderBy: { createdAt: "desc" } });
-const latestAct = await db.activity.findFirst({ orderBy: { createdAt: "desc" } });
-console.log(`latest task: "${latest?.title}" (${latest?.status}, ${latest?.priority})`);
-console.log(`latest activity: ${latestAct?.type} — ${latestAct?.message}`);
+// The row this run created, found by the title this run generated -- not by
+// whoever wrote last.
+const created = await db.task.findFirst({
+  where: { companyId: COMPANY_ID, title: TASK_TITLE },
+});
+const createdAct = await db.activity.findFirst({
+  where: { companyId: COMPANY_ID, message: { contains: TASK_TITLE } },
+});
+console.log(`created task: "${created?.title}" (${created?.status}, ${created?.priority})`);
+console.log(`matching activity: ${createdAct?.type} — ${createdAct?.message}`);
 
 const ok =
+  // The row itself, first: this is the only assertion no other writer can
+  // satisfy on this script's behalf.
+  created !== null &&
+  createdAct !== null &&
   afterTasks === beforeTasks + 1 &&
-  afterActs === beforeActs + 1 && // task_assigned
+  // ONE activity row, and it is task_created. The comment here used to say
+  // task_assigned, which lib/actions/tasks.ts writes only when the assignee is
+  // someone other than the actor -- and this script assigns to itself, so that
+  // row is never written. The count was right and the reason was wrong.
+  afterActs === beforeActs + 1 &&
   // Assignee == actor (Saqib), so no notification fan-out (skip-self rule).
   afterNotifs === beforeNotifs;
 
-console.log(ok ? "✅ task round-trip succeeded" : "❌ counts don't line up");
+console.log(ok ? "✅ task round-trip succeeded" : "❌ task round-trip failed");
+if (!ok) process.exitCode = 1;
 
 await browser.close();
 await db.$disconnect();

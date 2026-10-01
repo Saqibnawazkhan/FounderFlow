@@ -28,6 +28,7 @@ import { useEffect, useMemo, useState } from "react";
 import { addMonths, format, isSameMonth, startOfMonth, subMonths } from "date-fns";
 import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { buildMonthGrid, MAX_CHIPS_PER_DAY, type CalendarCell } from "@/lib/tasks/calendar";
+import { deadlineDay } from "@/lib/tasks/deadline";
 import { cn } from "@/lib/utils";
 import type { TaskWithCount } from "@/lib/queries/tasks";
 
@@ -95,7 +96,12 @@ export function TaskCalendar({
     if (!highlightId) return;
     const target = tasks.find((t) => t.id === highlightId);
     if (!target) return;
-    const due = startOfMonth(new Date(target.deadline));
+    // `deadlineDay`, not `new Date(...)` (tasks-and-comments-011). The stored
+    // instant read in the viewer's zone is a day early west of Greenwich, and on
+    // the first of a month that is a whole month early — so a link to a task due
+    // 1 November paged a UTC-5 reader to October and the highlight had nothing to
+    // land on, which is the exact dead end this effect exists to close.
+    const due = startOfMonth(deadlineDay(target.deadline));
     if (Number.isNaN(due.getTime())) return;
     setMonth((prev) => (isSameMonth(prev, due) ? prev : due));
   }, [highlightId, tasks]);

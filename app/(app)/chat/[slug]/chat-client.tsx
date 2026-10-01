@@ -27,7 +27,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import toast from "react-hot-toast";
 import { UserPlus } from "lucide-react";
@@ -45,8 +45,9 @@ import {
   canPostInChannel,
   canPostRunwayCard,
 } from "@/lib/auth/channel-permissions";
+import { nextAnchorStep, parseMessageAnchor } from "@/lib/chat/anchor";
 import { cn } from "@/lib/utils";
-import { loadOlderMessagesAction, loadThreadAction } from "./actions";
+import { loadOlderMessagesAction, loadThreadAction, locateMessageAction } from "./actions";
 import type {
   ChannelDetail,
   ChannelListItem,
@@ -85,6 +86,8 @@ export function ChatClient({
   currentUserId,
 }: Props) {
   const router = useRouter();
+  // chat-010. See the anchor effect below.
+  const searchParams = useSearchParams();
   // The viewer's company role, for the Runway control only — see the long note
   // beside `canPostRunway` below.
   const { data: session } = useSession();
@@ -146,12 +149,20 @@ export function ChatClient({
     [channel.slug]
   );
 
+  /**
+   * Open the panel on a thread ROOT.
+   *
+   * Takes an id rather than a `MessageClient` (chat-010): the only field it ever
+   * read was `.id`, and the deep-link path has a root id from
+   * `locateMessageAction` and no row to go with it. A caller that has the row
+   * passes `message.id`; nobody has to fabricate a MessageClient to open a panel.
+   */
   const openThread = useCallback(
-    async (message: MessageClient) => {
-      setThreadRootId(message.id);
-      threadRootIdRef.current = message.id;
+    async (rootId: string) => {
+      setThreadRootId(rootId);
+      threadRootIdRef.current = rootId;
       setThread(null);
-      const res = await loadThreadAction({ slug: channel.slug, rootId: message.id });
+      const res = await loadThreadAction({ slug: channel.slug, rootId });
       if (!res.success) {
         toast.error(res.error);
         setThreadRootId(null);
@@ -186,6 +197,19 @@ export function ChatClient({
       return delta !== 0 ? delta : a.id.localeCompare(b.id);
     });
   }, [olderPages, initialMessages]);
+
+  /**
+   * The merged timeline as of the last render.
+   *
+   * A ref BESIDE the memo, not instead of it: the deep-link effect below needs to
+   * know whether the anchored message is on screen, and listing `messages` as a
+   * dependency would re-run it on every page that lands and on every refresh from
+   * the activity poll — which is how a one-shot becomes a loop.
+   */
+  const messagesRef = useRef<MessageClient[]>(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const handleLoadOlder = useCallback(async () => {
     if (!cursor || loadingOlder) return;
@@ -452,6 +476,96 @@ export function ChatClient({
     startTransition(() => router.refresh());
   }, [selected, adding, channel.id, router, closeAdd]);
 
+  /* ── chat-010: FOLLOWING A MENTION BACK TO ITS MESSAGE ───────────────────
+   *
+   * `sendMessageAction` has always written `/chat/<slug>?message=<id>` into every
+   * mention and DM notification, and lib/queries/search.ts writes the same shape
+   * for a chat hit in the command palette. Nothing in this surface read the
+   * parameter, so every one of those links dropped the reader at the bottom of a
+   * busy room with nothing anchored — while `?taskId=` and `?transactionId=` are
+   * both honoured on their own surfaces, which makes it read as arbitrary rather
+   * than as a rule.
+   *
+   * THE DECISION IS NOT HERE. `nextAnchorStep` owns it, in lib/chat/anchor.ts,
+   * because none of it is observable from jsdom and all of it is worth pinning.
+   * This effect is the plumbing.
+   *
+   * THE COMMON CASE COSTS NOTHING. A mention from a minute ago is in the first
+   * page by definition, so the step is `highlight`, the effect returns, and the
+   * render below hands the id to <MessageList>, which marks the row and scrolls
+   * to it. No round trip, no state machine.
+   *
+   * ONE SHOT, AND ONE ROUND TRIP AT MOST. `handledAnchor` latches per anchor id:
+   * this island re-renders every five seconds from the activity poll, and an
+   * effect that re-derived its work each time would reopen a panel the reader had
+   * just closed. An earlier draft re-evaluated the step after every page that
+   * landed, so it could page backwards to an older root on the reader's behalf.
+   * Its own cases passed in isolation and it wedged this test file whenever the
+   * blocks above it had run first — a hang, not a failure, so no timeout fired.
+   * Removing the re-running loop fixed it; the precise mechanism (a re-entrant
+   * effect racing the panel-opening path inside testing-library's act queue) I
+   * narrowed but did not isolate. What replaces it is `not-loaded`: a truthful
+   * line pointing at the "Load earlier messages" control that already exists,
+   * rather than a background fetch loop nobody can see fail.
+   *
+   * WHY `useSearchParams` AND NOT THE RSC'S `searchParams`. The house pattern —
+   * tasks-client and expenses-client both read their deep link this way — and it
+   * keeps the anchor a client concern: following a second notification while the
+   * tab is open is a client-side navigation that never re-runs the page.
+   */
+  const anchorId = useMemo(() => parseMessageAnchor(searchParams.get("message")), [searchParams]);
+  const handledAnchor = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!anchorId || handledAnchor.current === anchorId) return;
+
+    const loadedIds = messagesRef.current.map((m) => m.id);
+    const first = nextAnchorStep({ anchorId, loadedIds, located: false, rootId: null });
+    // Already on screen: the render is the whole of the fix for this case.
+    if (first.kind !== "locate") return;
+
+    // Latched only once there is actually a round trip to make, so a render that
+    // happened before the first page arrived cannot burn the one shot.
+    handledAnchor.current = anchorId;
+
+    let alive = true;
+    void (async () => {
+      const res = await locateMessageAction({ slug: channel.slug, messageId: anchorId });
+      // Unmounted while the lookup was in flight — a channel switch remounts this
+      // island, and finishing the work would set state on a component that is
+      // gone and act on a conversation nobody is looking at any more.
+      if (!alive) return;
+      if (!res.success) {
+        toast(res.error, { icon: "ℹ️" });
+        return;
+      }
+      const step = nextAnchorStep({
+        anchorId,
+        loadedIds: messagesRef.current.map((m) => m.id),
+        located: true,
+        rootId: res.data.rootId,
+      });
+      if (step.kind === "open-thread") {
+        // A reply has `parentId != null` and `getMessagesPage` filters those out,
+        // so the panel is the ONLY place it renders. This is the case that could
+        // not work at all before, at any scroll position.
+        void openThread(step.rootId);
+        return;
+      }
+      if (step.kind === "not-loaded") {
+        // Said out loud, and pointed at a control that exists. A link that lands
+        // somewhere and explains nothing is the bug being fixed; a fix that
+        // silently stops is the same dead end wearing a fix.
+        toast("That message is further back — load earlier messages to reach it.", {
+          icon: "ℹ️",
+        });
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [anchorId, channel.slug, openThread, messagesRef]);
+
   const readOnly = !canPostInChannel({
     kind: channel.kind,
     isMember: channel.isMember,
@@ -558,7 +672,12 @@ export function ChatClient({
           loadingOlder={loadingOlder}
           onLoadOlder={handleLoadOlder}
           disabled={readOnly}
-          onOpenThread={openThread}
+          onOpenThread={(message) => void openThread(message.id)}
+          // chat-010. The id straight from the URL: <MessageList> decides for
+          // itself whether that row is on screen yet, and marks nothing when it
+          // is not, so this island does not have to keep a second answer to the
+          // same question.
+          anchoredMessageId={anchorId}
         />
 
         <div className="shrink-0 border-t border-border p-3">
@@ -600,6 +719,13 @@ export function ChatClient({
           users={mentionRoster}
           channelName={channel.name}
           channelKind={channel.kind}
+          // chat-009. THE SAME `readOnly` the timeline above uses, forwarded
+          // rather than recomputed: the panel has no channel facts of its own
+          // (`MessageClient` carries no kind, isMember or archivedAt), and this
+          // island already derived it from `canPostInChannel`. Omitting it left
+          // an archived — or non-member — conversation with an enabled Send
+          // button and a live emoji picker whose every click the server refuses.
+          readOnly={readOnly}
           open={threadRootId !== null}
           onClose={closeThread}
         />

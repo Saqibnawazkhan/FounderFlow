@@ -61,16 +61,23 @@ export function ClockWidget() {
   const [, startTransition] = useTransition();
   const [entry, setEntry] = useState<TimeEntryClient | null>(null);
   const [tasks, setTasks] = useState<{ id: string; title: string }[]>([]);
+  // time-013: whether open tasks exist beyond the ones the picker loaded.
+  const [tasksTruncated, setTasksTruncated] = useState(false);
   const [now, setNow] = useState<Date>(() => new Date());
 
   // Initial load + after every mutation. router.refresh() doesn't re-run
   // this because the widget is a client component; we explicitly refetch.
-  const reload = useCallback(async () => {
+  //
+  // Returns what the server said the open entry is, or `undefined` when the read
+  // itself failed and we therefore know nothing — `beat()` below distinguishes
+  // "the session is gone" from "we could not ask".
+  const reload = useCallback(async (): Promise<TimeEntryClient | null | undefined> => {
     const res = await getOpenEntryAction();
-    if (res.success) {
-      setEntry(res.data.openEntry);
-      setTasks(res.data.tasks);
-    }
+    if (!res.success) return undefined;
+    setEntry(res.data.openEntry);
+    setTasks(res.data.tasks);
+    setTasksTruncated(res.data.tasksTruncated);
+    return res.data.openEntry;
   }, []);
 
   useEffect(() => {
@@ -129,9 +136,33 @@ export function ClockWidget() {
       if (cancelled || !entry) return;
       if (typeof document !== "undefined" && document.hidden) return;
       const res = await heartbeatAction({ entryId: entry.id });
-      if (!cancelled && res.success) {
+      if (cancelled) return;
+      if (res.success) {
         setEntry((prev) => (prev ? { ...prev, lastActivityAt: new Date().toISOString() } : prev));
+        return;
       }
+      /* A REFUSED HEARTBEAT MEANS THIS TAB'S COPY IS STALE. Reconcile.
+       *
+       * This branch used to be absent — `if (res.success) setEntry(...)` and
+       * nothing else — which made time-015's server half invisible here.
+       * `heartbeatAction` is where the elapsed-time bound lives: it closes a
+       * session that has been open past AUTO_CLOSE_MS and answers with a failure,
+       * because the idle-driven sweep can never see a visible tab that heartbeats
+       * every five minutes. Ignoring that answer left the row closed in the
+       * database while this pill kept ticking in every open tab until the next
+       * full navigation — a timer the user cannot stop, counting time nobody is
+       * recording.
+       *
+       * The same reconcile is right for every other refusal: the entry was
+       * deleted, the nightly cron swept it, or another tab clocked out. Re-read
+       * rather than guess, and only announce it when the session really is gone,
+       * so a transient failure is not a toast.
+       */
+      const open = await reload();
+      if (cancelled || open !== null) return;
+      toast(res.error, { icon: "⏱️" });
+      startTransition(() => router.refresh());
+      broadcastChange();
     }
     const onVis = () => {
       if (typeof document !== "undefined" && !document.hidden) {
@@ -154,7 +185,7 @@ export function ClockWidget() {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [entry]);
+  }, [entry, reload, router, broadcastChange]);
 
   // Watch the warn / auto-close threshold. The user's keystrokes don't
   // shift lastActivityAt directly — only a successful heartbeat does — so
@@ -289,6 +320,7 @@ export function ClockWidget() {
         open={startOpen}
         onClose={() => setStartOpen(false)}
         tasks={tasks}
+        tasksTruncated={tasksTruncated}
         onSubmit={handleClockIn}
       />
       <StopModal
@@ -320,14 +352,18 @@ function StartModal({
   open,
   onClose,
   tasks,
+  tasksTruncated,
   onSubmit,
 }: {
   open: boolean;
   onClose: () => void;
   tasks: { id: string; title: string }[];
+  /** True when the workspace has more open tasks than this list holds. */
+  tasksTruncated: boolean;
   onSubmit: (taskId: string | undefined, note: string) => Promise<void>;
 }) {
   const taskId = useId();
+  const taskHintId = useId();
   const noteId = useId();
   const [selectedTask, setSelectedTask] = useState("");
   const [note, setNote] = useState("");
@@ -369,6 +405,7 @@ function StartModal({
             id={taskId}
             value={selectedTask}
             onChange={(e) => setSelectedTask(e.target.value)}
+            aria-describedby={tasksTruncated ? taskHintId : undefined}
             className="w-full appearance-none rounded-xl border border-border bg-bg px-4 py-2.5 text-sm text-fg focus:border-primary/50 focus:outline-none"
           >
             <option value="">Untagged work</option>
@@ -378,6 +415,19 @@ function StartModal({
               </option>
             ))}
           </select>
+          {/* time-013. The list is capped, and the cap used to be invisible: with
+              `orderBy: createdAt desc` the tasks that fall off the end are the
+              long-lived ones, which are the tasks people track the most time
+              against, so their hours quietly became untagged work. Saying so is
+              not the whole fix (a searchable picker is), but a stated ceiling is
+              a different thing from a silent one. Rendered only when the
+              has-more probe actually hit, so it cannot become decoration. */}
+          {tasksTruncated && (
+            <p id={taskHintId} className="mt-1.5 text-[11px] text-fg-muted">
+              Showing the {tasks.length} most recently created open tasks. Older ones aren&apos;t
+              listed here.
+            </p>
+          )}
         </div>
         <div>
           <label

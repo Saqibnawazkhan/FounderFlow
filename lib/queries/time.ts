@@ -77,7 +77,10 @@ export interface ClockedInPeers {
 export async function getClockedInPeers(): Promise<ClockedInPeers> {
   const { companyId } = await requireScopedSession();
   const rows = await db.timeEntry.findMany({
-    where: { companyId, clockOutAt: null },
+    // `deletedAt: null` — see the note on `getOpenEntry`. Without it, a user who
+    // deleted their own running timer stayed in the dashboard's "clocked in now"
+    // count for ever.
+    where: { companyId, clockOutAt: null, deletedAt: null },
     orderBy: { clockInAt: "desc" },
     select: { userId: true, userName: true },
   });
@@ -91,11 +94,22 @@ export async function getClockedInPeers(): Promise<ClockedInPeers> {
   return { count: peers.length, peers };
 }
 
-/** The current user's open entry, if any. Used by the topbar widget. */
+/**
+ * The current user's open entry, if any. Used by the topbar widget.
+ *
+ * `deletedAt: null` IS THE READ HALF OF THE TOMBSTONE, and its absence was the
+ * sharpest version of the gap prisma/schema.prisma warns about on
+ * `TimeEntry.deletedAt`. `deleteTimeEntryAction` soft-deletes, and
+ * `clockInAction` already filters `deletedAt: null` when it checks for an
+ * existing open entry — so a user who deleted their own RUNNING timer got a
+ * topbar pill ticking a row `findLiveEntry` then refuses to close ("Entry not
+ * found"), while clock-in cheerfully started another. The read and the write
+ * disagreed about whether the session existed.
+ */
 export async function getOpenEntry(): Promise<TimeEntryClient | null> {
   const { userId } = await requireScopedSession();
   const row = await db.timeEntry.findFirst({
-    where: { userId, clockOutAt: null },
+    where: { userId, clockOutAt: null, deletedAt: null },
     orderBy: { clockInAt: "desc" },
   });
   return row ? toClient(row) : null;
@@ -104,19 +118,72 @@ export async function getOpenEntry(): Promise<TimeEntryClient | null> {
 export type EntryScope = "mine" | "team";
 
 /**
+ * Hard ceiling on one /time read. A page cannot lift it.
+ *
+ * Unchanged in size from the `take: 500` it replaces. What changed is that the
+ * caller is now TOLD when it bit, because the cap itself was never the bug
+ * (time-010): the /time client computed the "Total tracked" sum, the "N sessions"
+ * label and the whole Week grid in memory from this array, so past 500 entries —
+ * one workday each for one person for two years, or three months for a team of
+ * eight — the label stopped being a count of sessions and paging the Week view
+ * back rendered "No entries / 0m" for weeks that are populated in the database.
+ * Empty cells for real work read as lost data, which is the worst thing a
+ * timesheet can say.
+ */
+const MAX_ENTRY_PAGE = 500;
+
+export interface EntryPage {
+  entries: TimeEntryClient[];
+  /** True when more entries exist older than the ones returned. */
+  truncated: boolean;
+  /**
+   * `clockInAt` (ISO) of the OLDEST entry in `entries`, or null when nothing was
+   * truncated. It is the honest horizon of the loaded window: the Week view uses
+   * it to say "weeks before this aren't loaded" rather than drawing seven empty
+   * cells for a week it simply did not fetch.
+   */
+  oldestLoadedAt: string | null;
+}
+
+/**
  * Lists entries for the /time page. Defaults to the current user's entries;
  * passing scope: "team" returns the whole company — but ONLY if the caller
  * has the cofounder/admin role. Members get their own entries either way
  * (no silent privilege escalation).
+ *
+ * `take: MAX_ENTRY_PAGE + 1` is the has-more probe — the pattern `getTaskPage`
+ * documents in lib/queries/tasks.ts: one extra row is cheaper than a second
+ * `count()` and cannot disagree with the page it describes. The probe row is
+ * sliced off and never reaches the client.
+ *
+ * WHAT THIS DOES NOT CLOSE, stated so it is not read as closing time-010. The
+ * totals are still computed client-side over this window, so /time's lifetime
+ * "Total tracked" and /settings's (lib/queries/stats.ts, an uncapped SQL sum) can
+ * still disagree for a customer past the cap — /time now says which window it is
+ * describing instead of claiming a total, which removes the contradiction without
+ * removing the difference. An exact figure needs an aggregate here AND the same
+ * treatment in stats.ts, which also has to gain `deletedAt IS NULL` and the
+ * open-entry cap; the two have to land together or the disagreement just changes
+ * direction.
  */
-export async function getEntries(scope: EntryScope = "mine"): Promise<TimeEntryClient[]> {
+export async function getEntries(scope: EntryScope = "mine"): Promise<EntryPage> {
   const { userId, companyId, role } = await requireScopedSession();
 
   const wantsTeam = scope === "team" && canEditEntryTimes(role);
   const rows = await db.timeEntry.findMany({
-    where: wantsTeam ? { companyId } : { userId },
+    // `deletedAt: null`: a tombstoned entry was still listed AND still summed
+    // into every figure on the page, which is what the schema comment means by
+    // "a tombstone nobody filters on does not hide a row, it duplicates it".
+    where: { ...(wantsTeam ? { companyId } : { userId }), deletedAt: null },
     orderBy: { clockInAt: "desc" },
-    take: 500, // bounded — the page also paginates client-side
+    take: MAX_ENTRY_PAGE + 1,
   });
-  return rows.map(toClient);
+  const truncated = rows.length > MAX_ENTRY_PAGE;
+  const page = truncated ? rows.slice(0, MAX_ENTRY_PAGE) : rows;
+  const entries = page.map(toClient);
+  return {
+    entries,
+    truncated,
+    oldestLoadedAt: truncated && entries.length > 0 ? entries[entries.length - 1].clockInAt : null,
+  };
 }

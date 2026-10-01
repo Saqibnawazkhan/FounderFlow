@@ -3,6 +3,13 @@
 /**
  * Reports charts split out so reports-client.tsx can next/dynamic them with
  * ssr:false — keeps Recharts (~200KB) out of the initial /reports bundle.
+ *
+ * Each chart takes the workspace `currency` as a prop and hands it to `useMoney`
+ * (rep-011). Without it these tooltips read the store's `currentCompany`, which is
+ * hydrated by a two-hop async chain and answers "PKR" until it lands — so a USD
+ * workspace's first hover showed rupees. reports-client.tsx has the authoritative
+ * value from its Server Component and passes it down; see lib/hooks/useMoney.ts
+ * for why the prop takes precedence over the store rather than filling in for it.
  */
 
 import {
@@ -46,10 +53,12 @@ const TOOLTIP_STYLE = {
 
 export function CashFlowBarChart({
   data,
+  currency,
 }: {
   data: Array<{ month: string; investments: number; expenses: number; revenue: number }>;
+  currency?: string;
 }) {
-  const money = useMoney();
+  const money = useMoney(currency);
   const n = useNumberFormat();
   return (
     <ResponsiveContainer width="100%" height="100%">
@@ -87,8 +96,14 @@ export function CashFlowBarChart({
   );
 }
 
-export function CategoriesPieChart({ data }: { data: Array<{ name: string; value: number }> }) {
-  const money = useMoney();
+export function CategoriesPieChart({
+  data,
+  currency,
+}: {
+  data: Array<{ name: string; value: number }>;
+  currency?: string;
+}) {
+  const money = useMoney(currency);
   return (
     <ResponsiveContainer width="100%" height="100%">
       <PieChart>
@@ -117,10 +132,12 @@ export function CategoriesPieChart({ data }: { data: Array<{ name: string; value
 
 export function FoundersHorizontalBar({
   data,
+  currency,
 }: {
   data: Array<{ name: string; investments: number; expenses: number }>;
+  currency?: string;
 }) {
-  const money = useMoney();
+  const money = useMoney(currency);
   const n = useNumberFormat();
   return (
     <ResponsiveContainer width="100%" height="100%">

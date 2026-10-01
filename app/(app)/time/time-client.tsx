@@ -12,7 +12,6 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { format } from "date-fns";
 import { CalendarDays, Clock, List, Pencil, Plus, Trash2, Users } from "lucide-react";
 import toast from "react-hot-toast";
 import { Avatar } from "@/components/ui/avatar";
@@ -23,6 +22,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { deleteTimeEntryAction } from "@/lib/actions/time";
 import { canEditEntryTimes, durationMs, formatDuration, sumDurations } from "@/lib/time/thresholds";
 import { WeeklyTimesheet } from "@/components/time/weekly-timesheet";
+import { LocalTime, useMounted } from "@/components/time/local-time";
 import { cn } from "@/lib/utils";
 import type { TimeEntryClient } from "@/lib/queries/time";
 import type { User } from "@/lib/types";
@@ -38,6 +38,29 @@ type Props = {
   currentUserRole: "admin" | "cofounder" | "member";
   canSeeTeam: boolean;
   initialScope: "mine" | "team";
+  /**
+   * The SERVER's clock at render time (time-011).
+   *
+   * `renderedAt` was `useMemo(() => new Date())`, which runs once on the server
+   * and again during hydration — two different instants — so an open entry's
+   * duration differed between the two renders and React logged a mismatch. Taking
+   * the instant from the RSC makes the server render and the first client render
+   * identical by construction, and it is also more correct than the old version
+   * after a `router.refresh()`: the memo never re-ran while the component stayed
+   * mounted, so the page's "now" was frozen at first mount for ever.
+   */
+  serverNowMs: number;
+  /**
+   * True when `getEntries` hit its row ceiling, so `initialEntries` is the newest
+   * window and not the whole history (time-010).
+   */
+  entriesTruncated: boolean;
+  /**
+   * `clockInAt` of the oldest loaded entry when the read was truncated, else null.
+   * The Week view uses it to say a week is outside the loaded window instead of
+   * drawing it as an empty week.
+   */
+  oldestLoadedAt: string | null;
 };
 
 export function TimeClient({
@@ -48,6 +71,9 @@ export function TimeClient({
   currentUserRole,
   canSeeTeam,
   initialScope,
+  serverNowMs,
+  entriesTruncated,
+  oldestLoadedAt,
 }: Props) {
   const router = useRouter();
   const confirm = useConfirm();
@@ -101,10 +127,14 @@ export function TimeClient({
     startTransition(() => router.push(url));
   }
 
-  // "Now" frozen at render time for in-table duration display. Running
-  // entries also have the topbar widget's live ticker; this is the historical
-  // view, so a slightly stale render is fine — the user expects a snapshot.
-  const renderedAt = useMemo(() => new Date(), []);
+  // "Now" frozen at RENDER time — the server's render — for in-table duration
+  // display. Running entries also have the topbar widget's live ticker; this is
+  // the historical view, so a snapshot is what the user expects. See the
+  // `serverNowMs` prop for why it is not `new Date()`.
+  const renderedAt = useMemo(() => new Date(serverNowMs), [serverNowMs]);
+  // Gates the one remaining timezone-dependent ATTRIBUTE below. Every VISIBLE
+  // timestamp goes through <LocalTime>, which gates itself.
+  const mounted = useMounted();
 
   const totalMs = useMemo(
     () =>
@@ -219,9 +249,18 @@ export function TimeClient({
           value={formatDuration(totalMs)}
           icon={Clock}
           tone="forest"
-          deltaLabel={`${n.number(initialEntries.length)} session${
-            initialEntries.length === 1 ? "" : "s"
-          }`}
+          /* time-010. This read `${n} session${s}` unconditionally, over an array
+             `getEntries` had capped — so past the ceiling the label stopped being
+             a count of sessions and started disagreeing with /settings, which sums
+             every row in SQL. The number is still the truth about the window; the
+             label now says which window, rather than implying there is no other. */
+          deltaLabel={
+            entriesTruncated
+              ? `${n.number(initialEntries.length)} most recent sessions`
+              : `${n.number(initialEntries.length)} session${
+                  initialEntries.length === 1 ? "" : "s"
+                }`
+          }
         />
         <DashboardStat
           label="Currently running"
@@ -235,7 +274,14 @@ export function TimeClient({
           value={n.number(autoClosedCount)}
           icon={Clock}
           tone="mint"
-          deltaLabel={autoClosedCount === 0 ? "No idle timeouts" : "Closed after 12.5h idle"}
+          // NOT "idle", and not a number. Two paths write `autoClosed`: the nightly
+          // sweep, which really does mean nobody was there, and `heartbeatAction`
+          // hitting the maximum session length while the tab was demonstrably
+          // VISIBLE. Calling both idle told a customer who worked through the night
+          // that they had walked away. The hour figure is gone too — it was stated
+          // here, in the row title and in the action, and the three had already
+          // drifted apart once.
+          deltaLabel={autoClosedCount === 0 ? "None" : "Closed automatically"}
         />
       </section>
 
@@ -278,6 +324,7 @@ export function TimeClient({
             entries={initialEntries}
             showPerson={initialScope === "team"}
             renderedAt={renderedAt}
+            loadedSince={oldestLoadedAt ? new Date(oldestLoadedAt) : null}
           />
         )
       ) : (
@@ -357,15 +404,19 @@ export function TimeClient({
                           </td>
                         )}
                         <td className="px-6 py-4 font-mono text-xs text-fg-muted">
-                          {format(startedAt, "MMM dd · HH:mm")}
+                          <LocalTime value={startedAt} pattern="MMM dd · HH:mm" />
                         </td>
                         <td className="px-6 py-4 font-mono text-xs">
                           {endedAt ? (
                             <span
                               className={cn("text-fg-muted", e.autoClosed && "text-warning-strong")}
-                              title={e.autoClosed ? "Auto-closed after 12.5h idle" : undefined}
+                              title={
+                                e.autoClosed
+                                  ? "Closed automatically — either no activity for hours, or the session reached its maximum length"
+                                  : undefined
+                              }
                             >
-                              {format(endedAt, "MMM dd · HH:mm")}
+                              <LocalTime value={endedAt} pattern="MMM dd · HH:mm" />
                               {e.autoClosed && " ⏱"}
                             </span>
                           ) : (
@@ -392,9 +443,19 @@ export function TimeClient({
                           {e.note || "—"}
                           {e.editedAt && (
                             <span
-                              title={`Edited by ${e.editedByName ?? "unknown"} on ${new Date(
-                                e.editedAt
-                              ).toLocaleString()}`}
+                              /* `toLocaleString()` is timezone-dependent, and a
+                                 `title` is an attribute React compares during
+                                 hydration — so this was the one part of the row
+                                 that <LocalTime> could not cover. Gated on mount
+                                 for the same reason: the server has no business
+                                 guessing the viewer's zone. */
+                              title={
+                                mounted
+                                  ? `Edited by ${e.editedByName ?? "unknown"} on ${new Date(
+                                      e.editedAt
+                                    ).toLocaleString()}`
+                                  : undefined
+                              }
                               className="ms-1 inline-flex items-center text-forest-strong"
                             >
                               ✎
@@ -452,10 +513,12 @@ export function TimeClient({
                       </span>
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-fg-muted">
-                      <span>{format(startedAt, "MMM dd · HH:mm")}</span>
+                      <span>
+                        <LocalTime value={startedAt} pattern="MMM dd · HH:mm" />
+                      </span>
                       {endedAt ? (
                         <span className={cn(e.autoClosed && "text-warning-strong")}>
-                          → {format(endedAt, "HH:mm")}
+                          → <LocalTime value={endedAt} pattern="HH:mm" />
                           {e.autoClosed && " ⏱"}
                         </span>
                       ) : (
@@ -563,7 +626,7 @@ function RunningEntryBanner({
         </span>
         <div>
           <p className="font-mono text-xs uppercase tracking-wider text-primary-strong">
-            Live session · started {format(new Date(entry.clockInAt), "h:mm a")}
+            Live session · started <LocalTime value={entry.clockInAt} pattern="h:mm a" />
           </p>
           <p className="mt-0.5 text-sm font-semibold text-fg">
             {entry.taskTitle ?? "Untagged work"}

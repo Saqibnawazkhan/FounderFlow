@@ -129,7 +129,7 @@ describe("buildMonthGrid (the month view behind the /tasks Calendar tab)", () =>
   });
 });
 
-describe("buildMonthGrid local-day bucketing", () => {
+describe("buildMonthGrid buckets by the day a deadline NAMES", () => {
   const SEPT = new Date(2026, 8, 1);
   const NOW = new Date(2026, 8, 23, 10, 0);
 
@@ -138,33 +138,62 @@ describe("buildMonthGrid local-day bucketing", () => {
     return cell ? cell.date.getDate() : null;
   }
 
-  // Task.deadline is an ISO instant in UTC. Bucketing on the UTC calendar day
-  // instead of the viewer's local one shifts tasks by a day near either edge of
-  // the day — in whichever direction the viewer's offset runs. Under the pinned
-  // −05:00 zone the LATE edge is the one that crosses: 23:59 local is already
-  // tomorrow in UTC, so a getUTCDate() comparison lands the task on the 24th
-  // and these fail. Each case asserts its own instant crosses before it asserts
-  // where it landed; a passing suite therefore proves the bug is absent rather
-  // than proving the clock happens to be convenient.
-  it("keeps a task due one minute before local midnight on that day", () => {
-    const deadline = localIso(2026, 8, 23, 23, 59);
-    expect(crossesUtcDay(deadline), UTC_PIN_MESSAGE).toBe(true);
-    const t = task({ id: "late", deadline });
-    expect(dayOf(buildMonthGrid(SEPT, [t], NOW), "late")).toBe(23);
+  /*
+   * THESE TWO CASES WERE REWRITTEN, AND THE MODEL THEY DEFENDED WAS OVERRULED.
+   * Recording it, because deleting an argued guard quietly is how a product ends
+   * up with two answers to one question.
+   *
+   * They asserted LOCAL-day bucketing, on the premise that "Task.deadline is an
+   * ISO instant in UTC", and built their fixtures with `localIso(…, 23, 59)` —
+   * 23:59 in the viewer's zone. That premise is the one tasks-and-comments-011
+   * rejected: a deadline is a CALENDAR DAY (see lib/tasks/deadline.ts), the server
+   * has always read it from UTC parts, and the four client surfaces that read it
+   * in the viewer's zone were the bug, not the contract.
+   *
+   * What settles it is that the fixtures were unreachable. Nothing in the product
+   * writes 23:59 local: `deadlineInstantForDay` writes NOON UTC, and legacy rows
+   * are MIDNIGHT UTC. So those cases pinned the grid's behaviour for instants the
+   * product cannot produce, while leaving the two it does produce untested — and
+   * the grid is PAGED by `startOfMonth(deadlineDay(...))`, so local-day bucketing
+   * made one component read the day two different ways: the card said Oct 15 and
+   * the chip sat in the Oct 14 cell.
+   *
+   * The cases below use the two instants that really exist, and the UTC pin still
+   * earns its keep: at −05:00 a midnight-UTC row is the PREVIOUS local day, so a
+   * local-day implementation lands it on the 22nd and fails.
+   */
+  it("buckets a NOON-UTC deadline — what the picker writes — on the day it names", () => {
+    const deadline = "2026-09-23T12:00:00.000Z";
+    const t = task({ id: "noon", deadline });
+    expect(dayOf(buildMonthGrid(SEPT, [t], NOW), "noon")).toBe(23);
   });
 
-  it("keeps every instant of a local day on that day, however far into the next UTC one it reads", () => {
-    // Half-hourly across Wed 23 Sep, local wall clock. Iterating the whole day
-    // rather than picking two moments means the assertion survives a change of
-    // pinned zone: whichever edge crosses UTC midnight, some instant in this
-    // sweep is on the far side of it, and the guard says so out loud.
-    const instants = Array.from({ length: 48 }, (_, i) => localIso(2026, 8, 23, 0, i * 30));
-    expect(instants.some(crossesUtcDay), UTC_PIN_MESSAGE).toBe(true);
+  it("buckets a legacy MIDNIGHT-UTC deadline on the day it names, not the day before", () => {
+    // The row shape that predates tasks-and-comments-011, and the one a viewer
+    // west of Greenwich saw shifted. At −05:00 this instant is 22 Sep 19:00
+    // locally, so a local-day implementation puts it in the 22nd cell.
+    const deadline = "2026-09-23T00:00:00.000Z";
+    expect(crossesUtcDay(deadline), UTC_PIN_MESSAGE).toBe(true);
+    const t = task({ id: "legacy", deadline });
+    expect(
+      dayOf(buildMonthGrid(SEPT, [t], NOW), "legacy"),
+      "the chip must sit in the cell the card's own text names"
+    ).toBe(23);
+  });
 
-    const tasks = instants.map((deadline, i) => task({ id: `sweep-${i}`, deadline }));
+  it("agrees with the card text for every hour of a stored day", () => {
+    // Swept across the UTC day rather than picking two instants, so the grid and
+    // `deadlineDayValue` — which is what the card renders — cannot diverge at any
+    // hour. This is the assertion that makes "one component, one reading of the
+    // day" a property rather than a claim.
+    const instants = Array.from(
+      { length: 24 },
+      (_, h) => `2026-09-23T${String(h).padStart(2, "0")}:00:00.000Z`
+    );
+    const tasks = instants.map((deadline, i) => task({ id: `hour-${i}`, deadline }));
     const cells = buildMonthGrid(SEPT, tasks, NOW);
     tasks.forEach((t) => {
-      expect(dayOf(cells, t.id), `${t.deadline} did not bucket on its local day`).toBe(23);
+      expect(dayOf(cells, t.id), `${t.deadline} did not bucket on the day it names`).toBe(23);
     });
   });
 

@@ -120,7 +120,24 @@ const H = vi.hoisted(() => {
       create: () => Promise.resolve({ id: "c_new_" + ++created }),
       update: () => Promise.resolve({}),
     },
-    user: { create: () => Promise.resolve({ id: "u_new_" + created }) },
+    user: {
+      create: () => Promise.resolve({ id: "u_new_" + created }),
+      // `resendInviteAction` became a seat gate: reviving a lapsed token adds a
+      // live seat, so it now rotates and counts inside ONE transaction (the
+      // regression an adversarial verifier found in team-and-invites-004). The
+      // count therefore runs against THIS object, not the outer `db` — which is
+      // the whole point of handing out a narrower client.
+      count: () => Promise.resolve(1),
+    },
+    // Zero live invites, so one member is under the Free cap and the resend
+    // proceeds to the part this file actually asserts: the invite URL's origin.
+    // Stubbed rather than asserted, because the seat behaviour is pinned properly
+    // in tests/lib/actions/seat-limit-race.test.ts and a second copy here would
+    // be one more place to update and the one that rots.
+    inviteToken: {
+      update: () => Promise.resolve({}),
+      count: () => Promise.resolve(0),
+    },
     activity: { create: () => Promise.resolve({}) },
     project: { create: () => Promise.resolve({ id: "p_new_" + created }) },
   };
@@ -165,6 +182,16 @@ const H = vi.hoisted(() => {
     inviteToken: {
       findUnique: () => Promise.resolve({ ...invite }),
       update: () => Promise.resolve({ ...invite }),
+      // `resendInviteAction` became a seat gate: reviving a lapsed token adds a
+      // live seat, so it now counts inside its write transaction (the regression
+      // an adversarial verifier found in team-and-invites-004). This file is
+      // about the invite URL's ORIGIN, not about seats, so the count answers
+      // zero — one member plus no live invites is under the Free cap, and the
+      // resend proceeds to the part this file actually asserts. Stubbed rather
+      // than asserted on purpose: the seat behaviour is pinned properly in
+      // tests/lib/actions/seat-limit-race.test.ts, and duplicating it here would
+      // be two places to update and one of them would rot.
+      count: () => Promise.resolve(0),
     },
     $transaction: (fn: (client: unknown) => Promise<unknown>) => fn(tx),
   };

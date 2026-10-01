@@ -10,6 +10,20 @@
 import puppeteer from "puppeteer-core";
 import { localDb } from "./_local-db.mjs";
 
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.18";
+
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const BASE = process.env.BASE ?? "http://localhost:3009";
 const CRON_SECRET = process.env.CRON_SECRET; // pull from process env
@@ -32,11 +46,17 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox", "--no-proxy-server", "--proxy-bypass-list=*", "--disable-gpu"],
 });
 const page = await browser.newPage();
+await page.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
 page.on("pageerror", (e) => console.error("PAGEERROR:", e.message));
 
 const stamp = Date.now();
 
-const beforeRules = await db.recurringRule.count();
+// Scoped to this script's tenant (audit harness-012). It was a bare
+// `db.recurringRule.count()` -- every tenant in the database at once. It is only
+// printed, never compared, so the bare version produced no false pass; it is
+// scoped anyway because the next person to add an `after` comparison will reach
+// for the line that is already here.
+const beforeRules = await db.recurringRule.count({ where: { companyId: "demo-nimbus" } });
 const beforeTxns = await db.transaction.count({ where: { companyId: "demo-nimbus" } });
 console.log(`DB before: rules=${beforeRules} txns(demo-nimbus)=${beforeTxns}`);
 

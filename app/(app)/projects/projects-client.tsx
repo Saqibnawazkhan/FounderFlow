@@ -17,7 +17,7 @@ import { Briefcase, Copy, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Modal } from "@/components/ui/modal";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { ProjectCard } from "@/components/projects/project-card";
+import { ProjectCard, STATUS_LABEL_KEY } from "@/components/projects/project-card";
 import { NewProjectModal } from "./new-project-modal";
 import { canCreateProject } from "@/lib/auth/project-permissions";
 import { duplicateProjectAction, restoreProjectAction } from "@/lib/actions/projects";
@@ -108,14 +108,16 @@ export function ProjectsClient({
       {/* Status chips */}
       <div className="inline-flex w-fit flex-wrap gap-1 rounded-full border border-border bg-bg p-1">
         {(["active", "all", "on_hold", "completed", "archived"] as StatusFilter[]).map((key) => {
-          const labelKey =
-            key === "all"
-              ? "statusAll"
-              : (`status${key.charAt(0).toUpperCase()}${key.slice(1).replace("_", "")}` as
-                  | "statusActive"
-                  | "statusOnHold"
-                  | "statusCompleted"
-                  | "statusArchived");
+          // A LOOKUP, not a key built from the slug — projects-002. The
+          // derivation produced "statusOnhold" (lowercase h) for "on_hold",
+          // because `.replace("_","")` drops the underscore without capitalising
+          // what follows; lib/i18n/strings.ts has `statusOnHold` and nothing by
+          // that name, so `t.projects[labelKey]` was `undefined` and this chip
+          // rendered as a bare count in English and in Urdu. The `as` cast is why
+          // the compiler never said so: an assertion on a computed string is not
+          // a check. STATUS_LABEL_KEY was extracted from exactly this bug and
+          // exported for this call site.
+          const labelKey = key === "all" ? "statusAll" : STATUS_LABEL_KEY[key];
           const active = filter === key;
           return (
             <button

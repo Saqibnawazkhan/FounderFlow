@@ -36,8 +36,22 @@
  */
 
 import { mkdirSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { psqlScalar as psql } from "./_local-psql.mjs";
 import puppeteer from "puppeteer-core";
+
+/**
+ * This script's own rate-limit bucket (audit harness-009). Every puppeteer
+ * request in dev arrives with no forwarding header, so lib/client-ip.ts finds no
+ * trusted address and lib/rate-limit.ts falls back to per-ACCOUNT limits — which
+ * means two scripts signing in as the same seeded user share one 5-per-minute
+ * budget, and whichever runs second reports "cannot sign in". A distinct address
+ * per script is what lib/client-ip.ts already documents the harness as relying
+ * on, and what every scripts/qa-*.mjs already does on 10.99.0.x.
+ *
+ * tests/ops/smoke-hygiene.test.ts asserts these are unique across the directory
+ * and that every page created here is given one.
+ */
+const SMOKE_IP = "10.98.0.2";
 
 const BASE = process.env.BASE ?? "http://localhost:3000";
 const CHROME =
@@ -95,17 +109,12 @@ function is(label, actual, expected) {
   else fail(label, `expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 }
 
-/**
- * Raw SQL against the LOCAL docker Postgres only. Deliberately not a Prisma
- * client: a bare `new PrismaClient()` resolves the root .env, and scripts/ is
- * held to `localDb()` for exactly that reason (CLAUDE.md, Tier 2).
- */
-function psql(sql) {
-  return execSync("docker exec -i founderflow-postgres psql -U founderflow -d founderflow -tA", {
-    input: sql,
-    encoding: "utf8",
-  }).trim();
-}
+// Raw SQL against the LOCAL docker Postgres, through the one module allowed to
+// shell out to psql. It pins the container as a literal and refuses the run when
+// .env.local names a non-loopback host, so this path now carries the same host
+// discipline `localDb()` gives the Prisma path — audit harness-004, where six
+// smoke scripts (this one among them) reached the database with no host check at
+// all. SQL goes in on stdin, so `"User"` needs no shell quoting.
 
 /** Every row this run created, removed children-before-parents. Idempotent. */
 function cleanup() {
@@ -223,6 +232,7 @@ const browser = await puppeteer.launch({
   args: ["--no-sandbox", "--no-proxy-server", "--proxy-bypass-list=*", "--disable-gpu"],
 });
 const page = await browser.newPage();
+await page.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
 page.on("pageerror", (e) => console.error("PAGEERROR:", e.message));
 page.on("console", (m) => {
   if (m.type() === "error") console.error("CONSOLE.error:", m.text());
@@ -498,6 +508,7 @@ try {
   // would keep his session and never exercise the solo workspace at all.
   const soloCtx = await browser.createBrowserContext();
   const solo = await soloCtx.newPage();
+  await solo.setExtraHTTPHeaders({ "x-real-ip": SMOKE_IP });
   solo.on("pageerror", (e) => console.error("PAGEERROR(solo):", e.message));
   try {
     await signIn(solo, SOLO.email);

@@ -31,6 +31,7 @@ import type React from "react";
 const H = vi.hoisted(() => ({
   listNotificationsAction: vi.fn(),
   unreadNotificationCountAction: vi.fn(),
+  unreadChatCountAction: vi.fn(),
 }));
 
 // The two endpoints under test. `listNotificationsAction` is mocked rather than
@@ -39,6 +40,12 @@ const H = vi.hoisted(() => ({
 vi.mock("@/lib/actions/notifications", () => ({
   listNotificationsAction: H.listNotificationsAction,
   unreadNotificationCountAction: H.unreadNotificationCountAction,
+}));
+// The Chat row's badge polls this. Mocked for the same reason the notifications
+// endpoint above is: the real module is a "use server" file that pulls next-auth
+// into jsdom, where there is no Next server runtime to pull.
+vi.mock("@/lib/actions/chat", () => ({
+  unreadChatCountAction: H.unreadChatCountAction,
 }));
 
 // next/link needs the App Router client runtime, which jsdom has none of.
@@ -124,6 +131,8 @@ beforeEach(() => {
     ],
   });
   H.unreadNotificationCountAction.mockResolvedValue({ success: true, data: { count: 2 } });
+  H.unreadChatCountAction.mockReset();
+  H.unreadChatCountAction.mockResolvedValue({ success: true, data: { count: 0 } });
   setHidden(false);
 });
 

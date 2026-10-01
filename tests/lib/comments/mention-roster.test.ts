@@ -56,8 +56,19 @@ const ROOT = process.cwd();
 /** Where a server-side roster can live. Client components are out of scope. */
 const SCAN_ROOTS = ["lib"];
 
-/** The two parser entry points. A module that names neither holds no roster. */
-const PARSER_ENTRY = /\b(extractMentions|tokenizeForRender)\b/;
+/**
+ * The parser entry points, plus the shared roster PROVIDER.
+ *
+ * `getMentionRoster` (lib/comments/roster.ts) exists so a client composer can be
+ * handed a roster that carries `handle` - finding tasks-and-comments-002, where
+ * /tasks narrowed its roster to `{ id, name }` before handing it to the
+ * autocomplete, so no handle could ever be offered and a teammate whose name has
+ * no ASCII letters had no row in the dropdown at all. That module does not call
+ * the parser itself, so without its name here it escaped this sweep entirely and
+ * could have dropped `handle: true` as silently as the queries this file was
+ * written for.
+ */
+const PARSER_ENTRY = /\b(extractMentions|tokenizeForRender|getMentionRoster)\b/;
 
 /**
  * Blank out comments, preserving length so offsets still line up.
@@ -249,12 +260,14 @@ describe("mention rosters (an unselected column is a silently dead @mention)", (
       rosters.length,
       "almost no roster query was found — either `user.findMany` was renamed, the " +
         "parser entry points moved, or stripComments is eating code. Every check " +
-        "below is now vacuous."
-    ).toBeGreaterThanOrEqual(4);
+        "below is now vacuous. The floor rose to 5 when lib/comments/roster.ts " +
+        "was added for tasks-and-comments-002; it must never be lowered to let a " +
+        "deleted roster pass."
+    ).toBeGreaterThanOrEqual(5);
     expect(
       rosters.filter((r) => selectsName(r.args)).length,
       "no roster selects `name: true`, which every one of them must"
-    ).toBeGreaterThanOrEqual(4);
+    ).toBeGreaterThanOrEqual(5);
   });
 
   it("every roster that feeds the mention parser selects handle", () => {
