@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState, useTransition } from "react";
+import { useId, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -8,6 +8,7 @@ import { AlertTriangle, Pause, Play, Plus, Target, Trash2 } from "lucide-react";
 import toast from "react-hot-toast";
 import { createBudgetAction, deleteBudgetAction, updateBudgetAction } from "@/lib/actions/budgets";
 import { NewBudgetSchema, type NewBudgetInput } from "@/lib/schemas/budget";
+import { budgetPercentLabel } from "@/lib/budgets/threshold";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Avatar } from "@/components/ui/avatar";
@@ -16,7 +17,7 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { cn } from "@/lib/utils";
 import { EXPENSE_CATEGORIES } from "@/lib/types";
 import type { BudgetWithSpend } from "@/lib/queries/budgets";
-import { useMoney } from "@/lib/hooks/useMoney";
+import { useCurrency, useMoney } from "@/lib/hooks/useMoney";
 import { useNumberFormat } from "@/lib/i18n/use-t";
 
 type Props = {
@@ -49,8 +50,12 @@ export function BudgetsClient({ budgets, projects }: Props) {
 
   async function handleDelete(b: BudgetWithSpend) {
     const ok = await confirm({
-      title: `Delete the ${b.category} budget?`,
-      description: "Spending continues, you just won't get alerts anymore.",
+      // The project is part of the subject, not decoration: since money-018 a
+      // workspace can hold a Salaries cap in Alpha AND one in Beta, and
+      // "Delete the Salaries budget?" would not say which row is about to go.
+      title: `Delete the ${b.category} budget in ${b.projectName}?`,
+      description:
+        "Spending continues, you just won't get alerts anymore. Caps on the same category in other projects aren't touched.",
       confirmLabel: "Delete",
       tone: "danger",
     });
@@ -66,9 +71,20 @@ export function BudgetsClient({ budgets, projects }: Props) {
     }
   }
 
-  // Categories that already have an active budget — disabled in the dropdown
-  // so users don't try to create a duplicate (server also rejects this).
-  const takenCategories = new Set(budgets.filter((b) => b.active).map((b) => b.category));
+  // Every active cap as a (project, category) pair. The form narrows this to the
+  // project it is targeting — it must NOT be flattened to a company-wide set of
+  // categories here (money-018). `createBudgetAction` refuses a duplicate only
+  // `{ projectId, category, active: true }` and says so in its error text
+  // ("already exists in this project"), so one Salaries cap in Alpha used to
+  // make Salaries unpickable for Beta forever — the UI forbidding what the
+  // server permits, and per-project budgeting unusable past the first project.
+  const activeCaps = useMemo(
+    () =>
+      budgets
+        .filter((b) => b.active)
+        .map((b) => ({ projectId: b.projectId, category: b.category })),
+    [budgets]
+  );
 
   return (
     <div className="mx-auto max-w-[1200px] space-y-8">
@@ -128,7 +144,7 @@ export function BudgetsClient({ budgets, projects }: Props) {
         description="Pick an expense category and the monthly cap. You can pause or remove it later."
       >
         <NewBudgetForm
-          takenCategories={takenCategories}
+          activeCaps={activeCaps}
           projects={projects}
           onClose={() => setModalOpen(false)}
           onCreated={() => {
@@ -155,16 +171,36 @@ function BudgetCard({
   const money = useMoney();
   const n = useNumberFormat();
   const pct = budget.percentUsed;
-  // Stays a raw integer: `aria-valuenow` below is machine-read by assistive
-  // tech and is specified as a plain number, so it must NOT be localised —
-  // grouping separators or non-Latin digits would make it unparseable. The
-  // human-readable label is formatted from this same integer so the two can
-  // never disagree.
-  const pctLabel = Math.round(pct * 100);
-  const pctText = n.percent(pctLabel / 100, { maximumFractionDigits: 0 });
-  const barWidth = Math.min(100, Math.max(2, pct * 100));
+  // The state reads the UNROUNDED ratio, against the same two thresholds the
+  // server's notification uses (`WARN_PCT` / `ALERT_PCT`,
+  // lib/budgets/threshold.ts). Deriving it from the rounded label instead would
+  // badge a budget at 99.6% as "Over" while the alert — which fires on the true
+  // ratio — is still only a warning: money-004's "the page screamed and the
+  // notification stayed silent", the wrong way round.
   const isOver = pct >= 1;
   const isWarning = pct >= 0.8 && pct < 1;
+  // ONE formatter, shared with the threshold notification that describes the
+  // same crossing of the same line — `budgetPercentLabel` in
+  // lib/budgets/threshold.ts, which is also where the rounding and the
+  // band-clamping are argued (money-014). A second copy of that arithmetic in
+  // lib/budgets/check.ts is exactly what made the bell say "at 100% of the cap"
+  // about a budget this card called 99% (R5-money-014-bell), so the derivation
+  // lives in one place and both surfaces call it.
+  //
+  // Stays a raw integer: `aria-valuenow` below is machine-read by assistive tech
+  // and is specified as a plain number, so it must NOT be localised — grouping
+  // separators or non-Latin digits would make it unparseable. The human-readable
+  // label is formatted from this same integer, so the two never disagree about
+  // which band the budget is in. They are not always the same NUMBER:
+  // `aria-valuenow` is additionally clamped to `aria-valuemax` (100), because a
+  // progressbar whose value sits outside its own declared range is invalid ARIA.
+  // That clamp can only bite above the cap — where the badge already says
+  // "Over" — so at 125% the bar reports 100 of 100 while the headline reads
+  // "125%". The `aria-label` on the same element carries the exact figure, which
+  // is what keeps the overrun audible.
+  const pctLabel = budgetPercentLabel(pct);
+  const pctText = n.percent(pctLabel / 100, { maximumFractionDigits: 0 });
+  const barWidth = Math.min(100, Math.max(2, pct * 100));
 
   const tone = isOver
     ? {
@@ -226,6 +262,15 @@ function BudgetCard({
             )}
           </div>
           <h3 className="truncate text-lg font-bold text-fg">{budget.category}</h3>
+          {/* A cap is a (project, category) pair, so the card has to print both
+              or two legitimate Salaries caps are one indistinguishable card
+              twice over (R3-money-018-cards). The name comes down on the row
+              rather than being joined against the project picker here — the
+              picker omits completed and archived projects, whose caps this page
+              still lists. */}
+          <p className="mt-0.5 truncate font-mono text-[11px] uppercase tracking-wider text-fg-muted">
+            {budget.projectName}
+          </p>
         </div>
         <p className={cn("shrink-0 font-mono text-2xl font-bold tabular-nums", tone.text)}>
           {pctText}
@@ -235,7 +280,7 @@ function BudgetCard({
       <div className="space-y-2">
         <div
           role="progressbar"
-          aria-label={`${budget.category} budget: ${pctText} of ${money(budget.monthlyLimit)} used`}
+          aria-label={`${budget.category} budget in ${budget.projectName}: ${pctText} of ${money(budget.monthlyLimit)} used`}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.min(100, pctLabel)}
@@ -270,7 +315,14 @@ function BudgetCard({
             onClick={onToggle}
             disabled={pending}
             className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg disabled:opacity-50"
-            aria-label={budget.active ? "Pause budget" : "Resume budget"}
+            // Both buttons name the (project, category) pair for the same reason
+            // the heading does: with two Salaries caps on screen, "Pause budget"
+            // twice tells a screen-reader user nothing about which one is which.
+            aria-label={
+              budget.active
+                ? `Pause ${budget.category} budget in ${budget.projectName}`
+                : `Resume ${budget.category} budget in ${budget.projectName}`
+            }
           >
             {budget.active ? (
               <>
@@ -285,7 +337,7 @@ function BudgetCard({
           <button
             onClick={onDelete}
             disabled={pending}
-            aria-label={`Delete ${budget.category} budget`}
+            aria-label={`Delete ${budget.category} budget in ${budget.projectName}`}
             className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
           >
             <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> Delete
@@ -300,13 +352,35 @@ function BudgetCard({
 /* NewBudgetForm                                                                */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
+/** One active cap, as much of it as the category picker needs. */
+type ActiveCap = { projectId: string; category: string };
+
+/** The categories already capped inside ONE project — never the whole company. */
+function takenIn(caps: ActiveCap[], projectId: string): Set<string> {
+  return new Set(caps.filter((c) => c.projectId === projectId).map((c) => c.category));
+}
+
+/**
+ * The first category still free inside ONE project, or `null` when that project
+ * has capped every one of them.
+ *
+ * It used to fall back to `EXPENSE_CATEGORIES[0]`, which in exactly that case is
+ * a category the project has already capped — so the form parked on a disabled
+ * option and offered a submit `createBudgetAction` is guaranteed to refuse
+ * ("already exists in this project"). Returning null forces the caller to say so
+ * instead of pretending there is a choice left.
+ */
+function firstFreeCategory(taken: Set<string>): string | null {
+  return EXPENSE_CATEGORIES.find((c) => !taken.has(c)) ?? null;
+}
+
 function NewBudgetForm({
-  takenCategories,
+  activeCaps,
   projects,
   onClose,
   onCreated,
 }: {
-  takenCategories: Set<string>;
+  activeCaps: ActiveCap[];
   projects: { id: string; name: string }[];
   onClose: () => void;
   onCreated: () => void;
@@ -315,14 +389,29 @@ function NewBudgetForm({
   const limitId = useId();
   const projectFieldId = useId();
 
-  // Pick the first NOT-already-budgeted category as the default so the form
-  // opens in a valid state most of the time.
-  const defaultCategory =
-    EXPENSE_CATEGORIES.find((c) => !takenCategories.has(c)) ?? EXPENSE_CATEGORIES[0];
+  // money-011 — the cap is entered in the workspace's currency, so the label has
+  // to name it rather than a hardcoded "PKR". Same source as the `useMoney()` the
+  // cards above use to render the caps back, so the ask and the answer agree.
+  const currency = useCurrency();
+
+  const defaultProjectId = projects[0]?.id ?? "";
+  // Pick the first category not already capped IN THE PROJECT THE FORM OPENS ON,
+  // so the form opens in a valid state most of the time. Empty when that project
+  // has capped all of them — `everyCategoryTaken` below explains that and blocks
+  // the submit, rather than the field sitting on a disabled option.
+  const defaultCategory = firstFreeCategory(takenIn(activeCaps, defaultProjectId)) ?? "";
+
+  // Set only when the form MOVES the user off a category they picked, which can
+  // happen on a project change. Silence there was the second half of
+  // R3-money-018-cards: the choice was replaced without a word.
+  const [categoryNote, setCategoryNote] = useState<string | null>(null);
 
   const {
     register,
     handleSubmit,
+    watch,
+    getValues,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<NewBudgetInput>({
     resolver: zodResolver(NewBudgetSchema),
@@ -331,9 +420,31 @@ function NewBudgetForm({
     defaultValues: {
       category: defaultCategory,
       monthlyLimit: undefined as unknown as number,
-      projectId: projects[0]?.id ?? "",
+      projectId: defaultProjectId,
     },
   });
+
+  // Which categories are unavailable depends on the project currently selected,
+  // so it is recomputed whenever that field changes rather than frozen at mount.
+  const selectedProjectId = watch("projectId");
+  const takenCategories = useMemo(
+    () => takenIn(activeCaps, selectedProjectId),
+    [activeCaps, selectedProjectId]
+  );
+  // Nothing left to file in this project. Every option is disabled, so the form
+  // has no valid submit to offer and says that plainly.
+  const everyCategoryTaken = useMemo(
+    () => EXPENSE_CATEGORIES.every((c) => takenCategories.has(c)),
+    [takenCategories]
+  );
+
+  /** The picked project as the user sees it named, for the messages below. */
+  function projectNameOf(projectId: string): string {
+    return projects.find((p) => p.id === projectId)?.name ?? "that project";
+  }
+
+  const projectField = register("projectId");
+  const categoryField = register("category");
 
   async function onSubmit(data: NewBudgetInput) {
     const res = await createBudgetAction(data);
@@ -363,7 +474,31 @@ function NewBudgetForm({
         </label>
         <select
           id={projectFieldId}
-          {...register("projectId")}
+          {...projectField}
+          onChange={(e) => {
+            projectField.onChange(e);
+            // The disabled set is per project, so the category already chosen may
+            // be capped in the project just picked. Move off it instead of leaving
+            // a disabled option selected and a submit the server will refuse —
+            // but SAY SO, because the category was the user's choice and this is
+            // taking it away from them.
+            const projectId = e.target.value;
+            const taken = takenIn(activeCaps, projectId);
+            const chosen = getValues("category");
+            if (!taken.has(chosen)) {
+              setCategoryNote(null);
+              return;
+            }
+            const free = firstFreeCategory(taken);
+            setValue("category", free ?? "");
+            // No free category left is the `everyCategoryTaken` message's job;
+            // two notes saying overlapping things would be worse than one.
+            setCategoryNote(
+              free
+                ? `${chosen} already has a cap in ${projectNameOf(projectId)}, so this switched to ${free}.`
+                : null
+            );
+          }}
           className={inputClass(!!errors.projectId)}
         >
           {projects.length === 0 && <option value="">No projects available</option>}
@@ -385,15 +520,45 @@ function NewBudgetForm({
         >
           Category
         </label>
-        <select id={categoryId} {...register("category")} className={inputClass(!!errors.category)}>
+        <select
+          id={categoryId}
+          {...categoryField}
+          onChange={(e) => {
+            categoryField.onChange(e);
+            // The user has just made the choice themselves; a note about an
+            // earlier automatic switch is stale from here on.
+            setCategoryNote(null);
+          }}
+          className={inputClass(!!errors.category)}
+        >
           {EXPENSE_CATEGORIES.map((c) => (
             <option key={c} value={c} disabled={takenCategories.has(c)} className="bg-bg">
               {c}
-              {takenCategories.has(c) ? " (already set)" : ""}
+              {takenCategories.has(c) ? " (already set in this project)" : ""}
             </option>
           ))}
         </select>
         {errors.category && <p className="mt-1.5 text-xs text-danger">{errors.category.message}</p>}
+        {everyCategoryTaken ? (
+          <p
+            data-testid="no-category-left"
+            role="status"
+            className="mt-1.5 text-xs text-warning-strong"
+          >
+            Every expense category already has an active cap in {projectNameOf(selectedProjectId)}.
+            Pause or delete one to add another.
+          </p>
+        ) : (
+          categoryNote && (
+            <p
+              data-testid="category-switch-note"
+              role="status"
+              className="mt-1.5 text-xs text-fg-muted"
+            >
+              {categoryNote}
+            </p>
+          )
+        )}
       </div>
 
       <div>
@@ -401,7 +566,7 @@ function NewBudgetForm({
           htmlFor={limitId}
           className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
         >
-          Monthly cap (PKR)
+          Monthly cap ({currency})
         </label>
         <input
           id={limitId}
@@ -428,7 +593,10 @@ function NewBudgetForm({
         </button>
         <button
           type="submit"
-          disabled={isSubmitting}
+          // Blocked while the chosen project has no free category: the only
+          // submit available there is one the server answers with "already
+          // exists in this project".
+          disabled={isSubmitting || everyCategoryTaken}
           className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
         >
           {isSubmitting ? "Saving…" : "Create budget"}

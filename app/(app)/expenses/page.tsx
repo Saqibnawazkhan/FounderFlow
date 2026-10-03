@@ -18,7 +18,12 @@ import { ExpensesClient } from "./expenses-client";
 
 export const metadata: Metadata = {
   title: "Expenses",
-  description: "Track every PKR going out of your company by category and contributor.",
+  // No currency in the copy: `Company.currency` is a per-workspace setting, so a
+  // USD workspace used to read "Track every PKR going out" above a table of
+  // dollars — in its tab description, its bookmarks and every link preview of
+  // this page. Every other in-app page was already neutral
+  // (tests/app/page-metadata-currency.test.ts keeps them all that way).
+  description: "Track every expense leaving your company, by category and contributor.",
 };
 
 export default async function ExpensesPage() {

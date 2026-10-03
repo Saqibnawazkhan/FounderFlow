@@ -352,11 +352,12 @@ describe("RunwayPayloadSchema (the frozen snapshot stored on the message)", () =
     expect(checked).toBe(Object.keys(PAYLOAD).length);
   });
 
-  // `runwayMonths: null` is the JSON spelling of the dashboard's `Infinity` —
-  // nothing was spent, so there is no burn to divide the balance by. JSON has
-  // no Infinity (`JSON.stringify(Infinity)` already yields null), so refusing
-  // null here would make an un-storable card out of the perfectly ordinary
-  // workspace that has raised money and not spent it yet.
+  // `runwayMonths: null` is "no burn recorded" — nothing was spent, so there is
+  // no burn to divide the balance by, and `runwayMonths()` in
+  // lib/finance/runway.ts answers null for that case on every surface. JSON could
+  // not carry a non-finite number anyway, so refusing null here would make an
+  // un-storable card out of the perfectly ordinary workspace that has raised
+  // money and not spent it yet.
   it("accepts a null runwayMonths as the wire spelling of no burn", () => {
     const r = RunwayPayloadSchema.safeParse({ ...PAYLOAD, runwayMonths: null });
     expect(r.success).toBe(true);

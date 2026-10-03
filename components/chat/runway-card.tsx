@@ -31,9 +31,10 @@
  *   • `redacted === true`   → a permission fact about the READER.
  *   • `runwayMonths === null` → a data fact about the WORKSPACE: nothing has
  *                             been spent, so there is no burn to divide by.
- *                             This is the JSON spelling of the dashboard's
- *                             `Infinity`, and "∞ months" is not an answer
- *                             anybody can plan against.
+ *                             `runwayMonths()` in lib/finance/runway.ts answers
+ *                             null for that case here and on /dashboard alike,
+ *                             because "∞ months" is not an answer anybody can
+ *                             plan against.
  *
  * ─── "AS OF", NEVER "LIVE". ───
  *

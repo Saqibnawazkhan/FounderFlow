@@ -222,10 +222,10 @@ describe("RunwayCard (the company balance, rendered inside a message row)", () =
   });
 
   // `runwayMonths: null` is a fact about the WORKSPACE — nothing was spent, so
-  // there is no burn to divide by. It is the JSON spelling of the dashboard's
-  // `Infinity`, and neither "∞ months" nor "0 months" is something a founder
-  // can plan against: the first is not an answer and the second is a lie in
-  // the dangerous direction.
+  // there is no burn to divide by, and `runwayMonths()` answers null for that on
+  // every surface (lib/finance/runway.ts). Neither "∞ months" nor "0 months" is
+  // something a founder can plan against: the first is not an answer and the
+  // second is a lie in the dangerous direction.
   it("renders a workspace with no burn as words rather than a number", () => {
     const { container } = render(<RunwayCard card={NO_BURN} />);
 

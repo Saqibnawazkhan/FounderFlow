@@ -146,6 +146,9 @@ const FINANCE_ACTIVITY_TYPES: string[] = [
   "investment_added",
   "revenue_added",
   "transaction_deleted",
+  // money-016 — an edit row quotes the figure before AND after the correction,
+  // so it is at least as finance-bearing as the three above.
+  "transaction_edited",
 ];
 
 /** The Notification topic bucket the finance wall is about. */

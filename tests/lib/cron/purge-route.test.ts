@@ -13,7 +13,8 @@
  * Findings: cron-002 (one stuck project must not stop the sweep), cron-005 (the
  * dry run must report the rows a live run would destroy), cron-006 (a
  * chat-heavy workspace must actually finish), cron-008 (a failed stage must
- * escalate), prodready-003 (a missing CRON_SECRET must be loud).
+ * escalate), prodready-003 (a missing CRON_SECRET must be loud),
+ * R1-money-013-cron (the hard delete must not strip money attribution).
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -80,6 +81,8 @@ function buildHarness(options: {
   /** Company ids whose purge transaction blows up. */
   failCompany?: string[];
   projectChildCounts?: Counts;
+  /** Makes the kept-backlog `project.count` throw (R1-money-013-cron, round 2). */
+  failProjectCount?: boolean;
 }): Harness {
   const counts: Counts = { ...(options.counts ?? {}) };
   const projectChildCounts: Counts = { ...(options.projectChildCounts ?? {}) };
@@ -87,6 +90,28 @@ function buildHarness(options: {
   const overdueProjects = options.overdueProjects ?? [];
   const failProjectDelete = options.failProjectDelete ?? [];
   const failCompany = options.failCompany ?? [];
+  const failProjectCount = options.failProjectCount ?? false;
+
+  /** Does this overdue project still carry transactions? */
+  const hasTransactions = (id: string) =>
+    (projectChildCounts[`transaction:${id}`] ?? projectChildCounts.transaction ?? 0) > 0;
+
+  /**
+   * Applies a `transactions: { none: {} }` / `{ some: {} }` relation filter to
+   * the overdue project set, the way Postgres would.
+   *
+   * The fake HAS to honour it. R1-money-013-cron's second round turns entirely
+   * on whether a project the sweep will never purge occupies a slot in the
+   * page, and a fake that returns every overdue id whatever it was asked
+   * cannot tell "excluded from the window" from "skipped inside the loop".
+   */
+  const applyTransactionFilter = (ids: string[], where?: Record<string, unknown>) => {
+    const rel = where?.transactions as { none?: unknown; some?: unknown } | undefined;
+    if (!rel) return ids;
+    if ("none" in rel) return ids.filter((id) => !hasTransactions(id));
+    if ("some" in rel) return ids.filter((id) => hasTransactions(id));
+    return ids;
+  };
 
   const ops: Op[] = [];
   const txOptions: unknown[] = [];
@@ -130,8 +155,12 @@ function buildHarness(options: {
     count: vi.fn(async (args?: { where?: Record<string, unknown> }) => {
       const where = args?.where ?? {};
       if (name === "project" && where.deletedAt) {
-        record(name, "count", overdueProjects.length);
-        return overdueProjects.length;
+        // The kept-backlog count. No `take`, deliberately: it is a total, not a
+        // page, which is half of what the test below is checking.
+        if (failProjectCount) throw new Error("canceling statement due to statement timeout");
+        const ids = applyTransactionFilter(overdueProjects.slice(), where);
+        record(name, "count", ids.length);
+        return ids.length;
       }
       if (typeof where.projectId === "string") {
         const key = `${name}:${where.projectId}`;
@@ -145,8 +174,14 @@ function buildHarness(options: {
     }),
     findMany: vi.fn(async (args?: { take?: number; where?: Record<string, unknown> }) => {
       if (name === "project") {
-        record(name, "findMany", overdueProjects.length);
-        return overdueProjects.map((id) => ({ id }));
+        // Honours `take` AND the relation filter, for the reason on
+        // `applyTransactionFilter`. It does NOT honour the overdue cutoff
+        // itself, because `overdueProjects` IS the already-overdue set by
+        // construction — same shape as the company fake below.
+        let ids = applyTransactionFilter(overdueProjects.slice(), args?.where);
+        if (typeof args?.take === "number") ids = ids.slice(0, args.take);
+        record(name, "findMany", ids.length);
+        return ids.map((id) => ({ id }));
       }
       const take = args?.take ?? 0;
       const batch = idsFor(name, take);
@@ -438,6 +473,182 @@ describe("cron-002 — one stuck project must not disable the whole stage", () =
     });
     const { body } = await run();
     expect(resultOf(body).orphanProjectRowsDeleted).toBeGreaterThanOrEqual(10);
+  });
+});
+
+/* ── R1-money-013-cron ─────────────────────────────────────────────────── */
+
+/**
+ * `tx.project.delete` is the one irreversible step in scope 2, and
+ * `Transaction.projectId` is `onDelete: SetNull` — so hard-deleting a tombstoned
+ * project silently strips the project tag off every transaction still pointing
+ * at it. money-013 closed the interactive door (deleteProjectAction now refuses
+ * a project with live transactions), but it put nothing in front of the
+ * irreversible step itself, so every project tombstoned BEFORE that gate landed
+ * still loses its attribution the night it goes overdue — and no error, no
+ * failure and no changed total ever says so.
+ *
+ * The contract: a tombstoned project that STILL carries transactions is kept,
+ * counted, and reported. A genuinely empty one is purged exactly as before.
+ */
+describe("R1-money-013-cron — purging a project must not strip money attribution", () => {
+  beforeEach(() => {
+    process.env.PURGE_ENABLED = "true";
+  });
+
+  it("keeps a tombstoned project whose transactions still point at it", async () => {
+    harness = buildHarness({
+      overdueProjects: ["p-money", "p-empty"],
+      projectChildCounts: { "transaction:p-money": 12 },
+    });
+    const { status, body } = await run();
+
+    const deletedIds = (
+      harness.db.project as {
+        delete: { mock: { calls: Array<[{ where: { id: string } }]> } };
+      }
+    ).delete.mock.calls.map((c) => c[0].where.id);
+    expect(deletedIds).toEqual(["p-empty"]);
+    expect(resultOf(body).orphanProjectsPurged).toBe(1);
+    expect(resultOf(body).orphanProjectsKeptWithTransactions).toBe(1);
+    // Keeping a row is the designed outcome, not a stuck stage: it must not
+    // escalate, or the nightly job pages on-call for ever.
+    expect(status).toBe(200);
+    expect(body.ok).toBe(true);
+  });
+
+  it("leaves that project's tasks and budgets alone too", async () => {
+    // The children go inside the same transaction as the project row. Deleting
+    // them and then keeping the parent would destroy rows for nothing.
+    harness = buildHarness({
+      overdueProjects: ["p-money"],
+      projectChildCounts: { "transaction:p-money": 3, "task:p-money": 4, "budget:p-money": 1 },
+    });
+    await run();
+    const destructive = harness.ops.filter((o) => o.kind === "deleteMany" || o.kind === "delete");
+    expect(destructive).toEqual([]);
+  });
+
+  it("counts a soft-deleted transaction too — its tag is attribution as well", async () => {
+    // Neither filter mentions `deletedAt`: a project whose transactions were all
+    // soft-deleted first is exactly the residue deleteProjectAction's own
+    // comment says the gate cannot close, and a soft-deleted transaction's
+    // project tag is attribution as much as a live one's. Asserted as an exact
+    // deep-equal, because `{ none: { deletedAt: null } }` is the plausible wrong
+    // spelling and it reads almost identically.
+    harness = buildHarness({
+      overdueProjects: ["p-money"],
+      projectChildCounts: { "transaction:p-money": 1 },
+    });
+    await run();
+    const windowWhere = (
+      harness.db.project as {
+        findMany: { mock: { calls: Array<[{ where: Record<string, unknown> }]> } };
+      }
+    ).findMany.mock.calls.map((c) => c[0].where);
+    expect(windowWhere.map((w) => w.transactions)).toContainEqual({ none: {} });
+    const keptWhere = (
+      harness.db.project as {
+        count: { mock: { calls: Array<[{ where: Record<string, unknown> }]> } };
+      }
+    ).count.mock.calls.map((c) => c[0].where);
+    expect(keptWhere.map((w) => w.transactions)).toContainEqual({ some: {} });
+  });
+
+  it("reports the same refusal in the dry run, so the two runs agree", async () => {
+    delete process.env.PURGE_ENABLED;
+    harness = buildHarness({
+      overdueProjects: ["p-money", "p-empty"],
+      projectChildCounts: { "transaction:p-money": 5 },
+    });
+    const { body } = await run();
+    expect(body.dryRun).toBe(true);
+    expect(resultOf(body).orphanProjectsKeptWithTransactions).toBe(1);
+    expect(resultOf(body).orphanProjectsPurged).toBe(1);
+  });
+
+  /**
+   * ROUND 2 — the keep must not starve the sweep.
+   *
+   * A kept project is overdue for ever, so a per-project check INSIDE the loop
+   * left it matching the scope-2 window every single night. Fill `take:
+   * projectLimit` with kept projects and the stage purges nothing at all, for
+   * every tenant, for ever — `orphanProjectRowsDeleted` stays 0, which is far
+   * too small for the bulk-mutation canary to notice, and the 90-day per-project
+   * erasure promise quietly stops being kept. That is the cron-002 outage shape
+   * this file's own scope-2 comment is scarred by.
+   */
+  it("still purges an empty project when the page would otherwise be full of kept ones", async () => {
+    harness = buildHarness({
+      overdueProjects: ["p-money-1", "p-money-2", "p-empty"],
+      projectChildCounts: {
+        "transaction:p-money-1": 9,
+        "transaction:p-money-2": 4,
+      },
+    });
+    // Two kept projects and a page of two: whichever order the read returns
+    // them in, the empty project is only reachable if the kept ones never enter
+    // the window.
+    const { body } = await run("?projectLimit=2");
+
+    const deletedIds = (
+      harness.db.project as {
+        delete: { mock: { calls: Array<[{ where: { id: string } }]> } };
+      }
+    ).delete.mock.calls.map((c) => c[0].where.id);
+    expect(deletedIds).toEqual(["p-empty"]);
+    expect(resultOf(body).orphanProjectsPurged).toBe(1);
+  });
+
+  it("reports the whole kept backlog, not just the slice that fit in one page", async () => {
+    harness = buildHarness({
+      overdueProjects: ["p-money-1", "p-money-2", "p-money-3", "p-empty"],
+      projectChildCounts: {
+        "transaction:p-money-1": 1,
+        "transaction:p-money-2": 1,
+        "transaction:p-money-3": 1,
+      },
+    });
+    const { body } = await run("?projectLimit=2");
+    // Three, not two: this number is the only place the permanent keeps are
+    // said out loud, and capping it at the page size would hide the backlog it
+    // exists to report.
+    expect(resultOf(body).orphanProjectsKeptWithTransactions).toBe(3);
+  });
+
+  it("asks for the oldest tombstones first, so one night's page is predictable", async () => {
+    harness = buildHarness({ overdueProjects: ["p-1"] });
+    await run();
+    const args = (
+      harness.db.project as {
+        findMany: { mock: { calls: Array<[Record<string, unknown>]> } };
+      }
+    ).findMany.mock.calls[0][0];
+    expect(args.orderBy).toEqual([{ deletedAt: "asc" }, { id: "asc" }]);
+  });
+
+  it("a failed kept-backlog count costs the number, not the night's sweep", async () => {
+    // The count is a REPORTING query. cron-002 is the scar that says one query
+    // must not take the stage with it — and a 0 here would read as "nothing is
+    // being kept", which is the misreading this endpoint exists to prevent, so
+    // the field goes null and the failure is named.
+    harness = buildHarness({
+      overdueProjects: ["p-empty"],
+      failProjectCount: true,
+    });
+    const { body, status } = await run();
+
+    const deletedIds = (
+      harness.db.project as {
+        delete: { mock: { calls: Array<[{ where: { id: string } }]> } };
+      }
+    ).delete.mock.calls.map((c) => c[0].where.id);
+    expect(deletedIds).toEqual(["p-empty"]);
+    expect(resultOf(body).orphanProjectsPurged).toBe(1);
+    expect(resultOf(body).orphanProjectsKeptWithTransactions).toBeNull();
+    const failures = body.failures as Array<{ stage: string }>;
+    expect(failures.map((f) => f.stage)).toContain("orphanProjectsKeptCount");
+    expect(status).toBeGreaterThanOrEqual(500);
   });
 });
 

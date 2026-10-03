@@ -18,7 +18,9 @@
  * founder's books.
  *
  * Callers (cron route, manual trigger) are responsible for:
- *   1. Loading active rules from DB
+ *   1. Loading active rules from DB — and clearing the `projectId` of any rule
+ *      whose project has been soft-deleted, because this module copies the tag
+ *      verbatim and cannot see a tombstone (R1-money-013-cron)
  *   2. Passing them in
  *   3. Persisting the returned transactions, and advancing the rule's
  *      `lastMaterializedAt` to the LAST occurrence they actually wrote — not
@@ -44,6 +46,10 @@ export interface MaterializedTransaction {
    * subscriptions, i.e. most of a real startup's outgoings — could never trip a
    * budget cap, because every Budget belongs to a project and
    * `checkBudgetThresholdAfterExpense` returns early on a null projectId.
+   *
+   * Carried VERBATIM, tombstone and all: nothing here can tell a live project
+   * from a deleted one, so the caller owns that check (see the header, and the
+   * `include` in the cron route).
    */
   projectId: string | null;
   /**

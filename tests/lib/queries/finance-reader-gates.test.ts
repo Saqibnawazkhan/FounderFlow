@@ -192,6 +192,9 @@ beforeEach(() => {
       projectId: "p1",
       category: "Office Rent",
       monthlyLimit: money(1000),
+      // Included by getBudgetsWithSpend so the card can name the project
+      // (R3-money-018-cards).
+      project: { name: "Apollo" },
       createdBy: "u1",
       createdByName: "Ada",
       active: true,

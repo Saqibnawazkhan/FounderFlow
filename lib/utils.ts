@@ -48,13 +48,34 @@ export function formatCurrency(amount: number, currency = "PKR"): string {
   //    character class from code points; the version here was a regex with a
   //    real NBSP pasted inside it, one careless autofix away from silently
   //    becoming a no-op.
-  //  • Negative CLDR output is "-PKR 12,345.00"; the previous inline format was
-  //    "PKR -12,345". Reorder so we don't regress the user-facing look while
-  //    keeping the one Intl call for grouping + currency-code lookup. Note this
-  //    only fires for currencies CLDR prefixes with an ISO CODE (PKR, AED) —
-  //    symbol currencies keep ICU's own "-$1,234.56", which is already the
-  //    conventional placement for them.
+  //
+  // ## The sign leads the figure, in every currency (money-015)
+  //
+  // This used to reorder negatives with `formatted.startsWith("-" + currency)`,
+  // so that PKR read "PKR -12,345.00" — the shape the hand-rolled pre-Intl
+  // version had emitted. That condition can only ever be met by a currency ICU
+  // renders as an ISO CODE: PKR and AED matched and were rewritten, while USD,
+  // EUR, GBP and INR kept ICU's "-$1,234.56". One product, two placements for
+  // the minus sign, chosen by whether CLDR happens to have a symbol for the
+  // workspace's currency — on a negative balance, which is the figure a founder
+  // reads most carefully.
+  //
+  // So the sign is handled here, once, for every path including the non-ISO
+  // fallback below: format the MAGNITUDE, prepend the sign. The result is
+  // byte-identical to ICU's own negative output for all six supported
+  // currencies (CLDR puts the minus first for every one of them), so this is
+  // "stop post-processing" rather than a second convention.
+  //
+  // It is also the only placement this product can read back: `parseMoneyInput`
+  // in lib/format.ts takes a leading or trailing sign and treats anything else
+  // outside the digits as currency decoration, so a copied "PKR -2,500.00"
+  // imported as a POSITIVE 2,500 while "-$2,500.00" was correctly refused.
+  //
+  // `-0` gets no sign (`-0 < 0` is false), which is deliberate: a balance that
+  // rounds to nothing should not display as a negative one.
   const digits = currencyMinorUnits(currency);
+  const sign = amount < 0 ? "-" : "";
+  const magnitude = Math.abs(amount);
   const formatted = sanitizeNumericOutput(
     ((): string => {
       try {
@@ -63,7 +84,7 @@ export function formatCurrency(amount: number, currency = "PKR"): string {
           currency,
           minimumFractionDigits: digits,
           maximumFractionDigits: digits,
-        }).format(amount);
+        }).format(magnitude);
       } catch {
         // Guard for the pathological case where the caller passes a non-ISO
         // 4217 code (e.g. a stale seed value). Fall back to a plain number —
@@ -72,14 +93,11 @@ export function formatCurrency(amount: number, currency = "PKR"): string {
         return `${currency} ${new Intl.NumberFormat("en-US", {
           minimumFractionDigits: digits,
           maximumFractionDigits: digits,
-        }).format(amount)}`;
+        }).format(magnitude)}`;
       }
     })()
   );
-  if (amount < 0 && formatted.startsWith(`-${currency}`)) {
-    return `${currency} -${formatted.slice(currency.length + 1).trimStart()}`;
-  }
-  return formatted;
+  return sign + formatted;
 }
 
 /* ------------------------------------------------------------------------- *

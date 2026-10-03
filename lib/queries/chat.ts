@@ -87,8 +87,9 @@ export interface MessageReactionClient {
  * money or imply the member is being shown everything there is.
  *
  * Note `runwayMonths: null` is a THIRD thing again — on an unredacted card it
- * means "no burn recorded", the JSON spelling of the dashboard's `Infinity`.
- * Read it together with `redacted`, never on its own.
+ * means "no burn recorded", which is what `runwayMonths()` in
+ * lib/finance/runway.ts answers for a workspace that has spent nothing, on
+ * /dashboard exactly as here. Read it together with `redacted`, never on its own.
  */
 export interface RunwayCardClient {
   /** ISO instant the snapshot was taken — always present, never a figure. */

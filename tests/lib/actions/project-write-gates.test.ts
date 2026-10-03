@@ -41,7 +41,10 @@ const H = vi.hoisted(() => {
   const consumed: Array<{ bucket: string; key: string }> = [];
   const gate = { allowed: true as boolean, error: undefined as string | undefined };
 
-  const MODELS = ["project", "user", "activity", "notification", "task", "budget"];
+  // `transaction` is here because deleteProjectAction's emptiness gate counts
+  // live transactions too (money-013) — without the delegate the action throws
+  // and every delete case below reads as a refusal.
+  const MODELS = ["project", "user", "activity", "notification", "task", "budget", "transaction"];
   const OPS = [
     "findUnique",
     "findFirst",
@@ -147,9 +150,11 @@ beforeEach(() => {
   H.results.set("project.update", { ...LIVE_PROJECT });
   H.results.set("project.updateMany", { count: 1 });
   H.results.set("activity.create", { id: "a-1" });
-  // deleteProjectAction refuses a project that still has children.
+  // deleteProjectAction refuses a project that still has children — tasks,
+  // budgets or transactions (money-013).
   H.results.set("task.count", 0);
   H.results.set("budget.count", 0);
+  H.results.set("transaction.count", 0);
 });
 
 describe("projects-012 — every project write takes the same rate-limit gate", () => {

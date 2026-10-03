@@ -15,6 +15,38 @@
 export const WARN_PCT = 0.8;
 export const ALERT_PCT = 1.0;
 
+/**
+ * The integer percentage EVERY surface prints for a budget — the headline and
+ * the `aria-valuenow` on a /budgets card, and the title + message of the
+ * threshold notification written in lib/budgets/check.ts. ONE copy, because the
+ * two surfaces describe the same crossing of the same line and a reader who
+ * sees two numbers cannot tell which one is lying.
+ *
+ * Rounded for fidelity, then clamped into the band the RAW ratio is in — the
+ * band `WARN_PCT` / `ALERT_PCT` above define and the card's badge names.
+ * Rounding alone printed "100%" at 0.996 and "100%" at 1.004, so the one figure
+ * these surfaces exist to show meant two different things and the reader could
+ * not tell whether the cap had been crossed (money-014 on the card,
+ * R5-money-014-bell on the notification, which kept its own copy of the bare
+ * `Math.round` and so said "at 100% of the cap" in a row typed `warning`).
+ *
+ * Flooring instead would fix the boundary and break the middle: `0.29 * 100` is
+ * 28.999999999999996 in IEEE-754, i.e. "28%" for 2,900 of a 10,000 cap. Only a
+ * ceiling is needed — rounding cannot fall below the band it is in, since
+ * anything within 0.5pp above a threshold rounds back onto the threshold itself.
+ *
+ * Over the cap is deliberately NOT clamped: the size of the overrun is the news,
+ * and 125% is unambiguous in a way 100% is not. (A `progressbar`'s
+ * `aria-valuenow` still has to sit inside its own `aria-valuemax`; that clamp
+ * belongs to the ARIA range, not to this label — see budgets-client.tsx.)
+ */
+export function budgetPercentLabel(percentUsed: number): number {
+  const rounded = Math.round(percentUsed * 100);
+  if (percentUsed >= ALERT_PCT) return rounded;
+  if (percentUsed >= WARN_PCT) return Math.min(99, rounded);
+  return Math.min(79, rounded);
+}
+
 export type BudgetThresholdKind = "warning" | "alert";
 
 export interface BudgetForCheck {

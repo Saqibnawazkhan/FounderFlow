@@ -55,6 +55,11 @@ const ACTIVITY_META: Record<ActivityType, { icon: LucideIcon; tone: ActivityTone
     task_updated: { icon: CheckSquare, tone: "info", label: "Task updated" },
     task_deleted: { icon: Trash2, tone: "danger", label: "Task deleted" },
     transaction_deleted: { icon: Trash2, tone: "danger", label: "Transaction deleted" },
+    // money-016. `info`, not `warning`, for the reason the sec-020 note below
+    // gives: correcting a mistyped figure is the routine act this feed exists to
+    // record, and a tone that shouts on every correction is a tone nobody reads.
+    // The old and the new amount are in the row's message and metadata.
+    transaction_edited: { icon: Edit3, tone: "info", label: "Transaction edited" },
     user_joined: { icon: UserPlus, tone: "forest", label: "Team update" },
     user_removed: { icon: UserMinus, tone: "danger", label: "Member removed" },
     user_role_changed: { icon: ShieldCheck, tone: "warning", label: "Role changed" },

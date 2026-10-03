@@ -31,8 +31,17 @@
  * into a component module.
  */
 
-/** Months in the rolling burn window behind the runway figure. */
-export const BURN_WINDOW_MONTHS = 3;
+/**
+ * Months in the rolling burn window behind the runway figure.
+ *
+ * RE-EXPORTED, not defined here: `lib/finance/runway.ts` owns the number,
+ * because it both sums the window (`burnWindowStart`) and caps the divisor
+ * (`burnMonthsCovered`), and a second copy here is a second thing to forget
+ * (money-017). This file's job is only to make the value importable from a
+ * Server Component — which it still is, since lib/finance/runway.ts is a plain
+ * module with no `"use client"` either.
+ */
+export { BURN_WINDOW_MONTHS } from "@/lib/finance/runway";
 
 /** Buckets on the cash-flow chart. */
 export const CASH_FLOW_MONTHS = 6;

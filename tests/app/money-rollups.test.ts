@@ -136,6 +136,9 @@ const ROLLUPS: DashboardRollups = {
   totals: totals({ expense: [900_000, 5000], investment: [10_000_000, 12], income: [50_000, 3] }),
   monthToDateExpense: 75_000,
   burnWindowExpense: 210_000,
+  // Older than the burn window, so burn stays `burnWindowExpense / 3` here and
+  // the cases below are unaffected by money-017's divisor.
+  ledgerStartsAt: "2025-01-01T00:00:00.000Z",
   monthly: [
     { month: "Apr", monthStart: "2026-04-01T00:00:00.000Z", expense: 1, income: 2, investment: 3 },
     { month: "May", monthStart: "2026-05-01T00:00:00.000Z", expense: 4, income: 5, investment: 6 },

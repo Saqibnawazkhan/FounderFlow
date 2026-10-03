@@ -92,6 +92,11 @@ export type ActivityType =
   | "user_role_changed"
   | "company_created"
   | "transaction_deleted"
+  // money-016. A ledger line can now be CORRECTED rather than only destroyed,
+  // and an edit that left no trace would be the worse half of that trade: the
+  // row's figure is what every roll-up sums. The activity row carries the old
+  // and the new amount (see `previousAmount` below).
+  | "transaction_edited"
   | "task_deleted"
   | "task_created"
   | "project_created"
@@ -138,6 +143,16 @@ export type ActivityMetadata =
       category: string;
       /** ISO 4217 code the amount was RECORDED in. Absent on legacy rows. */
       currency?: string;
+      /**
+       * money-016, on a `transaction_edited` row only: the amount the row held
+       * BEFORE the correction, in the same `currency` as `amount`.
+       *
+       * It is the structured half of the audit trail, and it exists for the same
+       * reason `currency` does — `message` is prose frozen on the day it was
+       * written, so the figure a reader can trust has to be a number in the
+       * metadata. Absent on every other row type.
+       */
+      previousAmount?: number;
       description?: string;
       recurring?: boolean;
       dueDate?: string;

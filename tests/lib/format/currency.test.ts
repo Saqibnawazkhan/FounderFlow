@@ -6,6 +6,7 @@ import {
   currencyMinorUnits,
   moneyDecimalPlaces,
   isStorableMoneyScale,
+  parseMoneyInput,
 } from "@/lib/format";
 import { SUPPORTED_CURRENCIES } from "@/lib/schemas/company";
 
@@ -91,13 +92,6 @@ describe("formatCurrency — cents (money-001, rep-001)", () => {
     rowsSumToTotal([25000.33, 4500.67, 120.5], "PKR");
   });
 
-  it("puts the sign in front of the code for code-prefixed currencies", () => {
-    // The reorder in formatCurrency only fires for currencies CLDR renders with
-    // an ISO code (PKR, AED); symbol currencies keep ICU's own "-$1,234.56".
-    expect(formatCurrency(-2500, "PKR")).toBe("PKR -2,500.00");
-    expect(formatCurrency(-1234.56, "USD")).toBe("-$1,234.56");
-  });
-
   it("emits no invisible or unpasteable characters", () => {
     for (let i = 0; i < SUPPORTED_CURRENCIES.length; i++) {
       const out = formatCurrency(1234.56, SUPPORTED_CURRENCIES[i]);
@@ -119,6 +113,68 @@ describe("formatCurrency — cents (money-001, rep-001)", () => {
     // Intl rejects outright (which takes formatCurrency's own catch).
     expect(formatCurrency(1234.56, "CHF")).toContain("1,234.56");
     expect(formatCurrency(1234.56, "NOTACODE")).toContain("1,234.56");
+  });
+});
+
+/**
+ * money-015: the minus sign had two placements, chosen by whether CLDR happens
+ * to have a symbol for the workspace's currency.
+ *
+ * `formatCurrency` post-processed its own output with
+ * `formatted.startsWith("-" + currency)`, a condition only a currency ICU
+ * renders as an ISO CODE can meet. PKR and AED matched and were rewritten to
+ * "PKR -2,500.00"; USD, EUR, GBP and INR did not match and kept ICU's
+ * "-$1,234.56". Two conventions for the one glyph a customer reads most
+ * carefully, on the one figure they read most carefully.
+ *
+ * The convention is now: the sign leads the whole figure. That is ICU's own
+ * placement for all six supported currencies, so it needs no post-processing at
+ * all, and it is the only one of the two the product can read back (last case).
+ *
+ * THE TEST THAT USED TO SIT HERE ASSERTED THE SPLIT — "puts the sign in front of
+ * the code for code-prefixed currencies", pinning both forms as if the
+ * difference were the contract. It was a test defending the defect, the same
+ * shape as the `maximumFractionDigits: 0` assertions above it, which is why it
+ * is gone rather than updated.
+ */
+describe("formatCurrency — one sign convention (money-015)", () => {
+  it("leads with the sign for a code currency and a symbol currency alike", () => {
+    expect(formatCurrency(-2500, "PKR")).toBe("-PKR 2,500.00");
+    expect(formatCurrency(-2500, "AED")).toBe("-AED 2,500.00");
+    expect(formatCurrency(-1234.56, "USD")).toBe("-$1,234.56");
+    expect(formatCurrency(-1234.56, "EUR")).toBe("-€1,234.56");
+  });
+
+  it("renders every negative as the sign plus the magnitude, in every currency", () => {
+    for (let i = 0; i < SUPPORTED_CURRENCIES.length; i++) {
+      const currency = SUPPORTED_CURRENCIES[i];
+      const negative = formatCurrency(-2500, currency);
+      // The invariant, independent of symbol or code: one sign, at the front,
+      // and the rest of the string identical to the positive rendering.
+      expect(negative).toBe("-" + formatCurrency(2500, currency));
+      expect(negative.indexOf("-")).toBe(0);
+      expect(negative.split("-").length - 1).toBe(1);
+    }
+  });
+
+  it("holds for an unknown currency code too, which takes the fallback path", () => {
+    // `Company.currency` is a plain DB column, so this branch is reachable, and
+    // it built its own string rather than going through ICU — the sign landed in
+    // the middle there regardless of the currency.
+    expect(formatCurrency(-1234.56, "NOTACODE")).toBe("-NOTACODE 1,234.56");
+  });
+
+  it("keeps the sign where this product's own importer can see it", () => {
+    // Not a hypothetical: `parseMoneyInput` (the CSV/paste importer) reads a
+    // LEADING or TRAILING sign, and treats anything else outside the digits as
+    // currency decoration. So "PKR -2,500.00" imported as +2,500 — silently, as
+    // a positive row in the ledger — while the same amount copied out of a USD
+    // workspace was correctly refused with reason "negative".
+    for (let i = 0; i < SUPPORTED_CURRENCIES.length; i++) {
+      const parsed = parseMoneyInput(formatCurrency(-2500, SUPPORTED_CURRENCIES[i]));
+      expect(parsed.ok).toBe(false);
+      if (!parsed.ok) expect(parsed.reason).toBe("negative");
+    }
   });
 });
 

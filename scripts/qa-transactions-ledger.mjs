@@ -377,9 +377,11 @@ async function main() {
     else fail("tenant A currency", `expected USD, got ${companyARow?.currency}`);
     const adminAUser = await db.user.findFirst({ where: { companyId: companyA, email: ADMIN_A } });
 
-    /* ── TXN-001: the transaction form is hardcoded to PKR ───────────────
-       A USD workspace's own "Log expense" form labels the field
-       "Amount (PKR)" and prints PKR inside the input. */
+    /* ── TXN-001: the transaction form must name the workspace currency ──
+       It used to label the field "Amount (PKR)" and print PKR inside the
+       input whatever the workspace had chosen. Both now read `useCurrency()`
+       (money-011), so a USD workspace's own "Log expense" form must contain
+       no "PKR" anywhere. */
     await admin.goto(`${BASE}/expenses`, { waitUntil: "networkidle0" });
     await admin.evaluate(() => {
       [...document.querySelectorAll("header button")]
@@ -951,8 +953,11 @@ async function main() {
         );
         btn?.click();
       }, descDel);
-      // Confirm dialog
-      await admin.waitForFunction(() => /cannot be undone/i.test(document.body.innerText), {
+      // Confirm dialog, gated on its TITLE rather than its body copy: the
+      // description no longer claims the delete is permanent (it is a soft
+      // delete — R4-money-016-trail), and a wait pinned to that old sentence
+      // would hang here for 15s and then abort the whole run.
+      await admin.waitForFunction(() => /delete this investment\?/i.test(document.body.innerText), {
         timeout: 15000,
       });
       await shot(admin, "023-delete-confirm");
@@ -983,7 +988,7 @@ async function main() {
       if (orphanComments === 0) {
         fail(
           "TXN-024 delete destroys the discussion",
-          'Comment.transactionId cascades, so deleting a transaction erases its whole comment thread — and the confirm copy only says "This action cannot be undone", never that the comments go with it'
+          "Comment.transactionId cascades, so deleting a transaction erases its whole comment thread — and nothing in the confirm dialog warns that the discussion goes with it"
         );
       } else {
         ok("TXN-024 comments survive their transaction's deletion");
@@ -1146,8 +1151,9 @@ async function main() {
           .find((b) => (b.getAttribute("aria-label") ?? "").includes(d))
           ?.click();
       }, cofoDesc);
+      // The title again, for the same reason as TXN-023 above.
       await admin
-        .waitForFunction(() => /cannot be undone/i.test(document.body.innerText), {
+        .waitForFunction(() => /delete this expense\?/i.test(document.body.innerText), {
           timeout: 15000,
         })
         .catch(() => {});

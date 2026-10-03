@@ -52,7 +52,7 @@ import { PillBadge } from "@/components/landing/pill-badge";
 import { cn } from "@/lib/utils";
 import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES } from "@/lib/types";
 import type { RecurringRuleClient } from "@/lib/queries/recurring";
-import { useMoney } from "@/lib/hooks/useMoney";
+import { useCurrency, useMoney } from "@/lib/hooks/useMoney";
 import { useNumberFormat } from "@/lib/i18n/use-t";
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -321,6 +321,11 @@ function NewRuleForm({ onClose, onCreated }: { onClose: () => void; onCreated: (
   const dayId = useId();
   const descId = useId();
 
+  // money-011 — a rule's amount is entered in the workspace's currency, and this
+  // one gets re-posted every month, so a mislabelled field compounds. Same source
+  // as the `useMoney()` the rule cards render with.
+  const currency = useCurrency();
+
   const {
     register,
     handleSubmit,
@@ -426,7 +431,7 @@ function NewRuleForm({ onClose, onCreated }: { onClose: () => void; onCreated: (
             htmlFor={amountId}
             className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
           >
-            Amount (PKR)
+            Amount ({currency})
           </label>
           <input
             id={amountId}

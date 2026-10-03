@@ -44,6 +44,19 @@ export interface BudgetClient {
   id: string;
   companyId: string;
   projectId: string;
+  /**
+   * The owning project's name, denormalised onto the row the way `createdByName`
+   * already is — because the CARD needs it (R3-money-018-cards).
+   *
+   * Since money-018 two projects may each cap "Salaries", so `category` alone no
+   * longer identifies a budget to a reader: /budgets rendered the two as
+   * identical cards with identical delete buttons. The name cannot be looked up
+   * client-side from the project picker instead: `listProjectOptions()`
+   * deliberately excludes completed and archived projects, while this query has
+   * no status filter, so a cap in a finished project would come back nameless —
+   * ambiguous again, in the one place a mislabelled delete costs real rows.
+   */
+  projectName: string;
   category: string;
   monthlyLimit: number;
   createdBy: string;
@@ -138,6 +151,9 @@ export async function getBudgetsWithSpend(
 
   const budgets = await db.budget.findMany({
     where: { companyId, deletedAt: null, ...(opts.projectId ? { projectId: opts.projectId } : {}) },
+    // The owning project's name travels with the row — see `projectName` on
+    // BudgetClient for why the client cannot resolve it from the picker list.
+    include: { project: { select: { name: true } } },
     orderBy: [{ active: "desc" }, { createdAt: "desc" }],
   });
 
@@ -196,6 +212,7 @@ export async function getBudgetsWithSpend(
       id: b.id,
       companyId: b.companyId,
       projectId: b.projectId,
+      projectName: b.project.name,
       category: b.category,
       monthlyLimit: limit,
       createdBy: b.createdBy,

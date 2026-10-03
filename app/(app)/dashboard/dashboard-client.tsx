@@ -33,12 +33,21 @@ import { useDateFormat, useNumberFormat } from "@/lib/i18n/use-t";
 // boundary filed a row dated the 1st under the previous month for every viewer
 // west of UTC while /budgets counted it in the current one (money-007).
 import { isDeadlineOverdue } from "@/lib/tasks/deadline";
-import { isInUtcMonth, utcMonthShortLabel, utcMonthWindow, utcMonthsAgo } from "@/lib/date-range";
+import { isInUtcMonth, utcMonthShortLabel, utcMonthWindow } from "@/lib/date-range";
 // From a plain module, NOT re-exported from here: page.tsx is a Server
-// Component and needs the same two numbers. An export from this file would
-// reach it as a client-reference proxy ({}) rather than a number, which is
-// exactly how the dashboard crashed. See ./windows.ts for the full account.
-import { BURN_WINDOW_MONTHS, CASH_FLOW_MONTHS } from "./windows";
+// Component and needs the same number. An export from this file would reach it
+// as a client-reference proxy ({}) rather than a number, which is exactly how
+// the dashboard crashed. See ./windows.ts for the full account.
+import { CASH_FLOW_MONTHS } from "./windows";
+// Burn, runway and the pace comparison are SHARED with the chat runway card
+// (lib/actions/chat.ts). One copy, or the two surfaces quote different runways
+// for the same workspace on the same afternoon — money-017.
+import {
+  averageMonthlyBurn,
+  burnPaceDeltaPct,
+  burnWindowStart,
+  runwayMonths,
+} from "@/lib/finance/runway";
 import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat, type DashboardStatProps } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
@@ -105,8 +114,12 @@ export interface DashboardRollups {
   /** `getMonthToDateExpense()` — expense total for the current UTC month. */
   monthToDateExpense: number;
   /** Expense total over the rolling burn window:
-   *  `getTransactionTotals({ from: utcMonthsAgo(now, BURN_WINDOW_MONTHS) })`. */
+   *  `getTransactionTotals({ from: burnWindowStart(now) })`. */
   burnWindowExpense: number;
+  /** `getLedgerStart()` — the earliest ledger row's date, ISO, or null on an
+   *  empty ledger. The DIVISOR behind burn: the window's spend is averaged over
+   *  the months the ledger actually covers, not over a constant 3 (money-017). */
+  ledgerStartsAt: string | null;
   /** `getMonthlyTotals(CASH_FLOW_MONTHS)` — oldest bucket first. */
   monthly: MonthTotals[];
   /** `getExpenseTotalsByCategory()` — biggest first. */
@@ -172,11 +185,16 @@ export function monthToDateExpense(
 /**
  * Spend over the rolling burn window.
  *
- * A ROLLING window, not the last N calendar months: a calendar window would
- * include a partial current month, so early in the month the
- * `/BURN_WINDOW_MONTHS` understates burn and therefore overstates runway.
- * `utcMonthsAgo` pins the edge to UTC midnight so the window does not shift with
- * the hour of day the dashboard happens to be opened.
+ * A ROLLING window, not the last N complete calendar months: a complete-months
+ * window would exclude the current month's spend entirely, which for a workspace
+ * in its first month means a burn of zero and an infinite runway.
+ * `burnWindowStart` pins the edge to UTC midnight so the window does not shift
+ * with the hour of day the dashboard happens to be opened.
+ *
+ * This is the NUMERATOR only. What it is divided by lives in
+ * lib/finance/runway.ts (`averageMonthlyBurn`), because a workspace younger than
+ * the window has fewer than `BURN_WINDOW_MONTHS` months to average over —
+ * money-017.
  */
 export function burnWindowExpense(
   transactions: Transaction[],
@@ -184,10 +202,40 @@ export function burnWindowExpense(
   rollups?: DashboardRollups
 ): number {
   if (rollups) return rollups.burnWindowExpense;
-  const cutoff = utcMonthsAgo(now, BURN_WINDOW_MONTHS);
+  const cutoff = burnWindowStart(now);
   return transactions
     .filter((t) => t.type === "expense" && new Date(t.date) >= cutoff)
     .reduce((s, t) => s + t.amount, 0);
+}
+
+/**
+ * When this workspace's ledger starts — the divisor behind burn (money-017).
+ *
+ * Prefers the roll-up's `_min(date)` aggregate. The array fallback is the
+ * weakest of the fallbacks in this file and says so: `getTransactions()` is
+ * capped at 5,000 rows per type and the rows a ceiling drops are the OLDEST, so
+ * past the ceiling the earliest row the page can see is NOT the earliest row that
+ * exists. That errs towards less history, so a smaller divisor, so a HIGHER burn
+ * and a LOWER runway — the safe direction, and the reason it is tolerable until
+ * the aggregate arrives.
+ */
+export function ledgerStart(
+  transactions: Transaction[],
+  rollups?: DashboardRollups
+): string | null {
+  if (rollups) return rollups.ledgerStartsAt;
+  // Compared as instants, not as strings: an unparseable row must be skipped
+  // rather than win a lexicographic sort and silently become the ledger's start.
+  let earliest: string | null = null;
+  let earliestAt = Infinity;
+  for (let i = 0; i < transactions.length; i++) {
+    const at = new Date(transactions[i].date).getTime();
+    if (!Number.isNaN(at) && at < earliestAt) {
+      earliestAt = at;
+      earliest = transactions[i].date;
+    }
+  }
+  return earliest;
 }
 
 export interface CashFlowBucket {
@@ -341,10 +389,20 @@ export function DashboardClient({
   const pendingTasks = taskCounts.open;
   const completedTasks = taskCounts.completed;
 
-  const monthlyBurn =
-    useMemo(() => burnWindowExpense(transactions, now, rollups), [transactions, now, rollups]) /
-    BURN_WINDOW_MONTHS;
-  const runwayMonths = monthlyBurn > 0 ? balance / monthlyBurn : Infinity;
+  // The window's spend over the months the LEDGER actually covers, capped at the
+  // window and floored at one month — not over a constant 3, which averaged a
+  // young workspace's money across months in which it did not yet exist and
+  // overstated its runway roughly threefold (money-017). The arithmetic is shared
+  // with the chat runway card so the two surfaces cannot quote different numbers.
+  // The earliest ledger row. Read twice: it is the burn divisor, and it is also
+  // what decides whether a "vs avg pace" comparison exists at all.
+  const ledgerStartsAt = useMemo(() => ledgerStart(transactions, rollups), [transactions, rollups]);
+  const monthlyBurn = useMemo(
+    () => averageMonthlyBurn(burnWindowExpense(transactions, now, rollups), ledgerStartsAt, now),
+    [transactions, now, rollups, ledgerStartsAt]
+  );
+  // `null`, not Infinity: "no burn recorded". Same spelling the card uses.
+  const runway = runwayMonths(balance, monthlyBurn);
 
   // This-month spend + how it compares to the average burn — a far more
   // frequently-checked number than all-time capital raised.
@@ -352,12 +410,17 @@ export function DashboardClient({
     () => monthToDateExpense(transactions, now, rollups),
     [transactions, now, rollups]
   );
-  // Kept as a whole-number percent (not a 0–1 ratio) because the sign test
-  // below reads it. `|| 0` normalises -0: a -0.4% drift rounds to -0, which
-  // passes `>= 0` and would take the "+" branch while Intl rendered the value
-  // itself as "-0%", printing "+-0%".
-  const burnDeltaPct =
-    monthlyBurn > 0 ? Math.round(((currentMonthSpend - monthlyBurn) / monthlyBurn) * 100) || 0 : 0;
+  // Month-to-date against the SAME FRACTION of an average month. Against a whole
+  // month it was structurally negative for three weeks out of four: on the 3rd a
+  // workspace spending its normal amount read "-90% vs avg" and one spending at
+  // twice its normal pace read "-3%" (money-017).
+  //
+  // `null` — the "spent this month" branch below — while the ledger is under a
+  // month old. There the burn divisor is clamped to one month, so the "average"
+  // IS this month's own total and the comparison read +107% on the 15th (+933% on
+  // the 3rd) for every such workspace alike, whatever it had spent
+  // (R2-money-017-pace).
+  const burnPaceDelta = burnPaceDeltaPct(currentMonthSpend, monthlyBurn, ledgerStartsAt, now);
 
   const monthlyData = useMemo(
     () => cashFlowSeries(transactions, now, rollups),
@@ -405,11 +468,11 @@ export function DashboardClient({
       tone: "primary",
       delta: balance >= 0 ? "positive" : "negative",
       deltaLabel:
-        runwayMonths === Infinity
+        runway === null
           ? "No burn recorded"
           : // min == max reproduces `toFixed(1)`: one decimal always, so the
             // card's width doesn't twitch between "8 mo" and "8.4 mo".
-            `${n.number(runwayMonths, {
+            `${n.number(runway, {
               minimumFractionDigits: 1,
               maximumFractionDigits: 1,
             })} mo runway`,
@@ -421,12 +484,14 @@ export function DashboardClient({
       tone: "forest",
       delta: "neutral",
       deltaLabel:
-        monthlyBurn > 0
-          ? // Intl signs negatives itself; the explicit "+" is the product's own
-            // gain marker, which `signDisplay` is not exposed to reach.
-            `${burnDeltaPct >= 0 ? "+" : ""}${n.percent(burnDeltaPct / 100, {
+        burnPaceDelta !== null
+          ? // "vs avg pace", not "vs avg": the comparison is against the part of
+            // an average month that has elapsed, which is what makes it readable
+            // on the 3rd. Intl signs negatives itself; the explicit "+" is the
+            // product's own gain marker, which `signDisplay` cannot reach.
+            `${burnPaceDelta >= 0 ? "+" : ""}${n.percent(burnPaceDelta / 100, {
               maximumFractionDigits: 0,
-            })} vs avg`
+            })} vs avg pace`
           : "spent this month",
     },
     {

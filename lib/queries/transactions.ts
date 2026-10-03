@@ -470,3 +470,33 @@ export async function getMonthToDateExpense(ref: Date = new Date()): Promise<num
   });
   return totals.byType.expense.total;
 }
+
+/**
+ * The date of the workspace's EARLIEST surviving ledger row, or `null` for a
+ * ledger with no rows — i.e. how much history the company actually has.
+ *
+ * THE DIVISOR BEHIND BURN (money-017). Average monthly burn is the burn window's
+ * spend over the months that window actually covers, and for a workspace younger
+ * than the window that is fewer than `BURN_WINDOW_MONTHS` months. Dividing by a
+ * constant 3 reported a one-month-old workspace's 100,000 of spend as a burn of
+ * 33,333 and about three times its real runway. `lib/finance/runway.ts`
+ * `burnMonthsCovered` turns this date into the divisor.
+ *
+ * EARLIEST ROW OF ANY TYPE, not earliest expense: a company that existed for
+ * three months and only started paying salaries last month really does have a
+ * three-month average with two quiet months in it. The seed investment is
+ * normally the first row either way.
+ *
+ * An aggregate rather than `getTransactions()[last].date`: that read is capped at
+ * `MAX_TRANSACTIONS_PER_TYPE` and the rows a ceiling drops are the OLDEST, so the
+ * list's earliest date is exactly the figure a large workspace cannot supply
+ * (money-008). `_min` over the indexed `(companyId, date)` pair is one cheap row.
+ */
+export async function getLedgerStart(): Promise<string | null> {
+  const { companyId } = await requireFinanceSession();
+  const row = await db.transaction.aggregate({
+    where: { companyId, deletedAt: null },
+    _min: { date: true },
+  });
+  return row._min.date ? row._min.date.toISOString() : null;
+}

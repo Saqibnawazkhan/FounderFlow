@@ -61,7 +61,16 @@ describe("formatCurrency", () => {
   });
 
   it("handles negative balances", () => {
-    expect(formatCurrency(-2500)).toBe("PKR -2,500.00");
+    expect(formatCurrency(-2500)).toBe("-PKR 2,500.00");
+  });
+
+  it("signs a negative the same way whatever the currency (money-015)", () => {
+    // This used to be "PKR -2,500.00" for PKR and "-$1,234.56" for USD: one
+    // product, two placements for the minus, picked by whether CLDR has a symbol
+    // for the workspace's currency. The invariant lives in
+    // tests/lib/format/currency.test.ts; these two keep the re-export honest.
+    expect(formatCurrency(-2500, "PKR")).toBe("-PKR 2,500.00");
+    expect(formatCurrency(-2500, "USD")).toBe("-$2,500.00");
   });
 
   it("falls through to Intl for non-PKR currencies", () => {

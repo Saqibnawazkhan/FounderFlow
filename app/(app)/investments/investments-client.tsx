@@ -6,6 +6,7 @@ import {
   ArrowUp,
   Calculator,
   Filter,
+  Pencil,
   Plus,
   Search,
   Trash2,
@@ -65,6 +66,9 @@ export function InvestmentsClient({
   const [importOpen, setImportOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  // Active row being corrected (null = closed). money-016 — a mistyped figure
+  // has to be fixable in place, not only deletable.
+  const [editingTxn, setEditingTxn] = useState<Transaction | null>(null);
 
   function refresh() {
     startTransition(() => router.refresh());
@@ -101,7 +105,13 @@ export function InvestmentsClient({
   async function handleDelete(id: string) {
     const ok = await confirm({
       title: "Delete this investment?",
-      description: "This action cannot be undone.",
+      // Same sentence as /expenses and /revenue, for the reason spelled out in
+      // app/(app)/expenses/expenses-client.tsx: delete writes a `deletedAt`
+      // tombstone (data-integrity-001), nothing purges an individually deleted
+      // transaction, and recovery is an operator's UPDATE rather than a button.
+      description:
+        "It leaves your ledger, reports and exports immediately. Nothing is erased, though — " +
+        "contact support right away and it can be restored.",
       confirmLabel: "Delete",
       tone: "danger",
     });
@@ -357,13 +367,24 @@ export function InvestmentsClient({
                     </td>
                     <td className="px-6 py-4 text-end">
                       {(currentUserId === t.addedBy || currentUserRole === "admin") && (
-                        <button
-                          onClick={() => handleDelete(t.id)}
-                          aria-label={`Delete investment ${t.description}`}
-                          className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
-                        >
-                          <Trash2 className="h-4 w-4" aria-hidden="true" />
-                        </button>
+                        <div className="inline-flex items-center gap-1">
+                          {/* Same permission rule as delete, because a
+                              correction moves money just as effectively. */}
+                          <button
+                            onClick={() => setEditingTxn(t)}
+                            aria-label={`Edit investment ${t.description}`}
+                            className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
+                          >
+                            <Pencil className="h-4 w-4" aria-hidden="true" />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(t.id)}
+                            aria-label={`Delete investment ${t.description}`}
+                            className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                          >
+                            <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -396,13 +417,22 @@ export function InvestmentsClient({
                     {d.date(t.date)}
                   </span>
                   {(currentUserId === t.addedBy || currentUserRole === "admin") && (
-                    <button
-                      onClick={() => handleDelete(t.id)}
-                      aria-label={`Delete investment ${t.description}`}
-                      className="ms-auto rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </button>
+                    <div className="ms-auto flex items-center gap-1">
+                      <button
+                        onClick={() => setEditingTxn(t)}
+                        aria-label={`Edit investment ${t.description}`}
+                        className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
+                      >
+                        <Pencil className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(t.id)}
+                        aria-label={`Delete investment ${t.description}`}
+                        className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    </div>
                   )}
                 </div>
               </li>
@@ -434,6 +464,26 @@ export function InvestmentsClient({
           onSuccess={refresh}
         />
       </Modal>
+
+      {/* Correcting a row, rather than deleting and retyping it (money-016).
+          Keyed on the row id so reopening on a different entry remounts the
+          form with that row's values instead of the last one's. */}
+      {editingTxn && (
+        <Modal
+          open={Boolean(editingTxn)}
+          onClose={() => setEditingTxn(null)}
+          title="Edit investment"
+          description="Correct the amount, category, date or description. The change is recorded in the activity feed."
+        >
+          <TransactionForm
+            key={editingTxn.id}
+            type="investment"
+            editing={editingTxn}
+            onClose={() => setEditingTxn(null)}
+            onSuccess={refresh}
+          />
+        </Modal>
+      )}
     </div>
   );
 }

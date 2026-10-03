@@ -9,6 +9,7 @@ import type { Metadata } from "next";
 import {
   getContributionTotalsByUser,
   getExpenseTotalsByCategory,
+  getLedgerStart,
   getMonthToDateExpense,
   getMonthlyTotals,
   getTransactionTotals,
@@ -51,6 +52,7 @@ export default async function DashboardPage() {
     totals,
     monthToDate,
     burnWindow,
+    ledgerStartsAt,
     monthly,
     categories,
     contributions,
@@ -68,9 +70,14 @@ export default async function DashboardPage() {
     // summing `transactions` — that array is a per-type 5,000-row window.
     getTransactionTotals(),
     getMonthToDateExpense(now),
-    // A ROLLING window, not a calendar one: a calendar window includes a
-    // partial current month, which understates burn and so overstates runway.
+    // A ROLLING window, not the last N COMPLETE calendar months: dropping the
+    // part-month we are in would report a first-month workspace's burn as zero
+    // and its runway as infinite.
     getTransactionTotals({ from: utcMonthsAgo(now, BURN_WINDOW_MONTHS) }),
+    // The divisor for that window (money-017). A workspace younger than the
+    // window has fewer than BURN_WINDOW_MONTHS months to average over, and
+    // dividing by a constant 3 overstated its runway roughly threefold.
+    getLedgerStart(),
     getMonthlyTotals(CASH_FLOW_MONTHS, now),
     getExpenseTotalsByCategory(),
     getContributionTotalsByUser(),
@@ -85,6 +92,7 @@ export default async function DashboardPage() {
         totals,
         monthToDateExpense: monthToDate,
         burnWindowExpense: burnWindow.byType.expense.total,
+        ledgerStartsAt,
         monthly,
         categories,
         contributions,

@@ -62,7 +62,9 @@ import {
 } from "@/lib/auth/channel-permissions";
 import { getTransactions } from "@/lib/queries/transactions";
 import { unreadChatTotal } from "@/lib/queries/chat";
-import { subMonths } from "date-fns";
+// The runway card's burn / runway arithmetic, shared with /dashboard's Balance
+// card so the two surfaces cannot quote different runways (money-017).
+import { averageMonthlyBurn, burnWindowStart, runwayMonths } from "@/lib/finance/runway";
 import { extractMentions } from "@/lib/comments/mentions";
 import { slugifyChannelName, uniqueChannelSlug } from "@/lib/chat/slug";
 import { conversationTitle, dmSlugFor } from "@/lib/chat/dm";
@@ -1248,19 +1250,25 @@ type RunwayFigures = Pick<RunwayPayload, "cashOnHand" | "monthlyBurn" | "runwayM
 /**
  * The dashboard's runway arithmetic, over the dashboard's own rows.
  *
- * MIRRORS app/(app)/dashboard/dashboard-client.tsx:78-91 line for line, and
- * the mirroring is load-bearing: a card quoting a second, independently
- * derived runway would let /chat and /dashboard disagree about the same word
- * on the same afternoon, with no way to tell from the outside which one was
- * lying. That is a worse bug than shipping no card at all.
+ * SHARES THE ARITHMETIC ITSELF with /dashboard — `lib/finance/runway.ts`, which
+ * both this and app/(app)/dashboard/dashboard-client.tsx import. That used to be
+ * two hand-mirrored copies plus a comment asking the next reader to keep them in
+ * step, and the mirroring is load-bearing: a card quoting a second,
+ * independently derived runway would let /chat and /dashboard disagree about the
+ * same word on the same afternoon, with no way to tell from the outside which
+ * one was lying. That is a worse bug than shipping no card at all. (money-017
+ * was both copies being wrong in the same way, which is the only reason the two
+ * surfaces still agreed.)
  *
- * Hence the input is whatever `getTransactions()` returns, NOT a Prisma
- * aggregate. A `groupBy` would be cheaper and would also drift on the first
- * workspace to cross that query's MAX_TRANSACTIONS ceiling — the dashboard
- * sums the capped 5,000 most recent rows, an aggregate would sum all of them,
- * and the two numbers would part company silently on exactly the accounts
- * busy enough to care. Sharing the query means the card is wrong in the same
- * direction, by the same amount, on the same day, and one fix corrects both.
+ * The input is whatever `getTransactions()` returns, NOT a Prisma aggregate. A
+ * `groupBy` would be cheaper and would also drift on the first workspace to
+ * cross that query's MAX_TRANSACTIONS ceiling — the dashboard's FALLBACK path
+ * sums the capped 5,000 most recent rows, an aggregate sums all of them, and the
+ * two numbers part company silently on exactly the accounts busy enough to care.
+ * /dashboard has since moved onto the aggregates (money-008) and this card has
+ * not, so the two can now differ by whatever the ceiling drops on a very large
+ * ledger; moving the card onto the same roll-ups is money-008's unfinished half.
+ * The ARITHMETIC over whichever rows arrive is one copy either way.
  *
  * `now` is a PARAMETER rather than a second `new Date()` so the three-month
  * cutoff and the `asOf` stamp on the stored card are the same instant. The
@@ -1272,44 +1280,55 @@ type RunwayFigures = Pick<RunwayPayload, "cashOnHand" | "monthlyBurn" | "runwayM
  * `runwayMonths` is null, not Infinity, when nothing has been spent —
  * `RunwayPayloadSchema` carries the reasoning (JSON has no Infinity, and
  * `.finite()` would reject it anyway). It means "no burn recorded".
- *
- * TODO(finance): when the dashboard moves off its client-side reduction,
- * hoist this into a shared pure helper under lib/finance/ and have both call
- * it, so the mirroring stops depending on somebody reading this comment. Both
- * call sites have to move in the same commit — a helper adopted by only one
- * of them is precisely the drift this function exists to prevent.
  */
 function runwayFigures(
   transactions: { type: string; amount: number; date: string }[],
   now: Date
 ): RunwayFigures {
-  const cutoff = subMonths(now, 3);
+  // UTC, not date-fns `subMonths` (which subtracts in the runtime's LOCAL
+  // calendar): `Transaction.date` is a date-only value stored at UTC midnight, so
+  // a local edge moved a row dated the boundary day in or out of the window
+  // depending on where the server happened to be (money-007).
+  const cutoff = burnWindowStart(now).getTime();
   let investments = 0;
   let revenue = 0;
   let expenses = 0;
-  let last3MoExpenses = 0;
+  let windowExpenses = 0;
+  // The ledger's own start, which is what the window's spend is averaged over
+  // (money-017). Earliest row of ANY type — a company that existed for three
+  // months and only started paying salaries last month really does have a
+  // three-month average with two quiet months in it.
+  let ledgerStartsAt = Infinity;
 
   // One pass instead of the dashboard's four `.filter().reduce()` chains. The
   // three types are disjoint, so this ladder sums exactly what those chains
   // sum; only the number of walks over the array differs.
   for (const t of transactions) {
+    const at = new Date(t.date).getTime();
+    if (!Number.isNaN(at) && at < ledgerStartsAt) ledgerStartsAt = at;
     if (t.type === "investment") {
       investments += t.amount;
     } else if (t.type === "income") {
       revenue += t.amount;
     } else if (t.type === "expense") {
       expenses += t.amount;
-      if (new Date(t.date) >= cutoff) last3MoExpenses += t.amount;
+      // NaN >= cutoff is false, so an unparseable date drops out of the window
+      // rather than silently counting as this instant — the previous behaviour.
+      if (at >= cutoff) windowExpenses += t.amount;
     }
   }
 
   const cashOnHand = investments + revenue - expenses;
-  const monthlyBurn = last3MoExpenses / 3;
+  const monthlyBurn = averageMonthlyBurn(
+    windowExpenses,
+    Number.isFinite(ledgerStartsAt) ? new Date(ledgerStartsAt) : null,
+    now
+  );
   return {
     cashOnHand,
     monthlyBurn,
-    // The dashboard's `Infinity`, spelled the way JSON can carry it.
-    runwayMonths: monthlyBurn > 0 ? cashOnHand / monthlyBurn : null,
+    // The dashboard's own figure, from the same function: null, not Infinity.
+    runwayMonths: runwayMonths(cashOnHand, monthlyBurn),
   };
 }
 

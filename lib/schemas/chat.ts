@@ -178,18 +178,24 @@ export const RUNWAY_CARD_VERSION = 1;
 /**
  * The stored payload of a Runway card.
  *
- * The field set MIRRORS the dashboard's own runway arithmetic
- * (app/(app)/dashboard/dashboard-client.tsx), so a card and the dashboard can
- * never quote two different definitions of the same word:
+ * The field set MIRRORS the ONE runway arithmetic both surfaces now run
+ * (lib/finance/runway.ts), so a card and the dashboard can never quote two
+ * different definitions of the same word:
  *   cashOnHand   = investments + revenue − expenses  (the "Balance" stat)
- *   monthlyBurn  = the last 3 months of expenses ÷ 3
- *   runwayMonths = cashOnHand ÷ monthlyBurn
+ *   monthlyBurn  = the burn window's expenses ÷ the months of ledger that window
+ *                  actually covers — `averageMonthlyBurn`, whose divisor is
+ *                  `burnMonthsCovered` and NOT a constant 3. The constant
+ *                  averaged a young workspace's money across months in which it
+ *                  did not yet exist and overstated its runway roughly
+ *                  threefold (money-017).
+ *   runwayMonths = cashOnHand ÷ monthlyBurn, or null when there is no burn
  *
- * `runwayMonths` is NULLABLE because the dashboard's version of it is
- * `Infinity` when nothing has been spent yet, and JSON has no Infinity —
- * `JSON.stringify(Infinity)` already yields `null`, so null is simply the
- * honest wire spelling of that case. It means "no burn recorded", NOT "no
- * data" and NOT "hidden from you"; the UI renders it as its own sentence.
+ * `runwayMonths` is NULLABLE because `runwayMonths()` answers `null` — "no burn
+ * recorded" — when nothing has been spent, and that is what both the card and
+ * /dashboard render: one value, from one function, since money-017. JSON could
+ * not carry a non-finite number anyway and `.finite()` below would reject one.
+ * Null means "no burn recorded", NOT "no data" and NOT "hidden from you"; the UI
+ * renders it as its own sentence.
  *
  * `cashOnHand` is deliberately unconstrained in sign: a workspace that has
  * spent more than it raised has a negative balance, and refusing to post that

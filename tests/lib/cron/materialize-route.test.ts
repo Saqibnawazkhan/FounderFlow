@@ -53,12 +53,19 @@ interface FakeDb {
   $transaction: ReturnType<typeof vi.fn>;
 }
 
+/**
+ * A rule row as the ROUTE loads it: the rule, plus the tombstone of the project
+ * its `projectId` names. The route has to ask for that relation — a rule row on
+ * its own cannot say whether its project still exists (R1-money-013-cron).
+ */
+type RuleRow = RecurringRule & { project?: { deletedAt: Date | null } | null };
+
 interface Harness {
   db: FakeDb;
   /** Rows the run actually wrote, in order. */
   written: FakeTxnRow[];
   /** Live rule rows, so a test can read back lastMaterializedAt. */
-  rows: Map<string, RecurringRule>;
+  rows: Map<string, RuleRow>;
   /** Options each $transaction() was opened with. */
   txOptions: unknown[];
 }
@@ -66,13 +73,13 @@ interface Harness {
 let harness: Harness;
 
 function buildHarness(
-  rules: RecurringRule[],
+  rules: RuleRow[],
   opts: { failCreateForRule?: string; staleReads?: boolean } = {}
 ): Harness {
   // `rows` is the durable state; `snapshot` is what findMany hands out. When
   // `staleReads` is set, every run is served the ORIGINAL values — which is
   // precisely two invocations overlapping before either has stamped.
-  const rows = new Map<string, RecurringRule>(rules.map((r) => [r.id, { ...r }]));
+  const rows = new Map<string, RuleRow>(rules.map((r) => [r.id, { ...r }]));
   const snapshot = rules.map((r) => ({ ...r }));
   const written: FakeTxnRow[] = [];
   const txOptions: unknown[] = [];
@@ -181,7 +188,7 @@ vi.mock("@sentry/nextjs", () => sentry);
 
 /* ── fixtures ──────────────────────────────────────────────────────────── */
 
-function rule(overrides: Partial<RecurringRule> = {}): RecurringRule {
+function rule(overrides: Partial<RuleRow> = {}): RuleRow {
   return {
     id: "rule-1",
     companyId: "co-1",
@@ -465,5 +472,69 @@ describe("cron-011 — an outsized materialization run trips the bulk-mutation c
     const res = await run();
     expect(res.body.transactionsCreated).toBe(1);
     expect(bulkMutationEvents()).toEqual([]);
+  });
+});
+
+/* ── R1-money-013-cron ─────────────────────────────────────────────────── */
+
+/**
+ * A DELETED PROJECT MUST NOT COLLECT NEW SPEND.
+ *
+ * money-013 taught `deleteProjectAction` that money counts as content, so a
+ * project carrying live transactions can no longer be deleted. Nothing taught
+ * this job: it selects on `{ active: true, ...LIVE_WORKSPACE_SCOPE }`, which
+ * says nothing about the project a rule points at, and nothing anywhere sets
+ * `active: false` when a project is deleted. So a project with an active
+ * recurring rule and no live transactions is deletable, and from that night on
+ * the cron posts brand-new LIVE transactions tagged to a tombstoned project —
+ * counted in company totals, invisible in every project view, and stripped of
+ * the tag the day the purge collects the project row.
+ *
+ * `lib/actions/recurring.ts` already refuses to CREATE a rule against a deleted
+ * project for exactly this reason ("every future posting in a ledger tab nobody
+ * can open while still counting toward that project's spend aggregate"). This is
+ * the same rule, one night later.
+ *
+ * The contract is to post the money WITHOUT the dead tag, not to skip the rule:
+ * the rent is still being paid, and cron-004 is the scar that says a missed
+ * posting is a month missing from a founder's books.
+ */
+describe("R1-money-013-cron — the nightly job must not tag a deleted project", () => {
+  it("posts the occurrence with no project tag when the project is tombstoned", async () => {
+    harness = buildHarness([
+      rule({ projectId: "proj-gone", project: { deletedAt: new Date(Date.UTC(2026, 1, 20)) } }),
+    ]);
+    const { status, body } = await run();
+
+    expect(status).toBe(200);
+    expect(body.transactionsCreated).toBe(1);
+    expect(harness.written).toHaveLength(1);
+    expect(harness.written[0].projectId).toBeNull();
+    // Reported, not silent: a rule still naming a deleted project is a thing
+    // somebody has to fix at the rule, and nothing else in the product says so.
+    expect(body.rulesWithDeletedProject).toEqual(["rule-1"]);
+  });
+
+  it("still carries the tag of a project that is alive", async () => {
+    // The money-005 half: dropping the tag wholesale would take recurring spend
+    // back out of reach of every budget cap.
+    harness = buildHarness([rule({ projectId: "proj-live", project: { deletedAt: null } })]);
+    const { body } = await run();
+
+    expect(harness.written[0].projectId).toBe("proj-live");
+    expect(body.rulesWithDeletedProject).toEqual([]);
+  });
+
+  it("asks the database for the project's tombstone at all — guard the guard", () => {
+    // Without this, the two assertions above pass vacuously the moment the route
+    // stops selecting the relation: the fake row simply has no `project` key,
+    // every rule looks live, and the file goes green while checking nothing.
+    harness = buildHarness([rule({ projectId: "proj-gone" })]);
+    return run().then(() => {
+      const args = harness.db.recurringRule.findMany.mock.calls[0]?.[0] as {
+        include?: { project?: { select?: { deletedAt?: boolean } } };
+      };
+      expect(args?.include?.project?.select?.deletedAt).toBe(true);
+    });
   });
 });

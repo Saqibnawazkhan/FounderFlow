@@ -14,10 +14,16 @@
  *      chat tables added 2026-09-24. See `purgeCompany` for why leaning on
  *      cascade instead was a real bug.
  *   2. Individually soft-deleted PROJECTS in still-live workspaces
- *      (deleteProjectAction soft-deletes projects with no LIVE tasks/budgets).
+ *      (deleteProjectAction soft-deletes projects with no LIVE tasks, budgets
+ *      or transactions).
  *      One project at a time, its tombstoned Task and Budget rows first — see
  *      the scope-2 block for why the old single `deleteMany` was a multi-tenant
- *      outage.
+ *      outage. A project that still has TRANSACTIONS pointing at it is never
+ *      purged at all (R1-money-013-cron): `Transaction.projectId` is SetNull, so
+ *      the delete would silently strip money attribution that cannot be rebuilt.
+ *      Those projects are excluded from the candidate window rather than skipped
+ *      inside the loop — kept rows stay overdue for ever, and a kept row that
+ *      still occupies a slot in the page is how the sweep would stall.
  *
  * There is NO individual-user purge stage, by design. A user deactivated (X8)
  * inside a live workspace keeps their tombstone AND all their content forever —
@@ -438,6 +444,17 @@ async function purgeRun(options: PurgeRunOptions): Promise<NextResponse> {
     orphanProjectsDeferred: 0,
     orphanProjectRowsDeleted: 0,
     orphanProjectRowsWouldDelete: 0,
+    /**
+     * Tombstoned projects this sweep will never purge, because transactions
+     * still point at them (R1-money-013-cron). Not a failure and not a deferral
+     * — it is permanent, and this number is the only place it is said out loud.
+     *
+     * The ONE figure in here that is a whole backlog rather than one page: these
+     * rows are excluded from the candidate window, so they are counted in a
+     * statement of their own. `null` means that count failed and the backlog is
+     * unknown — reported alongside a named failure, never as 0.
+     */
+    orphanProjectsKeptWithTransactions: 0 as number | null,
   };
 
   // 1. Whole-workspace erasure, one company at a time in dependency order.
@@ -523,8 +540,8 @@ async function purgeRun(options: PurgeRunOptions): Promise<NextResponse> {
   //    ONE PROJECT AT A TIME, CHILDREN FIRST (cron-002). This used to be a
   //    single `db.project.deleteMany({ where: projectWhere })`. Two facts made
   //    that a multi-tenant outage: `deleteProjectAction` decides a project is
-  //    empty by counting only `deletedAt: null` tasks and budgets, so a project
-  //    whose every task was soft-deleted FIRST passes the emptiness check and
+  //    empty by counting only `deletedAt: null` children, so a project whose
+  //    every task was soft-deleted FIRST passes the emptiness check and
   //    gets tombstoned while those rows physically remain; and Task.project /
   //    Budget.project are `onDelete: Restrict`. So one such project raised a
   //    foreign-key violation for the WHOLE statement: orphanProjectsPurged
@@ -534,12 +551,69 @@ async function purgeRun(options: PurgeRunOptions): Promise<NextResponse> {
   //    order inside the same transaction — and anything that still refuses is
   //    one named failure that the others survive.
   try {
-    const projectWhere = { ...overdue, company: { deletedAt: null } };
+    // MONEY ATTRIBUTION OUTLIVES THE PROJECT ROW (R1-money-013-cron).
+    //
+    // `tx.project.delete` below is the one irreversible step in this stage, and
+    // `Transaction.projectId` is `onDelete: SetNull` (prisma/schema.prisma) — so
+    // hard-deleting the project silently strips the project tag off every
+    // transaction still pointing at it. The rows survive, every company total is
+    // unchanged, nothing errors, and the answer to "what did that project cost?"
+    // is gone for good.
+    //
+    // money-013 closed the interactive door (deleteProjectAction refuses a
+    // project with live transactions) but put nothing in front of this step, so
+    // every project tombstoned BEFORE that gate landed still lost its
+    // attribution the night it went overdue. This is that backstop, and it needs
+    // no migration: a tombstoned project that still carries money is KEPT, for
+    // ever. The project row is one invisible row; the attribution is not
+    // reconstructible, and ops can still restore it with the runbook.
+    //
+    // THE GUARD IS IN THE WINDOW, NOT IN THE LOOP, and that placement is the
+    // whole of it. A kept project stays overdue for ever, so checking inside the
+    // loop left it matching this filter every single night: once `projectLimit`
+    // of them accumulated they filled the page and scope 2 purged nothing at
+    // all, for every tenant, for ever — with `orphanProjectRowsDeleted: 0`, far
+    // too small for the canary above to notice. That is exactly the cron-002
+    // outage described a few lines up, which is reason enough not to rebuild it
+    // deliberately. Excluding them here means the page only ever holds projects
+    // this run can finish; the `none` subquery rides `Transaction(projectId,
+    // date)`, so it also costs one statement instead of `projectLimit` of them.
+    //
+    // NOT filtered on `deletedAt: null`, deliberately: a soft-deleted
+    // transaction's tag is attribution too, and a project whose transactions
+    // were all deleted first is precisely the residue deleteProjectAction's own
+    // comment says its gate cannot close.
+    const liveWorkspace = { ...overdue, company: { deletedAt: null } };
+    const projectWhere = { ...liveWorkspace, transactions: { none: {} } };
     const overdueProjects = await db.project.findMany({
       where: projectWhere,
       select: { id: true },
+      // Oldest tombstone first. It is not what creates the forward progress —
+      // the filter above is, by keeping the permanent keeps out of the set —
+      // but it makes the page deterministic rather than heap order, so "what
+      // will tonight take?" has an answer, and a project that refuses to go
+      // cannot drift to a different slot each night.
+      orderBy: [{ deletedAt: "asc" }, { id: "asc" }],
       take: projectLimit,
     });
+    // The permanent-keep backlog. ONE statement, the exact complement of the
+    // window above, and its own try: this is now the only place the keeps are
+    // said out loud, so a failure here must not read as "nothing is being kept"
+    // (hence null, not 0) and must not cost the night's erasure the way a single
+    // failing statement did in cron-002.
+    try {
+      result.orphanProjectsKeptWithTransactions = await db.project.count({
+        where: { ...liveWorkspace, transactions: { some: {} } },
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown purge error";
+      result.orphanProjectsKeptWithTransactions = null;
+      failed.push({ stage: "orphanProjectsKeptCount", error: msg });
+      captureServerError(e, {
+        action: "purgeSoftDeleted.orphanProjectsKeptCount",
+        extra: { cutoff: cutoff.toISOString(), dryRun },
+      });
+    }
     if (dryRun) {
       result.orphanProjectsPurged = overdueProjects.length;
       for (const p of overdueProjects) {
@@ -560,7 +634,14 @@ async function purgeRun(options: PurgeRunOptions): Promise<NextResponse> {
       }
       warnBulkMutation(result.orphanProjectRowsWouldDelete, {
         action: "purgeSoftDeleted.orphanProjects.dryRun",
-        extra: { projects: overdueProjects.length, retentionDays: RETENTION_DAYS },
+        extra: {
+          // Both branches read the same filtered window, so this is the live
+          // run's number too — the dry run walks exactly the page the next live
+          // run would take, which is what makes the two comparable.
+          projects: result.orphanProjectsPurged,
+          projectsKeptWithTransactions: result.orphanProjectsKeptWithTransactions,
+          retentionDays: RETENTION_DAYS,
+        },
       });
     } else {
       for (const p of overdueProjects) {
@@ -576,9 +657,13 @@ async function purgeRun(options: PurgeRunOptions): Promise<NextResponse> {
             // Unconditional, not `deletedAt: { not: null }`: the project row is
             // going, so every row holding its Restrict FK has to go with it.
             // TimeEntry.task is SetNull, so it never jams.
-            // TimeEntry/Transaction/Activity/Notification/RecurringRule point at
-            // Project with SetNull and are deliberately kept: they are live
-            // workspace data that merely loses its project tag.
+            // TimeEntry/Activity/Notification/RecurringRule point at Project
+            // with SetNull and are deliberately kept: they are live workspace
+            // data that merely loses its project tag. Transaction used to be in
+            // that list and no longer is — losing a MONEY row's project tag is
+            // the loss this stage now refuses to cause, which is why the window
+            // this page came from excludes every project a transaction still
+            // references.
             //
             // Comment.task is onDelete: Cascade, so Postgres deletes these rows
             // and reports no count for them. Count them BEFORE the tasks go, or
@@ -635,7 +720,10 @@ async function purgeRun(options: PurgeRunOptions): Promise<NextResponse> {
       // this route has a hard 60s ceiling. Stated explicitly so nobody reads
       // "200 projects" as "200 projects exist". The dry run walks exactly the
       // page the next live run would take, which is what makes the two
-      // comparable.
+      // comparable. The single exception is
+      // `orphanProjectsKeptWithTransactions`, which is the whole backlog by
+      // design — those rows are excluded from the page, so a per-page figure
+      // would be permanently zero.
       limits: {
         companiesPerRun: MAX_COMPANIES_PER_RUN,
         projectsPerRun: MAX_PROJECTS_PER_RUN,

@@ -14,9 +14,12 @@
  *   archive  → Activity { type: "project_archived" }
  *   change-supervisor → Activity + Notification to the new supervisor
  *
- * Delete is hard-blocked when the project still has tasks or budgets —
- * the Prisma onDelete: Restrict policy catches it at the DB layer too,
- * but we surface a clean error here so the UI doesn't 500.
+ * Delete is hard-blocked when the project still has live tasks, budgets or
+ * transactions. For tasks and budgets the Prisma onDelete: Restrict policy
+ * catches it at the DB layer too, and we surface a clean error here so the UI
+ * doesn't 500. For transactions there is NO DB backstop — that FK is SetNull —
+ * so the check in deleteProjectAction is the only thing standing between a
+ * delete and the permanent loss of the project's spend history (money-013).
  */
 
 import { revalidatePath } from "next/cache";
@@ -1108,14 +1111,39 @@ export async function deleteProjectAction(projectId: string): Promise<ActionResu
     }
 
     // Only empty projects are deletable — otherwise archive/reparent first.
-    const [taskCount, budgetCount] = await Promise.all([
+    //
+    // MONEY COUNTS AS CONTENT (money-013). This gate asked about tasks and
+    // budgets only, which made a project carrying real spend "empty". For those
+    // two the database is a backstop behind this check — `Task.project` and
+    // `Budget.project` are `onDelete: Restrict`. `Transaction.projectId` is
+    // `onDelete: SetNull` (prisma/schema.prisma:414), so there is no backstop:
+    // the tombstoned project keeps its tag only until the purge cron hard-deletes
+    // the row, and then Postgres nulls every `projectId` pointing at it. The
+    // transactions themselves survive and company totals never move, which is
+    // precisely why the loss is invisible until somebody asks what a finished
+    // project cost — and the dialog the user confirmed to get here says "Only
+    // empty projects can be deleted. Archive a project to keep its history
+    // intact." (lib/i18n/strings.ts).
+    //
+    // A REFUSAL, not a reparent step, because there is nothing to reparent WITH:
+    // `updateTransactionAction` deliberately cannot change `projectId`
+    // (lib/actions/transactions.ts). Archive is the path that dialog already
+    // names, and it keeps the attribution.
+    //
+    // Live rows only, matching the two counts beside it. A project whose
+    // transactions were all soft-deleted first is still deletable, and those
+    // tombstoned rows still lose their tag at purge — the same residue the
+    // task/budget halves have always had, and not something this gate can close
+    // without making such a project undeletable.
+    const [taskCount, budgetCount, transactionCount] = await Promise.all([
       db.task.count({ where: { projectId, deletedAt: null } }),
       db.budget.count({ where: { projectId, deletedAt: null } }),
+      db.transaction.count({ where: { projectId, deletedAt: null } }),
     ]);
-    if (taskCount > 0 || budgetCount > 0) {
+    if (taskCount > 0 || budgetCount > 0 || transactionCount > 0) {
       return {
         success: false,
-        error: `Project still has ${taskCount} task(s) and ${budgetCount} budget(s). Archive it instead, or reparent its work first.`,
+        error: `Project still has ${taskCount} task(s), ${budgetCount} budget(s) and ${transactionCount} transaction(s). Archive it instead to keep its history — a transaction's project tag can't be moved, and deleting the project erases it.`,
       };
     }
 

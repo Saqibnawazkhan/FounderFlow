@@ -634,3 +634,74 @@ and produced a real fix:
 - **Brute-force alerting.** `lib/auth.ts:229` already captures repeated credential
   rejections to Sentry with a user id and hash prefix. Nobody is paged on it, so the
   signal is produced and discarded. That is an alert rule, not a commit.
+
+## 15. P2 money-correctness tranche (2026-10-02) — eight findings, none of them stale
+
+Same method as section 14: one finding at a time, a fixer and then a different agent
+whose job is to break the fix. **8 of 8 were real and fixed** — the exact inverse of
+the security tranche, where 4 of 9 were already closed. The two domains had diverged
+because months of hardening had overtaken the security filings while nothing had
+touched the money ones. "Roughly half are stale" is not a general rate; it is
+per-domain, and sizing the rest of the queue on one blended number would be wrong.
+
+Every one of the eight testers returned `holds-with-caveat` — not one clean pass.
+That is a property of the domain rather than sloppiness: a money figure appears on
+several surfaces at once, so changing how one computes or displays it leaves the
+others stating the old thing. Four of the caveats were exactly that.
+
+| finding | what it was |
+|---|---|
+| money-016 | **half wrong as filed** — the hard delete was already soft since data-integrity-001. The real half: no way to correct a mistyped amount at all. Built `updateTransactionAction` + edit controls, 14 tests, including re-judging the budget threshold for the **old and the new** category |
+| money-013 | the "empty project" gate counted tasks and budgets but not transactions, so a project carrying real spend was deletable and the purge then nulled every tag through `onDelete: SetNull` |
+| money-017 | burn divided by a constant 3 regardless of history: a one-month-old workspace read **33,333 and twelve months of runway** where the truth was 100,000 and four. Both surfaces now share `lib/finance/runway.ts` |
+| money-018 | the UI disabled per-project budget categories the server explicitly permits, making per-project budgeting unusable past the first project |
+| money-014 | `100%` meant both "approaching the cap" and "over it" |
+| money-011 | three forms asked for `(PKR)` in workspaces of any currency and answered in dollars |
+| money-015 | negative amounts rendered `PKR -1,235` or `-$1,235` depending on whether CLDR has a symbol for the currency |
+| money-012 | `NaN%` on the reports page when everything in the window rounds to zero |
+
+### The remediation pass, and the defect it caught
+
+25 tester findings (4 major) went into a second serial run of six items. All six
+fixed. The one that justifies the whole arrangement:
+
+**money-013's fix would have silently stopped the 90-day erasure stage.** The fix
+kept tombstoned projects that still have transactions pointing at them — correct. But
+purge scope 2 reads `take: 200` with **no `orderBy`**, so kept projects occupy slots
+in that window every night, permanently. Once the kept set reached 200, or sooner
+since an unordered read can return them first, scope 2 would purge nothing for any
+tenant, for ever, and nothing would report that it had stopped. A retention promise
+broken by data shape, in the file whose own `cron-002` comment is scarred by exactly
+that. The remediation moved the guard out of the loop and into the candidate query
+(`transactions: { none: {} }` plus a deterministic `orderBy`), which also removed a
+per-project `count` — one query instead of N.
+
+That finding arrived as `major` under a `holds-with-caveat` verdict. The runner only
+remediated on `broken` when this tranche started; it was changed mid-run to remediate
+on any major, and this is the finding that change caught.
+
+Three more worth recording:
+
+- **The materializer posts UNTAGGED rather than skipping.** A tombstoned project's
+  recurring rule kept minting new live transactions tagged to it. The obvious fix is
+  to skip the rule — which is `cron-004` again, a month missing from a founder's
+  books. Losing a tag is recoverable; losing a transaction is not.
+- **`money-017`'s fix made a second number worse.** With the divisor floored at one
+  month, `averageMonthlyBurn` equalled month-to-date spend for a young workspace, so
+  the pace figure compared a number against itself: **+107% on the 15th, +933% on the
+  3rd, identical whether the workspace spent 5,000 or 5,000,000.** `ledgerStartsAt` is
+  now a **required** argument to `burnPaceDeltaPct`, so the comparison cannot be
+  computed without the fact that decides whether it means anything.
+- **The false `Infinity` sentence existed in five copies.** The tester reported one;
+  the sweep found the same claim verbatim in the schema, a query module, a component
+  and two test files — every one documenting the formula that had just been deleted.
+
+- [ ] **A58 · 🔵 [OPP] A purge countdown that will now run out and do nothing.** `listDeletedProjectsForUser` shows `daysUntilPurge` for a tombstoned project. After R1, a project whose transactions still point at it is kept **for ever**, so that countdown reaches zero and nothing happens. It errs in the customer's favour — the project stays restorable longer, and its transactions were never purged by that stage anyway — but the copy states a deadline that no longer applies to it. Same shape as the delete confirmation R4 just corrected: a sentence that was true until the behaviour under it changed. → [lib/queries/projects.ts](lib/queries/projects.ts)
+
+### Open for the owner
+
+- **Should deleting a project be refused when an active recurring rule points at it?**
+  Not added, deliberately: the materializer no longer mints a doomed tag, so the
+  delete is harmless, and the refusal would make a currently-allowed action fail with
+  no UI to resolve it. The argument for it is that it fixes at the source and surfaces
+  the orphaned rule to the customer rather than only in a cron response body.

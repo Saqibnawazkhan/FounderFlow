@@ -88,6 +88,9 @@ function budgetRow(id: string, projectId: string, category: string, limit: numbe
     projectId,
     category,
     monthlyLimit: money(limit),
+    // The query includes the owning project's name so the card can print it
+    // (R3-money-018-cards); the DTO reads it straight off this relation.
+    project: { name: `Project ${projectId}` },
     createdBy: "u1",
     createdByName: "Ada",
     active: true,

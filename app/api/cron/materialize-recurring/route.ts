@@ -123,8 +123,49 @@ async function materializeRun(): Promise<NextResponse> {
     // is the rule for EVERY nightly job and this was the only job that had it.
     // `sweepAutoCloseEntries` had no filter at all. RecurringRule carries no
     // `deletedAt` of its own, so it takes the workspace-only scope.
-    const rules = await db.recurringRule.findMany({
+    //
+    // The project's tombstone rides along for the reason below. It is an
+    // `include` rather than a second query so a rule and the liveness of its
+    // project are read in one statement and cannot disagree.
+    const ruleRows = await db.recurringRule.findMany({
       where: { active: true, ...LIVE_WORKSPACE_SCOPE },
+      include: { project: { select: { deletedAt: true } } },
+    });
+
+    // A DELETED PROJECT MUST NOT COLLECT NEW SPEND (R1-money-013-cron).
+    //
+    // The workspace filter above is not enough, because a PROJECT can be
+    // tombstoned on its own. money-013 taught `deleteProjectAction` that money
+    // counts as content, so a project with live transactions can no longer be
+    // deleted — but nothing counts recurring RULES, and nothing anywhere sets
+    // `active: false` when a project goes. So a project with an active rule and
+    // no live transactions is legally deletable, and from that night on this job
+    // posted brand-new LIVE transactions tagged to a tombstoned project: counted
+    // in company totals, invisible in every project view, and stripped of the tag
+    // the day the purge collects the project row. `createRecurringRuleAction`
+    // already refuses to point a NEW rule at a deleted project for exactly this
+    // reason (lib/actions/recurring.ts) — this is the same rule, one night later.
+    //
+    // DROP THE TAG, DO NOT SKIP THE RULE. The rent is still being paid; cron-004
+    // is the scar that says a posting this job declines to make is a month
+    // missing from a founder's books. An untagged posting is ordinary
+    // company-wide spend — visible in the ledger, in every total, and in the CSV
+    // export. It trips no budget cap, which costs nothing: a project can only be
+    // deleted with zero live budgets, so there is no cap left to trip.
+    //
+    // A row with no `project` key cannot happen against Prisma (an `include` on
+    // a nullable relation yields the row or null), so "no tombstone loaded" is
+    // treated as live rather than silently untagging every rule.
+    //
+    // `rulesWithDeletedProject` is built HERE, across every rule loaded, and not
+    // across the rules `planRecurring` decides owe an occurrence tonight — so it
+    // names rules that posted nothing as well. That is the useful set; see the
+    // response field for why.
+    const rulesWithDeletedProject: string[] = [];
+    const rules = ruleRows.map((row) => {
+      if (!row.projectId || !row.project || row.project.deletedAt === null) return row;
+      rulesWithDeletedProject.push(row.id);
+      return { ...row, projectId: null };
     });
     const plans = planRecurring(rules, now);
 
@@ -291,6 +332,16 @@ async function materializeRun(): Promise<NextResponse> {
         // Rules whose backlog reached past the lookback window; those
         // occurrences are gone for good and this is the only place that says so.
         truncatedRules,
+        // R1-money-013-cron. Every ACTIVE rule still naming a tombstoned
+        // project, whether or not it owed an occurrence tonight: the list is
+        // built from the rules as they are loaded, before `planRecurring` works
+        // out which owe anything. So a name here means "this rule's project is
+        // gone", and anything it DID post tonight went in untagged. Deliberately
+        // not narrowed to the rules that posted — a monthly rule would then be
+        // invisible on 29 nights out of 30 — so the same ids repeat every night
+        // until someone re-points or pauses the rule. Empty is the healthy
+        // answer, and nothing else in the product mentions this at all.
+        rulesWithDeletedProject,
         // Rules a concurrent run had already claimed. Healthy in small numbers.
         rulesSkippedConcurrent: skippedConcurrent,
         budgetChecksRun: budgetChecks,

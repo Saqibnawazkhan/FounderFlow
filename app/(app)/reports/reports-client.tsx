@@ -999,7 +999,18 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
               <ul className="space-y-2">
                 {categoryData.map((c, i) => {
                   // 0–1 ratio — the scale `n.percent` takes. See lib/format.ts.
-                  const ratio = c.value / totalExpenses;
+                  //
+                  // The `> 0` guard is money-012, not habit. This list renders for
+                  // any category that has an expense ROW, whatever that row is
+                  // worth, so one expense stored as 0.00 (the amount column is
+                  // Decimal(12,2) with no check constraint, and rows predating
+                  // money-002's scale rule still hold that value) makes
+                  // `totalExpenses` 0 as well. 0/0 is NaN, and Intl's percent
+                  // style formats NaN as the literal "NaN%" — on the page a
+                  // customer exports to investors. Same shape as the three
+                  // sibling shares: revenue-client.tsx, investments-client.tsx
+                  // and `contributorRows` above.
+                  const ratio = totalExpenses > 0 ? c.value / totalExpenses : 0;
                   return (
                     <li key={c.name} className="flex items-center justify-between text-xs">
                       <div className="flex min-w-0 items-center gap-2">

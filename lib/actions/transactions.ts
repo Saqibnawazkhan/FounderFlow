@@ -18,13 +18,21 @@
  *   6. Deletes write the Tier 3 `deletedAt` tombstone — they do NOT hard-delete.
  *      See deleteTransactionAction; every read in this file and in
  *      lib/queries/ filters `deletedAt: null`, which is what makes that safe.
+ *   7. An edit amends the row in place and records what the figure USED to be
+ *      (money-016). See updateTransactionAction — a ledger whose only remedy for
+ *      a typo is destroy-and-retype loses the row's id, its createdAt and its
+ *      comment thread every time a customer fixes a number.
  */
 
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { ImportTransactionsSchema, NewTransactionSchema } from "@/lib/schemas/transaction";
+import {
+  EditTransactionSchema,
+  ImportTransactionsSchema,
+  NewTransactionSchema,
+} from "@/lib/schemas/transaction";
 import { limiters } from "@/lib/rate-limit";
 import { checkBudgetThresholdAfterExpense } from "@/lib/budgets/check";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
@@ -34,7 +42,7 @@ import { captureServerError } from "@/lib/sentry-server";
 // are written once and read forever (and one of them is mailed), so they cannot
 // be formatted with `toLocaleString()` — that resolves to the HOST's default
 // locale and to a floating 0-3 decimal places. See lib/utils.ts.
-import { formatAmountForMessage } from "@/lib/utils";
+import { formatAmountForMessage, formatUtcDay } from "@/lib/utils";
 import {
   EXPENSE_CATEGORIES,
   INVESTMENT_CATEGORIES,
@@ -79,12 +87,45 @@ function toClient(t: {
 function txnNoun(type: string): string {
   return type === "expense" ? "expense" : type === "income" ? "revenue" : "investment";
 }
+/**
+ * The same noun with the article the edit prose needs — "an expense",
+ * "a revenue entry", "an investment".
+ *
+ * It is NOT `` `a ${txnNoun(type)}` ``: that wrote "corrected a expense" and
+ * "edited a investment" into `Activity.message`, a persisted column read forever,
+ * so the typo outlived the correction it described. The article is derived from
+ * the noun rather than typed per type, so a fourth noun cannot reintroduce it,
+ * and "revenue" takes the count noun the three finance pages already use for the
+ * row ("Delete this revenue entry?") because "a revenue" is not English. The add
+ * and import paths need none of this — "added revenue of …", "imported 3
+ * expenses" carry no article.
+ */
+function txnNounPhrase(type: string): string {
+  const base = txnNoun(type);
+  const noun = base === "revenue" ? "revenue entry" : base;
+  return `${/^[aeiou]/i.test(noun) ? "an" : "a"} ${noun}`;
+}
 function txnActivityType(type: string): "expense_added" | "revenue_added" | "investment_added" {
   return type === "expense"
     ? "expense_added"
     : type === "income"
       ? "revenue_added"
       : "investment_added";
+}
+
+/**
+ * The categories a row of this `type` may carry. The server is the authority
+ * here, never the client — shared by the CSV importer and the edit path so
+ * "which set applies" cannot mean two different things in two actions.
+ */
+function categoriesForType(type: string): Set<string> {
+  return new Set<string>(
+    type === "expense"
+      ? EXPENSE_CATEGORIES
+      : type === "income"
+        ? REVENUE_CATEGORIES
+        : INVESTMENT_CATEGORIES
+  );
 }
 
 /* ─────────────────────────────────────────────────────────────────────────── *
@@ -316,13 +357,7 @@ export async function bulkImportTransactionsAction(
 
   // Category is validated server-side against the type's set. Unknown ones
   // are dropped (reported as skipped) rather than trusted from the client.
-  const validCats = new Set<string>(
-    type === "expense"
-      ? EXPENSE_CATEGORIES
-      : type === "income"
-        ? REVENUE_CATEGORIES
-        : INVESTMENT_CATEGORIES
-  );
+  const validCats = categoriesForType(type);
   const accepted = rows.filter((r) => validCats.has(r.category));
   const skipped = rows.length - accepted.length;
   if (accepted.length === 0) {
@@ -396,6 +431,214 @@ export async function bulkImportTransactionsAction(
     captureServerError(e, { action: "bulkImportTransactionsAction" });
     return { success: false, error: "Couldn't import right now. Try again." };
   }
+}
+
+/**
+ * Correct a row that is already in the ledger (money-016).
+ *
+ * WHY THIS EXISTS. Until it did, `delete` was the only remedy for a mistyped
+ * figure, and delete-then-retype is not an equivalent operation: the replacement
+ * row has a new id, so the original's Comment thread is orphaned from it; a new
+ * `createdAt`, so "when was this booked" becomes the day of the correction; and
+ * the figure that was wrong survives nowhere a customer can read. Two separate
+ * audit findings (money-002, money-009) produce wrong amounts, so correcting one
+ * is a day-one operation, not an edge case.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO:
+ *   • It cannot change `type` or `projectId` — see `EditTransactionSchema` for
+ *     why each of those is a different record rather than a typo.
+ *   • It does NOT fan out notifications. The add path pings everyone who can see
+ *     the money because a new ledger line is news; a correction to one is noise
+ *     at the same volume, and the activity feed is the surface that records it.
+ *     The budget threshold still re-runs below, so the one alert that IS
+ *     actionable still fires.
+ *   • It holds no optimistic-concurrency check. `Transaction` carries no
+ *     `updatedAt`/version column, so two simultaneous editors are last-write-wins
+ *     — the same posture as every other write in this file. Closing that needs a
+ *     column (and therefore a migration), and the activity row at least records
+ *     every value the figure passed through.
+ */
+export async function updateTransactionAction(input: unknown): Promise<ActionResult> {
+  const session = await auth();
+  if (!session?.user?.companyId || !session.user.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+  if (!canSeeFinances(session.user.role as Role)) {
+    return { success: false, error: "Not authorized" };
+  }
+
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
+  const parsed = EditTransactionSchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid transaction" };
+  }
+  const { id, amount, category, description, date } = parsed.data;
+
+  const txn = await db.transaction.findUnique({ where: { id } });
+  // A tombstoned row reads as gone from every ledger, roll-up and export, so
+  // editing one would bring a figure back through a side door — and the row it
+  // came back as would not be the one the restore runbook expects.
+  if (!txn || txn.deletedAt) return { success: false, error: "Transaction not found" };
+
+  // Same two gates as delete, for the same reason: an edit moves money just as
+  // effectively. The UI hides the control, the server is what enforces it.
+  if (txn.companyId !== session.user.companyId) {
+    return { success: false, error: "Not authorized" };
+  }
+  if (txn.addedBy !== session.user.id && session.user.role !== "admin") {
+    return { success: false, error: "Not authorized" };
+  }
+
+  // The schema accepts any category this product knows; only the server knows
+  // which set this ROW may use. Without this check an expense could be filed
+  // under "Product Sales", where no budget and no spend breakdown counts it.
+  if (!categoriesForType(txn.type).has(category)) {
+    return { success: false, error: "Pick a valid category for this type" };
+  }
+
+  const previousAmount = txn.amount.toNumber();
+  // `new Date(date)`, exactly as the add path does it — a date-only value from
+  // `<input type="date">` parses to UTC midnight (money-007).
+  const nextDate = new Date(date);
+  const amountChanged = previousAmount !== amount;
+  const categoryChanged = txn.category !== category;
+  // The UTC DAY, not the stored instant. The form round-trips exactly the day it
+  // showed — it fills from `editing.date.slice(0, 10)` and submits midnight of
+  // that day — but the STORED value is not always midnight: the CSV importer
+  // keeps whatever the bank wrote, and `new Date("6/1/2026")` is LOCAL midnight,
+  // i.e. 05:00Z on a host west of UTC. Comparing instants therefore made every
+  // such row report `date 2026-06-01 → 2026-06-01` whenever its amount was
+  // corrected, and turned a save that changed nothing into an Activity row
+  // claiming an edit that never happened. The UPDATE below still writes
+  // `nextDate`, which puts the row on the canonical midnight for that day; every
+  // reader buckets by UTC day, so the day the ledger shows does not move and
+  // there is nothing for the trail to record.
+  const previousDay = formatUtcDay(txn.date);
+  const nextDay = formatUtcDay(nextDate);
+  const dateChanged = previousDay !== nextDay;
+  const descriptionChanged = txn.description !== description;
+
+  // A save that changes nothing writes nothing. An audit trail padded with rows
+  // that record no change is one nobody scrolls through, which costs exactly as
+  // much as having none.
+  if (!amountChanged && !categoryChanged && !dateChanged && !descriptionChanged) {
+    return { success: true, data: undefined };
+  }
+
+  const me = await db.user.findUnique({
+    where: { id: session.user.id },
+    select: { id: true, name: true, company: { select: { currency: true } } },
+  });
+  if (!me) return { success: false, error: "User no longer exists" };
+  const currency = me.company.currency;
+
+  /** What changed, besides the amount — the message names it so the feed is
+   *  readable without opening the row. ISO day rather than a formatted date:
+   *  this string is written once and read forever, so it must not depend on the
+   *  writer's locale (same argument as `formatAmountForMessage`). */
+  const details: string[] = [];
+  if (categoryChanged) details.push(`category ${txn.category} → ${category}`);
+  if (dateChanged) details.push(`date ${previousDay} → ${nextDay}`);
+  if (descriptionChanged) details.push("description");
+
+  const nounPhrase = txnNounPhrase(txn.type);
+  // Both figures carry the currency code, for the money-006 reason: this prose
+  // is frozen on the day it is written. `activityDisplayMessage` re-renders the
+  // NEW figure at read time when it can identify it unambiguously, and returns
+  // the sentence byte-identical when it cannot (e.g. 11,000.00 → 1,000.00, where
+  // one figure's text contains the other's) — stale formatting, never a wrong
+  // number. The old amount is also in the metadata as a raw number.
+  const message = amountChanged
+    ? `${me.name} corrected ${nounPhrase} from ${formatAmountForMessage(
+        previousAmount,
+        currency
+      )} ${currency} to ${formatAmountForMessage(amount, currency)} ${currency}` +
+      (details.length > 0 ? ` (also: ${details.join(", ")})` : "")
+    : `${me.name} edited ${nounPhrase} of ${formatAmountForMessage(
+        amount,
+        currency
+      )} ${currency} — ${details.join(", ")}`;
+
+  try {
+    await db.$transaction(async (tx) => {
+      await tx.transaction.update({
+        where: { id },
+        // The four correctable fields and nothing else. `createdAt` and
+        // `deletedAt` are absent on purpose: an edit must not restamp when the row
+        // was booked, and must not touch the Tier 3 tombstone.
+        data: { amount, category, description, date: nextDate },
+      });
+      await tx.activity.create({
+        data: {
+          companyId: txn.companyId,
+          projectId: txn.projectId,
+          type: "transaction_edited",
+          message,
+          userId: me.id,
+          userName: me.name,
+          metadata: JSON.stringify({
+            kind: "transaction",
+            amount,
+            // money-016, the durable half. The figure in `message` is prose; this
+            // is the number a later reader can trust and re-render.
+            previousAmount,
+            category,
+            currency,
+          }),
+        },
+      });
+    });
+  } catch (e) {
+    // There is exactly one correction the database itself refuses: `Transaction`
+    // carries `@@unique([ruleId, date])` as the idempotency key for materialized
+    // recurring spend (cron-003), so moving a rule-generated row onto another
+    // occurrence's day collides. Hand-entered rows have a NULL `ruleId` and are
+    // outside the constraint. Caught rather than left to throw, because an
+    // unhandled rejection out of a server action reaches the person who typed
+    // the date as a blank failure.
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      return {
+        success: false,
+        error: "This recurring entry already has a row on that date. Pick another date.",
+      };
+    }
+    captureServerError(e, { action: "updateTransactionAction" });
+    return { success: false, error: "Couldn't save that change. Try again." };
+  }
+
+  // finance-planning-005, from the edit side: BOTH categories have to be
+  // re-judged when the row moves between them, because two months-to-date
+  // changed. Correcting 5,000,000 down to 5,000 is also the case that has to
+  // take an "over budget" alert back off — `decideRearm` in
+  // lib/budgets/threshold.ts is what makes that possible, and this is the call
+  // that reaches it. Awaited but never allowed to fail the edit (it swallows and
+  // logs internally), same posture as the add and delete paths.
+  if (txn.type === "expense") {
+    const affected = categoryChanged ? [txn.category, category] : [category];
+    for (const affectedCategory of affected) {
+      await checkBudgetThresholdAfterExpense({
+        companyId: txn.companyId,
+        projectId: txn.projectId,
+        category: affectedCategory,
+      });
+    }
+  }
+
+  revalidatePath("/expenses");
+  revalidatePath("/investments");
+  revalidatePath("/revenue");
+  revalidatePath("/dashboard");
+  revalidatePath("/reports");
+  revalidatePath("/activities");
+  if (txn.type === "expense") {
+    revalidatePath("/budgets");
+    revalidatePath("/notifications");
+  }
+  if (txn.projectId) revalidatePath(`/projects/${txn.projectId}`);
+
+  return { success: true, data: undefined };
 }
 
 export async function deleteTransactionAction(id: string): Promise<ActionResult> {

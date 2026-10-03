@@ -619,7 +619,8 @@ async function main() {
       );
     }
 
-    // The same hard-coding in the two forms.
+    // The same question for the New-budget form, which carried the same
+    // hard-coded "(PKR)" until money-011 pointed its label at useCurrency().
     await admin.goto(`${BASE}/budgets`, { waitUntil: "networkidle0", timeout: 60000 });
     await page_waitEmptyOrCards(admin);
     await clickByText(admin, /new budget|add first budget/i);

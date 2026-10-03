@@ -8,6 +8,7 @@ import {
   Calculator,
   Filter,
   MessageSquare,
+  Pencil,
   Plus,
   Search,
   Trash2,
@@ -17,6 +18,8 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { deleteTransactionAction } from "@/lib/actions/transactions";
+// The edit modal reaches updateTransactionAction through <TransactionForm
+// editing={…}> (money-016) — this island owns which row is being corrected.
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TransactionForm } from "@/components/transactions/transaction-form";
@@ -162,6 +165,8 @@ export function ExpensesClient({
 
   // Active transaction whose comment thread is open (null = closed).
   const [commentingTxn, setCommentingTxn] = useState<TransactionWithCount | null>(null);
+  // Active transaction being corrected (null = closed). money-016.
+  const [editingTxn, setEditingTxn] = useState<TransactionWithCount | null>(null);
   const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
 
   const expenses = useMemo(() => transactions.filter((t) => t.type === "expense"), [transactions]);
@@ -300,7 +305,19 @@ export function ExpensesClient({
   async function handleDelete(id: string) {
     const ok = await confirm({
       title: "Delete this expense?",
-      description: "This action cannot be undone.",
+      // NOT "this cannot be undone" — `deleteTransactionAction` has stamped a
+      // `deletedAt` tombstone since data-integrity-001, and no purge stage
+      // hard-deletes an individually deleted transaction, so the row keeps
+      // existing and an operator can put it back with one UPDATE. The old copy
+      // was the acct-011 defect in a third place: the customer who most needs to
+      // know there is a remedy was the one told, in the danger colour, that there
+      // was nothing to ask for. It points at support rather than a control
+      // because there is no restore UI, and it names no window because the
+      // 90 days in Settings is what the purge cron enforces for whole
+      // workspaces — not for this row.
+      description:
+        "It leaves your ledger, reports and exports immediately. Nothing is erased, though — " +
+        "contact support right away and it can be restored.",
       confirmLabel: "Delete",
       tone: "danger",
     });
@@ -578,13 +595,24 @@ export function ExpensesClient({
                           )}
                         </button>
                         {(currentUserId === t.addedBy || currentUserRole === "admin") && (
-                          <button
-                            onClick={() => handleDelete(t.id)}
-                            aria-label={`Delete expense ${t.description}`}
-                            className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
-                          >
-                            <Trash2 className="h-4 w-4" aria-hidden="true" />
-                          </button>
+                          <>
+                            {/* Same permission rule as delete, because a
+                                correction moves money just as effectively. */}
+                            <button
+                              onClick={() => setEditingTxn(t)}
+                              aria-label={`Edit expense ${t.description}`}
+                              className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
+                            >
+                              <Pencil className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                            <button
+                              onClick={() => handleDelete(t.id)}
+                              aria-label={`Delete expense ${t.description}`}
+                              className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                            >
+                              <Trash2 className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                          </>
                         )}
                       </div>
                     </td>
@@ -646,13 +674,22 @@ export function ExpensesClient({
                       )}
                     </button>
                     {(currentUserId === t.addedBy || currentUserRole === "admin") && (
-                      <button
-                        onClick={() => handleDelete(t.id)}
-                        aria-label={`Delete expense ${t.description}`}
-                        className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
-                      >
-                        <Trash2 className="h-4 w-4" aria-hidden="true" />
-                      </button>
+                      <>
+                        <button
+                          onClick={() => setEditingTxn(t)}
+                          aria-label={`Edit expense ${t.description}`}
+                          className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
+                        >
+                          <Pencil className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(t.id)}
+                          aria-label={`Delete expense ${t.description}`}
+                          className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -685,6 +722,26 @@ export function ExpensesClient({
           onSuccess={refresh}
         />
       </Modal>
+
+      {/* Correcting a row, rather than deleting and retyping it (money-016).
+          Keyed on the row id so reopening the modal on a different expense
+          remounts the form with that row's values instead of the last one's. */}
+      {editingTxn && (
+        <Modal
+          open={Boolean(editingTxn)}
+          onClose={() => setEditingTxn(null)}
+          title="Edit expense"
+          description="Correct the amount, category, date or description. The change is recorded in the activity feed."
+        >
+          <TransactionForm
+            key={editingTxn.id}
+            type="expense"
+            editing={editingTxn}
+            onClose={() => setEditingTxn(null)}
+            onSuccess={refresh}
+          />
+        </Modal>
+      )}
 
       {commentingTxn && (
         <CommentThreadModal

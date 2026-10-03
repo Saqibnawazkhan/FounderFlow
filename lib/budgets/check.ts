@@ -38,7 +38,12 @@
  */
 
 import { db } from "@/lib/db";
-import { decideRearm, decideThreshold, monthKey } from "@/lib/budgets/threshold";
+import {
+  budgetPercentLabel,
+  decideRearm,
+  decideThreshold,
+  monthKey,
+} from "@/lib/budgets/threshold";
 import { captureServerError } from "@/lib/sentry-server";
 import { notifyUsers } from "@/lib/notify/fan-out";
 import { canSeeProjectFinances } from "@/lib/auth/project-permissions";
@@ -147,7 +152,14 @@ export async function checkBudgetThresholdAfterExpense({
     const mk = monthKey(now);
     const limitLabel = monthlyLimit.toLocaleString();
     const spentLabel = monthToDate.toLocaleString();
-    const pctLabel = Math.round(decision.percentUsed * 100);
+    // `budgetPercentLabel`, not a bare `Math.round`: the /budgets card prints the
+    // same crossing of the same line, and the bare round said "at 100% of the
+    // cap" in a row typed `warning` — a budget at 99.6% is in the warning band by
+    // definition, so the bell claimed the cap was reached while the page said 99%
+    // (R5-money-014-bell, the notification half of money-014). Same argument as
+    // the currency label below: the row is written once and read forever, so no
+    // later code change repairs the history.
+    const pctLabel = budgetPercentLabel(decision.percentUsed);
 
     const title =
       decision.kind === "alert"
