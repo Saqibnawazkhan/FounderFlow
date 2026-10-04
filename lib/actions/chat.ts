@@ -60,7 +60,7 @@ import {
   canSeeChannel,
   dmKeyFor,
 } from "@/lib/auth/channel-permissions";
-import { getTransactions } from "@/lib/queries/transactions";
+import { getLedgerStart, getTransactionTotals } from "@/lib/queries/transactions";
 import { unreadChatTotal } from "@/lib/queries/chat";
 // The runway card's burn / runway arithmetic, shared with /dashboard's Balance
 // card so the two surfaces cannot quote different runways (money-017).
@@ -1248,7 +1248,7 @@ const RUNWAY_CARD_BODY = "shared a runway snapshot";
 type RunwayFigures = Pick<RunwayPayload, "cashOnHand" | "monthlyBurn" | "runwayMonths">;
 
 /**
- * The dashboard's runway arithmetic, over the dashboard's own rows.
+ * The dashboard's runway arithmetic, over the dashboard's own aggregates.
  *
  * SHARES THE ARITHMETIC ITSELF with /dashboard — `lib/finance/runway.ts`, which
  * both this and app/(app)/dashboard/dashboard-client.tsx import. That used to be
@@ -1260,15 +1260,23 @@ type RunwayFigures = Pick<RunwayPayload, "cashOnHand" | "monthlyBurn" | "runwayM
  * was both copies being wrong in the same way, which is the only reason the two
  * surfaces still agreed.)
  *
- * The input is whatever `getTransactions()` returns, NOT a Prisma aggregate. A
- * `groupBy` would be cheaper and would also drift on the first workspace to
- * cross that query's MAX_TRANSACTIONS ceiling — the dashboard's FALLBACK path
- * sums the capped 5,000 most recent rows, an aggregate sums all of them, and the
- * two numbers part company silently on exactly the accounts busy enough to care.
- * /dashboard has since moved onto the aggregates (money-008) and this card has
- * not, so the two can now differ by whatever the ceiling drops on a very large
- * ledger; moving the card onto the same roll-ups is money-008's unfinished half.
- * The ARITHMETIC over whichever rows arrive is one copy either way.
+ * THE INPUTS ARE AGGREGATES, NOT ROWS (transactions-ledger-001). Until this
+ * change the card summed `getTransactions()`, a LIST window capped at
+ * `MAX_TRANSACTIONS_PER_TYPE` (5,000 per type) whose own docstring ends "DO NOT
+ * SUM THE RESULT". Two consequences, and the second is why this mattered more
+ * here than anywhere else:
+ *
+ *   • The rows a ceiling drops are the OLDEST, which for a startup are the seed
+ *     investments — so `cashOnHand` lost money-IN first and both the balance and
+ *     the runway shrank as the workspace grew.
+ *   • /dashboard moved onto the unbounded roll-ups (money-008) and this card did
+ *     not, so the two surfaces could print different runways for the same
+ *     workspace on the same afternoon — the exact drift lib/finance/runway.ts
+ *     exists to prevent, arriving by a second route.
+ *
+ * And the card is a SNAPSHOT: it is never recomputed on read, so a wrong figure
+ * here is a permanent row in a channel the whole team reads, not a page that
+ * comes out right on the next refresh.
  *
  * `now` is a PARAMETER rather than a second `new Date()` so the three-month
  * cutoff and the `asOf` stamp on the stored card are the same instant. The
@@ -1282,48 +1290,25 @@ type RunwayFigures = Pick<RunwayPayload, "cashOnHand" | "monthlyBurn" | "runwayM
  * `.finite()` would reject it anyway). It means "no burn recorded".
  */
 function runwayFigures(
-  transactions: { type: string; amount: number; date: string }[],
+  input: {
+    /** `getTransactionTotals().balance` — capital + revenue − spend, every row. */
+    cashOnHand: number;
+    /** `getTransactionTotals({ from: burnWindowStart(now) }).byType.expense.total`
+     *  — the window is built in UTC, not with date-fns `subMonths` (which
+     *  subtracts in the runtime's LOCAL calendar while `Transaction.date` is a
+     *  date-only value stored at UTC midnight — money-007). */
+    burnWindowExpense: number;
+    /** `getLedgerStart()` — the earliest ledger row of ANY type, which is what
+     *  the window's spend is averaged over (money-017). A company that existed
+     *  for three months and only started paying salaries last month really does
+     *  have a three-month average with two quiet months in it. `null` on an empty
+     *  ledger. */
+    ledgerStartsAt: string | null;
+  },
   now: Date
 ): RunwayFigures {
-  // UTC, not date-fns `subMonths` (which subtracts in the runtime's LOCAL
-  // calendar): `Transaction.date` is a date-only value stored at UTC midnight, so
-  // a local edge moved a row dated the boundary day in or out of the window
-  // depending on where the server happened to be (money-007).
-  const cutoff = burnWindowStart(now).getTime();
-  let investments = 0;
-  let revenue = 0;
-  let expenses = 0;
-  let windowExpenses = 0;
-  // The ledger's own start, which is what the window's spend is averaged over
-  // (money-017). Earliest row of ANY type — a company that existed for three
-  // months and only started paying salaries last month really does have a
-  // three-month average with two quiet months in it.
-  let ledgerStartsAt = Infinity;
-
-  // One pass instead of the dashboard's four `.filter().reduce()` chains. The
-  // three types are disjoint, so this ladder sums exactly what those chains
-  // sum; only the number of walks over the array differs.
-  for (const t of transactions) {
-    const at = new Date(t.date).getTime();
-    if (!Number.isNaN(at) && at < ledgerStartsAt) ledgerStartsAt = at;
-    if (t.type === "investment") {
-      investments += t.amount;
-    } else if (t.type === "income") {
-      revenue += t.amount;
-    } else if (t.type === "expense") {
-      expenses += t.amount;
-      // NaN >= cutoff is false, so an unparseable date drops out of the window
-      // rather than silently counting as this instant — the previous behaviour.
-      if (at >= cutoff) windowExpenses += t.amount;
-    }
-  }
-
-  const cashOnHand = investments + revenue - expenses;
-  const monthlyBurn = averageMonthlyBurn(
-    windowExpenses,
-    Number.isFinite(ledgerStartsAt) ? new Date(ledgerStartsAt) : null,
-    now
-  );
+  const { cashOnHand } = input;
+  const monthlyBurn = averageMonthlyBurn(input.burnWindowExpense, input.ledgerStartsAt, now);
   return {
     cashOnHand,
     monthlyBurn,
@@ -1358,7 +1343,7 @@ function runwayFigures(
  * says why: a schema that took the numbers would let any client publish any
  * numbers it liked, over the company's name, into a room the whole team
  * reads. Every figure below is derived from the caller's OWN `companyId`,
- * through the same query the dashboard uses.
+ * through the same unbounded aggregates the dashboard uses.
  *
  * ── WHY `asOf` EXISTS ─────────────────────────────────────────────────────
  * The landing page labels this card "Runway · live". A stored snapshot is not
@@ -1434,7 +1419,7 @@ export async function postRunwayCardAction(input: unknown): Promise<ActionResult
 
     // (6) Compute. One clock read for the whole snapshot — see runwayFigures.
     const now = new Date();
-    const [author, company, transactions] = await Promise.all([
+    const [author, company, totals, burnWindow, ledgerStartsAt] = await Promise.all([
       db.user.findUnique({ where: { id: userId }, select: { name: true, avatar: true } }),
       // `deletedAt: null`, like every scoped read in the codebase: a
       // tombstoned workspace does not get to publish its balance into its own
@@ -1444,8 +1429,11 @@ export async function postRunwayCardAction(input: unknown): Promise<ActionResult
         select: { currency: true },
       }),
       // Company-scoped internally, from this same session — the caller cannot
-      // name a workspace — and it is the dashboard's own query.
-      getTransactions(),
+      // name a workspace — and these are the dashboard's own three aggregates,
+      // not the capped row window the card used to sum (see runwayFigures).
+      getTransactionTotals(),
+      getTransactionTotals({ from: burnWindowStart(now) }),
+      getLedgerStart(),
     ]);
     if (!author) return { success: false, error: "User no longer exists" };
     if (!company) return { success: false, error: "Workspace not found" };
@@ -1459,7 +1447,14 @@ export async function postRunwayCardAction(input: unknown): Promise<ActionResult
       // never a hardcoded default — `formatCurrency` would otherwise print a
       // PKR balance with a dollar sign in front of it.
       currency: company.currency,
-      ...runwayFigures(transactions, now),
+      ...runwayFigures(
+        {
+          cashOnHand: totals.balance,
+          burnWindowExpense: burnWindow.byType.expense.total,
+          ledgerStartsAt,
+        },
+        now
+      ),
     });
 
     const created = await db.$transaction(async (tx) => {

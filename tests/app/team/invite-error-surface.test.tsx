@@ -49,7 +49,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { DeactivatedUser, Task, Transaction, User } from "@/lib/types";
+import type { DeactivatedUser, Task, User } from "@/lib/types";
 
 /* ───────────────────────────── mocks ─────────────────────────────────── */
 
@@ -152,14 +152,14 @@ const deactivated: DeactivatedUser = {
   deactivatedAt: "2026-09-01T10:00:00.000Z",
 };
 
-const transactions: Transaction[] = [];
+// No `transactions` prop any more: /team receives no ledger rows at all, only
+// the per-person contribution aggregate (transactions-ledger-001).
 const tasks: Task[] = [];
 
 function renderTeam() {
   return render(
     <TeamClient
       users={[admin]}
-      transactions={transactions}
       tasks={tasks}
       pendingInvites={[]}
       deactivatedUsers={[deactivated]}

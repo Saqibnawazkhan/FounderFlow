@@ -24,6 +24,18 @@
  * exporters map over, and the parity case below fails if a later edit reopens the
  * gap in either direction.
  *
+ * ONE DELIBERATE EXCEPTION, added by transactions-ledger-009. The two files are
+ * identical EXCEPT for a description leading with `=`, `+`, `-`, `@`, TAB or CR:
+ * the .xlsx prefixes those with an apostrophe to neutralise spreadsheet formula
+ * injection, and the PDF — which has no evaluator — does not. The parity case
+ * below keeps its strict equality only because none of its three fixtures leads
+ * with one of those characters; widen that fixture set and it will fail by one
+ * character, correctly. The carve-out, the ordinary-prose cost it imposes
+ * (`-50% vendor credit` is not an attack), and the "ends with, at most one
+ * longer" relationship that replaces equality for those values all live in
+ * tests/app/reports/export-formula-injection.test.ts, with the trade written up
+ * in lib/reports/spreadsheet-safe.ts.
+ *
  * Run as: npx cross-env TZ=America/Bogota vitest run tests/app/reports/reports-export-fidelity.test.ts
  */
 
@@ -100,6 +112,13 @@ describe("pdfTransactionRows (rep-006)", () => {
 });
 
 describe("the PDF and the Excel sheet agree about every row", () => {
+  // "Identical" holds for every description EXCEPT one leading with `=`, `+`,
+  // `-`, `@`, TAB or CR, which the .xlsx apostrophe-prefixes and the PDF does
+  // not (transactions-ledger-009). None of the three fixtures below leads with
+  // one of those, which is why strict equality is still the right assertion
+  // here; the divergent class is covered by export-formula-injection.test.ts.
+  // Add a `-`- or `+`-leading fixture here and this case fails by one character
+  // BY DESIGN — that is the carve-out, not a regression.
   it("prints the identical description cell in both files", () => {
     const txns = [
       txn({ id: "a", description: LONG }),

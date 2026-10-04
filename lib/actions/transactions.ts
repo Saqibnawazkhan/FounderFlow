@@ -36,6 +36,12 @@ import {
 import { limiters } from "@/lib/rate-limit";
 import { checkBudgetThresholdAfterExpense } from "@/lib/budgets/check";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
+import {
+  importDateWindow,
+  splitDuplicateImportRows,
+  storedLedgerRowKeys,
+  type ImportCandidateRow,
+} from "@/lib/transactions/import-dedupe";
 import { warnBulkMutation } from "@/lib/safety/bulk-mutation-guard";
 import { captureServerError } from "@/lib/sentry-server";
 // money-001, persisted half: the three money figures below go into strings that
@@ -330,13 +336,76 @@ export async function addTransactionAction(input: unknown): Promise<ActionResult
  * CSV import (F2). Bulk-inserts a batch of parsed rows for the current user.
  * Rows whose category isn't a recognised one for the chosen type are dropped
  * and counted in `skipped` — the server is the authority on categories, never
- * the client. Deliberately does NOT fan out per-row notifications or run the
- * budget-threshold check: importing historical data shouldn't ping the whole
- * team or fire "over budget" alerts retroactively. Logs one summary activity.
+ * the client. Logs one summary activity.
+ *
+ * ## The batch can be tagged to a project (transactions-ledger-004)
+ *
+ * This action used to hardcode `projectId: null`, and `ImportTransactionsSchema`
+ * had no `projectId` at all. Every `Budget` belongs to a project
+ * (`Budget.projectId` is NOT NULL) and both budget readers deliberately count
+ * untagged spend against no cap — `lib/budgets/check.ts` returns early for a
+ * project-less expense, and `getBudgetsWithSpend` scopes its aggregate to the
+ * projects that have budgets. So 100% of imported spend was outside 100% of
+ * budget tracking: a customer who onboarded by importing their spend history,
+ * which is exactly what the "Import CSV" button invites, saw every budget read
+ * 0 spent and never got a single over-budget alert.
+ *
+ * The tag is verified against the caller's company and `deletedAt: null`, the
+ * same check `addTransactionAction` runs for the same reason — every export of
+ * a `"use server"` module is a public POST endpoint.
+ *
+ * ## Rows the ledger already holds are withheld, not inserted (transactions-ledger-008)
+ *
+ * `createMany` inserts whatever it is given, and nothing else could catch a
+ * repeat: `Transaction`'s only unique key is `@@unique([ruleId, date])` and a
+ * composite unique treats rows as distinct whenever a column is NULL, so every
+ * imported row (`ruleId IS NULL`) sits outside it. Importing the same CSV twice
+ * therefore doubled burn, revenue, budget spend and the runway denominator in
+ * silence, with nothing marking the copies and no remedy but deleting rows one
+ * at a time — and the trigger is a retry after an import that looked like it
+ * failed, not carelessness.
+ *
+ * So every batch is now split against the ledger's existing rows (and against
+ * itself) by `lib/transactions/import-dedupe.ts`. The duplicates are RETURNED
+ * rather than dropped, as rows, so the modal can report them and offer "import
+ * anyway" — two identical charges on one day are possible, and silently
+ * destroying a real transaction is the same class of defect as silently
+ * doubling one. `allowDuplicates` is that answer coming back, and it skips the
+ * lookup entirely; it bypasses no other check.
+ *
+ * What this does NOT buy, stated plainly — two things:
+ *
+ *   • there is no import-batch id on `Transaction`, so a batch that is imported
+ *     anyway still cannot be UNDONE as a unit. That needs a column, and
+ *     therefore a migration;
+ *   • a pre-003 row whose cell was numeric and day-first was stored with its
+ *     month and day transposed (5 February for a cell meaning 2 June), and no
+ *     comparison keyed on the date can match a date four months away. Those
+ *     rows can still be re-imported and doubled. The clock-shift half of that
+ *     legacy population IS caught — see `storedRowCandidateDays`.
+ *
+ * ## What it still deliberately does NOT do
+ *
+ * No per-row notification fan-out. Importing a year of history must not put a
+ * hundred "New expense" rows in everyone's bell, their inbox and their lock
+ * screen; the one summary activity row is the record.
+ *
+ * The budget threshold IS judged, which is a change from the original "no
+ * threshold check on import" posture — that posture is what made the finding
+ * above invisible rather than merely late. It is judged ONCE PER DISTINCT
+ * CATEGORY after the batch commits, never per row (a 1,000-row import would
+ * otherwise be 1,000 aggregates), and only for expense imports that carry a
+ * project. `checkBudgetThresholdAfterExpense` sums the CURRENT calendar month
+ * only, so genuinely historical rows still cross nothing; what fires is a cap
+ * this month's imported spend really did exceed, at most once per threshold per
+ * month per budget thanks to the sentinel, bounded by the ten expense
+ * categories. Leaving it unjudged did not prevent that alert, it only deferred
+ * it to the next hand-typed expense — which then attributes the crossing to the
+ * wrong event.
  */
 export async function bulkImportTransactionsAction(
   input: unknown
-): Promise<ActionResult<{ imported: number; skipped: number }>> {
+): Promise<ActionResult<{ imported: number; skipped: number; duplicates: ImportCandidateRow[] }>> {
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
@@ -352,8 +421,22 @@ export async function bulkImportTransactionsAction(
   if (!parsed.success) {
     return { success: false, error: parsed.error.issues[0]?.message ?? "Invalid import" };
   }
-  const { type, rows } = parsed.data;
+  const { type, rows, projectId, allowDuplicates } = parsed.data;
   const { id: userId, companyId } = session.user;
+
+  // Same verification as addTransactionAction, for the same reason: the id
+  // arrives from the browser, so it has to be proved to belong to THIS company
+  // and to a project that still exists before a thousand rows are filed against
+  // it. deletedAt:null because an import modal left open while someone else
+  // deleted the project would otherwise bury the batch in a ledger tab nobody
+  // can open, while the project spend aggregate keeps counting it.
+  if (projectId) {
+    const project = await db.project.findFirst({
+      where: { id: projectId, companyId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!project) return { success: false, error: "Project not found" };
+  }
 
   // Category is validated server-side against the type's set. Unknown ones
   // are dropped (reported as skipped) rather than trusted from the client.
@@ -375,12 +458,90 @@ export async function bulkImportTransactionsAction(
   if (!user) return { success: false, error: "User no longer exists" };
 
   try {
-    const total = accepted.reduce((s, r) => s + r.amount, 0);
+    // ── Which of these rows does the ledger already hold? ─────────────────
+    // (transactions-ledger-008)
+    //
+    // Bounded three ways, so a file covering twelve days reads twelve days of
+    // one ledger direction rather than the whole table:
+    //
+    //   • `type` — an expense cannot be a duplicate of a revenue row;
+    //   • the batch's own date window, one day either side of it because a
+    //     pre-003 row for a given day is not stored ON that UTC day (see
+    //     `importDateWindow`);
+    //   • the batch's DISTINCT amounts. `amount` is part of the key, so a row
+    //     whose amount is not in this list cannot be a duplicate of anything
+    //     here — the filter provably loses nothing, and it is what keeps a
+    //     five-year onboarding import from pulling five years of ledger into
+    //     memory. At most 1000 entries, which is the schema's own row cap. It
+    //     bounds the read by the batch's amount footprint rather than by the
+    //     window's row count: a ledger holding hundreds of rows at one of
+    //     these amounts in this window is still a large read.
+    //
+    // `deletedAt: null` because a row the customer deleted on purpose must not
+    // block re-importing it — the tombstone IS the statement that the ledger no
+    // longer holds that line.
+    //
+    // Skipped entirely once the customer has answered "import anyway": the
+    // question has been put to them and settled, so asking the database again
+    // is a wasted read on the slowest path this action has.
+    let fresh = accepted;
+    let duplicates: typeof accepted = [];
+    if (!allowDuplicates) {
+      const span = importDateWindow(accepted);
+      // Canonicalised at the column's own scale first, so 25000 and 25000.00
+      // are one entry rather than two.
+      const amountKeys = new Set<string>();
+      for (const r of accepted) amountKeys.add(r.amount.toFixed(2));
+      const existing = span
+        ? await db.transaction.findMany({
+            where: {
+              companyId,
+              type,
+              deletedAt: null,
+              date: { gte: span.gte, lt: span.lt },
+              amount: { in: Array.from(amountKeys, (a) => new Prisma.Decimal(a)) },
+            },
+            select: { date: true, amount: true, category: true, description: true },
+          })
+        : [];
+      const split = splitDuplicateImportRows(
+        type,
+        accepted,
+        // `flatMap`, because a stored instant does not always name the day it
+        // was written for: east of UTC a pre-003 row sits at 19:00Z on the day
+        // before, so it is compared under both days. See `storedLedgerRowKeys`.
+        existing.flatMap((t) =>
+          storedLedgerRowKeys({
+            type,
+            date: t.date,
+            // `.toFixed(2)` on the Decimal, so 25000 and 25000.00 reduce to one
+            // key — 2 is the column's own scale and the row schema already
+            // refuses anything finer.
+            amount: t.amount.toFixed(2),
+            category: t.category,
+            description: t.description,
+          })
+        )
+      );
+      fresh = split.fresh;
+      duplicates = split.duplicates;
+    }
+
+    // There is nothing new in the file. A SUCCESS with `imported: 0`, not an
+    // error, because nothing went wrong — the modal turns this into "N rows
+    // look like duplicates of entries you already have — import anyway?".
+    // Returning BEFORE the transaction is what keeps an import that wrote
+    // nothing from logging "imported 0 entries from CSV" into the feed.
+    if (fresh.length === 0) {
+      return { success: true, data: { imported: 0, skipped, duplicates } };
+    }
+
+    const total = fresh.reduce((s, r) => s + r.amount, 0);
     const result = await db.$transaction(async (tx) => {
       const created = await tx.transaction.createMany({
-        data: accepted.map((r) => ({
+        data: fresh.map((r) => ({
           companyId,
-          projectId: null,
+          projectId: projectId ?? null,
           type,
           amount: new Prisma.Decimal(r.amount),
           category: r.category,
@@ -393,10 +554,24 @@ export async function bulkImportTransactionsAction(
       await tx.activity.create({
         data: {
           companyId,
+          // Carry the tag so the project's own Activity tab shows the import
+          // that moved its spend, exactly as the add and delete paths do.
+          projectId: projectId ?? null,
           type: txnActivityType(type),
-          message: `${user.name} imported ${created.count} ${txnNoun(type)} ${
-            created.count === 1 ? "entry" : "entries"
-          } from CSV`,
+          // The withheld count rides along on the persisted message, because the
+          // activity feed is where a suspected double import is diagnosed weeks
+          // later — "imported 2 (1 skipped as a duplicate)" is the only durable
+          // record that the file held more rows than the ledger took. Appended
+          // only when there were any, so the ordinary message is unchanged.
+          message:
+            `${user.name} imported ${created.count} ${txnNoun(type)} ${
+              created.count === 1 ? "entry" : "entries"
+            } from CSV` +
+            (duplicates.length > 0
+              ? ` (${duplicates.length} skipped as ${
+                  duplicates.length === 1 ? "a duplicate" : "duplicates"
+                })`
+              : ""),
           userId,
           userName: user.name,
           metadata: JSON.stringify({
@@ -418,6 +593,21 @@ export async function bulkImportTransactionsAction(
       extra: { type },
     });
 
+    // One threshold pass per DISTINCT category, after the batch has committed —
+    // see the docstring for why the import judges budgets at all and why it is
+    // not per row. `Array.from(new Set(…))` rather than `[...new Set(…)]`:
+    // tsconfig sets no `target`, so spreading a Set fails `npm run typecheck`
+    // while passing vitest. Expenses only, and only with a project, because
+    // every Budget belongs to one. Awaited but never allowed to fail the import
+    // — the hook swallows and logs internally, same posture as the add, edit and
+    // delete paths.
+    if (type === "expense" && projectId) {
+      const categories = Array.from(new Set(fresh.map((r) => r.category)));
+      for (const category of categories) {
+        await checkBudgetThresholdAfterExpense({ companyId, projectId, category });
+      }
+    }
+
     revalidatePath("/expenses");
     revalidatePath("/investments");
     revalidatePath("/revenue");
@@ -425,8 +615,10 @@ export async function bulkImportTransactionsAction(
     revalidatePath("/reports");
     revalidatePath("/activities");
     revalidatePath("/budgets");
+    revalidatePath("/notifications");
+    if (projectId) revalidatePath(`/projects/${projectId}`);
 
-    return { success: true, data: { imported: result.count, skipped } };
+    return { success: true, data: { imported: result.count, skipped, duplicates } };
   } catch (e) {
     captureServerError(e, { action: "bulkImportTransactionsAction" });
     return { success: false, error: "Couldn't import right now. Try again." };
@@ -652,9 +844,12 @@ export async function deleteTransactionAction(id: string): Promise<ActionResult>
 
   const txn = await db.transaction.findUnique({ where: { id } });
   // Already tombstoned reads as gone. Re-deleting would move the sentinel
-  // timestamp (the restore runbook in CLAUDE.md reunites a set of rows with a
-  // BETWEEN around it) and write a second "deleted" activity row for one
-  // deletion.
+  // timestamp (the restore runbook in CLAUDE.md reunites a workspace's rows by
+  // `"companyId" = '<id>' AND "deletedAt" = '<exact t>'`, so a moved stamp
+  // leaves the row out of the set its siblings come back with) and write a
+  // second "deleted" activity row for one deletion. The runbook used a ±1s
+  // BETWEEN window until data-integrity-005 corrected it on 2026-09-30; it is
+  // now an exact match, because one transaction wrote one value.
   if (!txn || txn.deletedAt) return { success: false, error: "Transaction not found" };
 
   // Cross-company access guard. The client UI also hides this button for

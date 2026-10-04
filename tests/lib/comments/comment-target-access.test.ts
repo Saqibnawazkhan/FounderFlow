@@ -28,6 +28,22 @@
  *
  * lib/auth/** is deliberately not mocked — `canSeeAllProjects` and
  * `canManageProject` are the real predicates the rest of the product obeys.
+ *
+ * THE TRANSACTION TARGET IS THE SAME GATE, AND IT WAS A STEP BEHIND
+ * (transactions-ledger-005). 015 gave the task branch a `deletedAt` filter;
+ * the transaction branch was left verifying `companyId` and reading `type`,
+ * with no tombstone test and no `deletedAt` in its `select`. Yet
+ * `deleteTransactionAction` has tombstoned rather than hard-deleted since
+ * data-integrity-001, and `mayReadTarget` refuses a thread whose transaction is
+ * tombstoned — so the write could still land on a thread no surface shows:
+ * every ledger, roll-up and export filters the row out, and the restore runbook
+ * would bring back a conversation that continued after the delete. The mention
+ * fan-out makes it worse than inert, because the ping fires: the author is told
+ * "pinged 1 teammate", and the teammate clicks a link into a thread that
+ * `listCommentsForTarget` answers with `[]`. The last two tests here therefore
+ * also assert the `select`, because the fake does not project `select` and a
+ * check against a column the action never asked for is `undefined` in real
+ * Prisma — i.e. no check at all.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -111,6 +127,9 @@ const ADMIN_TASK = {
 /** The project ADMIN_TASK lives in, supervised by somebody else again. */
 const PROJECT = { supervisorId: "u_admin" };
 
+/** A live ledger row, as the transaction branch of the action reads it. */
+const LIVE_TXN = { companyId: "c_nimbus", type: "expense", deletedAt: null };
+
 function signedInAs(role: "admin" | "cofounder" | "member", id: string) {
   session.user = { id, companyId: "c_nimbus", role };
 }
@@ -136,6 +155,7 @@ beforeEach(() => {
   prisma.answers.set("project.findFirst", { ...PROJECT });
   prisma.answers.set("project.findUnique", { ...PROJECT });
   prisma.answers.set("comment.create", { id: "cm_1", taskId: "t_admin" });
+  prisma.answers.set("transaction.findUnique", { ...LIVE_TXN });
 });
 
 /* ══════════ the leak ══════════════════════════════════════════════════════ */
@@ -173,6 +193,46 @@ describe("a member cannot comment on a task the board hides from them (015)", ()
 
     expect(res.success, "a comment was accepted onto a soft-deleted task").toBe(false);
     expect(commentWrites()).toHaveLength(0);
+  });
+});
+
+/* ══════════ the same gate, on the ledger side ═════════════════════════════ */
+
+describe("a tombstoned transaction's thread is closed, not just hidden (transactions-ledger-005)", () => {
+  it("refuses a comment on a soft-deleted ledger row", async () => {
+    signedInAs("admin", "u_admin");
+    prisma.answers.set("transaction.findUnique", { ...LIVE_TXN, deletedAt: new Date() });
+
+    const res = await createCommentAction({ body: "probe", transactionId: "tx_1" });
+
+    expect(
+      res.success,
+      "a comment was accepted onto a tombstoned transaction — a thread every read hides"
+    ).toBe(false);
+    expect(commentWrites(), "a Comment row was written for a deleted ledger line").toHaveLength(0);
+  });
+
+  it("asks the database for deletedAt, rather than checking a column it never selected", async () => {
+    signedInAs("admin", "u_admin");
+
+    await createCommentAction({ body: "receipt attached", transactionId: "tx_1" });
+
+    const reads = callsTo("transaction", "findUnique");
+    expect(reads).toHaveLength(1);
+    const select = (reads[0].args[0] as { select?: Record<string, unknown> }).select;
+    expect(
+      select?.deletedAt,
+      "the tombstone check reads `undefined` in real Prisma unless the select asks for it"
+    ).toBe(true);
+  });
+
+  it("still accepts a comment on a live ledger row", async () => {
+    signedInAs("admin", "u_admin");
+
+    const res = await createCommentAction({ body: "receipt attached", transactionId: "tx_1" });
+
+    expect(res.success, "the tombstone gate locked out a live transaction thread").toBe(true);
+    expect(commentWrites()).toHaveLength(1);
   });
 });
 

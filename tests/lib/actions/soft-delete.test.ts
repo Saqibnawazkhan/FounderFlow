@@ -270,8 +270,11 @@ describe("deleteTransactionAction (a mis-clicked ledger line must be recoverable
   it("refuses a row that is already tombstoned", async () => {
     // Two deletes of the same id would otherwise move the tombstone timestamp
     // and write a second "deleted" activity row for one deletion. The timestamp
-    // matters: CLAUDE.md's restore runbook reunites a workspace's rows with a
-    // BETWEEN filter around it.
+    // matters: CLAUDE.md's restore runbook reunites a workspace's rows by
+    // `"companyId" = '<id>' AND "deletedAt" = '<exact t>'`, so moving the stamp
+    // takes the row out of the set its siblings will be restored with. (That
+    // runbook used a ±1s BETWEEN window until data-integrity-005 corrected it
+    // on 2026-09-30 — an exact match, because one transaction wrote one value.)
     signedInAs("admin");
     when("transaction.findUnique", aLiveExpense({ deletedAt: new Date("2026-09-01") }));
     when("user.findUnique", actor("Saqib", "PKR"));
@@ -280,6 +283,78 @@ describe("deleteTransactionAction (a mis-clicked ledger line must be recoverable
     expect(res.success).toBe(false);
     expect(callsTo("transaction.update")).toHaveLength(0);
     expect(callsTo("activity.create")).toHaveLength(0);
+  });
+
+  /* ───────────────────────────────────────────────────────────────────────── *
+   * transactions-ledger-013 — the author-or-admin gate, on the IRREVERSIBLE
+   * path.
+   *
+   * WHY THIS PAIR EXISTS. The gate is
+   * `txn.addedBy !== session.user.id && session.user.role !== "admin"` in BOTH
+   * write paths. Its EDIT twin is pinned — tests/lib/actions/transaction-edit.
+   * test.ts, "refuses someone who is neither the creator nor an admin", whose
+   * header states the rule is deliberate: "the permission rule is the delete
+   * rule (creator or admin, same company), since an edit can move money just
+   * as effectively as a delete". The DELETE half had no test at all: every
+   * `signedInAs` in this file was "admin" and every fixture is `addedBy: "u1"`,
+   * which is also the default signed-in id, so both clauses passed on every
+   * existing case and no actor ever reached the gate. The reversible path was
+   * guarded and the irreversible one was not.
+   *
+   * WHY TWO TESTS AND NOT ONE. One negative case alone passes against an
+   * admin-only gate, which would stop a cofounder deleting their OWN ledger
+   * line — a regression in the opposite direction, on the same predicate. The
+   * two cases below differ in exactly one input, `addedBy` vs. the signed-in
+   * id, with the same non-admin role in both. That makes the pair name the
+   * discriminating field rather than the outcome, so dropping the gate fails
+   * the first and tightening it to `role === "admin"` fails the second.
+   *
+   * WHAT THIS DELIBERATELY DOES NOT DECIDE. Whether a cofounder SHOULD be able
+   * to delete a teammate's row is a product question and is open with the
+   * owner. These tests pin the rule the server enforces TODAY, which is the
+   * same rule the three ledger clients render against (the Pencil and the Trash
+   * are both inside `currentUserId === t.addedBy || currentUserRole ===
+   * "admin"`). If the owner inverts the rule, this pair and its edit twin flip
+   * together — they encode one predicate, in one direction, in two files.
+   * ───────────────────────────────────────────────────────────────────────── */
+
+  it("refuses someone who is neither the creator nor an admin", async () => {
+    // A cofounder — full finance access everywhere else — on a teammate's row.
+    signedInAs("cofounder", "u2");
+    when("transaction.findUnique", aLiveExpense());
+    when("user.findUnique", actor("Other", "PKR"));
+
+    const res = await deleteTransactionAction("t1");
+    expect(res.success).toBe(false);
+
+    expect(
+      callsTo("transaction.update"),
+      "a refused delete must not write the tombstone — the row stays visible"
+    ).toHaveLength(0);
+    expect(
+      callsTo("activity.create"),
+      "nor an activity row claiming a deletion that did not happen"
+    ).toHaveLength(0);
+  });
+
+  it("lets a non-admin delete the row they filed themselves", async () => {
+    // Same role, same workspace, same fixture — only `addedBy` differs from the
+    // case above. This is the clause that makes the gate "creator OR admin"
+    // rather than "admin".
+    signedInAs("cofounder", "u1");
+    when("transaction.findUnique", aLiveExpense());
+    when("user.findUnique", actor("Saqib", "PKR"));
+
+    const res = await deleteTransactionAction("t1");
+    expect(res.success, `error was: ${res.success ? "" : res.error}`).toBe(true);
+
+    const tombstones = callsTo("transaction.update");
+    expect(
+      tombstones.length,
+      "the row's own author is permitted, so the tombstone must be written"
+    ).toBe(1);
+    expect(dataOf(tombstones[0]).deletedAt).toBeInstanceOf(Date);
+    expect(whereOf(tombstones[0]).id).toBe("t1");
   });
 
   it("hides tombstoned rows from the ledger read the finance pages render", async () => {

@@ -2,9 +2,12 @@
  * "Bilal mentioned you" on an EXPENSE must land on that expense.
  *
  * FINDING tasks-and-comments-003, the finance half. `createCommentAction`
- * builds the mention notification's link as
- * `/expenses?transactionId=<id>&comment=<id>` (lib/actions/comments.ts:165) and
- * has done since the tasks half was fixed. `/tasks?taskId=` is honoured —
+ * builds the mention notification's link for a comment on an EXPENSE as
+ * `/expenses?transactionId=<id>&comment=<id>` and has done since the tasks half
+ * was fixed. (Since transactions-ledger-016 it reads the row's `type` and sends
+ * an income row's mention to /revenue and a capital row's to /investments —
+ * neither of those islands honours the param yet, which is why this file still
+ * only covers /expenses.) `/tasks?taskId=` is honoured —
  * tasks-client.tsx scrolls the card into view and flashes it — but
  * expenses-client.tsx contained no `useSearchParams` at all, so the finance
  * mention resolved to a bare /expenses: no scroll, no highlight, nothing on
@@ -121,6 +124,7 @@ function renderExpenses() {
       projects={[]}
       currentUserId="u1"
       currentUserRole="admin"
+      currency="PKR"
     />
   );
 }
@@ -216,6 +220,7 @@ describe("tasks-and-comments-003 (finance half) — /expenses?transactionId=", (
         projects={[]}
         currentUserId="u1"
         currentUserRole="admin"
+        currency="PKR"
       />
     );
 

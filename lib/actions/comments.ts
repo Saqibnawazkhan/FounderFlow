@@ -38,6 +38,27 @@ import {
 import type { ActionResult } from "@/lib/actions/types";
 import { notifyUsers } from "@/lib/notify/fan-out";
 
+/**
+ * Which ledger page lists a row of this `Transaction.type`.
+ *
+ * All three ledgers render the same table and, since transactions-ledger-016,
+ * the same per-row comment control — but each client filters `transactions` to
+ * ONE type, so a deep link has to name the page that actually holds the row.
+ *
+ * Unknown types fall back to /expenses rather than throwing: a type nobody
+ * recognises must still produce a usable notification, and a broken link is a
+ * far better outcome here than a failed comment write. Not derived from
+ * `TRANSACTION_TYPES` because this is a ROUTING fact — which page shows which
+ * type — and not something the type list knows; it is only a lookup, not a
+ * second source of truth about what a type is. NOT exported: this file is
+ * `"use server"`, where every export has to be an async server action.
+ */
+function ledgerPathForType(type: string): string {
+  if (type === "income") return "/revenue";
+  if (type === "investment") return "/investments";
+  return "/expenses";
+}
+
 export async function createCommentAction(input: unknown): Promise<
   ActionResult<{
     id: string;
@@ -69,6 +90,10 @@ export async function createCommentAction(input: unknown): Promise<
   if (transactionId && !canSeeFinances(session.user.role as Role)) {
     return { success: false, error: "Not authorized" };
   }
+
+  // Which ledger page this comment's row is shown on. Read off the row below;
+  // the default only ever survives for a task comment, which never uses it.
+  let ledgerPath = "/expenses";
 
   try {
     // Verify the target belongs to this company. Prevents cross-company
@@ -126,13 +151,32 @@ export async function createCommentAction(input: unknown): Promise<
       }
       if (!mayAccess) return { success: false, error: "Target not found" };
     } else if (transactionId) {
+      // `type` as well as `companyId` since transactions-ledger-016: all three
+      // ledgers carry a comment control now, so the row's own type is what
+      // decides where its mention notification points and which page is
+      // revalidated. Without it both default to /expenses, and a mention on a
+      // sale lands the reader on a page that filters to `type === "expense"`
+      // and therefore provably does not contain their row.
+      //
+      // `deletedAt` too, and it is the same rule the task branch above states
+      // (transactions-ledger-005). `deleteTransactionAction` tombstones rather
+      // than hard-deleting since data-integrity-001, and `mayReadTarget` in
+      // lib/queries/comments.ts refuses the thread of a tombstoned row — so
+      // without this filter a stale ledger modal, or any retained id, could
+      // append to a thread that exists on no surface: every ledger, roll-up and
+      // export filters the row out, and the restore runbook would bring back a
+      // conversation that continued after the delete. It is worse than inert
+      // because the mention fan-out below still fires — the author is told
+      // "pinged 1 teammate", and the teammate clicks a link into a thread
+      // `listCommentsForTarget` answers with an empty list.
       const txn = await db.transaction.findUnique({
         where: { id: transactionId },
-        select: { companyId: true },
+        select: { companyId: true, type: true, deletedAt: true },
       });
-      if (!txn || txn.companyId !== companyId) {
+      if (!txn || txn.deletedAt || txn.companyId !== companyId) {
         return { success: false, error: "Target not found" };
       }
+      ledgerPath = ledgerPathForType(txn.type);
     }
 
     // Pull the author profile + company roster in one round trip. We need
@@ -200,21 +244,29 @@ export async function createCommentAction(input: unknown): Promise<
        * teammate's task landed them on a list that provably did not contain it.
        *
        * `taskId=` / `transactionId=` FIRST because that is the param the product
-       * already honours: tasks-client scrolls the card into view and flashes it.
-       * `comment=` is kept, and kept SECOND, for two reasons — a client that
-       * learns to read it can open the thread without this link changing again,
-       * and `deleteCommentAction` below sweeps by that substring. Ordering also
-       * matters to `deleteTaskAction`, which sweeps `link contains "taskId=<id>"`:
-       * deleting a task now also clears the mention pings that pointed into it,
-       * which is the behaviour audit row X10 asks for.
+       * already honours: tasks-client scrolls the card into view and flashes it,
+       * and so does expenses-client. `comment=` is kept, and kept SECOND, for two
+       * reasons — a client that learns to read it can open the thread without this
+       * link changing again, and `deleteCommentAction` below sweeps by that
+       * substring. Ordering also matters to `deleteTaskAction`, which sweeps
+       * `link contains "taskId=<id>"`: deleting a task now also clears the mention
+       * pings that pointed into it, which is the behaviour audit row X10 asks for.
        *
-       * Opening the comment thread itself still needs the two client pages to
-       * read `?comment=` — reported as a follow-up. Landing on the right card
-       * beats landing on the wrong page while that is wired up.
+       * THE LEDGER IS THE ROW'S OWN (transactions-ledger-016). This was a
+       * hard-coded `/expenses`, which was right only while /expenses was the one
+       * page with a comment control. Now that all three have one, a sale's
+       * mention goes to /revenue and a cheque's to /investments — the page that
+       * actually lists that row.
+       *
+       * STILL OPEN, and smaller than it was: only expenses-client reads
+       * `?transactionId=`, so on /revenue and /investments the reader lands on
+       * the right ledger and finds the row themselves rather than being scrolled
+       * to it. Nothing reads `?comment=` anywhere yet, so no link opens the
+       * thread it names.
        */
       const link = taskId
         ? `/tasks?taskId=${taskId}&comment=${created.id}`
-        : `/expenses?transactionId=${transactionId}&comment=${created.id}`;
+        : `${ledgerPath}?transactionId=${transactionId}&comment=${created.id}`;
       // A mention rides the category of whatever it's attached to.
       const category = taskId ? "task" : "finance";
       const truncated = body.length > 140 ? body.slice(0, 137) + "…" : body;
@@ -240,7 +292,9 @@ export async function createCommentAction(input: unknown): Promise<
     }
 
     if (taskId) revalidatePath("/tasks");
-    else revalidatePath("/expenses");
+    // The ledger the row is on, not always /expenses: revalidating the wrong
+    // page leaves the right one's comment counts stale.
+    else revalidatePath(ledgerPath);
 
     return {
       success: true,

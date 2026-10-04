@@ -7,7 +7,6 @@ import {
   ArrowDown,
   Calculator,
   Filter,
-  MessageSquare,
   Pencil,
   Plus,
   Search,
@@ -24,6 +23,8 @@ import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TransactionForm } from "@/components/transactions/transaction-form";
 import { ImportTransactionsModal } from "@/components/transactions/import-transactions-modal";
+import { LedgerTruncationNotice } from "@/components/transactions/ledger-truncation-notice";
+import { TransactionCommentButton } from "@/components/transactions/transaction-comment-button";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
@@ -146,6 +147,13 @@ type Props = {
    *  list read dropped. tests/app/money-rollups.test.ts fails while it is
    *  absent. */
   rollups?: ExpenseRollups;
+  /** `Company.currency`, from the row page.tsx fetched (transactions-ledger-006).
+   *  REQUIRED, unlike `rollups` above: the store's copy of it is absent for a
+   *  whole server-action round-trip after sign-in, so a page that forgets to pass
+   *  it renders a USD workspace's money — and its amount input's label — in
+   *  rupees. Required means `npm run typecheck` is what catches that, not a
+   *  customer. */
+  currency: string;
 };
 
 export function ExpensesClient({
@@ -155,8 +163,11 @@ export function ExpensesClient({
   currentUserId,
   currentUserRole,
   rollups,
+  currency,
 }: Props) {
-  const money = useMoney();
+  // The server's value, not the store's: see the `currency` prop above. The form
+  // below takes the same one, so the figures and the question cannot disagree.
+  const money = useMoney(currency);
   const n = useNumberFormat();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -197,9 +208,12 @@ export function ExpensesClient({
   /* ───────────────────────────────────────────────────────────────────────── *
    * DEEP LINK FROM A MENTION (tasks-and-comments-003, finance half)
    *
-   * `createCommentAction` sends "<name> mentioned you" on a transaction comment
-   * to `/expenses?transactionId=<id>&comment=<id>`. This island had no
-   * `useSearchParams` at all, so that link resolved to a bare /expenses — the
+   * `createCommentAction` sends "<name> mentioned you" on a comment about an
+   * EXPENSE to `/expenses?transactionId=<id>&comment=<id>` — since
+   * transactions-ledger-016 it picks the ledger from the row's own `type`, so an
+   * income row's mention goes to /revenue and a capital row's to /investments
+   * (neither of those islands reads the param yet; this one does). This island
+   * had no `useSearchParams` at all, so that link resolved to a bare /expenses — the
    * reader was told someone was talking about one of their expenses and then
    * shown a list of all of them. The /tasks half of the same finding already
    * honours `?taskId=`; this is the same shape, deliberately, so the two
@@ -411,7 +425,7 @@ export function ExpensesClient({
             <h3 className="mt-1 text-lg font-bold tracking-tight">Spend by category</h3>
           </div>
           <div className="h-64">
-            <CategoryBreakdownBar data={categoryBreakdown} />
+            <CategoryBreakdownBar data={categoryBreakdown} currency={currency} />
           </div>
           <table className="sr-only">
             <caption>Spend by category</caption>
@@ -478,6 +492,15 @@ export function ExpensesClient({
       </section>
 
       <section className="overflow-hidden rounded-2xl border border-border bg-surface">
+        {/* The table below is a WINDOW: at most MAX_TRANSACTIONS_PER_TYPE rows,
+            oldest dropped first, and this page has no pagination to reach them
+            with. `rollups` is optional here, and the notice says nothing without
+            it rather than guessing (transactions-ledger-001). */}
+        <LedgerTruncationNotice
+          shown={expenses.length}
+          total={rollups?.expense.count}
+          noun="expenses"
+        />
         {filtered.length === 0 ? (
           <EmptyState
             icon={TrendingDown}
@@ -575,25 +598,14 @@ export function ExpensesClient({
                     </td>
                     <td className="px-6 py-4 text-end">
                       <div className="inline-flex items-center gap-1">
-                        <button
+                        {/* Shared with /revenue and /investments since
+                            transactions-ledger-016 — the thread hangs off a
+                            Transaction, not off an expense. */}
+                        <TransactionCommentButton
+                          count={t.commentCount}
+                          description={t.description}
                           onClick={() => setCommentingTxn(t)}
-                          aria-label={
-                            t.commentCount > 0
-                              ? `Open comments (${n.number(t.commentCount)}) for ${t.description}`
-                              : `Add a comment to ${t.description}`
-                          }
-                          className={cn(
-                            "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors",
-                            t.commentCount > 0
-                              ? "text-forest-strong hover:bg-forest/10"
-                              : "text-fg-muted hover:bg-glass/[0.06] hover:text-fg"
-                          )}
-                        >
-                          <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
-                          {t.commentCount > 0 && (
-                            <span className="font-mono font-bold">{n.number(t.commentCount)}</span>
-                          )}
-                        </button>
+                        />
                         {(currentUserId === t.addedBy || currentUserRole === "admin") && (
                           <>
                             {/* Same permission rule as delete, because a
@@ -654,25 +666,11 @@ export function ExpensesClient({
                     {formatUtcDate(t.date)}
                   </span>
                   <div className="ms-auto flex items-center gap-1">
-                    <button
+                    <TransactionCommentButton
+                      count={t.commentCount}
+                      description={t.description}
                       onClick={() => setCommentingTxn(t)}
-                      aria-label={
-                        t.commentCount > 0
-                          ? `Open comments (${n.number(t.commentCount)}) for ${t.description}`
-                          : `Add a comment to ${t.description}`
-                      }
-                      className={cn(
-                        "inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs transition-colors",
-                        t.commentCount > 0
-                          ? "text-forest-strong hover:bg-forest/10"
-                          : "text-fg-muted hover:bg-glass/[0.06] hover:text-fg"
-                      )}
-                    >
-                      <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
-                      {t.commentCount > 0 && (
-                        <span className="font-mono font-bold">{n.number(t.commentCount)}</span>
-                      )}
-                    </button>
+                    />
                     {(currentUserId === t.addedBy || currentUserRole === "admin") && (
                       <>
                         <button
@@ -701,6 +699,7 @@ export function ExpensesClient({
 
       <ImportTransactionsModal
         type="expense"
+        projects={projects}
         open={importOpen}
         onClose={() => setImportOpen(false)}
         onImported={() => {
@@ -718,6 +717,7 @@ export function ExpensesClient({
         <TransactionForm
           type="expense"
           projects={projects}
+          serverCurrency={currency}
           onClose={() => setModalOpen(false)}
           onSuccess={refresh}
         />
@@ -737,6 +737,7 @@ export function ExpensesClient({
             key={editingTxn.id}
             type="expense"
             editing={editingTxn}
+            serverCurrency={currency}
             onClose={() => setEditingTxn(null)}
             onSuccess={refresh}
           />

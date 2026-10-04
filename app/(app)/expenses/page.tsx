@@ -14,6 +14,7 @@ import {
 import { getCompanyUsers } from "@/lib/queries/users";
 import { listProjectOptions } from "@/lib/queries/projects";
 import { requireScopedSession } from "@/lib/queries/session";
+import { getCurrentCompany } from "@/lib/queries/company";
 import { ExpensesClient } from "./expenses-client";
 
 export const metadata: Metadata = {
@@ -28,7 +29,7 @@ export const metadata: Metadata = {
 
 export default async function ExpensesPage() {
   const now = new Date();
-  const [session, transactions, users, projects, totals, monthToDate, categories] =
+  const [session, transactions, users, projects, totals, monthToDate, categories, company] =
     await Promise.all([
       requireScopedSession(),
       getTransactions(),
@@ -41,6 +42,15 @@ export default async function ExpensesPage() {
       getTransactionTotals(),
       getMonthToDateExpense(now),
       getExpenseTotalsByCategory(),
+      // transactions-ledger-006. The workspace's own currency, on the FIRST
+      // PAINT. The client's figures and its "Amount (…)" input label both used
+      // to read it out of the Zustand store, which CompanyHydrator fills over a
+      // two-hop async chain — so a USD workspace rendered this whole page, and
+      // asked for an amount, in rupees until a server-action round-trip
+      // returned. In the Promise.all rather than awaited after it, so it costs
+      // no extra waterfall stage; `requireScopedSession` inside it is the same
+      // per-request memo the line above uses.
+      getCurrentCompany(),
     ]);
 
   return (
@@ -55,6 +65,7 @@ export default async function ExpensesPage() {
       projects={projects.map((p) => ({ id: p.id, name: p.name }))}
       currentUserId={session.userId}
       currentUserRole={session.role}
+      currency={company.currency}
     />
   );
 }

@@ -138,7 +138,7 @@ These are the ones I'd take first. Ship as one PR each, or bundle P0-1 through P
 ## 4. Finance — budgets, expenses, investments, reports, recurring
 
 - [x] **F1 · 🔴 [BUG] `Float` money type + client-side sums** — shipped with P0-4 on 2026-07-02.
-- [x] **F2 · 🟠 [FEAT] No CSV/XLSX import for transactions.** ✔ CSV import shipped on both `/expenses` and `/investments`. `ImportTransactionsModal` picks a file, auto-detects the date/amount/category/description columns, and shows a validated preview (per-row valid/skipped with reasons) before anything saves; a "Download template" link seeds the format. `parseCSV` (extracted to [lib/transactions/csv.ts](lib/transactions/csv.ts), 9 unit tests — quoted fields, escaped quotes, embedded newlines, CRLF) does the parsing. `bulkImportTransactionsAction` re-validates every row server-side (categories especially — unknown ones are dropped + counted, never trusted from the client), inserts via one `createMany`, logs a single summary activity, fires the bulk-mutation canary, and deliberately skips per-row notifications + budget-threshold checks so importing history doesn't spam the team or retro-fire "over budget" alerts. (XLSX import not included — CSV is the universal export format; note kept as an opportunity.)
+- [x] **F2 · 🟠 [FEAT] No CSV/XLSX import for transactions.** ✔ CSV import shipped on both `/expenses` and `/investments`. `ImportTransactionsModal` picks a file, auto-detects the date/amount/category/description columns, and shows a validated preview (per-row valid/skipped with reasons) before anything saves; a "Download template" link seeds the format. `parseCSV` (extracted to [lib/transactions/csv.ts](lib/transactions/csv.ts), 9 unit tests — quoted fields, escaped quotes, embedded newlines, CRLF) does the parsing. `bulkImportTransactionsAction` re-validates every row server-side (categories especially — unknown ones are dropped + counted, never trusted from the client), inserts via one `createMany`, logs a single summary activity, fires the bulk-mutation canary, and deliberately skips per-row notifications so importing history doesn't spam the team. (It skipped the budget-threshold check too, until transactions-ledger-004: the batch now takes an optional project tag — the modal has a picker — and an expense import judges each distinct category's cap once after the batch. Untagged imported spend crossed no cap at all, because every `Budget` belongs to a project, so "no threshold check on import" meant budgets did nothing for anyone who onboarded by importing.) (XLSX import not included — CSV is the universal export format; note kept as an opportunity.)
 - [ ] **F3 · 🟠 [FEAT] No receipt/attachment field on transactions.** Deferred — needs object storage wiring (Supabase Storage) + schema migration + upload UI. P2 feature commit.
 - [x] **F4 · 🟠 [FEAT] No multi-currency.** ✔ SHIPPED (commit `5bb359c`, per-workspace currency chosen at signup). `lib/hooks/useMoney.ts` is the `useCurrencyFormatter()` hook this row called for, seeded from the app-layout RSC and consumed by 15 call sites; `lib/schemas/auth.ts:29` validates `currency: z.enum(SUPPORTED_CURRENCIES)`; `Company.currency` (schema.prisma:120) still defaults to `"PKR"`. Smoke: `scripts/smoke-currency.mjs`. Residual: a few hardcoded "(PKR)" *labels* remain — see the follow-ups list. Original deferral rationale below, kept for context. ~~DEFERRED (evaluated 2026-07-04).~~ `formatCurrency(amount, currency)` already accepts a code and `Company.currency` already exists — the gap is a settings picker to set it plus threading the company currency through **48 `formatCurrency(...)` call sites across 15 files**, most in client components that don't have the company in scope. The clean way is a `CurrencyProvider` context seeded from the app-layout RSC + a `useCurrencyFormatter()` hook, then a mechanical sweep of all 48 sites. That's a focused rollout best verified against a running app (a half-threaded sweep would show PKR in some places and the new currency in others — worse than today). Product is PKR-first (CLAUDE.md, `NEXT_PUBLIC_DEFAULT_CURRENCY=PKR`), so this is genuinely a "Follow-up" epic, not a quick win. No FX conversion is in scope — display currency only.
 - [x] **F5 · 🟠 [FEAT] Reports offer only 6 preset ranges.** ✔ Added a **Custom** option with from/to date inputs alongside the presets. Crucially the whole report now scopes to the selected window — cash-flow chart, category mix, per-founder totals, AND the PDF/Excel exports (which stamp the date range) — where previously the presets only moved the cash-flow chart while the totals stayed all-time. A reversed range is forgiven (swapped) instead of showing nothing.
@@ -705,3 +705,97 @@ Three more worth recording:
   delete is harmless, and the refusal would make a currently-allowed action fail with
   no UI to resolve it. The argument for it is that it fixes at the source and surfaces
   the orphaned rule to the customer rather than only in a cron response body.
+
+## 16. P2 transactions-ledger tranche (2026-10-04) — fifteen findings, six majors, all six self-inflicted
+
+The largest tranche so far: 15 findings, 36 agents, no errors. **11 fixed, 2 already
+closed, 2 needs-owner.** Staleness came in at ~13%, between the security tranche's 44%
+and the money tranche's 0% — further evidence that the rate is per-domain and that a
+blended estimate would mislead.
+
+**Every one of the six major findings was a defect the fix itself introduced**, not
+something missed in existing code. Across three tranches that ratio has held: these
+agents read existing code reliably and predict the consequences of their own changes
+poorly, which is exactly the gap a second agent closes.
+
+| finding | outcome |
+|---|---|
+| -001 silent truncation | **fixed** — partly stale, but four of seven surfaces still summed the capped array |
+| -004 imported spend invisible to budgets | **fixed** — 100% of imported spend was excluded from 100% of budget tracking |
+| -003 non-US CSV corruption | **fixed** — amounts already closed by money-009; dates were real |
+| -008 duplicate import | **fixed** — detection in code, no migration; batch id left as an owner call |
+| -009 formula injection | **fixed** — sanitised on export, not import |
+| -014 wrong column picked | **fixed** — `subtotal` won the amount column because it contains "total" |
+| -010 1,000-row cap | **fixed** |
+| -007 wedged import dialog | **fixed** |
+| -011 deactivated teammate notified | already-closed |
+| -013 cofounder delete | **needs-owner**, and wrong as filed — UI and server already agree |
+| -012 supervisor cannot record spend | **needs-owner** — widens who may write money |
+| -016 comments on one ledger of three | **fixed** |
+| -002 Revenue offers an "Import investments" template | **fixed**, one file |
+| -005 hard delete | **fixed** — the hard-delete half was already closed by 36760ec |
+| -006 PKR in a non-PKR workspace | already-closed, **overturned by its tester** |
+
+### The six majors
+
+1. **-001's fix left dead data on the wire.** `/team` still fetched and serialised the
+   full ledger into a prop nothing read any more. The same fix also shipped `rowCount`,
+   documented as a field that lets a caller print "showing N of M", with zero callers —
+   this repo's signature defect, introduced by the fix for a finding about silent
+   truncation. The remediation built the notice rather than deleting the field, and made
+   the finance-reader gate table derive from the module's exports so it cannot silently
+   fall behind again.
+2. **-004's project tag was sticky for the whole page visit.** All three ledger clients
+   render the import modal unconditionally and close it by flipping their own state, so
+   React never discards it and `handleClose` is never reached on success. Import March
+   tagged to Launch v2, and April silently inherits it — worse than the original bug,
+   which at least failed uniformly.
+3. **-008's dedupe missed the case it was built for, in the home market.** It keyed on
+   the UTC day, justified by a comment about legacy rows stored at local midnight —
+   which is false for every timezone east of UTC. At UTC+5 a legacy row and its
+   re-import land on different UTC days. The remediation matched a stored row under
+   every UTC day it could have been written for and widened the fetch to match, while
+   leaving an exact-UTC-midnight row on one day so a real next-day charge still imports.
+4. **-009's guard mangled ordinary accounting prose.** A description reading "-50%
+   vendor credit" gained an apostrophe in the .xlsx while the PDF printed it clean —
+   re-opening rep-006, which exists because two files from two adjacent buttons
+   disagreeing about the same row is what an auditor notices. See A59.
+5. **-013's fixer justified writing nothing on a false premise.** It claimed no test
+   pinned either side; `transaction-edit.test.ts:320` is exactly that test. The real gap
+   was the inverse and on the destructive path — `deleteTransactionAction`'s
+   author-or-admin gate had no test at all, because every fixture in
+   `soft-delete.test.ts` is an admin acting on their own row. Now pinned.
+6. **-006's "already closed" was overturned by its tester.** The filing's headline
+   symptom still reproduced: `useCurrency()` is called with no argument and falls back
+   to PKR, so the server-rendered HTML of every finance page reads "Amount (PKR)" for a
+   non-PKR workspace until hydration lands. The remediation threaded the currency from
+   all three RSC pages instead of making the fallback smarter.
+
+> **The best single piece of work in the tranche was a test nobody asked for.** -006's
+> fixer found the finding already closed, noticed that nothing pinned the server-side
+> half, wrote five tests, and then **proved they had teeth by reintroducing the exact
+> hardcoded PKR the filing describes** — 4 of 5 failed — before restoring the file
+> byte-for-byte with an md5 check. A test written against already-correct code is the
+> easiest kind to get wrong, because it passes immediately and nothing tells you it
+> would have passed anyway.
+
+- [ ] **A59 · 🟠 [BUG] The spreadsheet formula guard is a cost with no current benefit, and it was accepted on a premise nobody executed.** transactions-ledger-009 prefixes any description, author or company name leading with `=`, `+`, `-`, `@`, TAB or CR with an apostrophe on the .xlsx path. SheetJS writes that apostrophe literally, so a description reading "-50% vendor credit" renders mangled in Excel while the PDF prints it clean. **Measured, not reasoned:** `XLSX.utils.aoa_to_sheet` writes `=1+1` as `t:"s"` with no `f` attribute, and it survives a real write/read round trip as a string — so the .xlsx is **already safe** and the prefix buys nothing today. The fixer, its tester and the remediation all engaged seriously with this, and all three reasoned about SheetJS's behaviour from the finding's description of it; one `node -e` inverted the conclusion in seconds. Keep `lib/reports/spreadsheet-safe.ts` and its tests — they are correct for the genuine CSV export that does not exist yet — stop applying the marker on the .xlsx path, and pin the safety property with a round-trip test so the suite goes red if SheetJS or the export format ever changes. → [lib/reports/spreadsheet-safe.ts](lib/reports/spreadsheet-safe.ts)
+
+- [ ] **A60 · 🔵 [OPP] /reports still sums a truncated ledger, and it is the surface that travels furthest.** Raised by -001's tester and deliberately left open by its remediation, which agreed rather than claiming the finding closed. `summaryFigures` computes Investments / Revenue / Expenses / Net flow with `sumOfType` over the capped per-type array; the category and contributor breakdowns do the same; the Excel and PDF exporters map over it. The other six consumers now either aggregate in SQL or show a truncation notice — /reports got neither. Fixing it needs a server round trip per period window, which is why it was scoped out, not because it is not real. This is the page a customer exports and sends to investors. → [app/(app)/reports/reports-client.tsx](app/(app)/reports/reports-client.tsx)
+
+### Open for the owner — three questions that are really one
+
+Three findings across two tranches ask the same thing in different clothes, and
+answering them separately would leave a permission model explicable only as history:
+
+- **sec-016** — may a cofounder close a task they did not file?
+- **-013** — may a cofounder edit or delete a ledger row they did not create?
+- **-012** — may a project supervisor record spend against the project they run?
+
+The first two are "does a cofounder have authority over other people's records". The
+third is "does a delegated role get write access to the thing it is accountable for" —
+today the supervisor escape hatch is read-only in practice, so every project expense
+funnels back through a founder, which is the bottleneck the role exists to remove.
+
+Also open: whether to spend a migration on `Transaction.importBatchId` so a bad import
+can be undone as a unit. The SQL is in -008's report; detection is closed without it.

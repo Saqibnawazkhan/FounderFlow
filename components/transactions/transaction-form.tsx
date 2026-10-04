@@ -33,12 +33,31 @@ interface Props {
    * default. The edit action ignores the field for the same reason.
    */
   editing?: Transaction;
+  /**
+   * `Company.currency`, from the row the page's Server Component already fetched
+   * (transactions-ledger-006). Every one of this component's call sites passes
+   * it — /expenses, /revenue and /investments each read the company row — and
+   * tests/components/money-input-currency-labels.test.tsx sweeps the tree so a
+   * new one cannot quietly skip it.
+   *
+   * Optional only because `useCurrency` is precedence-with-fallback rather than
+   * required-or-bust (lib/hooks/useMoney.ts): a surface with no company row in
+   * hand still renders, from the store, exactly as it did before.
+   */
+  serverCurrency?: string;
   onClose: () => void;
   /** Called after the server action succeeds so the parent can re-fetch. */
   onSuccess?: () => void;
 }
 
-export function TransactionForm({ type, projects = [], editing, onClose, onSuccess }: Props) {
+export function TransactionForm({
+  type,
+  projects = [],
+  editing,
+  serverCurrency,
+  onClose,
+  onSuccess,
+}: Props) {
   const typeCategories =
     type === "expense"
       ? EXPENSE_CATEGORIES
@@ -60,13 +79,24 @@ export function TransactionForm({ type, projects = [], editing, onClose, onSucce
   // is the number stored — so a label reading "(PKR)" on a USD workspace invited
   // a founder to convert in their head and book an amount wrong by the exchange
   // rate, on the same screen where every figure already renders through
-  // `useMoney()`. Same source as those figures (no `company` row reaches this
-  // component), so the question and the answer cannot disagree.
+  // `useMoney()`. Same source as those figures, so the question and the answer
+  // cannot disagree.
+  //
+  // transactions-ledger-006: that source is the `company` row the page fetched,
+  // NOT the store. money-011 landed `useCurrency()` with no argument, which reads
+  // `currentCompany.currency` — a value that arrives over a two-hop async chain
+  // (providers.tsx hydrates the session, then company-hydrator.tsx calls
+  // `getMyCompanyAction`) and is absent until both land. So this form went on
+  // asking a USD workspace for rupees on the first load after signup, on a new
+  // device, after clearing site data and after /settings' "Reset local
+  // preferences" — until a server-action round-trip returned, which is long
+  // enough to open this modal and type a number into it. The prop is available on
+  // the first paint; the store stays as the fallback for a caller that has no row.
   //
   // The ISO CODE, not a symbol: all six SUPPORTED_CURRENCIES are three letters,
   // which keeps the input's `ps-14` affix gutter correct for every workspace, and
   // "$" alone would not say which dollar.
-  const currency = useCurrency();
+  const currency = useCurrency(serverCurrency);
 
   const amountId = useId();
   const projectId = useId();

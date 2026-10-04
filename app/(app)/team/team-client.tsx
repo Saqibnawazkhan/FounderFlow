@@ -35,36 +35,70 @@ import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn } from "@/lib/utils";
 import { useMoney } from "@/lib/hooks/useMoney";
-import type {
-  DeactivatedUser,
-  PendingInvite,
-  Task,
-  Transaction,
-  User,
-  UserRole,
-} from "@/lib/types";
+import type { DeactivatedUser, PendingInvite, Task, User, UserRole } from "@/lib/types";
 import { ROLE_LABELS } from "@/lib/types";
+import type { UserContribution } from "@/lib/queries/transactions";
 import { canSeeFinances } from "@/lib/auth/role-gates";
 import { useDateFormat, useNumberFormat } from "@/lib/i18n/use-t";
 
+/**
+ * One member's "invested / spent" cells, from the per-person aggregate rather
+ * than the row array (transactions-ledger-001, the tail of money-008).
+ *
+ * WHAT WAS WRONG. Both cells were `transactions.filter(t => t.addedBy === id &&
+ * t.type === …).reduce(…)` over `getTransactions()` — a LIST window capped at
+ * `MAX_TRANSACTIONS_PER_TYPE` (5,000 per type) whose docstring ends "DO NOT SUM
+ * THE RESULT". The rows a ceiling drops are the OLDEST, so a founder who put
+ * money in early and then stopped read as having contributed nothing, next to
+ * their own name, on the page where the team compares contributions.
+ *
+ * `contributions` is `getContributionTotalsByUser()`, keyed by
+ * `Transaction.addedBy` — who RECORDED the row, which is what these cells have
+ * always displayed and what /dashboard and /investments use, so the three
+ * surfaces cannot quote different figures for the same person. A person with no
+ * rows is absent from the map, so the lookup floors at 0 rather than rendering
+ * "undefined".
+ *
+ * THERE IS NO ROW-ARRAY FALLBACK, and removing it is half the fix. While this
+ * function still took a `Transaction[]`, app/(app)/team/page.tsx kept fetching
+ * the window to feed it — and that branch could never run: it was reached only
+ * when `contributions` was undefined, which is exactly when the server had
+ * withheld the rows and passed `[]`. So a dead branch justified shipping up to
+ * 15,000 ledger rows into the payload of a page that renders none of them.
+ *
+ * `undefined` means "this viewer gets no finance data" — a member, for whom
+ * `showMemberStats` hides the cells anyway — and the honest answer there is 0,
+ * not a sum over rows this page no longer receives.
+ */
+export function memberFinanceTotals(
+  userId: string,
+  contributions?: Record<string, UserContribution>
+): { invested: number; spent: number } {
+  const c = contributions ? contributions[userId] : undefined;
+  return { invested: c?.investment ?? 0, spent: c?.expense ?? 0 };
+}
+
 type Props = {
   users: User[];
-  transactions: Transaction[];
   tasks: Task[];
   pendingInvites: PendingInvite[];
   deactivatedUsers: DeactivatedUser[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
+  /** `getContributionTotalsByUser()` from app/(app)/team/page.tsx — undefined for
+   *  a member, who is never sent finance data at all (the server withholds it and
+   *  `showMemberStats` hides the cells). */
+  contributions?: Record<string, UserContribution>;
 };
 
 export function TeamClient({
   users,
-  transactions,
   tasks,
   pendingInvites,
   deactivatedUsers,
   currentUserId,
   currentUserRole,
+  contributions,
 }: Props) {
   const router = useRouter();
   const money = useMoney();
@@ -267,12 +301,12 @@ export function TeamClient({
 
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2">
         {users.map((user) => {
-          const userInvestments = transactions
-            .filter((t) => t.addedBy === user.id && t.type === "investment")
-            .reduce((s, t) => s + t.amount, 0);
-          const userExpenses = transactions
-            .filter((t) => t.addedBy === user.id && t.type === "expense")
-            .reduce((s, t) => s + t.amount, 0);
+          // From the per-person aggregate, which has no ceiling — this page
+          // receives no ledger rows at all any more (transactions-ledger-001).
+          const { invested: userInvestments, spent: userExpenses } = memberFinanceTotals(
+            user.id,
+            contributions
+          );
           const userTasks = tasks.filter((t) => t.assignedTo === user.id);
           const completedTasks = userTasks.filter((t) => t.status === "completed").length;
 

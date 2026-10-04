@@ -142,6 +142,17 @@ export interface LedgerTotals {
   /** Cash in (founder capital + earned revenue) − cash out. The same formula
    *  /reports' "Cash balance (all time)" row uses, so the two cannot drift. */
   balance: number;
+  /**
+   * How many expense ROWS the ledger holds — the "N transactions" caption under
+   * the Total spend card (transactions-ledger-001).
+   *
+   * It was `transactions.filter(…).length` inline in the card, i.e. a count of
+   * the 5,000-row-per-type window sitting under a figure that already came from
+   * an uncapped aggregate. /expenses had already moved the identical caption
+   * onto `expenseHeadline().count`, so past the ceiling the two surfaces printed
+   * different row counts for the same ledger with the same money above them.
+   */
+  expenseCount: number;
 }
 
 export function ledgerTotals(
@@ -155,12 +166,19 @@ export function ledgerTotals(
       revenue: byType.income.total,
       expenses: byType.expense.total,
       balance,
+      expenseCount: byType.expense.count,
     };
   }
   const investments = sumOfType(transactions, "investment");
   const revenue = sumOfType(transactions, "income");
   const expenses = sumOfType(transactions, "expense");
-  return { investments, revenue, expenses, balance: investments + revenue - expenses };
+  return {
+    investments,
+    revenue,
+    expenses,
+    balance: investments + revenue - expenses,
+    expenseCount: transactions.filter((t) => t.type === "expense").length,
+  };
 }
 
 /**
@@ -383,6 +401,7 @@ export function DashboardClient({
     investments: totalInvestments,
     expenses: totalExpenses,
     balance,
+    expenseCount,
   } = useMemo(() => ledgerTotals(transactions, rollups), [transactions, rollups]);
   // From the count query, not from `tasks`: that array is a 300-row window
   // (perf-002), so filtering it under-reports the KPI in a busy workspace.
@@ -500,9 +519,10 @@ export function DashboardClient({
       icon: TrendingDown,
       tone: "mint",
       delta: "neutral",
-      deltaLabel: `${n.number(
-        transactions.filter((t) => t.type === "expense").length
-      )} transactions`,
+      // From the roll-up's own count, like the figure above it: a caption that
+      // counted the row window read 5,000 under a correct 6,000-row total, and
+      // disagreed with the same caption on /expenses (transactions-ledger-001).
+      deltaLabel: `${n.number(expenseCount)} transactions`,
     },
     {
       label: "Open tasks",

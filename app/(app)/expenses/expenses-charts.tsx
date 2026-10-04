@@ -23,10 +23,17 @@ const TOOLTIP_STYLE = {
 
 export function CategoryBreakdownBar({
   data,
+  currency,
 }: {
   data: Array<{ category: string; amount: number }>;
+  /** `Company.currency`, forwarded from the page's Server Component by
+   *  expenses-client.tsx (transactions-ledger-006) — the same value the table and
+   *  the amount input beside this chart use. Reading the store here instead would
+   *  put rupees in this tooltip while the row above it said dollars, for as long
+   *  as CompanyHydrator's round-trip takes. */
+  currency: string;
 }) {
-  const money = useMoney();
+  const money = useMoney(currency);
   const n = useNumberFormat();
   return (
     <ResponsiveContainer width="100%" height="100%">

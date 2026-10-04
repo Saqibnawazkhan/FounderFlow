@@ -44,6 +44,8 @@
  * the cookie is the thing under test.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /* ─────────────────────────── the fake Prisma client ─────────────────────── */
@@ -143,6 +145,13 @@ beforeEach(() => {
       _count: { comments: 0 },
     },
   ]);
+  // `getLedgerStart`'s one `_min(date)`. The recorder's default answer is `[]`,
+  // which has no `_min` — and the admin/cofounder cases below call the reader
+  // for real, so an unstubbed aggregate would fail them on a TypeError rather
+  // than on the gate. No other reader in this file aggregates.
+  H.results.set("transaction.aggregate", {
+    _min: { date: new Date("2026-01-04T00:00:00.000Z") },
+  });
   H.results.set("transaction.groupBy", [
     {
       type: "expense",
@@ -218,6 +227,19 @@ const COMPANY_WIDE: { name: string; run: () => Promise<unknown> }[] = [
   { name: "getTransactionTotals (balance + runway)", run: () => txns.getTransactionTotals() },
   { name: "getMonthlyTotals (the cash-flow chart)", run: () => txns.getMonthlyTotals(3) },
   { name: "getExpenseTotalsByCategory (the pie)", run: () => txns.getExpenseTotalsByCategory() },
+  {
+    // The parameterized form /revenue's category bars read
+    // (transactions-ledger-001). `getExpenseTotalsByCategory` is a thin wrapper
+    // over it, so the wrapper being listed proved nothing about this one.
+    name: "getTotalsByCategory (the /revenue bars)",
+    run: () => txns.getTotalsByCategory("income"),
+  },
+  {
+    // The burn divisor (money-017) — one `_min(date)` over the whole ledger,
+    // which is still a ledger read a member must not be able to make.
+    name: "getLedgerStart (the burn divisor)",
+    run: () => txns.getLedgerStart(),
+  },
   {
     name: "getContributionTotalsByUser (per-founder capital)",
     run: () => txns.getContributionTotalsByUser(),
@@ -297,6 +319,47 @@ describe("a demoted teammate's stale cookie no longer reads the ledger (sec-002)
     expect(feed[0].message).toContain("250");
     const rules = await recurring.getRecurringRules();
     expect(rules[0].amount).toBe(1000);
+  });
+});
+
+/* ──────── the table cannot fall behind the module it is a table OF ──────── */
+
+/**
+ * The docstring above COMPANY_WIDE asks to be extended — "a reader added to one
+ * of these modules next quarter is meant to be added here in one line" — and
+ * asking is exactly what this repo's safety notes have learned not to rely on
+ * (CLAUDE.md: the claim is checked, not remembered).
+ *
+ * It had already fallen behind twice: `getLedgerStart` (money-017) and
+ * `getTotalsByCategory` (transactions-ledger-001) were both added to
+ * lib/queries/transactions.ts and neither was listed, so nothing proved a
+ * demoted co-founder's stale 30-day cookie could not reach them. The gates
+ * happened to hold; that is luck, not coverage, and each omission makes the next
+ * one easier to miss.
+ *
+ * Derived from `export async function`, so a reader cannot join that module
+ * without either joining the table or failing here BY NAME.
+ */
+function leadingIdentifier(entryName: string): string {
+  const m = /^(\w+)/.exec(entryName);
+  return m ? m[1] : "";
+}
+
+describe("every reader lib/queries/transactions.ts exports is in the table", () => {
+  it("names each one, so none goes ungated by omission", () => {
+    const text = readFileSync(join(process.cwd(), "lib/queries/transactions.ts"), "utf8");
+    const covered = COMPANY_WIDE.map((r) => leadingIdentifier(r.name));
+    const re = /export async function (\w+)/g;
+    const missing: string[] = [];
+    let m: RegExpExecArray | null = re.exec(text);
+    while (m !== null) {
+      if (covered.indexOf(m[1]) === -1) missing.push(m[1]);
+      m = re.exec(text);
+    }
+    expect(
+      missing,
+      "these readers of lib/queries/transactions.ts are missing from COMPANY_WIDE — add one line each, with a run() that calls them"
+    ).toEqual([]);
   });
 });
 

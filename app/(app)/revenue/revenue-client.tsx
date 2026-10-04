@@ -20,26 +20,150 @@ import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TransactionForm } from "@/components/transactions/transaction-form";
 import { ImportTransactionsModal } from "@/components/transactions/import-transactions-modal";
+import { LedgerTruncationNotice } from "@/components/transactions/ledger-truncation-notice";
+import { TransactionCommentButton } from "@/components/transactions/transaction-comment-button";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { REVENUE_CATEGORIES, type Transaction } from "@/lib/types";
+import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
+import { REVENUE_CATEGORIES, type Transaction, type User } from "@/lib/types";
+// TYPE-ONLY, so lib/queries' server graph (db, Sentry, the scoped-session read)
+// stays out of the client bundle.
+import type { TransactionWithCount, TypeTotal } from "@/lib/queries/transactions";
 import { useMoney } from "@/lib/hooks/useMoney";
 import { useDateFormat, useNumberFormat } from "@/lib/i18n/use-t";
 
+/* ─────────────────────────────────────────────────────────────────────────── *
+ * /revenue's money figures, as pure functions over EITHER an aggregate or the
+ * row array (transactions-ledger-001, the tail of money-008).
+ *
+ * WHAT WAS WRONG. "Total revenue", "Avg / entry", the N-entries caption and
+ * every category bar were computed from `transactions`, which is
+ * `getTransactions()` — a LIST window capped at `MAX_TRANSACTIONS_PER_TYPE`
+ * (5,000 per type) whose docstring ends "DO NOT SUM THE RESULT". Past the
+ * ceiling every one of them is short, silently, and the rows dropped are the
+ * oldest.
+ *
+ * "Avg / entry" was wrong in a second way, the same way /expenses' was:
+ * `total / revenue.length` mixes a numerator and a denominator from different
+ * populations the moment either comes from an aggregate. The roll-up carries its
+ * own `count`, so the average is computed from one population.
+ *
+ * Pinned by tests/app/finance/uncapped-totals.test.ts, which also asserts
+ * app/(app)/revenue/page.tsx actually passes the aggregates: a roll-up with no
+ * caller fixes nothing.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/** The server-side aggregates /revenue needs, in one prop. One object rather
+ *  than two props because the figures have to come from the same instant. */
+export interface RevenueRollups {
+  /** `getTransactionTotals().byType.income` — whole-ledger revenue sum + row
+   *  count, neither of them capped. */
+  income: TypeTotal;
+  /** `getTotalsByCategory("income")` — biggest first. */
+  categories: { category: string; amount: number }[];
+}
+
+export interface RevenueHeadline {
+  /** All-time revenue total. */
+  total: number;
+  /** All-time revenue ROW COUNT — the denominator of the average, and the
+   *  "N entries" caption. */
+  count: number;
+  /** `total / count`, NOT pre-rounded: `money(Math.round(x))` throws the cents
+   *  away before formatting, so three 0.50 entries average to a figure wearing a
+   *  decimal point that makes it look exact (money-001). `formatCurrency`
+   *  already rounds to the stored scale. */
+  average: number;
+}
+
+export function revenueHeadline(revenue: Transaction[], rollups?: RevenueRollups): RevenueHeadline {
+  const total = rollups ? rollups.income.total : revenue.reduce((s, t) => s + t.amount, 0);
+  const count = rollups ? rollups.income.count : revenue.length;
+  return { total, count, average: count > 0 ? total / count : 0 };
+}
+
+/**
+ * Revenue per category, biggest first, empty categories omitted.
+ *
+ * Revenue's natural breakdown is by category (product vs services vs subs), not
+ * by person the way founder capital is.
+ *
+ * BOTH BRANCHES READ THE LEDGER, not `REVENUE_CATEGORIES`. Iterating the
+ * constant — which is what this used to do — meant a row carrying anything else
+ * had its money in the headline and in no bar, so the breakdown silently failed
+ * to add up.
+ *
+ * The write path that lets that happen is `addTransactionAction`: it validates
+ * `category` against the union of all three constants and never cross-checks it
+ * against the row's own `type`, so an income row filed under an expense category
+ * is stored as filed. `updateTransactionAction` and
+ * `bulkImportTransactionsAction` both do cross-check — the CSV importer drops
+ * such a row and counts it as `skipped` — so the importer, which an earlier
+ * version of this comment blamed, is the one path that provably cannot cause it.
+ *
+ * Re-sorted in both branches so the function does not depend on a caller's
+ * ordering.
+ */
+export function revenueCategoryRows(
+  revenue: Transaction[],
+  rollups?: RevenueRollups
+): { name: string; amount: number }[] {
+  let rows: { category: string; amount: number }[];
+  if (rollups) {
+    rows = rollups.categories.slice();
+  } else {
+    const m = new Map<string, number>();
+    revenue.forEach((t) => m.set(t.category, (m.get(t.category) || 0) + t.amount));
+    // Array.from, not a spread: tsconfig sets no `target`, so it defaults to ES5
+    // and spreading a Map fails `npm run typecheck` while passing vitest.
+    rows = Array.from(m.entries()).map(([category, amount]) => ({ category, amount }));
+  }
+  return rows
+    .filter((r) => r.amount > 0)
+    .sort((a, b) => b.amount - a.amount)
+    .map((r) => ({ name: r.category, amount: r.amount }));
+}
+
 type Props = {
-  transactions: Transaction[];
+  /** Rows WITH their comment counts: `getTransactions` has always included
+   *  `_count.comments` for every type, and since transactions-ledger-016 this
+   *  page renders it instead of discarding it. */
+  transactions: TransactionWithCount[];
+  /** The company roster, for @-mention autocomplete inside a thread. Without it
+   *  every `@name` typed on this page resolves to nobody. */
+  users: User[];
   projects: { id: string; name: string }[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
+  /** Server-side aggregates, from app/(app)/revenue/page.tsx. Every money figure
+   *  on this page is short by whatever the 5,000-row-per-type list read dropped
+   *  without them. */
+  rollups: RevenueRollups;
+  /** `Company.currency`, from the row page.tsx fetched (transactions-ledger-006).
+   *  Required rather than optional: the store's copy is absent for a whole
+   *  server-action round-trip after sign-in, so a page that forgets this renders
+   *  a USD workspace's money — and its amount input's label — in rupees, and
+   *  `npm run typecheck` is the right place to catch that. */
+  currency: string;
 };
 
-export function RevenueClient({ transactions, projects, currentUserId, currentUserRole }: Props) {
+export function RevenueClient({
+  transactions,
+  users,
+  projects,
+  currentUserId,
+  currentUserRole,
+  rollups,
+  currency,
+}: Props) {
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
-  const money = useMoney();
+  // The server's value, not the store's: see the `currency` prop above. The form
+  // below takes the same one, so the figures and the question cannot disagree.
+  const money = useMoney(currency);
   const n = useNumberFormat();
   const d = useDateFormat();
 
@@ -52,6 +176,11 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
   // Active row being corrected (null = closed). money-016 — a mistyped figure
   // has to be fixable in place, not only deletable.
   const [editingTxn, setEditingTxn] = useState<Transaction | null>(null);
+  // Active row whose comment thread is open (null = closed).
+  // transactions-ledger-016 — "why is this 4.2M sale booked to Consulting?" had
+  // nowhere to live on the page that shows the sale.
+  const [commentingTxn, setCommentingTxn] = useState<TransactionWithCount | null>(null);
+  const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
 
   function refresh() {
     startTransition(() => router.refresh());
@@ -71,20 +200,15 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
     [revenue, search, categoryFilter]
   );
 
-  const totalRevenue = revenue.reduce((s, t) => s + t.amount, 0);
+  // From the aggregate, never from `revenue`: that array is a 5,000-row-per-type
+  // LIST window whose own docstring says not to sum it.
+  const {
+    total: totalRevenue,
+    count: revenueCount,
+    average: avgRevenue,
+  } = useMemo(() => revenueHeadline(revenue, rollups), [revenue, rollups]);
 
-  // Revenue's natural breakdown is by category (product vs services vs subs),
-  // not by person the way founder capital is.
-  const byCategory = useMemo(
-    () =>
-      REVENUE_CATEGORIES.map((cat) => ({
-        name: cat,
-        amount: revenue.filter((t) => t.category === cat).reduce((s, t) => s + t.amount, 0),
-      }))
-        .filter((c) => c.amount > 0)
-        .sort((a, b) => b.amount - a.amount),
-    [revenue]
-  );
+  const byCategory = useMemo(() => revenueCategoryRows(revenue, rollups), [revenue, rollups]);
 
   async function handleDelete(id: string) {
     const ok = await confirm({
@@ -149,7 +273,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
           icon={Coins}
           tone="primary"
           delta="positive"
-          deltaLabel={`${n.number(revenue.length)} ${entryWord(revenue.length)}`}
+          deltaLabel={`${n.number(revenueCount)} ${entryWord(revenueCount)}`}
         />
         <DashboardStat
           label="Categories"
@@ -160,10 +284,14 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
         />
         <DashboardStat
           label="Avg / entry"
-          value={money(revenue.length > 0 ? Math.round(totalRevenue / revenue.length) : 0)}
+          // Not pre-rounded: `money()` rounds to the stored scale, and
+          // `Math.round` first threw the cents away before formatting, so small
+          // figures averaged to a wrong number wearing a decimal point that made
+          // it look exact (money-001).
+          value={money(avgRevenue)}
           icon={Calculator}
           tone="mint"
-          deltaLabel={`Across ${n.number(revenue.length)} ${entryWord(revenue.length)}`}
+          deltaLabel={`Across ${n.number(revenueCount)} ${entryWord(revenueCount)}`}
         />
       </section>
 
@@ -253,6 +381,15 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
       </section>
 
       <section className="overflow-hidden rounded-2xl border border-border bg-surface">
+        {/* The table below is a WINDOW: at most MAX_TRANSACTIONS_PER_TYPE rows,
+            oldest dropped first, and this page has no pagination to reach them
+            with. Renders nothing until the window is actually short of the
+            ledger (transactions-ledger-001). */}
+        <LedgerTruncationNotice
+          shown={revenue.length}
+          total={rollups.income.count}
+          noun="revenue entries"
+        />
         {filtered.length === 0 ? (
           <EmptyState
             icon={Coins}
@@ -343,26 +480,38 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
                       </span>
                     </td>
                     <td className="px-6 py-4 text-end">
-                      {(currentUserId === t.addedBy || currentUserRole === "admin") && (
-                        <div className="inline-flex items-center gap-1">
-                          {/* Same permission rule as delete, because a
-                              correction moves money just as effectively. */}
-                          <button
-                            onClick={() => setEditingTxn(t)}
-                            aria-label={`Edit revenue ${t.description}`}
-                            className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
-                          >
-                            <Pencil className="h-4 w-4" aria-hidden="true" />
-                          </button>
-                          <button
-                            onClick={() => handleDelete(t.id)}
-                            aria-label={`Delete revenue ${t.description}`}
-                            className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
-                          >
-                            <Trash2 className="h-4 w-4" aria-hidden="true" />
-                          </button>
-                        </div>
-                      )}
+                      <div className="inline-flex items-center gap-1">
+                        {/* OUTSIDE the mine-or-admin fence below: discussing a
+                            figure is not changing it, and `canSeeFinances` —
+                            which every reader of this page has passed — is the
+                            only predicate either server gate applies
+                            (transactions-ledger-016). */}
+                        <TransactionCommentButton
+                          count={t.commentCount}
+                          description={t.description}
+                          onClick={() => setCommentingTxn(t)}
+                        />
+                        {(currentUserId === t.addedBy || currentUserRole === "admin") && (
+                          <>
+                            {/* Same permission rule as delete, because a
+                                correction moves money just as effectively. */}
+                            <button
+                              onClick={() => setEditingTxn(t)}
+                              aria-label={`Edit revenue ${t.description}`}
+                              className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
+                            >
+                              <Pencil className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                            <button
+                              onClick={() => handleDelete(t.id)}
+                              aria-label={`Delete revenue ${t.description}`}
+                              className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                            >
+                              <Trash2 className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -393,24 +542,31 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
                   <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
                     {d.date(t.date)}
                   </span>
-                  {(currentUserId === t.addedBy || currentUserRole === "admin") && (
-                    <div className="ms-auto flex items-center gap-1">
-                      <button
-                        onClick={() => setEditingTxn(t)}
-                        aria-label={`Edit revenue ${t.description}`}
-                        className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
-                      >
-                        <Pencil className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(t.id)}
-                        aria-label={`Delete revenue ${t.description}`}
-                        className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
-                      >
-                        <Trash2 className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                    </div>
-                  )}
+                  <div className="ms-auto flex items-center gap-1">
+                    <TransactionCommentButton
+                      count={t.commentCount}
+                      description={t.description}
+                      onClick={() => setCommentingTxn(t)}
+                    />
+                    {(currentUserId === t.addedBy || currentUserRole === "admin") && (
+                      <>
+                        <button
+                          onClick={() => setEditingTxn(t)}
+                          aria-label={`Edit revenue ${t.description}`}
+                          className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
+                        >
+                          <Pencil className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(t.id)}
+                          aria-label={`Delete revenue ${t.description}`}
+                          className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </li>
             ))}
@@ -420,6 +576,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
 
       <ImportTransactionsModal
         type="income"
+        projects={projects}
         open={importOpen}
         onClose={() => setImportOpen(false)}
         onImported={() => {
@@ -437,6 +594,7 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
         <TransactionForm
           type="income"
           projects={projects}
+          serverCurrency={currency}
           onClose={() => setModalOpen(false)}
           onSuccess={refresh}
         />
@@ -456,10 +614,28 @@ export function RevenueClient({ transactions, projects, currentUserId, currentUs
             key={editingTxn.id}
             type="income"
             editing={editingTxn}
+            serverCurrency={currency}
             onClose={() => setEditingTxn(null)}
             onSuccess={refresh}
           />
         </Modal>
+      )}
+
+      {/* The thread, same component and same shape as /expenses and
+          /investments. `onChanged={refresh}` is what keeps the row's count
+          badge honest after a post or a delete. */}
+      {commentingTxn && (
+        <CommentThreadModal
+          open={Boolean(commentingTxn)}
+          onClose={() => setCommentingTxn(null)}
+          target={{ transactionId: commentingTxn.id }}
+          title={`Comments · ${commentingTxn.description}`}
+          description={`${money(commentingTxn.amount)} — ${commentingTxn.category}`}
+          currentUserId={currentUserId}
+          currentUserRole={currentUserRole}
+          companyUsers={mentionUsers}
+          onChanged={refresh}
+        />
       )}
     </div>
   );

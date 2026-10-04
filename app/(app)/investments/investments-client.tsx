@@ -21,11 +21,16 @@ import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TransactionForm } from "@/components/transactions/transaction-form";
 import { ImportTransactionsModal } from "@/components/transactions/import-transactions-modal";
+import { LedgerTruncationNotice } from "@/components/transactions/ledger-truncation-notice";
+import { TransactionCommentButton } from "@/components/transactions/transaction-comment-button";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
+import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
 import { INVESTMENT_CATEGORIES, type Transaction, type User } from "@/lib/types";
+// TYPE-ONLY, so lib/queries' server graph stays out of the client bundle.
+import type { TransactionWithCount, TypeTotal, UserContribution } from "@/lib/queries/transactions";
 import { useMoney } from "@/lib/hooks/useMoney";
 import { useDateFormat, useNumberFormat } from "@/lib/i18n/use-t";
 
@@ -35,12 +40,96 @@ const ROLE_LABEL = {
   member: "Team Member",
 } as const;
 
+/* ─────────────────────────────────────────────────────────────────────────── *
+ * /investments' money figures, as pure functions over EITHER an aggregate or the
+ * row array (transactions-ledger-001, the tail of money-008).
+ *
+ * WHAT WAS WRONG. "Total raised", "Avg cheque", the contributor count and every
+ * per-founder bar were computed from `transactions`, which is
+ * `getTransactions()` — a LIST window capped at `MAX_TRANSACTIONS_PER_TYPE`
+ * (5,000 per type) whose docstring ends "DO NOT SUM THE RESULT".
+ *
+ * THIS PAGE IS WHERE THAT HURT MOST. The rows a ceiling drops are the OLDEST,
+ * and a startup's oldest rows are its seed investments — so the founder whose
+ * capital started the company is the first person whose bar shrinks, on the one
+ * page that exists to show it, and a founder who stopped investing early
+ * disappears from the breakdown entirely.
+ *
+ * Pinned by tests/app/finance/uncapped-totals.test.ts, which also asserts
+ * app/(app)/investments/page.tsx actually passes the aggregates.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/** The server-side aggregates /investments needs, in one prop. */
+export interface InvestmentRollups {
+  /** `getTransactionTotals().byType.investment` — whole-ledger capital sum + row
+   *  count, neither of them capped. */
+  investment: TypeTotal;
+  /** `getContributionTotalsByUser()` — keyed by `Transaction.addedBy`. */
+  contributions: Record<string, UserContribution>;
+}
+
+export interface InvestmentHeadline {
+  /** All-time capital raised. */
+  total: number;
+  /** All-time investment ROW COUNT — the denominator of the average, and the
+   *  "N contributions" caption. */
+  count: number;
+  /** `total / count`, NOT pre-rounded (money-001). */
+  average: number;
+}
+
+export function investmentHeadline(
+  investments: Transaction[],
+  rollups?: InvestmentRollups
+): InvestmentHeadline {
+  const total = rollups ? rollups.investment.total : investments.reduce((s, t) => s + t.amount, 0);
+  const count = rollups ? rollups.investment.count : investments.length;
+  return { total, count, average: count > 0 ? total / count : 0 };
+}
+
+/**
+ * Capital contributed per person, biggest first, zero-contributors omitted.
+ *
+ * Keyed by `Transaction.addedBy` (who RECORDED the row), matching what the page
+ * has always displayed and what /dashboard's identical card uses, so the two
+ * cannot quote different figures for the same founder.
+ */
+export function founderStatRows(
+  users: User[],
+  investments: Transaction[],
+  rollups?: InvestmentRollups
+): { name: string; amount: number; role: User["role"] }[] {
+  const investedBy = (id: string): number =>
+    rollups
+      ? (rollups.contributions[id]?.investment ?? 0)
+      : investments.filter((t) => t.addedBy === id).reduce((s, t) => s + t.amount, 0);
+  return users
+    .map((u) => ({ name: u.name, amount: investedBy(u.id), role: u.role }))
+    .filter((f) => f.amount > 0)
+    .sort((a, b) => b.amount - a.amount);
+}
+
 type Props = {
-  transactions: Transaction[];
+  /** Rows WITH their comment counts: `getTransactions` has always included
+   *  `_count.comments` for every type, and since transactions-ledger-016 this
+   *  page renders it instead of discarding it. */
+  transactions: TransactionWithCount[];
+  /** Doubles as the founder-contribution roster and the @-mention list a
+   *  thread resolves `@name` against. */
   users: User[];
   projects: { id: string; name: string }[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
+  /** Server-side aggregates, from app/(app)/investments/page.tsx. Every money
+   *  figure on this page is short by whatever the 5,000-row-per-type list read
+   *  dropped without them. */
+  rollups: InvestmentRollups;
+  /** `Company.currency`, from the row page.tsx fetched (transactions-ledger-006).
+   *  Required rather than optional: the store's copy is absent for a whole
+   *  server-action round-trip after sign-in, so a page that forgets this renders
+   *  a USD workspace's money — and its amount input's label — in rupees, and
+   *  `npm run typecheck` is the right place to catch that. */
+  currency: string;
 };
 
 export function InvestmentsClient({
@@ -49,11 +138,15 @@ export function InvestmentsClient({
   projects,
   currentUserId,
   currentUserRole,
+  rollups,
+  currency,
 }: Props) {
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
-  const money = useMoney();
+  // The server's value, not the store's: see the `currency` prop above. The form
+  // below takes the same one, so the figures and the question cannot disagree.
+  const money = useMoney(currency);
   const n = useNumberFormat();
   const d = useDateFormat();
 
@@ -69,6 +162,11 @@ export function InvestmentsClient({
   // Active row being corrected (null = closed). money-016 — a mistyped figure
   // has to be fixable in place, not only deletable.
   const [editingTxn, setEditingTxn] = useState<Transaction | null>(null);
+  // Active row whose comment thread is open (null = closed).
+  // transactions-ledger-016 — a cheque is exactly the kind of row that needs a
+  // "what was this for?" trail next to it.
+  const [commentingTxn, setCommentingTxn] = useState<TransactionWithCount | null>(null);
+  const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
 
   function refresh() {
     startTransition(() => router.refresh());
@@ -88,18 +186,17 @@ export function InvestmentsClient({
     [investments, search, categoryFilter]
   );
 
-  const totalInvestments = investments.reduce((s, t) => s + t.amount, 0);
+  // From the aggregates, never from `investments`: that array is a
+  // 5,000-row-per-type LIST window whose own docstring says not to sum it.
+  const {
+    total: totalInvestments,
+    count: investmentCount,
+    average: avgInvestment,
+  } = useMemo(() => investmentHeadline(investments, rollups), [investments, rollups]);
+
   const founderStats = useMemo(
-    () =>
-      users
-        .map((u) => ({
-          name: u.name,
-          amount: investments.filter((t) => t.addedBy === u.id).reduce((s, t) => s + t.amount, 0),
-          role: u.role,
-        }))
-        .filter((u) => u.amount > 0)
-        .sort((a, b) => b.amount - a.amount),
-    [investments, users]
+    () => founderStatRows(users, investments, rollups),
+    [users, investments, rollups]
   );
 
   async function handleDelete(id: string) {
@@ -160,7 +257,7 @@ export function InvestmentsClient({
           icon={TrendingUp}
           tone="primary"
           delta="positive"
-          deltaLabel={`${n.number(investments.length)} contributions`}
+          deltaLabel={`${n.number(investmentCount)} contributions`}
         />
         <DashboardStat
           label="Contributors"
@@ -171,12 +268,12 @@ export function InvestmentsClient({
         />
         <DashboardStat
           label="Avg / contribution"
-          value={money(
-            investments.length > 0 ? Math.round(totalInvestments / investments.length) : 0
-          )}
+          // Not pre-rounded: `money()` rounds to the stored scale, and
+          // `Math.round` first threw the cents away before formatting (money-001).
+          value={money(avgInvestment)}
           icon={Calculator}
           tone="mint"
-          deltaLabel={`Across ${n.number(investments.length)} entries`}
+          deltaLabel={`Across ${n.number(investmentCount)} entries`}
         />
       </section>
 
@@ -274,6 +371,15 @@ export function InvestmentsClient({
       </section>
 
       <section className="overflow-hidden rounded-2xl border border-border bg-surface">
+        {/* The table below is a WINDOW: at most MAX_TRANSACTIONS_PER_TYPE rows,
+            oldest dropped first — which on this page means the seed round — and
+            there is no pagination to reach them with. Renders nothing until the
+            window is actually short of the ledger (transactions-ledger-001). */}
+        <LedgerTruncationNotice
+          shown={investments.length}
+          total={rollups.investment.count}
+          noun="investments"
+        />
         {filtered.length === 0 ? (
           <EmptyState
             icon={Wallet}
@@ -366,26 +472,38 @@ export function InvestmentsClient({
                       </span>
                     </td>
                     <td className="px-6 py-4 text-end">
-                      {(currentUserId === t.addedBy || currentUserRole === "admin") && (
-                        <div className="inline-flex items-center gap-1">
-                          {/* Same permission rule as delete, because a
-                              correction moves money just as effectively. */}
-                          <button
-                            onClick={() => setEditingTxn(t)}
-                            aria-label={`Edit investment ${t.description}`}
-                            className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
-                          >
-                            <Pencil className="h-4 w-4" aria-hidden="true" />
-                          </button>
-                          <button
-                            onClick={() => handleDelete(t.id)}
-                            aria-label={`Delete investment ${t.description}`}
-                            className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
-                          >
-                            <Trash2 className="h-4 w-4" aria-hidden="true" />
-                          </button>
-                        </div>
-                      )}
+                      <div className="inline-flex items-center gap-1">
+                        {/* OUTSIDE the mine-or-admin fence below: discussing a
+                            figure is not changing it, and `canSeeFinances` —
+                            which every reader of this page has passed — is the
+                            only predicate either server gate applies
+                            (transactions-ledger-016). */}
+                        <TransactionCommentButton
+                          count={t.commentCount}
+                          description={t.description}
+                          onClick={() => setCommentingTxn(t)}
+                        />
+                        {(currentUserId === t.addedBy || currentUserRole === "admin") && (
+                          <>
+                            {/* Same permission rule as delete, because a
+                                correction moves money just as effectively. */}
+                            <button
+                              onClick={() => setEditingTxn(t)}
+                              aria-label={`Edit investment ${t.description}`}
+                              className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
+                            >
+                              <Pencil className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                            <button
+                              onClick={() => handleDelete(t.id)}
+                              aria-label={`Delete investment ${t.description}`}
+                              className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                            >
+                              <Trash2 className="h-4 w-4" aria-hidden="true" />
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -416,24 +534,31 @@ export function InvestmentsClient({
                   <span className="font-mono text-[10px] uppercase tracking-wider text-fg-muted">
                     {d.date(t.date)}
                   </span>
-                  {(currentUserId === t.addedBy || currentUserRole === "admin") && (
-                    <div className="ms-auto flex items-center gap-1">
-                      <button
-                        onClick={() => setEditingTxn(t)}
-                        aria-label={`Edit investment ${t.description}`}
-                        className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
-                      >
-                        <Pencil className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(t.id)}
-                        aria-label={`Delete investment ${t.description}`}
-                        className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
-                      >
-                        <Trash2 className="h-4 w-4" aria-hidden="true" />
-                      </button>
-                    </div>
-                  )}
+                  <div className="ms-auto flex items-center gap-1">
+                    <TransactionCommentButton
+                      count={t.commentCount}
+                      description={t.description}
+                      onClick={() => setCommentingTxn(t)}
+                    />
+                    {(currentUserId === t.addedBy || currentUserRole === "admin") && (
+                      <>
+                        <button
+                          onClick={() => setEditingTxn(t)}
+                          aria-label={`Edit investment ${t.description}`}
+                          className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary-strong"
+                        >
+                          <Pencil className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(t.id)}
+                          aria-label={`Delete investment ${t.description}`}
+                          className="rounded-lg p-1.5 text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </li>
             ))}
@@ -443,6 +568,7 @@ export function InvestmentsClient({
 
       <ImportTransactionsModal
         type="investment"
+        projects={projects}
         open={importOpen}
         onClose={() => setImportOpen(false)}
         onImported={() => {
@@ -460,6 +586,7 @@ export function InvestmentsClient({
         <TransactionForm
           type="investment"
           projects={projects}
+          serverCurrency={currency}
           onClose={() => setModalOpen(false)}
           onSuccess={refresh}
         />
@@ -479,10 +606,28 @@ export function InvestmentsClient({
             key={editingTxn.id}
             type="investment"
             editing={editingTxn}
+            serverCurrency={currency}
             onClose={() => setEditingTxn(null)}
             onSuccess={refresh}
           />
         </Modal>
+      )}
+
+      {/* The thread, same component and same shape as /expenses and /revenue.
+          `onChanged={refresh}` is what keeps the row's count badge honest after
+          a post or a delete. */}
+      {commentingTxn && (
+        <CommentThreadModal
+          open={Boolean(commentingTxn)}
+          onClose={() => setCommentingTxn(null)}
+          target={{ transactionId: commentingTxn.id }}
+          title={`Comments · ${commentingTxn.description}`}
+          description={`${money(commentingTxn.amount)} — ${commentingTxn.category}`}
+          currentUserId={currentUserId}
+          currentUserRole={currentUserRole}
+          companyUsers={mentionUsers}
+          onChanged={refresh}
+        />
       )}
     </div>
   );

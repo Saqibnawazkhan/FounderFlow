@@ -20,11 +20,13 @@
  * redirect safe. /dashboard, /expenses, /revenue, /investments and /reports are
  * all in `MEMBER_BLOCKED_ROUTES`. The two callers that are NOT blocked routes
  * both ask the predicate before they call: app/(app)/team/page.tsx passes
- * `canSeeFin ? getTransactions() : Promise.resolve([])`, and
+ * `canSeeFin ? getContributionTotalsByUser() : Promise.resolve(undefined)`, and
  * `postRunwayCardAction` refuses on `canPostRunwayCard` (which delegates to
  * `canSeeFinances`) three steps before it reads. So no member reaches these
  * functions on a legitimate path, and the redirect only ever fires for the stale
- * cookie it exists to stop. Pinned in tests/lib/queries/finance-reader-gates.test.ts.
+ * cookie it exists to stop. Pinned in tests/lib/queries/finance-reader-gates.test.ts,
+ * whose table is now derived from this module's exports so a new reader cannot
+ * go ungated by being forgotten.
  *
  * ── TWO KINDS OF READ, AND WHY THE DIFFERENCE MATTERS (money-008) ───────────
  *
@@ -51,29 +53,61 @@
  *   • One ceiling spanned all three types, so a workspace whose 5,000 newest
  *     rows are expenses rendered /revenue as literally empty ("No revenue yet")
  *     while its income rows sat untouched in the table.
- *     `bulkImportTransactionsAction` accepts 1,000 rows per import — five
- *     imports reach it.
+ *     `bulkImportTransactionsAction` accepts 1,000 rows per CALL, and since
+ *     transactions-ledger-010 the importer chunks one file across as many calls
+ *     as it needs — so a single accounting export can reach that ceiling on its
+ *     own, never mind five.
  *
  * The header comment that used to sit here filed this as a performance
  * follow-up. It was a correctness bug with a performance cause, which is why it
  * survived: nobody reviews a perf TODO for wrong money.
  *
- * ── WHAT IS STILL OWED ─────────────────────────────────────────────────────
- * The roll-ups exist and are correct, and NOTHING CALLS THEM YET. Every one of
- * the seven finance surfaces still calls `getTransactions()` with no type and no
- * date window, and reduces the windowed array client-side:
+ * ── WHO CALLS THE ROLL-UPS ─────────────────────────────────────────────────
+ * All seven finance surfaces, as of transactions-ledger-001. A
+ * correct-and-unreached roll-up looks exactly like a fix from inside this file —
+ * the shape of six previous bugs in this repo (see
+ * tests/lib/actions/reachability.test.ts) — so the wiring is pinned from the
+ * caller side, not assumed here:
  *
  *   app/(app)/dashboard/page.tsx   app/(app)/expenses/page.tsx
+ *   app/(app)/reports/page.tsx       → tests/app/money-rollups.test.ts
+ *                                      tests/app/reports/reports-period.test.ts
  *   app/(app)/revenue/page.tsx     app/(app)/investments/page.tsx
- *   app/(app)/reports/page.tsx     app/(app)/team/page.tsx
- *   lib/actions/chat.ts:1294 (the runway card)
+ *   app/(app)/team/page.tsx        lib/actions/chat.ts (the runway card)
+ *                                    → tests/app/finance/uncapped-totals.test.ts
  *
- * So a workspace past the per-type ceiling still sees understated all-time
- * totals — just no longer an EMPTY page, and no longer without a warning in the
- * ops feed. Worth stating plainly because a correct-and-unreached roll-up looks
- * exactly like a fix from inside this file: it is the shape of six previous bugs
- * in this repo (see tests/lib/actions/reachability.test.ts). Wiring is one prop
- * per surface; those page files are owned elsewhere in this wave.
+ * ── WHO MAY HOLD ROWS, WHICH IS FEWER ──────────────────────────────────────
+ * A surface that displays FIGURES ONLY has no business receiving ledger rows:
+ * they cost a payload and buy nothing. lib/actions/chat.ts gave up the fetch in
+ * the same change that stopped it summing; /team did not, and went one change
+ * with up to 15,000 rows — every amount, description, category and author name
+ * in the ledger — serialized into the browser of everyone who opened the page,
+ * for a reader that could no longer run. Dropping a sum is half a fix; the other
+ * half is dropping the read that fed it.
+ *
+ * LIST-WINDOW CALLERS — every file that may call `getTransactions`:
+ *   app/(app)/dashboard/page.tsx
+ *   app/(app)/expenses/page.tsx
+ *   app/(app)/revenue/page.tsx
+ *   app/(app)/investments/page.tsx
+ *   app/(app)/reports/page.tsx
+ *
+ * That enumeration is CHECKED, not remembered: the block it replaced said the
+ * seven surfaces above "still ALSO call `getTransactions()`, which is correct:
+ * they render a list as well as a total", of a list that included /team and
+ * lib/actions/chat.ts — neither of which renders a list, and neither of which
+ * still imports it. tests/app/finance/uncapped-totals.test.ts derives the real
+ * importer set from source and fails if it drifts from the five paths above, in
+ * either direction. The rule inside those five is the one in `getTransactions`'
+ * own docstring: the array is for rows, every figure comes from a roll-up.
+ *
+ * /reports is the one partial: its all-time balance row is an aggregate, while
+ * its in-period figures are still reduced from the array because they are scoped
+ * by a client-side period picker and would need a server round trip per window.
+ * Nothing on that page says its window is truncated either, so a long period on
+ * a ledger past the ceiling still exports a short figure. The reasoning is
+ * recorded in app/(app)/reports/reports-client.tsx and the residual is still
+ * open; it is not fixed here.
  *
  * `getContributionTotalsByUser` was the last MISSING roll-up, not just an
  * unwired one: /dashboard's founder-contribution card and /team's per-member
@@ -279,7 +313,22 @@ export interface TransactionTotals {
   /** Cash in (founder capital + earned revenue) − cash out, the definition the
    *  dashboard's Balance card has always used. */
   balance: number;
-  /** Every non-deleted row in the window — lets a caller print "showing N of M". */
+  /**
+   * The three types' counts summed — every non-deleted row this window covers.
+   *
+   * NOT the "showing N of M" denominator, which is PER TYPE and comes from
+   * `byType[type].count`: each ledger page renders one type, so the all-types
+   * sum would compare a page's income rows against the whole ledger. The
+   * truncation notice that prints it lives in
+   * components/transactions/ledger-truncation-notice.tsx.
+   *
+   * This field has no caller today, and the docstring it replaces claimed one
+   * ("lets a caller print 'showing N of M'") — a field documented by the caller
+   * it does not have is this repo's most repeated defect shape (MEMORY.md
+   * "Shipped, tested, unreachable"). It survives because it is one addition a
+   * caller would otherwise write out, and because two roll-up tests assert it;
+   * it is not a signal anything renders.
+   */
   rowCount: number;
 }
 
@@ -390,18 +439,46 @@ export async function getMonthlyTotals(months = 6, ref: Date = new Date()): Prom
 }
 
 /**
- * Expense spend per category, biggest first — the /dashboard pie and the
- * /expenses breakdown bar. Aggregated in SQL for the same reason as the rest:
- * the chart used to be built from the capped array, so a large workspace's
- * oldest categories simply vanished from it.
+ * One type's spend/intake per category, biggest first — the /dashboard pie, the
+ * /expenses breakdown bar and the /revenue category bars. Aggregated in SQL for
+ * the same reason as the rest: the charts used to be built from the capped
+ * array, so a large workspace's oldest categories simply vanished from them.
+ *
+ * Returns the categories the LEDGER actually holds, not a walk over the
+ * `*_CATEGORIES` constant in lib/types.ts — /revenue's bars used to iterate the
+ * constant, so a row carrying anything else had its money in the headline total
+ * and in no bar, leaving a breakdown that silently did not add up.
+ *
+ * WHICH WRITE PATH LETS THAT HAPPEN, since the answer is not the obvious one:
+ * `addTransactionAction`. It validates `category` against the union of all three
+ * constants (lib/schemas/transaction.ts) and then never cross-checks it against
+ * the row's own `type` — so an income row filed under "Office Rent" is accepted
+ * and stored. `updateTransactionAction` does check (`categoriesForType`), and so
+ * does `bulkImportTransactionsAction`, which re-checks every row and counts the
+ * failures as `skipped`: the CSV importer is the one write path that provably
+ * CANNOT produce this, which is worth saying because the comment here used to
+ * blame it.
+ *
+ * Recurring rules are a second such path for the two types they support: a
+ * rule's category is validated against the expense-plus-investment union
+ * (lib/schemas/recurring.ts) and never against the rule's own `type`, and both
+ * `createRecurringRuleAction`'s seed row and the materializer cron write the
+ * pair through verbatim. Rules cannot be `income`, so that one does not reach
+ * /revenue's bars. Reading the ledger also survives a category being retired
+ * from the constant while its rows stay.
+ *
+ * The premise is executed, not asserted, in
+ * tests/app/finance/uncapped-totals.test.ts — it reads the three action bodies
+ * and fails if this paragraph names a path that does cross-check.
  */
-export async function getExpenseTotalsByCategory(
+export async function getTotalsByCategory(
+  type: TransactionType,
   window: DateWindow = {}
 ): Promise<{ category: string; amount: number }[]> {
   const { companyId } = await requireFinanceSession();
   const rows = await db.transaction.groupBy({
     by: ["category"],
-    where: { companyId, deletedAt: null, type: "expense", ...dateFilter(window) },
+    where: { companyId, deletedAt: null, type, ...dateFilter(window) },
     _sum: { amount: true },
   });
   return rows
@@ -410,6 +487,14 @@ export async function getExpenseTotalsByCategory(
       amount: r._sum.amount ? r._sum.amount.toNumber() : 0,
     }))
     .sort((a, b) => b.amount - a.amount);
+}
+
+/** Expense spend per category — `getTotalsByCategory("expense")` under the name
+ *  /dashboard and /expenses already call. */
+export async function getExpenseTotalsByCategory(
+  window: DateWindow = {}
+): Promise<{ category: string; amount: number }[]> {
+  return getTotalsByCategory("expense", window);
 }
 
 /** Per-type totals for one person. Every type present, so a page can print a

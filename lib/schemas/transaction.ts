@@ -19,6 +19,15 @@ const allCategories = [
 ] as const;
 
 /**
+ * The most rows one CSV import call may carry — and therefore the size the
+ * importer chunks a larger file into (transactions-ledger-010). Exported so the
+ * client's chunk size and the server's cap cannot drift apart; see
+ * lib/transactions/import-batches.ts for why a drift would be this finding
+ * again.
+ */
+export const IMPORT_MAX_ROWS_PER_BATCH = 1000;
+
+/**
  * The amount rule, shared by the manual form and the CSV importer (money-002).
  *
  * `.positive().max(1e9)` was the whole of it, which left the SCALE to Postgres —
@@ -121,10 +130,51 @@ export const ImportTransactionRowSchema = z.object({
   date: dateField,
 });
 
+/**
+ * One import batch: the ledger direction, an optional project tag for the whole
+ * batch, and the rows.
+ *
+ * `projectId` is per-BATCH rather than per-row, and it is the field that makes
+ * imported spend visible to budgets at all (transactions-ledger-004). It used to
+ * be absent, and the action hardcoded `projectId: null`, so every imported row
+ * was untagged — and `Budget.projectId` is NOT NULL while
+ * lib/queries/budgets.ts deliberately counts untagged spend against no cap, so
+ * 100% of imported spend sat outside 100% of budget tracking. A customer who
+ * onboarded by importing their history saw every budget read 0 spent.
+ *
+ * Per-batch because a CSV has no project column to read one from, and inventing
+ * a header for it would mean guessing a project NAME and resolving it to an id
+ * row by row — a bad trade against one picker in the modal. Same `""` →
+ * `undefined` transform as `NewTransactionSchema` so a "no project" <select>
+ * option round-trips to a SQL NULL; the action verifies the id against the
+ * caller's company before it is written.
+ *
+ * `allowDuplicates` is the customer's answer to "N of these look like entries
+ * you already have — import anyway?" (transactions-ledger-008). It defaults to
+ * FALSE and the default is the whole point: an import that forgets to send the
+ * flag must not mean "yes, double the ledger". The action only uses it to skip
+ * withholding rows it has already reported once — it is never a way to bypass
+ * any other check, every row still goes through `ImportTransactionRowSchema`
+ * and the server-side category and project verification.
+ *
+ * `rows` is capped PER CALL, not per file (transactions-ledger-010). A larger
+ * export used to be refused in full — one zod failure, zero inserts, after the
+ * customer had picked the file and pressed Import — because the importer sent
+ * every valid row in one call. It now chunks at exactly
+ * `IMPORT_MAX_ROWS_PER_BATCH`, which is why that number is a shared constant
+ * rather than a literal here: a client chunking at a different number would
+ * reproduce the finding with the rejection moved one step earlier. See
+ * lib/transactions/import-batches.ts.
+ */
 export const ImportTransactionsSchema = z.object({
   type: z.enum(["expense", "investment", "income"]),
+  projectId: z
+    .string()
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
+  allowDuplicates: z.boolean().default(false),
   rows: z
     .array(ImportTransactionRowSchema)
     .min(1, "Nothing to import")
-    .max(1000, "Import at most 1000 rows at a time"),
+    .max(IMPORT_MAX_ROWS_PER_BATCH, `Import at most ${IMPORT_MAX_ROWS_PER_BATCH} rows at a time`),
 });

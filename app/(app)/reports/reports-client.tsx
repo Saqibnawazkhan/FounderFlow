@@ -21,6 +21,7 @@ import type { Company, Transaction, User } from "@/lib/types";
 // subMonths, all LOCAL) is gone entirely; see lib/date-range.ts and money-007.
 import { format } from "date-fns";
 import { startOfUtcMonth } from "@/lib/date-range";
+import { spreadsheetSafeRows } from "@/lib/reports/spreadsheet-safe";
 
 // Inlined palette — must NOT import named constants from reports-charts.tsx
 // at top level, that pulls recharts into the initial chunk and defeats the
@@ -582,19 +583,36 @@ export function pdfTransactionRows(
 
 /**
  * The same ledger for the Transactions sheet. Amounts stay NUMBERS (signed, so
- * the column can be summed in Excel) and the date is the sheet's day format, but
- * the description cell is the same string the PDF prints — which is the property
- * tests/app/reports/reports-export-fidelity.test.ts pins.
+ * the column can be summed in Excel) and the date is the sheet's day format.
+ *
+ * The free text is the one thing that is NOT simply `pdfTransactionRows`'
+ * string: `spreadsheetSafeRows` guards it (transactions-ledger-009), because a
+ * `description` that arrived from a vendor's CSV, or an `addedByName` someone
+ * chose for themselves, may begin with `=`, `+`, `-` or `@`, and this is the
+ * boundary where that text becomes spreadsheet content. Numbers are not touched.
+ *
+ * Note what that means for the PDF beside it, because it is NOT only payloads:
+ * `-` and `+` lead ordinary expense wording, so "-50% vendor credit" is written
+ * here as "'-50% vendor credit" while `pdfTransactionRows` prints it clean. The
+ * strict-equality case in tests/app/reports/reports-export-fidelity.test.ts
+ * still holds, but only because none of its fixtures leads with one of those
+ * characters — not because ordinary descriptions are universally unaffected.
+ * tests/app/reports/export-formula-injection.test.ts pins both halves: the
+ * divergence as "the Excel cell ends with the PDF cell, and is at most one
+ * character longer", and the prose cost as cases of its own. The trade is
+ * written up in full in lib/reports/spreadsheet-safe.ts.
  */
 export function excelTransactionRows(txns: Transaction[]): (string | number)[][] {
-  return txns.map((t) => [
-    formatUtcDay(t.date),
-    t.type,
-    t.category,
-    t.description,
-    t.addedByName,
-    t.type === "expense" ? -t.amount : t.amount,
-  ]);
+  return spreadsheetSafeRows(
+    txns.map((t) => [
+      formatUtcDay(t.date),
+      t.type,
+      t.category,
+      t.description,
+      t.addedByName,
+      t.type === "expense" ? -t.amount : t.amount,
+    ])
+  );
 }
 
 /**
@@ -828,27 +846,48 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
       // rep-004: `breakdown`, so the Team sheet's Investments column sums to the
       // Summary sheet's "Investments (in period)". It did not when a contributor
       // had been deactivated.
-      const founderSheet = XLSX.utils.aoa_to_sheet([
-        ["Name", "Email", "Role", "Status", "Investments", "Expenses Logged", "% of capital"],
-        ...breakdown.map((r) => [
-          r.name,
-          r.email,
-          r.role,
-          r.former ? "former" : "active",
-          r.investments,
-          r.expenses,
-          r.capitalRatio,
-        ]),
-      ]);
+      const founderSheet = XLSX.utils.aoa_to_sheet(
+        spreadsheetSafeRows([
+          ["Name", "Email", "Role", "Status", "Investments", "Expenses Logged", "% of capital"],
+          ...breakdown.map((r) => [
+            r.name,
+            r.email,
+            r.role,
+            r.former ? "former" : "active",
+            r.investments,
+            r.expenses,
+            r.capitalRatio,
+          ]),
+        ])
+      );
 
-      const monthlySheet = XLSX.utils.aoa_to_sheet([
-        ["Month", "Investments", "Revenue", "Expenses", "Net Flow"],
-        ...monthlyData.map((m) => [m.month, m.investments, m.revenue, m.expenses, m.netFlow]),
-      ]);
+      const monthlySheet = XLSX.utils.aoa_to_sheet(
+        spreadsheetSafeRows([
+          ["Month", "Investments", "Revenue", "Expenses", "Net Flow"],
+          ...monthlyData.map((m) => [m.month, m.investments, m.revenue, m.expenses, m.netFlow]),
+        ])
+      );
 
+      // transactions-ledger-009: nothing reaches `aoa_to_sheet` unguarded. That
+      // is stated as a rule over the four sheets rather than as a list of
+      // fields, because the fields that carry the hazard are spread across three
+      // of them — `company.name` here, a contributor's name and email in Team,
+      // `description` and `addedByName` in Transactions — and a fifth sheet
+      // added later would otherwise have to remember. `spreadsheetSafeRows` is
+      // idempotent, so wrapping `txnData` again (its rows already came guarded
+      // out of `excelTransactionRows`) changes nothing and keeps the rule
+      // uniform and checkable.
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summarySheet), "Summary");
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(txnData), "Transactions");
+      XLSX.utils.book_append_sheet(
+        wb,
+        XLSX.utils.aoa_to_sheet(spreadsheetSafeRows(summarySheet)),
+        "Summary"
+      );
+      XLSX.utils.book_append_sheet(
+        wb,
+        XLSX.utils.aoa_to_sheet(spreadsheetSafeRows(txnData)),
+        "Transactions"
+      );
       XLSX.utils.book_append_sheet(wb, founderSheet, "Team");
       XLSX.utils.book_append_sheet(wb, monthlySheet, "Monthly");
 

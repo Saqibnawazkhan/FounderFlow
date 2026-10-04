@@ -16,8 +16,10 @@
  *   • The cap was taken across ALL THREE TYPES AT ONCE. A workspace whose 5,000
  *     newest rows are expenses renders /revenue as literally empty — "No revenue
  *     yet" — while its income rows sit untouched in the table.
- *     `bulkImportTransactionsAction` accepts 1,000 rows per import, so five
- *     imports reach the ceiling.
+ *     `bulkImportTransactionsAction` accepts 1,000 rows per CALL, and since
+ *     transactions-ledger-010 the importer chunks one file across as many calls
+ *     as it needs, so a single accounting export can reach the ceiling on its
+ *     own.
  *
  * WHAT IS ASSERTED HERE, AND WHY IT IS THE QUESTION ASKED RATHER THAN THE ROWS
  * RETURNED. There is no database in vitest, so no test here can sum real rows.
