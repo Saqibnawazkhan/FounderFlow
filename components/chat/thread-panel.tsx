@@ -5,6 +5,11 @@
  * thread. The "N replies" link that opens it lives on the message row in the
  * main timeline, not here; this component only renders once it's open.
  *
+ * THREE STATES, not two (chat-011): closed → nothing at all; open with no root
+ * yet → the same dialog on a skeleton, because the click has to be answered
+ * before the round trip finishes; open with a root → the thread. See the
+ * `root` prop.
+ *
  * Built on <Modal> rather than a hand-rolled side drawer. The drawer reads
  * better on a wide screen, but Modal already brings the four things a thread
  * panel must not get wrong — focus trap, focus return on close, Escape, and
@@ -32,7 +37,24 @@ import type { MessageClient } from "@/lib/queries/chat";
 import { cn } from "@/lib/utils";
 
 type Props = {
-  root: MessageClient;
+  /**
+   * The message being replied to, or NULL while it is still being fetched
+   * (chat-011).
+   *
+   * WHY NULLABLE RATHER THAN A `loading` FLAG. There is one fact here — has the
+   * thread arrived? — and the root's presence already carries it. A separate
+   * boolean would be a second source of truth for the same thing, free to
+   * disagree with it, and the disagreement would render a composer with no
+   * `parentId` to send to.
+   *
+   * WHY IT IS NULLABLE AT ALL. <ChatClient> has claimed in a comment since this
+   * panel was built that "`threadRootId` is set the moment a reply indicator is
+   * clicked so the panel can open on a spinner instead of waiting for the
+   * round-trip" — and then rendered the panel only once the data had landed, so
+   * the state it described could not exist. On a slow connection "N replies"
+   * looked like a dead control and the reader pressed it again.
+   */
+  root: MessageClient | null;
   replies: MessageClient[];
   users: { id: string; name: string }[];
   open: boolean;
@@ -86,6 +108,39 @@ export function ThreadPanel({
   if (!open) return null;
 
   const channel = channelName ?? "thread";
+
+  /* ── chat-011: OPEN, AND HONEST ABOUT BEING EMPTY ───────────────────────
+   *
+   * The same <Modal>, so the click buys the reader the same focus trap and the
+   * same Escape it will have a moment later — the dialog does not jump around
+   * underneath them when the thread lands.
+   *
+   * `description` says "Loading" rather than "0 replies": the reply count
+   * branch below is a statement ABOUT the conversation, and "No replies yet —
+   * be the first." said while a request is in flight is simply false. Same
+   * reason there is no composer here — <MessageComposer> pins every send to
+   * `parentId={root.id}`, and a box that accepts a reply with nowhere to send
+   * it is worse than a box that is not there yet.
+   *
+   * The pulse is CSS (`animate-pulse`), not a timer: nothing in a test has to
+   * wait for it, and nothing here re-renders on a clock. */
+  if (!root) {
+    return (
+      <Modal open onClose={onClose} title="Thread" description="Loading…" size="lg">
+        <div className="flex flex-col gap-4" aria-busy="true">
+          <div className="animate-pulse space-y-2 rounded-xl bg-bg/40 p-3">
+            <div className="h-3 w-28 rounded bg-glass/[0.10]" />
+            <div className="h-3 w-full rounded bg-glass/[0.08]" />
+            <div className="h-3 w-2/3 rounded bg-glass/[0.08]" />
+          </div>
+          {/* A visible sentence as well as the skeleton: a screen-reader user
+              gets nothing from three grey rectangles, and `aria-busy` alone is
+              not announced by every reader. */}
+          <p className="text-center text-xs text-fg-muted">Loading this thread…</p>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal

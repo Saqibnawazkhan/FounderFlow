@@ -14,7 +14,7 @@
  *
  * WHAT IT IS ABOUT. The invite surface let an anonymous caller drive an
  * unbounded number of indexed `inviteToken.findUnique` round trips, forever,
- * with no session, from one address. /invite/* is public in auth.config.ts:70
+ * with no session, from one address. /invite/* is public in auth.config.ts:99
  * and middleware wires only NextAuth, so there was no edge-level valve either.
  * Every sibling redeem endpoint (verify-email, confirm-email-change,
  * reset-password) already meters itself with

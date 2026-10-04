@@ -550,11 +550,23 @@ describe("updateUserRoleAction — a role change invalidates the old token", () 
 
 describe("acceptInviteAction — an invite into a deleted workspace", () => {
   it("refuses a token whose workspace has been tombstoned", async () => {
-    // softDeleteWorkspace tombstones the users, projects and money but never
-    // the InviteToken rows, and invites live 7 days. Accepting one used to
-    // mint a LIVE user inside a dead company: some pages throw, others render,
-    // and everything they enter is hard-deleted by the purge cron on day 90.
-    // Finding data-integrity-003.
+    // Invites live 7 days, so a token can outlive the workspace it was sent
+    // for. Accepting one used to mint a LIVE user inside a dead company: some
+    // pages throw, others render, and everything they enter is hard-deleted by
+    // the purge cron on day 90. Finding data-integrity-003 / acct-003.
+    //
+    // THIS COMMENT USED TO SAY softDeleteWorkspace "never" touches the
+    // InviteToken rows. That is no longer true — acct-003 made the sweep
+    // hard-delete every unused token for the company inside the same
+    // $transaction as the tombstone (lib/actions/account.ts, pinned in
+    // tests/lib/actions/workspace-lifecycle.test.ts) — and a stale present-tense
+    // claim about a safety mechanism is this repo's signature defect, so it is
+    // corrected rather than left as period detail.
+    //
+    // The check below is still the one that matters, and not as belt-and-braces
+    // theatre: tokens written for workspaces deleted BEFORE that burn shipped
+    // are still in the database with nothing having burnt them, and this is the
+    // refusal a future delete path cannot bypass by forgetting to clean up.
     prisma.answers.set("inviteToken.findUnique", {
       id: "i1",
       token: "tok_live",

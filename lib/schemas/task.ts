@@ -91,10 +91,31 @@ export const TaskStatusUpdateSchema = z.object({
   status: z.enum(["pending", "in_progress", "completed"]),
 });
 
-// Bulk operations. `ids` is capped so a malicious client can't ask us to
-// touch an unbounded set in one request — 200 is well above any realistic
-// on-screen selection.
-const TaskIdList = z.array(z.string().min(1)).min(1, "Select at least one task").max(200);
+/**
+ * How many task ids one bulk request may carry.
+ *
+ * Capped so a malicious client can't ask us to touch an unbounded set in one
+ * request. EXPORTED, and that is the point of it being here (second half of
+ * tasks-and-comments-010): three places need this number and they must not
+ * disagree —
+ *
+ *   - the parser below, which refuses an over-sized payload;
+ *   - `bulkSelectionTooLargeError` in lib/actions/tasks.ts, whose sentence
+ *     NAMES the number to the user;
+ *   - `toggleSelectAll` in app/(app)/tasks/tasks-client.tsx, which clamps the
+ *     checkbox so a legal selection is the only one the UI can produce.
+ *
+ * It was inline here and mirrored by hand in the action, with a comment saying
+ * "if lib/schemas/task.ts ever exports its cap, import it here" — and the
+ * client had no copy at all, which is how "select all" on a 300-row board
+ * (`TASK_PAGE_SIZE`, lib/queries/tasks.ts) could only ever be refused.
+ */
+export const MAX_BULK_TASK_IDS = 200;
+
+const TaskIdList = z
+  .array(z.string().min(1))
+  .min(1, "Select at least one task")
+  .max(MAX_BULK_TASK_IDS);
 
 export const BulkTaskStatusSchema = z.object({
   ids: TaskIdList,

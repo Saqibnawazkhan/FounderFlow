@@ -104,10 +104,14 @@
  * /reports is the one partial: its all-time balance row is an aggregate, while
  * its in-period figures are still reduced from the array because they are scoped
  * by a client-side period picker and would need a server round trip per window.
- * Nothing on that page says its window is truncated either, so a long period on
- * a ledger past the ceiling still exports a short figure. The reasoning is
- * recorded in app/(app)/reports/reports-client.tsx and the residual is still
- * open; it is not fixed here.
+ * What closed (RES-001) is the SILENCE, not the arithmetic: that page now
+ * compares the rows it received of each type against `byType[type].count` and,
+ * when the ceiling dropped rows the selected period could contain, says so on
+ * screen AND in both exports — so a short figure no longer reaches an investor
+ * looking complete. `reportTruncation` in app/(app)/reports/reports-client.tsx
+ * is the decision; tests/app/reports/reports-truncation-notice.test.tsx pins it
+ * and all three surfaces it feeds. A per-window aggregate is still the better
+ * fix and is still open.
  *
  * `getContributionTotalsByUser` was the last MISSING roll-up, not just an
  * unwired one: /dashboard's founder-contribution card and /team's per-member

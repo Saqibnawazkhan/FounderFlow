@@ -31,6 +31,7 @@ import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
+import { useCommentDeepLink } from "@/components/comments/comment-deep-link";
 // formatUtcDate, not formatDate: `Transaction.date` is a DATE-ONLY value
 // stored at UTC midnight (money-007), so the local renderer printed the day
 // BEFORE the one the customer typed for every viewer west of UTC — an
@@ -176,6 +177,13 @@ export function ExpensesClient({
 
   // Active transaction whose comment thread is open (null = closed).
   const [commentingTxn, setCommentingTxn] = useState<TransactionWithCount | null>(null);
+  /**
+   * The one comment inside that thread the reader was sent to, or null when the
+   * thread was opened from the row's own comment button (tasks-and-comments-003).
+   * Cleared with the thread, so reopening the row by hand does not re-scroll to
+   * a mention from last week.
+   */
+  const [commentDeepLinkId, setCommentDeepLinkId] = useState<string | null>(null);
   // Active transaction being corrected (null = closed). money-016.
   const [editingTxn, setEditingTxn] = useState<TransactionWithCount | null>(null);
   const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
@@ -225,10 +233,30 @@ export function ExpensesClient({
    * `display:none` one, and scrollIntoView on a hidden element silently does
    * nothing. Keep every node; pick a laid-out one at scroll time.
    *
-   * `?comment=` is read by neither page yet (opening the thread itself is the
-   * remaining half of the follow-up recorded in lib/actions/comments.ts).
+   * `?comment=` IS READ NOW, here and on /revenue and /investments and /tasks,
+   * through the one shared decision in
+   * components/comments/comment-deep-link.ts — so a mention on a ledger row
+   * highlights the row AND opens its thread, scrolled to the comment that named
+   * the reader. The three ledgers differ in everything else a deep link does
+   * (this page clears the reader's filters and scrolls across several frames;
+   * the other two read no target param at all) and not in that decision, which
+   * is why it is shared rather than copied three times.
    * ───────────────────────────────────────────────────────────────────────── */
   const highlightIdParam = searchParams.get("transactionId");
+  const commentIdParam = searchParams.get("comment");
+  useCommentDeepLink({
+    commentId: commentIdParam,
+    targetId: highlightIdParam,
+    // `expenses`, not `filtered`: the effect above clears the reader's filters
+    // for a deep link, but it does so in a state update that has not rendered
+    // yet, so `filtered` still hides the row at this moment. The thread is the
+    // thing they were sent for — it must not depend on a search box.
+    rows: expenses,
+    onOpen: (t) => {
+      setCommentingTxn(t);
+      setCommentDeepLinkId(commentIdParam);
+    },
+  });
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const scrollRefs = useRef<Map<string, Set<HTMLElement>>>(new Map());
   function registerRef(id: string) {
@@ -747,7 +775,11 @@ export function ExpensesClient({
       {commentingTxn && (
         <CommentThreadModal
           open={Boolean(commentingTxn)}
-          onClose={() => setCommentingTxn(null)}
+          onClose={() => {
+            setCommentingTxn(null);
+            setCommentDeepLinkId(null);
+          }}
+          highlightCommentId={commentDeepLinkId}
           target={{ transactionId: commentingTxn.id }}
           title={`Comments · ${commentingTxn.description}`}
           description={`${money(commentingTxn.amount)} — ${commentingTxn.category}`}

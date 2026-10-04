@@ -26,6 +26,11 @@
  * The copy itself is never spelled out here — every assertion goes through
  * `en.settings.*`, so rewording a string cannot turn these green or red on its
  * own. tests/app/settings/danger-zone-export-pointer.test.ts owns the wording.
+ *
+ * acct-013 SHARES THIS FILE for the same reason: it is the same component, the
+ * same two scopes and the same mocks, and the finding is also about what a sole
+ * founder can SEE before a whole-workspace cascade — see the third describe
+ * block. Its server half lives in tests/lib/actions/workspace-lifecycle.test.ts.
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -162,6 +167,108 @@ describe("the delete-account dialog puts its export hint on the screen", () => {
     await mountAccountModal();
 
     expect(screen.getByRole("button", { name: /delete/i })).not.toBeDisabled();
+  });
+});
+
+/**
+ * acct-013 — THE TWO KEYS, ON THE SCREEN.
+ *
+ * The server half is pinned in tests/lib/actions/workspace-lifecycle.test.ts:
+ * `deleteAccountAction` refuses the whole-workspace cascade unless the workspace
+ * name is typed, and asserts that `company.update` is never reached without it.
+ * Nothing asserted that the DIALOG asks for it. Delete the
+ * `{deletesWorkspace && scope && (…)}` field block in delete-account-modal.tsx
+ * and every test in this repo stayed green while the solo founder — the shape
+ * that branch exists for — was left with a dialog whose only input is a password
+ * and a submit button the server now always refuses. Server-side enforcement
+ * without the field is a different bug, not a smaller one.
+ *
+ * THE COMPLEMENT IS ASSERTED TOO, and it is not symmetry for its own sake: the
+ * multi-user branch really does only remove the caller, so demanding a workspace
+ * name there would put the heavier friction in front of the lighter destruction
+ * and train people to type past it.
+ *
+ * Copy comes from `en.settings.*` like every other assertion in this file, so
+ * rewording a string cannot turn these green on its own — the wording itself is
+ * owned by tests/lib/i18n/settings-copy.test.ts.
+ */
+describe("the solo founder's dialog asks for both keys (acct-013)", () => {
+  beforeEach(() => {
+    actions.describeAccountDeletionAction.mockReset();
+    actions.deleteAccountAction.mockReset();
+    toasts.error.mockReset();
+  });
+
+  it("renders the workspace-name field, and copy that names the workspace", async () => {
+    actions.describeAccountDeletionAction.mockResolvedValue({
+      success: true,
+      data: { deletesWorkspace: true, workspaceName: WORKSPACE },
+    });
+
+    await mountAccountModal();
+
+    expect(
+      screen.getByLabelText(en.settings.workspaceNameConfirm),
+      "for the only member of a workspace this click runs the byte-identical " +
+        "softDeleteWorkspace cascade that 'Delete this workspace' runs. That dialog " +
+        "asks for the workspace name; this one must ask for it too, or the weaker " +
+        "path is the one a solo founder's whole ledger goes through."
+    ).toBeInTheDocument();
+    // Still asks for the password as well — the name replaces nothing.
+    expect(screen.getByLabelText(en.settings.passwordConfirm)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        en.settings.deleteAccountWorkspaceConfirmDesc.replace("{workspace}", `"${WORKSPACE}"`)
+      ),
+      "the word 'workspace' did not appear in this modal at all, so afterwards the " +
+        "user's model was 'I removed my login' and they never asked for the 90-day restore"
+    ).toBeInTheDocument();
+  });
+
+  it("asks for the password alone when the workspace survives the delete", async () => {
+    actions.describeAccountDeletionAction.mockResolvedValue({
+      success: true,
+      data: { deletesWorkspace: false, workspaceName: WORKSPACE },
+    });
+
+    await mountAccountModal();
+
+    expect(
+      screen.queryByLabelText(en.settings.workspaceNameConfirm),
+      "the multi-user branch only tombstones the caller, so one password is the " +
+        "right amount of friction and a name field here would be friction in front " +
+        "of the wrong destruction"
+    ).toBeNull();
+    expect(screen.getByText(en.settings.deleteAccountConfirmDesc)).toBeInTheDocument();
+  });
+
+  it("does not ask the server at all when the typed name does not match", async () => {
+    // The action re-checks the name because a server action is a POST endpoint.
+    // This assertion is about the other half: the dialog answers an obvious
+    // mismatch in the field, where the reader is looking, instead of spending a
+    // destructive-class rate-limit slot (lib/rate-limit.ts `destructive`: 5 per
+    // user / 10 min) on a submission it can already see is wrong.
+    actions.describeAccountDeletionAction.mockResolvedValue({
+      success: true,
+      data: { deletesWorkspace: true, workspaceName: WORKSPACE },
+    });
+    // Resolves to a refusal rather than a success so that a REGRESSION here fails
+    // on the assertion below instead of on jsdom's unimplemented navigation.
+    actions.deleteAccountAction.mockResolvedValue({
+      success: false,
+      error: "should not be reached",
+    });
+
+    const user = userEvent.setup();
+    await mountAccountModal();
+    // Right letters, wrong case — the server comparison is case-sensitive on
+    // purpose, so the dialog must not be laxer than the gate it stands in front of.
+    await user.type(screen.getByLabelText(en.settings.workspaceNameConfirm), "nimbus labs");
+    await user.type(screen.getByLabelText(en.settings.passwordConfirm), "hunter2hunter2");
+    await user.click(screen.getByRole("button", { name: /delete/i }));
+
+    expect(await screen.findByText(`Type "${WORKSPACE}" exactly to confirm.`)).toBeInTheDocument();
+    expect(actions.deleteAccountAction).not.toHaveBeenCalled();
   });
 });
 

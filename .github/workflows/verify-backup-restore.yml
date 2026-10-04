@@ -41,6 +41,16 @@
 ##   4. Does 20260925140000_add_user_handle's BACKFILL work on real rows? On
 ##      staging it ran against an empty table, which is a no-op — so the riskiest
 ##      statement in the pending batch is currently untested.
+##   5. Is the dump restorable into a REAL Supabase project, not just into this
+##      container? Added 2026-10-04 with backup.yml's `--schema=public`. The
+##      container is empty, so an unscoped dump restores into it cleanly while
+##      still being unrestorable into Supabase, whose managed `auth`, `storage`,
+##      `realtime` and `vault` schemas already exist. The restore step now
+##      asserts that no managed schema arrived with the dump — which is the only
+##      place that property can be OBSERVED rather than inferred from the flags.
+##   6. How long does a restore take? Not an RTO (see backup.yml's header), but
+##      the drill prints its own elapsed seconds so the number stops being
+##      unknown and starts being a trend.
 ##
 ## Logs print counts and aggregates ONLY, never row contents. Repo collaborators
 ## can read Actions logs; customer data must not appear in them.
@@ -49,10 +59,47 @@
 name: Verify backup restore
 
 on:
+  # WEEKLY, Mondays at 06:40 UTC. cron-014's second limb: this drill had run
+  # exactly once, by hand, and a restore proven once is proven about that day's
+  # dump, that day's migration set and that day's pg_dump version. Between
+  # presses of the button the claim decays with nothing saying so.
+  #
+  # WHY WEEKLY AND NOT NIGHTLY. What decays nightly — "did an object of the
+  # right size land in the bucket" — is already covered nightly, by backup.yml's
+  # `freshness` job, which needs no database and no restore. What only THIS can
+  # answer is whether the file's CONTENT restores and the pending migrations
+  # still apply to it, and that changes when someone changes the schema, the
+  # dump command or the Postgres version — on the scale of merges, not nights.
+  # Weekly bounds the undetected window at 7 days, shorter than the 14-day
+  # pre-disablement warning in backup.yml and far shorter than a monthly
+  # alternative. Nightly would multiply the cost sevenfold (a full download, a
+  # service container, an `npm install` and a `prisma migrate deploy` each time)
+  # for a property that does not change nightly — and it would pull a copy of
+  # every customer's financial records onto a GitHub runner every night, which
+  # is an exposure worth having as rarely as is still useful.
+  #
+  # WHY MONDAY MORNING. A failure needs someone to act on it; a Saturday-night
+  # red sits unread. 06:40 UTC is late morning in the maintainer's timezone
+  # (PKT), with the week ahead to fix it.
+  #
+  # WHY 06:40 AND NOT ON THE HOUR. It must not land in backup.yml's windows:
+  # the dump runs 04:15 UTC (15-minute timeout) and the freshness audit 13:45
+  # UTC. 06:40 leaves the dump over two hours of margin for GitHub's best-effort
+  # scheduler, so the drill restores the object that night's run produced rather
+  # than racing it. Off-the-hour because :00 is when every cron on the platform
+  # queues. tests/ops/backup-workflow.test.ts asserts the hour stays clear of
+  # both of backup.yml's.
+  #
+  # AND IT IS INERT UNTIL THIS FILE REACHES `main`: GitHub fires `schedule:`
+  # from the DEFAULT branch's copy of a workflow only. The same is true of the
+  # dispatch button below. See the push trigger's note.
+  schedule:
+    - cron: "40 6 * * 1"
+
   workflow_dispatch:
     inputs:
       dump_date:
-        description: "Dump to restore, as YYYY-MM-DD. Blank = newest in the bucket."
+        description: "Dump to restore: a YYYY-MM-DD prefix (newest of that day) or a full object name. Blank = newest in the bucket."
         required: false
         default: ""
 
@@ -75,17 +122,47 @@ on:
   #
   # So until this lands on `main` deliberately, it triggers on a push to the
   # branch it lives on, narrowed to changes to this file so ordinary commits do
-  # not re-run it. DELETE THIS BLOCK once the file reaches `main`; the dispatch
-  # button above is its permanent home.
+  # not re-run it. DELETE THIS BLOCK once the file reaches `main`; the schedule
+  # and the dispatch button above are its permanent home.
+  #
+  # THE WEEKLY SCHEDULE IS SUBJECT TO THE SAME RULE, and that is the whole
+  # residue of this workflow: GitHub reads `schedule:` from the DEFAULT branch
+  # only, so until this file is on `main` nothing fires on Mondays and this
+  # push trigger is the only thing that has ever run it. The schedule is
+  # correct-and-inert, not working.
   push:
     branches:
       - staging-verify
     paths:
       - ".github/workflows/verify-backup-restore.yml"
 
+# `issues: write` is load-bearing now that this runs on a schedule. A
+# dispatch-only workflow fails in front of the person who pressed the button; a
+# scheduled one fails into an empty room, so adding the schedule without an
+# alert would convert a manual check into a silent one. `contents` stays read —
+# this job checks out the repo and restores a dump, and a pushable token in a
+# scheduled job is a scheduled production deploy waiting to happen.
+permissions:
+  contents: read
+  issues: write
+
+# One drill at a time, and never cancel one in flight: the weekly run and a
+# hand-pressed one would otherwise race for the same service container port and
+# both report nonsense. Nothing here writes anywhere persistent, so a queued
+# second run is pure waste rather than a hazard.
+concurrency:
+  group: verify-backup-restore
+  cancel-in-progress: false
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # A hung `psql -f` would otherwise burn GitHub's 6-hour default while the
+    # job shows "in progress", which reports to nobody. The recorded run took
+    # minutes; 30 is generous enough to absorb a slow apt mirror and an
+    # `npm install`, and short enough that a stall becomes a failure the same
+    # morning.
+    timeout-minutes: 30
 
     # The ONLY database this job can reach. Ephemeral, unreachable from outside
     # the runner, gone when the job finishes.
@@ -146,18 +223,74 @@ jobs:
             ENDPOINT_ARGS=(--endpoint-url "$BACKUP_S3_ENDPOINT")
           fi
 
+          # The object-name filter has to match what backup.yml WRITES, and that
+          # changed under this workflow's feet. prodready-010 moved the key from
+          # `founderflow-YYYY-MM-DD.sql.gz` to a second-resolution
+          # `founderflow-YYYY-MM-DDTHHMMSSZ.sql.gz` on 2026-09-28, because
+          # `aws s3 cp` overwrites and two dumps on one day shared a key. This
+          # filter still demanded the date-only form until 2026-10-04, so it
+          # matched NOTHING taken after that change: the "newest dump" selector
+          # came back empty and the drill failed with "No dump found" — a
+          # scheduled drill on that would have gone red every week while saying
+          # nothing whatsoever about restorability. Both forms are accepted
+          # because the bucket still holds old-format objects.
+          # tests/ops/backup-workflow.test.ts expands backup.yml's own `date -u`
+          # format and asserts this expression matches it, so the two cannot
+          # drift again.
+          # THE LISTING IS ITS OWN COMMAND, not the head of a `… || true`
+          # pipeline. It used to be inside one: the `|| true` was added for
+          # grep's no-match exit 1, which is correct in itself — the friendly
+          # "No dump found" below has to be reachable, and `pipefail` would
+          # otherwise kill the step first — but it covered the whole
+          # `aws | awk | grep | sort`. So a revoked key, a renamed bucket or a
+          # wrong endpoint stopped aborting with the real AWS error and fell
+          # through to `::error title=No dump found` instead. In a weekly job
+          # whose entire output is one red, a credential problem that reports
+          # itself as an empty bucket sends the next reader to the wrong place.
+          LISTING=$(aws s3 ls "s3://$BACKUP_S3_BUCKET/nightly/" "${ENDPOINT_ARGS[@]}")
+          # Only grep's "nothing matched" is forgiven, and only that: grep exits
+          # 1 when it found nothing and 2 when grep itself failed, and a bare
+          # `|| true` cannot tell those apart.
+          # tests/ops/backup-workflow.test.ts expands backup.yml's own `date -u`
+          # format and asserts this expression matches it, so the two cannot
+          # drift again (it did drift: see the note above).
+          NAMES=$(printf '%s\n' "$LISTING" \
+            | awk '{print $4}' \
+            | { grep -E '^founderflow-[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9]{6}Z)?\.sql\.gz$' || [ "$?" -eq 1 ]; } \
+            | sort)
           if [ -n "${DUMP_DATE:-}" ]; then
-            NAME="founderflow-${DUMP_DATE}.sql.gz"
+            # BOTH of the forms this input's description promises — a
+            # YYYY-MM-DD day prefix, and a full object name. The previous
+            # version was `grep -E "^founderflow-${DUMP_DATE}"`, which PREPENDS
+            # the prefix unconditionally, so a full object name became
+            # `^founderflow-founderflow-…`, matched nothing, and failed with
+            # "No dump found" — blaming the bucket for the filter's own bug, on
+            # the one control a human reaches for in an incident ("restore THAT
+            # snapshot, not the newest").
+            #
+            # Matched with `case`, not with an interpolated regex. This value
+            # arrives from a text box, and in an ERE a `.` is a wildcard and a
+            # `|` is an alternation, so a careless paste could select a
+            # different snapshot than the one asked for. A quoted `case`
+            # pattern is literal: an exact name matches exactly, a day prefix
+            # matches that day, and nothing has to be escaped. $NAMES is
+            # sorted, so the last match for a day is that day's newest dump.
+            NAME=""
+            while IFS= read -r candidate; do
+              [ -n "$candidate" ] || continue
+              case "$candidate" in
+                "$DUMP_DATE") NAME="$candidate" ;;
+                "founderflow-$DUMP_DATE"*) NAME="$candidate" ;;
+              esac
+            done <<< "$NAMES"
           else
-            # Newest by key name. The filenames are ISO dates, so lexical order
-            # IS chronological order — no reliance on S3 timestamps, which
-            # differ across providers.
-            NAME=$(aws s3 ls "s3://$BACKUP_S3_BUCKET/nightly/" "${ENDPOINT_ARGS[@]}" \
-              | awk '{print $4}' | grep -E '^founderflow-[0-9]{4}-[0-9]{2}-[0-9]{2}\.sql\.gz$' \
-              | sort | tail -1)
+            # Newest by key name. The filenames are ISO-ordered, so lexical
+            # order IS chronological order — no reliance on S3 timestamps,
+            # which differ across providers.
+            NAME=$(printf '%s\n' "$NAMES" | tail -1)
           fi
           if [ -z "${NAME:-}" ]; then
-            echo "::error title=No dump found::Nothing matching founderflow-YYYY-MM-DD.sql.gz under nightly/."
+            echo "::error title=No dump found::Nothing under nightly/ matches ${DUMP_DATE:-the newest founderflow-YYYY-MM-DD[THHMMSSZ].sql.gz}. The bucket listing itself SUCCEEDED, so this is the filter or the bucket's contents — a bad credential, a missing bucket or a wrong endpoint aborts further up with the AWS error rather than arriving here."
             exit 1
           fi
           echo "Restoring: $NAME"
@@ -171,11 +304,22 @@ jobs:
           gunzip -c ./dump.sql.gz > ./dump.sql
           echo "uncompressed bytes: $(stat -c%s ./dump.sql)"
 
-          # ON_ERROR_STOP=0 deliberately. A Supabase dump can carry statements a
-          # vanilla Postgres has no opinion about (extensions, roles, publication
-          # DDL). Aborting on the first of those would tell us nothing about
-          # whether OUR data restored. So: continue, then judge on the tables.
+          # ON_ERROR_STOP=0 deliberately, and NOT upgraded to 1 now that the
+          # dump is scoped. Aborting on the first statement a vanilla Postgres
+          # has no opinion about would tell us nothing about whether OUR data
+          # restored, and a drill that goes red on a harmless notice is a drill
+          # that gets muted. So: continue through everything, print every
+          # distinct error kind, then judge on the tables and the rows.
+          #
+          # The elapsed seconds are the cheapest fact a restore drill can
+          # produce about recovery time, and prodready-009's "an unmeasured RTO
+          # is not an RTO" is why they are recorded. Read them as a LOWER BOUND
+          # only: this is a loopback container on a GitHub runner, so it
+          # contains no Supabase provisioning and no network transfer.
+          STARTED=$(date -u +%s)
           "$PSQL" "$TARGET_URL" -v ON_ERROR_STOP=0 -q -f ./dump.sql > restore.log 2> restore.err || true
+          RESTORE_SECONDS=$(( $(date -u +%s) - STARTED ))
+          echo "RESTORE_SECONDS=$RESTORE_SECONDS" >> "$GITHUB_ENV"
 
           ERRORS=$(grep -c '^ERROR:' restore.err || true)
           echo "psql ERROR lines: ${ERRORS:-0}"
@@ -183,17 +327,46 @@ jobs:
             echo "--- distinct error kinds (messages only, no data) ---"
             grep '^ERROR:' restore.err | sed 's/".*"/"<redacted>"/g' | sort | uniq -c | sort -rn | head -20
           fi
+          echo "::notice title=Restore time::$DUMP_NAME: psql restore took ${RESTORE_SECONDS}s into a loopback postgres:17 container, $(stat -c%s ./dump.sql) uncompressed bytes, ${ERRORS:-0} psql errors. Lower bound on recovery time, not an RTO."
 
-          # KNOWN AND HARMLESS, recorded so nobody re-investigates it: the dump
-          # carries Supabase-specific statements — `supabase_vault`, the `vault`
-          # schema — that a vanilla Postgres has no extension for. Those surface
-          # in the CONTAINER's server log rather than psql's stderr, so they do
-          # not show in the count above. They matter only if the app reads them,
-          # and it does not: it talks to Postgres through Prisma and uses no
-          # vault secrets. A restore into a real Supabase project would not hit
-          # them at all. Flagged because "ERROR" in a backup log is exactly the
-          # thing that gets mistaken for a broken backup.
-          echo "note: supabase_vault / vault.secrets statements are expected to fail on vanilla Postgres and are not used by this app"
+          # ── Nothing outside `public` may have arrived ──────────────────────
+          # This is question 5 in the header, and it is the only place the
+          # property can be OBSERVED rather than inferred from backup.yml's
+          # flags. A real recovery target is a Supabase project, where every
+          # schema below already exists and is populated; a dump that creates
+          # them collides on restore. The container is empty, so an unscoped
+          # dump restores into it perfectly happily — which is exactly why the
+          # drill proving "it restores" proved the wrong thing until the dump
+          # was scoped on 2026-10-04.
+          #
+          # WHAT THIS REPLACES, recorded so nobody re-investigates it: this step
+          # used to carry a note that `supabase_vault` / `vault.secrets`
+          # statements in the dump were "KNOWN AND HARMLESS" and failed in the
+          # CONTAINER's server log rather than in psql's stderr, which is why
+          # they never showed in the error count above. That note was true of an
+          # unscoped dump and is now false by construction: those statements are
+          # not in the file at all, and the assertion below fails if they come
+          # back. The reason it was flagged is still worth keeping in view —
+          # "ERROR" in a backup log is exactly the thing that gets mistaken for
+          # a broken backup.
+          MANAGED_SCHEMAS="auth storage realtime vault extensions graphql graphql_public pgsodium supabase_migrations"
+          FOUND=""
+          for s in $MANAGED_SCHEMAS; do
+            # An empty answer means the QUERY failed, not that the schema is
+            # absent — reporting that as "not schema-scoped" would be the wrong
+            # diagnosis, and the next step fails loudly on a dead psql anyway.
+            n=$("$PSQL" "$TARGET_URL" -At -c "select count(*) from information_schema.schemata where schema_name='$s'" 2>/dev/null || echo "")
+            if [ -z "$n" ]; then
+              echo "::warning title=Schema check skipped::could not query information_schema for '$s'"
+            elif [ "$n" != "0" ]; then
+              FOUND="$FOUND $s"
+            fi
+          done
+          if [ -n "$FOUND" ]; then
+            echo "::error title=Dump is not schema-scoped::The restored dump created Supabase-managed schema(s):$FOUND. Every one of those already exists in a real Supabase project, so this dump cannot be restored into one — which is prodready-009 reopening. Check that backup.yml still passes --schema=public."
+            exit 1
+          fi
+          echo "no Supabase-managed schemas in the restored dump — it is scoped to public and will not collide with a real target"
 
       - name: Did the data arrive, or only the schema?
         run: |
@@ -247,7 +420,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
 
       - name: Install dependencies
@@ -301,4 +474,62 @@ jobs:
             exit 1
           fi
 
-          echo "::notice title=Restore verified::$DUMP_NAME restored, $TOTAL users, $AFTER migrations applied, backfill clean."
+          echo "::notice title=Restore verified::$DUMP_NAME restored in ${RESTORE_SECONDS}s, $TOTAL users, $AFTER migrations applied, backfill clean, no Supabase-managed schemas present."
+
+      - name: Open an issue if the drill failed
+        # Same shape and the same marker as backup.yml's alerts, deliberately:
+        # one `[backup-alert]` thread per outage, because a weekly drill that
+        # files a fresh issue every Monday gets muted, and a muted alert is the
+        # state all of this exists to leave.
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = "[backup-alert]";
+            const title = `${marker} Backup restore drill FAILED`;
+            const body = [
+              `The weekly restore drill could not restore the newest nightly dump.`,
+              ``,
+              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `- Triggered by: \`${context.eventName}\``,
+              ``,
+              `This job does not touch any real database — it restores into a throwaway`,
+              `\`postgres:17\` container. So a failure here does NOT mean data has been`,
+              `lost. It means one of:`,
+              ``,
+              `1. the dump in the bucket is not restorable (the serious one),`,
+              `2. the pending migrations no longer apply to production's real schema,`,
+              `3. the dump is no longer schema-scoped, so it would collide with a real`,
+              `   Supabase target (prodready-009 reopening), or`,
+              `4. the drill itself has drifted from what backup.yml writes.`,
+              ``,
+              `The run log says which. Until it is fixed, the backups are back to being a`,
+              `hypothesis: they are still being taken, and nothing is proving they restore.`,
+            ].join("\n");
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              per_page: 100,
+            });
+            // listForRepo returns pull requests too; they are not our alerts.
+            const existing = issues.find((i) => !i.pull_request && i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+              core.warning(`Restore drill failed; commented on existing issue #${existing.number}`);
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["backup"],
+              });
+              core.warning(`Restore drill failed; opened issue #${created.number}`);
+            }

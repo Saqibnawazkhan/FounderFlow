@@ -69,8 +69,11 @@ import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer-core";
 import { localDb } from "./_local-db.mjs";
 
-// fileURLToPath, not import.meta.dirname — the latter needs Node >= 20.11 and
-// .github/workflows/ci.yml pins node-version: "20".
+// fileURLToPath, not import.meta.dirname — the portable form, kept now that the
+// Node pin has moved. The original reason was narrower: import.meta.dirname needs
+// Node >= 20.11 while .github/workflows/ci.yml pinned node-version "20". CI and
+// `engines.node` pin "24" today (tests/ops/node-runtime-pin.test.ts enforces
+// that they agree), so this is a preference, not a constraint.
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BASE = process.env.BASE ?? "http://localhost:3000";
 const CHROME =

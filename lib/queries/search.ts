@@ -333,9 +333,12 @@ async function searchMessages(q: string, userId: string, companyId: string): Pro
     // this comment named as a prerequisite is handled too: a hit whose `parentId`
     // is non-null opens the panel rather than scrolling the timeline.
     //
-    // Still not done, so that the next reader is not misled the other way: an
-    // anchor older than the newest loaded page is NOT paged towards — it falls
-    // back to a line pointing at "Load earlier messages".
+    // An anchor older than the newest page IS now served, which this comment
+    // denied until chat-010's residual half landed: app/(app)/chat/[slug]/page.tsx
+    // reads `?message=` and calls `getMessagesPageAnchoredAt`, which returns the
+    // bounded window CONTAINING the row rather than the live edge. The "Load
+    // earlier messages" fallback survives only for a server/client disagreement —
+    // an id the server could not place — so it is the cold path, not the hot one.
     href: `/chat/${row.channelSlug}?message=${row.id}`,
   }));
 }

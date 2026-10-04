@@ -33,6 +33,35 @@ function roleFromToken(claim: unknown): Role {
 }
 
 export const authConfig = {
+  // WHAT THIS DOES AND DOES NOT MEAN (prodready-023). `trustHost` tells
+  // @auth/core to take the request's own `Host` / `X-Forwarded-Host` as the
+  // origin — which is only safe when something else fixes that origin.
+  // `AUTH_URL` is that something: next-auth rewrites every request's origin to
+  // it before Auth runs (`reqWithEnvURL`, node_modules/next-auth/lib/env.js),
+  // so with it set the header is never consulted. Until 2026-10-04 nothing
+  // required it in production, and the origin — session cookie, sign-in
+  // redirect, `callbackUrl` validation — really was whatever hostname the
+  // request arrived on, including every per-deployment *.vercel.app URL.
+  // `AUTH_URL` is now in REQUIRED_PROD_ENV in scripts/vercel-build.mjs (with a
+  // value rule, and a cross-check against NEXT_PUBLIC_APP_URL), so a production
+  // build fails without one pinned canonical origin.
+  //
+  // WHAT THAT STILL LEAVES. The pin fixes the origin Auth.js COMPUTES from, not
+  // the host the response was served on, and Auth.js sets the session cookie
+  // with no `Domain` attribute — so it is host-only on whichever hostname
+  // answered. A sign-in driven straight at an alias (a preview URL, or a
+  // production deployment's own *.vercel.app alias) still leaves a valid cookie
+  // on that alias; the pin only stops the flow settling there, because the
+  // post-sign-in redirect goes to the canonical origin, where that cookie is not
+  // sent. Narrowing it to exactly one origin needs a canonical-host redirect in
+  // middleware, which does not exist yet — see CLAUDE.md, "What a pinned
+  // AUTH_URL does NOT close".
+  //
+  // Deleting this line would NOT be the stricter choice: @auth/core sets
+  // `trustHost` itself whenever `VERCEL` is set (lib/utils/env.js), i.e. on
+  // every Vercel build, and whenever `NODE_ENV !== "production"`, i.e. in
+  // `next dev`. It would change nothing in either place and break a
+  // self-hosted production run. Pinned by tests/lib/env/build-config.test.ts.
   trustHost: true,
   session: { strategy: "jwt" },
   pages: {
@@ -71,6 +100,17 @@ export const authConfig = {
         pathname.startsWith("/api/auth") ||
         pathname.startsWith("/api/cron/") || // protected by CRON_SECRET header instead
         pathname.startsWith("/api/webhooks/") || // protected by provider HMAC signature instead
+        // The liveness probe (prodready-018). An EXACT match, not a prefix: the
+        // three entries above are prefixes because each owns a family of paths
+        // with its own non-session gate, whereas this is one route with no gate
+        // at all, and `/api/health/<anything>` must not inherit that.
+        //
+        // It has to be here or the route does not work: the matcher in
+        // middleware.ts inspects every path without a dot in it, so without this
+        // line an anonymous poll gets a 302 to /login — which every uptime
+        // monitor records as "up". A health endpoint that is accidentally
+        // private is worse than none. See app/api/health/route.ts.
+        pathname === "/api/health" ||
         pathname === "/robots.txt" ||
         pathname === "/sitemap.xml" ||
         pathname === "/icon.svg" ||

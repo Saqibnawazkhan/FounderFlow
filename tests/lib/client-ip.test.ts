@@ -13,7 +13,15 @@ describe("getClientIp", () => {
   beforeEach(() => store.clear());
   afterEach(() => vi.unstubAllEnvs());
 
-  it("prefers x-real-ip (the unspoofable edge value)", async () => {
+  // These first four run with NODE_ENV=test and no VERCEL, which is a runtime
+  // `trustedIpHeaders()` deliberately lets read both headers (a laptop is not a
+  // trust boundary, and the puppeteer harness needs a per-agent bucket). So
+  // they pin the ORDER OF PREFERENCE and the parsing, not trustworthiness —
+  // this title used to say "the unspoofable edge value", which is the exact
+  // claim lib/client-ip.ts's banner was rewritten to repudiate: x-real-ip is
+  // unspoofable on Vercel's edge and nowhere else. Trust itself is pinned by
+  // the sec-001 block below.
+  it("prefers x-real-ip over x-forwarded-for where both may be read", async () => {
     store.set("x-real-ip", "203.0.113.7");
     store.set("x-forwarded-for", "1.1.1.1, 203.0.113.7");
     expect(await getClientIp()).toBe("203.0.113.7");

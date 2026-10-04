@@ -5,11 +5,17 @@
  *
  * Straight from the marketing mock: Hash icon, channel name in
  * `text-sm font-bold tracking-tight`, member count pushed to the far end in
- * mono. Nothing else earns a place here — the mock's restraint is the point.
+ * mono. The mock's restraint is the point, and it is the reason the only two
+ * additions here are things a reader cannot do anywhere else:
  *
- * The one addition the mock has no need for is the mobile back affordance:
- * below `md` the rail and the conversation are mutually exclusive panes, so
- * without it a phone user who opens a channel has no way back to the list.
+ *   - the mobile back affordance — below `md` the rail and the conversation are
+ *     mutually exclusive panes, so without it a phone user who opens a channel
+ *     has no way back to the list;
+ *   - the mute bell (chat-012) — `ChannelMember.mutedAt` was honoured by both
+ *     notification fan-outs and written by nothing in the entire repo, so a
+ *     member of a noisy channel could only stop its pings by turning mentions
+ *     off everywhere in the workspace. This bar is where a per-conversation
+ *     setting belongs; see `MUTE_TITLE` for what it must promise.
  *
  * DIRECTION (audit S20): inline offsets here are logical (`ms-`/`me-`), not
  * `ml-`/`mr-`. `border-b` stays as it is — that is a BLOCK edge, and block
@@ -31,7 +37,7 @@
  * direction. Only the back arrow is signage, and only it flips.
  */
 
-import { ArrowLeft, Hash, Lock } from "lucide-react";
+import { ArrowLeft, Bell, BellOff, Hash, Lock } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { isDmKind, isPrivateKind } from "@/lib/chat/dm";
 import type { ChannelDetail } from "@/lib/queries/chat";
@@ -40,9 +46,47 @@ type Props = {
   channel: ChannelDetail;
   /** Mobile only — swaps the conversation pane back to the rail. */
   onBack?: () => void;
+  /**
+   * Has the viewer silenced this conversation? (chat-012)
+   *
+   * Taken as a prop rather than read off `channel.muted` so the surface can
+   * show the state it is about to write while the round trip is in flight —
+   * and so this component has exactly one source for it. <ChatClient> seeds it
+   * from `channel.muted`.
+   */
+  muted?: boolean;
+  /**
+   * Press-the-bell. ABSENT means there is no bell: a non-member has no
+   * `ChannelMember` row for `mutedAt` to live on, and drawing a control whose
+   * only possible outcome is a refusal is worse than drawing none.
+   */
+  onToggleMute?: () => void;
+  /** True while the write is in flight — the control is disabled, not hidden. */
+  mutePending?: boolean;
 };
 
-export function ChannelHeader({ channel, onBack }: Props) {
+/**
+ * WHAT THE MUTE CONTROL PROMISES, in one place so the label, the tooltip and
+ * the marker cannot drift apart.
+ *
+ * A muted channel keeps its place in the rail, keeps counting unread messages
+ * (`unreadChatTotal` counts muted channels deliberately) and stays completely
+ * readable. The ONLY thing that stops is the notification fan-out. A bare bell
+ * glyph reads as "hide this", so the tooltip has to say which of those it is —
+ * otherwise someone mutes a channel to get it out of their list and then
+ * reports that mute is broken.
+ */
+const MUTE_TITLE =
+  "Stop notifications from this conversation. It stays in your list and still shows unread messages.";
+const UNMUTE_TITLE = "Turn notifications from this conversation back on.";
+
+export function ChannelHeader({
+  channel,
+  onBack,
+  muted = false,
+  onToggleMute,
+  mutePending = false,
+}: Props) {
   const dm = isDmKind(String(channel.kind));
   // `isPrivateKind` is IMPORTED, not re-spelled inline. This line used to be a
   // third private copy of the same substring test, beside the rail's copy and
@@ -97,8 +141,47 @@ export function ChannelHeader({ channel, onBack }: Props) {
           Archived
         </span>
       )}
+      {/* chat-012. A VISIBLE state, beside the Archived pill it is modelled on,
+          because a bell and a bell-with-a-slash are a pixel apart at this size
+          and a tooltip is not a state. Rendered on the mute flag alone, so it
+          is still legible for a reader who cannot reach the control (nothing
+          takes the bell away from a member today, but the pill is about what is
+          true, not about what is clickable). */}
+      {muted && (
+        <span className="shrink-0 rounded-full bg-glass/[0.08] px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-fg-muted">
+          Muted
+        </span>
+      )}
       {/* `ms-auto`: "the far end of the bar", not "the right". */}
       <span className="ms-auto shrink-0 font-mono text-[10px] text-fg-muted">{trailing}</span>
+      {onToggleMute && (
+        <button
+          type="button"
+          onClick={onToggleMute}
+          disabled={mutePending}
+          // The accessible name carries the VERB, so a screen reader hears what
+          // pressing it will do rather than the state it is in — the same rule
+          // the rest of this product's toggles follow. The Bell glyphs are
+          // aria-hidden and carry no name of their own.
+          aria-label={muted ? "Unmute notifications" : "Mute notifications"}
+          // `aria-pressed` as well as the label: the label says what happens
+          // next, this says where the toggle is now.
+          aria-pressed={muted}
+          title={muted ? UNMUTE_TITLE : MUTE_TITLE}
+          // `-me-1` bleeds the icon button into the header's `px-4` on the
+          // reading-END edge, mirroring the back button's `-ms-1` on the start
+          // edge, so both optically align with the bar's content.
+          className="-me-1 shrink-0 rounded-md p-1 text-fg-muted transition-colors hover:bg-glass/[0.06] hover:text-fg disabled:opacity-50"
+        >
+          {/* Neither bell mirrors under `dir` — an object, not signage, exactly
+              like the Hash and the Lock above. */}
+          {muted ? (
+            <BellOff className="h-3.5 w-3.5" aria-hidden="true" />
+          ) : (
+            <Bell className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+        </button>
+      )}
     </header>
   );
 }

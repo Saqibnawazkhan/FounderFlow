@@ -24,17 +24,17 @@
  * exporters map over, and the parity case below fails if a later edit reopens the
  * gap in either direction.
  *
- * ONE DELIBERATE EXCEPTION, added by transactions-ledger-009. The two files are
- * identical EXCEPT for a description leading with `=`, `+`, `-`, `@`, TAB or CR:
- * the .xlsx prefixes those with an apostrophe to neutralise spreadsheet formula
- * injection, and the PDF — which has no evaluator — does not. The parity case
- * below keeps its strict equality only because none of its three fixtures leads
- * with one of those characters; widen that fixture set and it will fail by one
- * character, correctly. The carve-out, the ordinary-prose cost it imposes
- * (`-50% vendor credit` is not an attack), and the "ends with, at most one
- * longer" relationship that replaces equality for those values all live in
- * tests/app/reports/export-formula-injection.test.ts, with the trade written up
- * in lib/reports/spreadsheet-safe.ts.
+ * NO EXCEPTIONS — and there was one for a while, which is worth recording.
+ * transactions-ledger-009 made the .xlsx apostrophe-prefix any description
+ * leading with `=`, `+`, `-`, `@`, TAB or CR, so "-50% vendor credit" arrived in
+ * the spreadsheet as "'-50% vendor credit" while the PDF printed it clean. This
+ * file's parity case kept its strict equality only because none of its three
+ * fixtures happened to lead with one of those characters. A59 removed the marker
+ * — `XLSX.utils.aoa_to_sheet` writes such a cell `t: "s"` with no `f` and emits
+ * no `<f>` element, so the .xlsx was already inert and the prefix bought nothing
+ * — and the parity case below now carries `-`- and `+`-leading fixtures
+ * deliberately, so the carve-out cannot creep back without failing here.
+ * tests/app/reports/export-formula-injection.test.ts holds the measurement.
  *
  * Run as: npx cross-env TZ=America/Bogota vitest run tests/app/reports/reports-export-fidelity.test.ts
  */
@@ -112,18 +112,19 @@ describe("pdfTransactionRows (rep-006)", () => {
 });
 
 describe("the PDF and the Excel sheet agree about every row", () => {
-  // "Identical" holds for every description EXCEPT one leading with `=`, `+`,
-  // `-`, `@`, TAB or CR, which the .xlsx apostrophe-prefixes and the PDF does
-  // not (transactions-ledger-009). None of the three fixtures below leads with
-  // one of those, which is why strict equality is still the right assertion
-  // here; the divergent class is covered by export-formula-injection.test.ts.
-  // Add a `-`- or `+`-leading fixture here and this case fails by one character
-  // BY DESIGN — that is the carve-out, not a regression.
+  // "Identical" holds for EVERY description, with no carve-out. The last two
+  // fixtures are the ones transactions-ledger-009 made diverge and A59 restored:
+  // ordinary accounting prose leading with `-` or `+`, which the .xlsx
+  // apostrophe-prefixed while the PDF printed it clean. They are here so that
+  // reintroducing the marker fails this case rather than passing it by luck of
+  // the fixture set.
   it("prints the identical description cell in both files", () => {
     const txns = [
       txn({ id: "a", description: LONG }),
       txn({ id: "b", description: "Short one" }),
       txn({ id: "c", description: "x".repeat(500) }),
+      txn({ id: "d", description: "-50% vendor credit" }),
+      txn({ id: "e", description: "+1 seat add-on" }),
     ];
     const pdf = pdfTransactionRows(txns, money);
     const xls = excelTransactionRows(txns);

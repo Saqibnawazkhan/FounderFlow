@@ -30,7 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import { useRouter, useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import toast from "react-hot-toast";
-import { UserPlus } from "lucide-react";
+import { ArrowDown, UserPlus } from "lucide-react";
 import { ChannelHeader } from "@/components/chat/channel-header";
 import { ChannelRail } from "@/components/chat/channel-rail";
 import { MessageComposer } from "@/components/chat/message-composer";
@@ -39,7 +39,11 @@ import { NewChannelModal } from "@/components/chat/new-channel-modal";
 import { NewDmModal } from "@/components/chat/new-dm-modal";
 import { ThreadPanel } from "@/components/chat/thread-panel";
 import { Modal } from "@/components/ui/modal";
-import { addChannelMembersAction, pollChannelActivityAction } from "@/lib/actions/chat";
+import {
+  addChannelMembersAction,
+  pollChannelActivityAction,
+  setChannelMuteAction,
+} from "@/lib/actions/chat";
 import {
   canManageChannel,
   canPostInChannel,
@@ -75,6 +79,22 @@ type Props = {
   initialMessages: MessageClient[];
   initialCursor: string | null;
   currentUserId: string;
+  /**
+   * Is `initialMessages` a window around a `?message=` anchor that does NOT
+   * reach the newest message? (chat-010)
+   *
+   * Only the server can answer it — the island cannot tell "this is the live
+   * edge" from "this is fifty rows out of four hundred" by looking at the page
+   * it was handed. It matters because the room really is frozen in that state:
+   * the activity poll refreshes an anchored page into the same anchored page,
+   * so without the control this flag draws, a reader who followed a month-old
+   * mention would sit in history with no way back and no sign that newer
+   * messages existed.
+   *
+   * Defaults to false: an ordinary channel open is never a history window, and
+   * the honest default for "are you lost in the backlog" is no.
+   */
+  viewingHistory?: boolean;
 };
 
 export function ChatClient({
@@ -84,6 +104,7 @@ export function ChatClient({
   initialMessages,
   initialCursor,
   currentUserId,
+  viewingHistory = false,
 }: Props) {
   const router = useRouter();
   // chat-010. See the anchor effect below.
@@ -117,8 +138,16 @@ export function ChatClient({
   const [adding, setAdding] = useState(false);
 
   // Thread panel. `thread` holds the loaded conversation; `threadRootId` is
-  // set the moment a reply indicator is clicked so the panel can open on a
-  // spinner instead of waiting for the round-trip before reacting.
+  // set the moment a reply indicator is clicked, so the panel can open on a
+  // skeleton instead of waiting for the round-trip before reacting.
+  //
+  // chat-011: THIS COMMENT WAS FALSE FOR AS LONG AS IT HAS EXISTED. The render
+  // below was `{thread && …}` — gated on the LOADED data — and <ThreadPanel>'s
+  // `root` was non-nullable, so the state described here could not be reached:
+  // the window between the click and the response rendered nothing, and on a
+  // slow connection "N replies" looked like a dead control. The render is gated
+  // on `threadRootId` now and the panel takes `root: MessageClient | null`,
+  // which is what makes the sentence above true.
   const [threadRootId, setThreadRootId] = useState<string | null>(null);
   const [thread, setThread] = useState<{ root: MessageClient; replies: MessageClient[] } | null>(
     null
@@ -448,6 +477,54 @@ export function ChatClient({
     );
   }, [channel.kind, channel.members, dmCandidates]);
 
+  /* ── chat-012: THE MUTE LEVER ────────────────────────────────────────────
+   *
+   * `ChannelMember.mutedAt` has been in the schema since the chat migration and
+   * BOTH notification fan-outs honour it — `sendMessageAction` and
+   * `postRunwayCardAction` each drop `mutedAt: { not: null }` members from their
+   * recipients. Nothing in the repo ever WROTE it: no action, no route, no
+   * control. The suppression was complete, tested and unreachable, which is this
+   * codebase's signature defect, and the only thing missing was the lever.
+   *
+   * WHY LOCAL STATE AND NOT `channel.muted` DIRECTLY. The write is a round trip
+   * and the control has to answer the click; seeded from the prop and updated
+   * from the SERVER'S answer (never from the click), so a refusal leaves the
+   * bell where it was rather than lying about a write that did not happen. The
+   * island is keyed on the channel, so this cannot outlive the channel it
+   * describes — and the action revalidates both chat paths, so the next render
+   * of this island starts from the database again.
+   */
+  const [muted, setMuted] = useState(channel.muted);
+  const [mutePending, setMutePending] = useState(false);
+
+  const toggleMute = useCallback(async () => {
+    if (mutePending) return;
+    setMutePending(true);
+    // The DESIRED state, not a toggle verb: the server is idempotent on an
+    // absolute value, so a double tap or a second tab cannot land the opposite
+    // of what the reader last pressed. See `SetChannelMuteSchema`.
+    const res = await setChannelMuteAction({ channelId: channel.id, muted: !muted });
+    setMutePending(false);
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    setMuted(res.data.muted);
+    // The copy says what mute did NOT do, which is the half people get wrong: a
+    // muted channel keeps its place in the rail and keeps counting unread
+    // messages (`unreadChatTotal` counts muted channels deliberately). Somebody
+    // who muted it to make it go away should hear that here rather than
+    // discover it.
+    toast.success(
+      res.data.muted
+        ? "Muted. It stays in your list and still shows unread messages — you just won't be notified."
+        : "Unmuted. You'll be notified about this conversation again."
+    );
+    // The header's own state comes from the RSC on the next render; refresh so
+    // a reload is not what it takes for the two to agree.
+    startTransition(() => router.refresh());
+  }, [mutePending, muted, channel.id, router]);
+
   const closeAdd = useCallback(() => {
     setAddOpen(false);
     setSelected([]);
@@ -495,6 +572,15 @@ export function ChatClient({
    * render below hands the id to <MessageList>, which marks the row and scrolls
    * to it. No round trip, no state machine.
    *
+   * AND SO DOES THE OLD CASE, NOW — BUT NOT FROM HERE. An anchor further back
+   * than the newest page used to end in `not-loaded` and a toast, because this
+   * island could not reach it. It is served upstream instead:
+   * `app/(app)/chat/[slug]/page.tsx` reads the same parameter and asks
+   * `getMessagesPageAnchoredAt` for the window CONTAINING the anchor, so by the
+   * time this effect runs the row is in `initialMessages` and the step is
+   * `highlight` exactly like a fresh mention. One fetch, on the server, with no
+   * loop — see the paragraph below for why that distinction is load-bearing.
+   *
    * ONE SHOT, AND ONE ROUND TRIP AT MOST. `handledAnchor` latches per anchor id:
    * this island re-renders every five seconds from the activity poll, and an
    * effect that re-derived its work each time would reopen a panel the reader had
@@ -504,9 +590,9 @@ export function ChatClient({
    * blocks above it had run first — a hang, not a failure, so no timeout fired.
    * Removing the re-running loop fixed it; the precise mechanism (a re-entrant
    * effect racing the panel-opening path inside testing-library's act queue) I
-   * narrowed but did not isolate. What replaces it is `not-loaded`: a truthful
-   * line pointing at the "Load earlier messages" control that already exists,
-   * rather than a background fetch loop nobody can see fail.
+   * narrowed but did not isolate. That loop is still not coming back: the page
+   * above fetches the right window ONCE, before this component exists, which is
+   * the same outcome with no client state machine to wedge.
    *
    * WHY `useSearchParams` AND NOT THE RSC'S `searchParams`. The house pattern —
    * tasks-client and expenses-client both read their deep link this way — and it
@@ -553,9 +639,15 @@ export function ChatClient({
         return;
       }
       if (step.kind === "not-loaded") {
-        // Said out loud, and pointed at a control that exists. A link that lands
-        // somewhere and explains nothing is the bug being fixed; a fix that
-        // silently stops is the same dead end wearing a fix.
+        // THE FALLBACK, not the ordinary path any more. The page above serves
+        // the window containing the anchor, so reaching here means the server
+        // render and this lookup disagreed about where the message is — the
+        // window was not built (and `locateMessageAction` would then have
+        // failed, taking the branch above), or the timeline moved underneath a
+        // tab that had been open a while. Kept because the alternative is a
+        // link that lands somewhere and explains nothing, which is the bug this
+        // whole finding is about, and because it points at a control that
+        // genuinely exists three lines up the page.
         toast("That message is further back — load earlier messages to reach it.", {
           icon: "ℹ️",
         });
@@ -637,7 +729,19 @@ export function ChatClient({
       />
 
       <div className={cn("min-w-0 flex-1 flex-col md:flex", railOpen ? "hidden" : "flex")}>
-        <ChannelHeader channel={channel} onBack={() => setRailOpen(true)} />
+        <ChannelHeader
+          channel={channel}
+          onBack={() => setRailOpen(true)}
+          muted={muted}
+          // chat-012. Passed ONLY to a member: `mutedAt` is a column on the
+          // caller's own `ChannelMember` row, and a public channel's non-member
+          // reader does not have one. Creating one here would silence them and
+          // also subscribe them to this channel's unread badge for good, which
+          // is the stealth-join `markChannelReadAction` refuses for the same
+          // reason. Their answer is the workspace notification preferences.
+          onToggleMute={channel.isMember ? () => void toggleMute() : undefined}
+          mutePending={mutePending}
+        />
 
         {/* Membership strip. Rendered ONLY when there is something to do here,
             so an ordinary reader never pays a row of chrome for a control they
@@ -680,6 +784,34 @@ export function ChatClient({
           anchoredMessageId={anchorId}
         />
 
+        {/* ── chat-010: THE WAY BACK OUT OF HISTORY ────────────────────────
+            Drawn only for an anchored window that does not reach the newest
+            message. It is not decoration: in this state the room really is
+            frozen — the activity poll refreshes an anchored page into the same
+            anchored page — so a reader who followed a month-old mention would
+            otherwise sit in the backlog with no sign that newer messages
+            existed. It says so, rather than leaving them to notice.
+
+            `goToChannel` pushes `/chat/<slug>` with no query, which drops the
+            anchor; the page above keys the island on the anchor, so this
+            remounts at the live edge with a fresh cursor and scroll position
+            instead of carrying this window's into it. */}
+        {viewingHistory && (
+          <div className="flex shrink-0 items-center gap-3 border-t border-border bg-glass/[0.04] px-4 py-1.5">
+            <p className="truncate text-[11px] text-fg-muted">
+              You&rsquo;re reading earlier messages — new ones won&rsquo;t show up here.
+            </p>
+            <button
+              type="button"
+              onClick={() => goToChannel(channel.slug)}
+              className="ms-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider text-fg-muted transition-colors hover:text-fg"
+            >
+              <ArrowDown className="h-3 w-3" aria-hidden="true" />
+              Jump to latest
+            </button>
+          </div>
+        )}
+
         <div className="shrink-0 border-t border-border p-3">
           {readOnly ? (
             <p className="rounded-xl border border-dashed border-border px-3 py-2 text-center text-xs text-fg-muted">
@@ -712,10 +844,16 @@ export function ChatClient({
         </div>
       </div>
 
-      {thread && (
+      {/* chat-011: gated on the REQUEST (`threadRootId`), not on the response
+          (`thread`). That is the whole fix: `openThread` sets the id, clears
+          the old conversation and only then awaits `loadThreadAction`, so this
+          renders the panel on a skeleton the moment the reader clicks and swaps
+          in the thread when it arrives. A failure clears the id again, so the
+          panel never sits there spinning forever — see `openThread`. */}
+      {threadRootId !== null && (
         <ThreadPanel
-          root={thread.root}
-          replies={thread.replies}
+          root={thread?.root ?? null}
+          replies={thread?.replies ?? []}
           users={mentionRoster}
           channelName={channel.name}
           channelKind={channel.kind}

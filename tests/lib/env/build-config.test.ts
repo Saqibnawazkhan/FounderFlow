@@ -67,6 +67,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  authOriginMismatchProblem,
   isDirectInvocation,
   isLoopbackUrl,
   productionEnvProblems,
@@ -91,6 +92,9 @@ const HEALTHY_PROD_ENV: Record<string, string> = {
   AUTH_SECRET: "0123456789abcdef0123456789abcdef0123456789ab",
   CRON_SECRET: "cron-0123456789abcdef0123456789abcdef",
   NEXT_PUBLIC_APP_URL: "https://app.founderflow.com",
+  // Same ORIGIN as NEXT_PUBLIC_APP_URL — the two name one canonical domain,
+  // and prodready-023's cross-var rule refuses a scope where they disagree.
+  AUTH_URL: "https://app.founderflow.com",
   GMAIL_USER: "noreply@founderflow.com",
   GMAIL_APP_PASSWORD: "abcd efgh ijkl mnop",
 };
@@ -104,6 +108,7 @@ const REQUIRED_NAMES = [
   "DATABASE_URL",
   "DIRECT_URL",
   "AUTH_SECRET",
+  "AUTH_URL",
   "CRON_SECRET",
   "NEXT_PUBLIC_APP_URL",
   "GMAIL_USER",
@@ -156,7 +161,7 @@ describe("production build env gate (a green build that is broken is an outage)"
     }
   });
 
-  it("requires exactly these seven, so the list cannot shrink unnoticed", () => {
+  it("requires exactly these eight, so the list cannot shrink unnoticed", () => {
     // An empty environment must produce one problem per required var and
     // nothing else (no value rule fires on a blank value). Pinning the count
     // means deleting an entry from REQUIRED_PROD_ENV — the cheap move during an
@@ -581,6 +586,194 @@ describe("prodready-006 — half-configured Sentry is worse than none", () => {
           "as production and post-launch triage cannot separate them"
       ).toBe(true);
     }
+  });
+});
+
+describe("prodready-023 — the auth origin is pinned, not taken from the request", () => {
+  /**
+   * THE FINDING. `auth.config.ts:65` sets `trustHost: true` and nothing has ever
+   * required `AUTH_URL`, so next-auth derives its origin from the incoming
+   * `Host` / `X-Forwarded-Host` header
+   * (node_modules/@auth/core/lib/utils/env.js:68 — `createActionURL` falls back
+   * to those two headers whenever `AUTH_URL` is unset). Setting `AUTH_URL` is
+   * what replaces that fallback with one fixed answer: next-auth rewrites the
+   * request's origin to it before Auth ever runs
+   * (node_modules/next-auth/lib/env.js:5, `reqWithEnvURL`).
+   *
+   * Removing `trustHost: true` would NOT fix it: `config.trustHost ??=` defaults
+   * to true whenever `VERCEL` is set, and `VERCEL` is set on every Vercel build.
+   * The only lever that fixes the origin is `AUTH_URL`, which is why this is a
+   * required var rather than a config edit.
+   *
+   * It is also absent from the live project, not hypothetically: the
+   * `vercel env ls production` inventory quoted in the prodready-006 block above
+   * lists seven variables and `AUTH_URL` is not among them.
+   */
+  it("refuses a production build that leaves the origin to whatever Host arrives", () => {
+    const problems = productionEnvProblems(envWithout("AUTH_URL")).join("\n");
+    expect(problems, "a Production scope with no pinned auth origin built green").toContain(
+      "AUTH_URL"
+    );
+    expect(
+      problems,
+      "the refusal must say WHAT goes wrong, or the next person sets it to the deployment URL"
+    ).toContain("Host");
+  });
+
+  it("refuses a loopback or malformed AUTH_URL", () => {
+    // The same mistake shape as NEXT_PUBLIC_APP_URL: not forgotten, but copied
+    // out of .env.local.example, where AUTH_URL is http://localhost:3000.
+    for (const bad of ["http://localhost:3000", "http://127.0.0.1:3000", "app.founderflow.com"]) {
+      expect(
+        productionEnvProblems(envWith("AUTH_URL", bad)).join("\n"),
+        `AUTH_URL="${bad}" was accepted for a production build`
+      ).toContain("AUTH_URL");
+    }
+  });
+
+  /**
+   * Not a style rule. @auth/core derives `useSecureCookies` from this value's
+   * protocol, so an `http://` origin takes the `Secure` attribute and the
+   * `__Secure-` prefix off the session cookie on a site that is served over
+   * HTTPS — a session cookie that will travel over plain http.
+   */
+  it("refuses an http:// auth origin, because the session cookie stops being Secure", () => {
+    const problem = productionEnvProblems(envWith("AUTH_URL", "http://app.founderflow.com")).join(
+      "\n"
+    );
+    expect(problem).toContain("AUTH_URL");
+    expect(problem.toLowerCase()).toContain("https");
+  });
+
+  /**
+   * The input the test above does NOT pin, and the only one that reaches a
+   * released build.
+   *
+   * That case leaves `NEXT_PUBLIC_APP_URL` on its https value, so the CROSS-VAR
+   * origin rule fires and its message quotes `NEXT_PUBLIC_APP_URL
+   * (https://app.founderflow.com)` — which satisfies `toContain("https")`
+   * whether or not the protocol rule exists at all. Delete the
+   * `parsed.protocol !== "https:"` branch from `VALUE_RULES.AUTH_URL` and every
+   * other test in this file stays green.
+   *
+   * Two MATCHING http origins are the shape nothing else here objects to:
+   * `NEXT_PUBLIC_APP_URL` deliberately has no https rule of its own (a
+   * self-hosted http deploy still sends working e-mail links), and the cross-var
+   * rule compares origins, which agree. So this is the case that holds the
+   * protocol rule up, and the gate's whole argument rests on it: @auth/core
+   * takes `useSecureCookies` from this value's protocol
+   * (node_modules/@auth/core/lib/init.js:69), so an http AUTH_URL strips the
+   * `Secure` attribute and the `__Secure-` name prefix off the session cookie of
+   * a site that is served over HTTPS.
+   */
+  it("refuses two matching http origins, which no other rule in the gate catches", () => {
+    const env = envWith("AUTH_URL", "http://app.founderflow.com");
+    env.NEXT_PUBLIC_APP_URL = "http://app.founderflow.com";
+    const problems = productionEnvProblems(env);
+    expect(
+      problems,
+      "an all-http Production scope built green, so the session cookie ships with no " +
+        "Secure attribute and no __Secure- prefix"
+    ).toHaveLength(1);
+    expect(problems[0]).toContain("AUTH_URL");
+    expect(problems[0], "the refusal must name the attribute that is lost").toContain("Secure");
+  });
+
+  /**
+   * The cross-var half. Two different canonical answers in one deploy is its own
+   * bug: e-mail links are built onto NEXT_PUBLIC_APP_URL while cookies, the
+   * sign-in redirect and `callbackUrl` validation all happen on AUTH_URL's
+   * origin, so a reset link lands on a host that cannot complete the sign-in it
+   * was sent for.
+   */
+  it("refuses an auth origin that disagrees with the e-mail origin", () => {
+    const problems = productionEnvProblems(
+      envWith("AUTH_URL", "https://founderflow-git-main.vercel.app")
+    ).join("\n");
+    expect(problems, "two different canonical origins in one deploy were accepted").toContain(
+      "AUTH_URL"
+    );
+    expect(problems).toContain("NEXT_PUBLIC_APP_URL");
+  });
+
+  it("accepts a basePath on AUTH_URL, because next-auth reads its pathname as one", () => {
+    // setEnvDefaults takes `new URL(AUTH_URL).pathname` as `basePath`
+    // (node_modules/next-auth/lib/env.js:20), so a path is legitimate here. Only
+    // the ORIGIN has to agree.
+    expect(
+      productionEnvProblems(envWith("AUTH_URL", "https://app.founderflow.com/api/auth")),
+      "a legitimate AUTH_URL with a basePath was rejected, which would block the deploy"
+    ).toEqual([]);
+  });
+
+  /**
+   * The other half of the same fact, which the gate documented and then declined
+   * to check until 2026-10-04.
+   *
+   * `setEnvDefaults` takes the pathname VERBATIM as `basePath`
+   * (node_modules/next-auth/lib/env.js:25-28 — it returns early only for `"/"`,
+   * and `config.basePath || (config.basePath = pathname)` otherwise), while this
+   * app's handler is mounted at `app/api/auth/[...nextauth]/route.ts` and
+   * nowhere else. So `https://app.founderflow.com/app` passes a presence check,
+   * sets `basePath=/app`, and every Auth.js URL — sign-in, callback, session —
+   * is built under a prefix nothing serves. That is the same "syntactically
+   * present but wrong" shape as the loopback check (prodready-004), which is the
+   * whole reason these value rules exist.
+   */
+  it("refuses an AUTH_URL path that is not where the handler is mounted", () => {
+    for (const bad of ["https://app.founderflow.com/app", "https://app.founderflow.com/auth"]) {
+      const problems = productionEnvProblems(envWith("AUTH_URL", bad)).join("\n");
+      expect(
+        problems,
+        `AUTH_URL="${bad}" was accepted, so every Auth.js route would 404 on this deploy`
+      ).toContain("AUTH_URL");
+      expect(problems, "the refusal must name the path that does work").toContain("/api/auth");
+    }
+  });
+
+  it("accepts the bare origin and a trailing slash, which both work unchanged", () => {
+    // `/` is the documented value: next-auth returns early on it and applies its
+    // own `/api/auth` default. `/api/auth/` is `/api/auth` as far as @auth/core
+    // is concerned — `createActionURL` strips the trailing slash
+    // (node_modules/@auth/core/lib/utils/env.js:88-93) and
+    // `parseActionAndProviderId` matches either form (lib/utils/web.js:92) — so
+    // refusing it would block a deploy that works, which is the one thing a
+    // build gate must not do.
+    expect(productionEnvProblems(envWith("AUTH_URL", "https://app.founderflow.com/"))).toEqual([]);
+    expect(
+      productionEnvProblems(envWith("AUTH_URL", "https://app.founderflow.com/api/auth/"))
+    ).toEqual([]);
+  });
+
+  it("says nothing about the pair when either side is absent", () => {
+    // Otherwise a scope that is simply missing one of the two gets two
+    // complaints about one problem, and the useful one is the missing-var line.
+    expect(authOriginMismatchProblem({})).toBeNull();
+    expect(authOriginMismatchProblem({ AUTH_URL: "https://app.founderflow.com" })).toBeNull();
+    expect(
+      authOriginMismatchProblem({ NEXT_PUBLIC_APP_URL: "https://app.founderflow.com" })
+    ).toBeNull();
+    // A malformed value belongs to the per-var rules, which say so in plainer
+    // words than an origin comparison can.
+    expect(
+      authOriginMismatchProblem({ AUTH_URL: "not-a-url", NEXT_PUBLIC_APP_URL: "also-not" })
+    ).toBeNull();
+    // Trailing slash is not a disagreement: `new URL(...).origin` drops it.
+    expect(
+      authOriginMismatchProblem({
+        AUTH_URL: "https://app.founderflow.com/",
+        NEXT_PUBLIC_APP_URL: "https://app.founderflow.com",
+      })
+    ).toBeNull();
+  });
+
+  it("keeps trustHost on, since the origin is now pinned rather than guessed", () => {
+    // Deleting `trustHost: true` would change nothing on Vercel (VERCEL makes it
+    // default true) and would break `next dev` on a non-default host for no
+    // gain. The fix is the pinned origin above, so this line stays — and if it
+    // ever goes, the reason had better not be "prodready-023 said so".
+    const src = readFileSync(join(ROOT, "auth.config.ts"), "utf8");
+    expect(/trustHost:\s*true/.test(src)).toBe(true);
   });
 });
 

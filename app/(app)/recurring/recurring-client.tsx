@@ -12,7 +12,7 @@ import {
   toggleRecurringRuleAction,
 } from "@/lib/actions/recurring";
 import { z } from "zod";
-import type { NewRecurringRuleInput } from "@/lib/schemas/recurring";
+import { recurringAmountField, type NewRecurringRuleInput } from "@/lib/schemas/recurring";
 
 /**
  * Form-level schema: a flat object that always has BOTH day fields, with
@@ -24,16 +24,23 @@ import type { NewRecurringRuleInput } from "@/lib/schemas/recurring";
  *
  * At submit time we narrow this flat shape into the discriminated union
  * before calling the server action.
+ *
+ * `amount` is IMPORTED from the server schema rather than restated (money-002).
+ * A restated copy is how this mirror ended up without the scale rule while the
+ * transaction form had it: 0.004 passed every rule here, and a `Decimal(12, 2)`
+ * column stored the rule and its seed expense as 0.00 — then re-posted 0.00
+ * every month, silently.
  */
 const FormSchema = z
   .object({
     type: z.enum(["expense", "investment"]),
-    amount: z
-      .number({ invalid_type_error: "Amount must be a number" })
-      .positive("Amount must be greater than 0")
-      .max(1_000_000_000, "Amount is implausibly large"),
+    amount: recurringAmountField,
     category: z.string().min(1, "Pick a category"),
     description: z.string().trim().max(500),
+    // The optional project tag (money-005). `""` is the "no project" option; it
+    // is narrowed to `undefined` in `onSubmit` rather than here, because the
+    // <select> needs a string to hold.
+    projectId: z.string().optional(),
     frequency: z.enum(["monthly", "weekly"]),
     dayOfMonth: z.number().int().min(1).max(31).optional(),
     dayOfWeek: z.number().int().min(0).max(6).optional(),
@@ -61,9 +68,19 @@ type Props = {
   rules: RecurringRuleClient[];
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
+  /**
+   * The projects this caller may file spend against, from `listProjectOptions()`
+   * in the page's Server Component (money-005). An empty list renders no picker
+   * — the tag is optional and a workspace with no projects has nothing to pick.
+   *
+   * REQUIRED rather than defaulted so `tsc` refuses a page that forgets to pass
+   * it: a picker with nothing to offer is the same unreachable-server-path bug
+   * this prop exists to close.
+   */
+  projects: { id: string; name: string }[];
 };
 
-export function RecurringClient({ rules, currentUserId, currentUserRole }: Props) {
+export function RecurringClient({ rules, currentUserId, currentUserRole, projects }: Props) {
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
@@ -167,6 +184,7 @@ export function RecurringClient({ rules, currentUserId, currentUserRole }: Props
         size="lg"
       >
         <NewRuleForm
+          projects={projects}
           onClose={() => setModalOpen(false)}
           onCreated={() => {
             refresh();
@@ -315,9 +333,18 @@ function RuleCard({
 /* NewRuleForm                                                                  */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-function NewRuleForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function NewRuleForm({
+  projects,
+  onClose,
+  onCreated,
+}: {
+  projects: { id: string; name: string }[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
   const amountId = useId();
   const categoryId = useId();
+  const projectFieldId = useId();
   const dayId = useId();
   const descId = useId();
 
@@ -341,6 +368,10 @@ function NewRuleForm({ onClose, onCreated }: { onClose: () => void; onCreated: (
       amount: undefined as unknown as number,
       category: EXPENSE_CATEGORIES[0],
       description: "",
+      // "No project" is the default. Never the first project: that would file
+      // rent against a budget nobody chose, and send an over-budget alert about
+      // it (money-005).
+      projectId: "",
       frequency: "monthly",
       dayOfMonth: 1,
     },
@@ -354,6 +385,12 @@ function NewRuleForm({ onClose, onCreated }: { onClose: () => void; onCreated: (
   );
 
   async function onSubmit(data: FormSchemaInput) {
+    // The optional project tag (money-005). `undefined`, NOT `""`: the action
+    // parses the tag off the raw input with `.trim().min(1).nullish()`
+    // (lib/actions/recurring.ts:53), so a literal empty string is refused as
+    // "Invalid project" and an untagged rule could not be created at all.
+    const projectId = data.projectId && data.projectId.length > 0 ? data.projectId : undefined;
+
     // Narrow the flat form shape into the discriminated union the server
     // action expects. The FormSchema refinement above already guaranteed
     // the right day field is set for the chosen frequency.
@@ -364,6 +401,7 @@ function NewRuleForm({ onClose, onCreated }: { onClose: () => void; onCreated: (
             amount: data.amount,
             category: data.category,
             description: data.description,
+            projectId,
             frequency: "monthly",
             dayOfMonth: data.dayOfMonth ?? 1,
           }
@@ -372,6 +410,7 @@ function NewRuleForm({ onClose, onCreated }: { onClose: () => void; onCreated: (
             amount: data.amount,
             category: data.category,
             description: data.description,
+            projectId,
             frequency: "weekly",
             dayOfWeek: data.dayOfWeek ?? 1,
           };
@@ -468,6 +507,53 @@ function NewRuleForm({ onClose, onCreated }: { onClose: () => void; onCreated: (
           )}
         </div>
       </div>
+
+      {/*
+        The project tag (money-005). Every Budget belongs to a Project and the
+        threshold check returns early on a null project, so an untagged rule can
+        never trip an 80%/100% alert however much it posts — and recurring spend
+        (rent, salaries, subscriptions) is exactly what a founder caps. The whole
+        server path already carried the tag; this field is what reaches it.
+
+        Hidden when the workspace has no projects: the tag is optional and there
+        would be nothing to pick. Native <select> with the same `inputClass` as
+        the Category select beside it, matching the project picker in
+        components/transactions/transaction-form.tsx.
+      */}
+      {projects.length > 0 && (
+        <div>
+          <label
+            htmlFor={projectFieldId}
+            className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
+          >
+            Project{" "}
+            <span className="font-sans normal-case tracking-normal text-fg-muted/60">
+              (optional)
+            </span>
+          </label>
+          <select
+            id={projectFieldId}
+            {...register("projectId")}
+            className={inputClass(!!errors.projectId)}
+          >
+            <option value="" className="bg-bg">
+              Not tagged to a project
+            </option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id} className="bg-bg">
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-xs text-fg-muted">
+            Tagged spend counts toward that project&apos;s budget, on the first posting and on every
+            one the daily job creates after it.
+          </p>
+          {errors.projectId && (
+            <p className="mt-1.5 text-xs text-danger">{errors.projectId.message}</p>
+          )}
+        </div>
+      )}
 
       <div>
         <label

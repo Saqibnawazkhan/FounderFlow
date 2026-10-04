@@ -26,12 +26,39 @@
  * ── THE UPSTASH SWAP IS NOT A DROP-IN, whatever the old comment said ───────
  * This file used to promise "swap the storage for Upstash Redis — the
  * consume() signature stays the same so callers (server actions) don't have to
- * change", and lib/auth/login-throttle.ts carried it too (both corrected now;
- * lib/email/quota.ts:20 still states it about its own counter). It is false, and it is
- * the kind of false that makes someone under-estimate a security task: every
- * Redis client is async, `consume(key): RateLimitResult` is synchronous, and
- * `authorize()` / every server action treats it as such. A shared store means
- * an async API and therefore an `await` at all ~40 call sites. Plan for that.
+ * change", and lib/auth/login-throttle.ts and lib/email/quota.ts carried it
+ * too. All three now say the opposite. It is false, and it is the kind of false
+ * that makes someone under-estimate a security task: every Redis client is
+ * async, `consume(key): RateLimitResult` is synchronous, and `authorize()` /
+ * every server action treats it as such. A shared store means an async API and
+ * therefore an `await` at more than 60 call sites across more than 20 files.
+ *
+ * That figure is MEASURED, by tests/lib/rate-limit-shared-store.test.ts, and
+ * held to a floor rather than pinned: the number this sentence carried for
+ * months was "~40", which was an under-count when it was written and grows
+ * every time a gated action is added. An approximation is the wrong shape for
+ * a figure that can only be checked by counting — and under-stating the size
+ * of a security task is the same defect as over-stating a security guarantee,
+ * which is the thing this banner exists to stop.
+ *
+ * ── WHAT IS LANDABLE BEFORE THE INSTANCE EXISTS: NOTHING ────────────────────
+ * prodready-013 (2026-10-04) proposed implementing the Upstash backend now,
+ * "behind the existing consume() signature so no caller changes". Neither half
+ * is available: a synchronous method cannot make an HTTP round-trip, and a
+ * backend nothing imports is the complete-tested-unreachable defect this repo
+ * has filed against itself about ten times — in a security file, an unwired
+ * limiter backend reads to the next auditor as a control that exists. So
+ * tests/lib/rate-limit-shared-store.test.ts refuses one that lands without a
+ * caller, instead of this comment asking nicely.
+ *
+ * Also refused: putting UPSTASH_REDIS_REST_URL / _TOKEN into `requiredProdEnv`
+ * in scripts/vercel-build.mjs, which the same finding suggested. It would fail
+ * every production build over two variables no code reads. Nor are they
+ * provisioned — the only copies in existence are two empty strings in a local
+ * .env.local, and CODEBASE-AUDIT.md records their slots being dropped from both
+ * env templates precisely because operators were being asked to configure
+ * something nothing read. The open item is an account-level one (an Upstash or
+ * KV instance, and its credentials in the Production scope): FaultsAudit A37.
  *
  * AND POINT IT AT THE ADDRESS-KEYED BUCKETS FIRST. This banner used to offer a
  * shortcut — "a `User.failedLoginCount` + `User.failedLoginWindowStartedAt`

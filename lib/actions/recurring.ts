@@ -39,15 +39,22 @@ import type { ActionResult } from "@/lib/actions/types";
  * The optional project tag, parsed separately from `NewRecurringRuleSchema`.
  *
  * `NewRecurringRuleSchema` is a discriminated union of plain `z.object`s, so it
- * runs in strip mode and silently drops any key it does not declare — including
- * `projectId`. Declaring the tag inside that union is the better long-term home
- * (it is the type the /recurring form builds its payload against), and it is
- * requested; until it lands this parse keeps the SERVER half complete, so the
- * form only has to start sending the field. Parsing it twice once the union
- * carries it is harmless.
+ * runs in strip mode and silently drops any key it does not declare. It now
+ * DECLARES `projectId` (money-005), which is the better long-term home — it is
+ * the type the /recurring form builds its payload against. This parse stays
+ * because it reads the tag off the RAW input, and parsing it twice is harmless.
  *
- * `.nullish()` because the form's "no project" option sends null, and an
- * untagged rule stays legal — it is the pre-projects, company-global spend path.
+ * KEEPING IT IS NOT COSMETIC. Because this runs on the raw input, it sees the
+ * value BEFORE the union's `"" -> undefined` transform, so a literal empty
+ * string reaches `.min(1)` and is refused as "Invalid project". That is why the
+ * /recurring form narrows `"" -> undefined` in its own submit handler rather
+ * than posting the select's empty value: without that, picking "Not tagged to a
+ * project" would be rejected. Pinned by
+ * tests/app/recurring/new-rule-project-tag.test.tsx.
+ *
+ * `.nullish()` so both spellings pass: the form sends `undefined` (it must, per
+ * the paragraph above) and a direct caller may send `null`. An untagged rule
+ * stays legal — it is the pre-projects, company-global spend path.
  */
 const RuleProjectTagSchema = z.object({
   projectId: z.string().trim().min(1).nullish(),

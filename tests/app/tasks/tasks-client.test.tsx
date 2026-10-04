@@ -770,3 +770,81 @@ describe("the detail modal's status select obeys the same rule (009)", () => {
     expect(within(dialog).getByLabelText("Change status")).toBeEnabled();
   });
 });
+
+/* ══════════ 003 — the mention link opens the thread it names ══════════════ */
+
+/**
+ * tasks-and-comments-003, the half that was left.
+ *
+ * `createCommentAction` sends "<name> mentioned you" to
+ * `/tasks?taskId=<taskId>&comment=<commentId>`. The `taskId=` half was fixed
+ * first and is covered by the 013 block above — the card scrolls and flashes.
+ * `comment=` was carried but read by NOBODY: the repo-wide grep for
+ * `searchParams.get` under app/(app)/ found only `taskId` here and
+ * `transactionId` in expenses-client. So the only call to action an @mention
+ * has landed the reader on a board with the conversation still closed, which is
+ * the finding's own words: "the comment it points at never opens".
+ *
+ * WHAT IS ASSERTED, and why it is the dialog rather than a scroll position. The
+ * comment id cannot be resolved on the client — mapping it to its target needs
+ * a server read — so the thread is opened via the `taskId=` the link already
+ * carries, which is why `createCommentAction` puts the target first. Scrolling
+ * to the individual comment INSIDE the thread lives in components/comments/,
+ * which is reported rather than built here.
+ *
+ * `listCommentsAction` is mocked at the top of this file to answer `[]`, so
+ * these cases are about whether the thread is OPENED, not about its contents.
+ */
+describe("/tasks?comment= opens the comment thread the mention points at (003)", () => {
+  it("opens the named task's thread on arrival", async () => {
+    nav.params.set("taskId", "t1");
+    nav.params.set("comment", "cm_1");
+    renderBoard({ initialTasks: [task({ id: "t1", title: "Ship the invoice export" })] });
+
+    const dialog = await screen.findByRole("dialog");
+    // The thread modal titles itself after the task, which is what proves it is
+    // the comment thread and not some other dialog the board can raise.
+    expect(within(dialog).getByText(/Comments · Ship the invoice export/)).toBeInTheDocument();
+  });
+
+  it("opens nothing when the link carries no comment id", async () => {
+    // GUARDS THE GUARD. Without this, the case above would pass just as happily
+    // against a board that opened the thread for every `?taskId=` link — which
+    // would be a different bug (every task notification, not just mentions,
+    // would raise a modal nobody asked for).
+    nav.params.set("taskId", "t1");
+    renderBoard({ initialTasks: [task({ id: "t1", title: "Ship the invoice export" })] });
+
+    // The card itself must still be there — i.e. the board rendered — so an
+    // absent dialog is a decision and not a crash.
+    expect(screen.getByText("Ship the invoice export")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("opens nothing when the task is not on this reader's board", async () => {
+    // A member mentioned on a teammate's task: `getTasks` filters their board
+    // to `assignedTo`, so the row is absent, and `listCommentsForTarget` would
+    // refuse them the thread anyway. An empty modal is a worse answer than none.
+    nav.params.set("taskId", "t_not_mine");
+    nav.params.set("comment", "cm_1");
+    renderBoard({ initialTasks: [task({ id: "t1", title: "Ship the invoice export" })] });
+
+    expect(screen.getByText("Ship the invoice export")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("stays closed once the reader closes it", async () => {
+    // The param is still in the URL at that point, so without the once-per-id
+    // ref the next render would re-open the thread and the reader could not
+    // dismiss it.
+    const userEv = userEvent.setup();
+    nav.params.set("taskId", "t1");
+    nav.params.set("comment", "cm_1");
+    renderBoard({ initialTasks: [task({ id: "t1", title: "Ship the invoice export" })] });
+
+    const dialog = await screen.findByRole("dialog");
+    await userEv.click(within(dialog).getByRole("button", { name: "Close" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+});

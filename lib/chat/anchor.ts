@@ -23,10 +23,19 @@
  * WHY THE TIMELINE IS NOT ENOUGH ON ITS OWN. `getMessagesPage` returns the
  * newest 50 ROOTS (`parentId: null`), so two kinds of target are missing from a
  * freshly loaded channel: a root older than that page, and — whatever the age —
- * any reply inside a thread, which the timeline excludes by design. The first is
- * reachable by the "Load earlier messages" control the reader already has, and is
- * reported as such. The second is not reachable from the timeline at ANY depth,
- * which is why `open-thread` is a step of its own rather than "keep looking".
+ * any reply inside a thread, which the timeline excludes by design.
+ *
+ * THE FIRST IS NOW SERVED UPSTREAM, which is the one thing about this module
+ * that has changed since it was written: `app/(app)/chat/[slug]/page.tsx` reads
+ * the same `?message=` parameter and asks `getMessagesPageAnchoredAt` for the
+ * window CONTAINING the anchor, so an old root arrives already in the page and
+ * this module answers `highlight` for it. `not-loaded` survives as the fallback
+ * for the server render and the client lookup disagreeing — see its own note
+ * below, which says that rather than claiming to be the ordinary path.
+ *
+ * The second is not reachable from the timeline at ANY depth — no window can
+ * contain a row the query filters out — which is why `open-thread` is a step of
+ * its own rather than "keep looking".
  */
 
 /**
@@ -75,7 +84,8 @@ export function parseMessageAnchor(raw: string | string[] | null | undefined): s
  * `highlight` — the target is in the loaded timeline; mark it and scroll to it.
  * `locate` — ask the server where this id lives (a root, or a reply's root).
  * `open-thread` — it is a reply; the panel is the only place it renders.
- * `not-loaded` — it is a root further back than the loaded page.
+ * `not-loaded` — it is a root that is not in the loaded page, and the server
+ *                was supposed to have put it there.
  *
  * FOUR OF THE FIVE HAVE A CALLER IN <ChatClient>; `idle` does not, and saying
  * "every one of these does" was the defect this module's own next sentence is
@@ -94,9 +104,14 @@ export function parseMessageAnchor(raw: string | string[] | null | undefined): s
  * was written and tested, and the effect that drove it hung the chat-client test
  * file whenever the earlier blocks in it had run first. Both the step and its
  * machinery were removed rather than left in as a branch nothing reaches — that is
- * this codebase's signature defect and not one to add to on purpose. `not-loaded`
- * is the honest replacement: the reader is told, and pointed at the "Load earlier
- * messages" control that has always been there.
+ * this codebase's signature defect and not one to add to on purpose.
+ *
+ * WHAT CLOSED IT INSTEAD, and the reason the loop is not missed: the RSC fetches
+ * the window containing the anchor ONCE, before this component exists
+ * (`getMessagesPageAnchoredAt`). Same outcome, no client state machine, nothing
+ * to wedge. `not-loaded` keeps the toast as the fallback for the two renders
+ * disagreeing, and the next paragraph on `nextAnchorStep` says which of these
+ * steps is a base case rather than letting the reader assume all five are hot.
  */
 export type AnchorStep =
   | { kind: "idle" }
@@ -129,6 +144,12 @@ export type AnchorState = {
  *
  * `not-loaded` is a RESULT, not a silent stop. Replacing "no anchor at all" with
  * "an anchor that quietly did nothing" would be the same dead end wearing a fix.
+ * It is now a FALLBACK rather than the ordinary answer for an old root — the page
+ * above arrives with the anchor's window already loaded — and it is kept for the
+ * same reason `idle` is: this is a total function over `AnchorState`, and a
+ * decision that answers every input it accepts beats one whose caller has to
+ * pre-filter. What it must not do is read as the hot path for old messages. It
+ * is not one.
  */
 export function nextAnchorStep(state: AnchorState): AnchorStep {
   const { anchorId, loadedIds, located, rootId } = state;
@@ -137,9 +158,10 @@ export function nextAnchorStep(state: AnchorState): AnchorStep {
   if (rootId) return { kind: "open-thread", rootId };
   if (loadedIds.indexOf(anchorId) !== -1) return { kind: "highlight" };
   if (!located) return { kind: "locate" };
-  // Located, a root, and still not in the timeline: it is further back than the
-  // page the reader has. `getMessagesPage` returns tombstones too, so a deleted
-  // message is found and reads "This message was deleted." rather than landing
-  // here.
+  // Located, a root, and still not in the timeline — which the anchored page the
+  // RSC serves is supposed to have prevented, so this is the two of them
+  // disagreeing rather than the ordinary old-message case. Tombstones do not
+  // land here either way: both the window and `getMessageLocation` return them,
+  // so a deleted message is found and reads "This message was deleted."
   return { kind: "not-loaded" };
 }

@@ -46,9 +46,21 @@ const prisma = vi.hoisted(() => {
     deletedAt: null,
   };
   const author = { id: "u_author", name: "Ayesha Raza", handle: "ayesha", avatar: null };
+  // Ali is a COFOUNDER, and that is load-bearing rather than decoration.
+  // tasks-and-comments-016 added an audience filter to createCommentAction: a
+  // mentioned person is only notified if they could actually OPEN the thread,
+  // which for a transaction thread means `canSeeFinances` (admin or cofounder).
+  // This row carried no `role` at all until 2026-10-05, so it read as a member,
+  // the filter correctly refused the ping, and all four link assertions below
+  // failed with `link was ""`.
+  //
+  // The fixture was the thing that was wrong, not the product — a roster where
+  // nobody can read the thread is not a world this action ever sees. Cofounder
+  // rather than admin on purpose: it proves the gate admits the non-admin
+  // finance role, instead of only ever exercising the author's own.
   const roster: Record<string, unknown>[] = [
     author,
-    { id: "u_ali", name: "Ali Khan", handle: "ali", avatar: null },
+    { id: "u_ali", name: "Ali Khan", handle: "ali", avatar: null, role: "cofounder" },
   ];
   /** Every `select` the action passed, so a test can assert what it asked for. */
   const selects: unknown[] = [];

@@ -23,6 +23,14 @@
  * in a way no customer reports as a bug:
  *
  *   - no AUTH_SECRET     → every authenticated request throws.
+ *   - no AUTH_URL        → next-auth has no fixed origin, so it takes one from
+ *                          the request's Host / X-Forwarded-Host header
+ *                          (auth.config.ts sets `trustHost: true`, and Vercel's
+ *                          own VERCEL variable would turn that on anyway). Every
+ *                          hostname that serves the deployment then mints and
+ *                          accepts its own sessions, and the sign-in redirect,
+ *                          `callbackUrl` validation and cookie domain all follow
+ *                          whatever arrived rather than the canonical domain.
  *   - no DATABASE_URL    → every query throws.
  *   - no DIRECT_URL      → step 2 cannot run (see the pgbouncer note below).
  *   - no CRON_SECRET     → all three nightly jobs return 500 for ever. Nothing
@@ -120,6 +128,16 @@ const REQUIRED_PROD_ENV = {
   AUTH_SECRET:
     "Auth.js signing secret. Without it every authenticated request throws. " +
     "Set it in the Production scope.",
+  AUTH_URL:
+    "the canonical origin Auth.js signs, sets cookies and redirects on — set it to the " +
+    "same origin as NEXT_PUBLIC_APP_URL. Without it next-auth derives its origin from " +
+    "the incoming Host / X-Forwarded-Host header, so every hostname that serves this " +
+    "deployment (each per-deployment *.vercel.app URL as well as the custom domain) " +
+    "mints and accepts its own sessions, and the sign-in redirect plus callbackUrl " +
+    "validation follow whatever arrived. Removing `trustHost: true` from auth.config.ts " +
+    "would NOT replace this: @auth/core turns trustHost on by itself whenever VERCEL is " +
+    "set, which is every Vercel build. A pinned AUTH_URL is the only thing that gives it " +
+    "one answer.",
   CRON_SECRET:
     "the bearer token Vercel Cron sends, and the only thing guarding the three " +
     "nightly jobs. Without it materialize-recurring, sweep-time-entries and " +
@@ -260,6 +278,58 @@ const VALUE_RULES = {
     }
     return null;
   },
+  AUTH_URL(value) {
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      return (
+        `AUTH_URL is not an absolute URL (got "${value}"). It must be the full canonical ` +
+        "origin, e.g. https://app.founderflow.com — next-auth rewrites every request's " +
+        "origin to it, so a bare host is not usable."
+      );
+    }
+    if (isLoopbackUrl(value)) {
+      return (
+        `AUTH_URL points at a loopback host (${parsed.host}). That is the ` +
+        ".env.local.example value; in production it makes every Auth.js URL — the sign-in " +
+        "redirect, the callback, the cookie origin — point at the customer's own machine."
+      );
+    }
+    if (parsed.protocol !== "https:") {
+      // Not a style rule: @auth/core derives `useSecureCookies` from this
+      // protocol, so an http:// origin strips the Secure attribute and the
+      // __Secure- name prefix from the session cookie of a site that is served
+      // over HTTPS.
+      return (
+        `AUTH_URL is "${value}", which is not https. @auth/core decides whether the ` +
+        "session cookie is Secure (and carries the __Secure- prefix) from this value's " +
+        "protocol, so an http origin ships a session cookie that will travel in clear text."
+      );
+    }
+    // The pathname is not decoration: next-auth reads it as `basePath`
+    // VERBATIM (node_modules/next-auth/lib/env.js:25-28 returns early only for
+    // "/", then `config.basePath || (config.basePath = pathname)`), and this
+    // app's handler is mounted at `app/api/auth/[...nextauth]` and nowhere
+    // else. So a value with any other path is syntactically fine and 404s every
+    // Auth.js route — the same failure shape the loopback check above exists
+    // for. "/" and "/api/auth" are the two paths that reach the handler; a
+    // trailing slash on either is harmless, because @auth/core strips it
+    // (lib/utils/env.js `createActionURL`) and `parseActionAndProviderId`
+    // matches both forms.
+    const basePath = parsed.pathname.replace(/\/+$/, "");
+    if (basePath !== "" && basePath !== "/api/auth") {
+      return (
+        `AUTH_URL is "${value}", whose path ("${parsed.pathname}") is not where this app's ` +
+        "Auth.js handler lives. next-auth takes that path as its basePath verbatim, and the " +
+        "handler is mounted at app/api/auth/[...nextauth] — so sign-in, the callback and the " +
+        "session endpoint would all be built under a prefix nothing serves, and every one of " +
+        "them 404s. Use the bare origin (the /api/auth default then applies), or spell that " +
+        "default out as /api/auth."
+      );
+    }
+    return null;
+  },
   DIRECT_URL(value) {
     // Named because the failure is otherwise a Prisma error about advisory
     // locks that reads like a database problem rather than a config one.
@@ -274,6 +344,50 @@ const VALUE_RULES = {
     return null;
   },
 };
+
+/**
+ * prodready-023. Why ONE canonical origin, checked across two variables.
+ *
+ * `NEXT_PUBLIC_APP_URL` is what every e-mail link, `metadataBase` and checkout
+ * redirect is built onto. `AUTH_URL` is what next-auth signs, sets cookies and
+ * redirects on. They are not two settings, they are one fact written twice, and
+ * a deploy where they disagree is broken in a way neither var's own rules can
+ * see: the password-reset link a locked-out customer receives lands on one host
+ * while the session cookie, the sign-in redirect and `callbackUrl` validation
+ * all belong to the other, so the link cannot complete the sign-in it was sent
+ * for.
+ *
+ * Compares ORIGIN only, deliberately: next-auth reads `AUTH_URL`'s pathname as
+ * its `basePath` (node_modules/next-auth/lib/env.js:20), so
+ * `https://app.example.com/api/auth` is a legitimate value and must not be
+ * read as a disagreement with `https://app.example.com`.
+ *
+ * Returns the problem string, or null when there is nothing to say — which
+ * includes either side being absent or malformed, because the required-var list
+ * and VALUE_RULES already report those in plainer words than an origin
+ * comparison can.
+ */
+export function authOriginMismatchProblem(env) {
+  if (isBlank(env.AUTH_URL) || isBlank(env.NEXT_PUBLIC_APP_URL)) return null;
+  let authOrigin;
+  let appOrigin;
+  try {
+    authOrigin = new URL(String(env.AUTH_URL)).origin;
+    appOrigin = new URL(String(env.NEXT_PUBLIC_APP_URL)).origin;
+  } catch {
+    return null;
+  }
+  if (authOrigin === appOrigin) return null;
+  return (
+    `AUTH_URL (${authOrigin}) and NEXT_PUBLIC_APP_URL (${appOrigin}) name different ` +
+    "origins, so this deploy has two canonical domains. E-mail links, metadataBase and " +
+    "the checkout redirect are built onto NEXT_PUBLIC_APP_URL while the session cookie, " +
+    "the sign-in redirect and callbackUrl validation all belong to AUTH_URL — an invite " +
+    "or password-reset link then lands on a host that cannot finish the sign-in it was " +
+    "sent for. Set both to the one public origin (AUTH_URL may carry a basePath; only " +
+    "the origin has to match)."
+  );
+}
 
 /**
  * prodready-006. Why a MISMATCHED Sentry pair fails the build while an absent
@@ -386,6 +500,12 @@ export function productionEnvProblems(env) {
     const problem = VALUE_RULES[name](String(value));
     if (problem) problems.push(problem);
   }
+
+  // prodready-023. The other rule ACROSS two vars: each origin can be perfectly
+  // valid on its own and still contradict the other. See
+  // authOriginMismatchProblem.
+  const authOrigin = authOriginMismatchProblem(env);
+  if (authOrigin) problems.push(authOrigin);
 
   // prodready-006. A rule ACROSS two vars, which is why it cannot live in
   // VALUE_RULES (per-var) or REQUIRED_PROD_ENV (per-var, and neither DSN is

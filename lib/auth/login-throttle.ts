@@ -156,9 +156,12 @@ export function recordLoginFailure(email: string): void {
  * correcting itself (see the banner at the top of that file). It is false, and
  * false in the direction that makes someone under-estimate a security task:
  * every Redis client is async, both methods are declared synchronous in
- * `RateLimiter`, and `authorize()` plus ~40 server-action call sites treat them
- * as such. A shared store means an async API and an `await` at every one of
- * them.
+ * `RateLimiter`, and `authorize()` plus more than 60 call sites across more
+ * than 20 files treat them as such. A shared store means an async API and an
+ * `await` at every one of them. That figure is measured by
+ * tests/lib/rate-limit-shared-store.test.ts and held to a floor; the "~40"
+ * this sentence used to carry was an approximation, and it under-stated the
+ * task in the same direction the paragraph is warning about.
  *
  * ── THE ROW-COUNTER ROUTE: DECIDED AGAINST, 2026-09-29 ──────────────────────
  *

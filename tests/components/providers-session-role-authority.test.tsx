@@ -282,7 +282,7 @@ describe("sec-013 — localStorage cannot grant a role", () => {
   });
 
   it("falls back to member, not to the local row, when the session carries no role", () => {
-    // `auth.config.ts:55` already defaults `session.user.role` to "member", so
+    // `auth.config.ts:84` already defaults `session.user.role` to "member", so
     // this state should be unreachable in the app. Pinned anyway: the fallback
     // chain in providers.tsx is what would be read if that default were ever
     // removed, and it must not reach for attacker-controlled storage.

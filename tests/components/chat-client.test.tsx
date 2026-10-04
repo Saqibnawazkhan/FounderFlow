@@ -78,6 +78,9 @@ const chatActions = vi.hoisted(() => ({
   addChannelMembersAction: vi.fn(),
   markChannelReadAction: vi.fn(),
   toggleReactionAction: vi.fn(),
+  // chat-012. The whole finding is that this had no caller anywhere in the
+  // product, so the question these mocks answer is "did a control reach it".
+  setChannelMuteAction: vi.fn(),
 }));
 vi.mock("@/lib/actions/chat", () => chatActions);
 
@@ -97,8 +100,30 @@ vi.mock("@/components/chat/channel-rail", () => ({
     <nav aria-label="Channels" data-has-new-dm={onNewDm ? "true" : "false"} />
   ),
 }));
+// chat-012: the mute props are EXERCISED rather than dropped. Whether this
+// island hands the header a working toggle is the whole of the finding, and a
+// stub that swallowed `onToggleMute` could not tell the fix from the bug. The
+// real control — that it exists, what it is called, and what it promises — is
+// pinned against the real component in tests/components/channel-header.test.tsx.
 vi.mock("@/components/chat/channel-header", () => ({
-  ChannelHeader: ({ channel }: { channel: { name: string } }) => <header>{channel.name}</header>,
+  ChannelHeader: ({
+    channel,
+    muted,
+    onToggleMute,
+  }: {
+    channel: { name: string };
+    muted?: boolean;
+    onToggleMute?: () => void;
+  }) => (
+    <header data-muted={muted === undefined ? "absent" : String(muted)}>
+      {channel.name}
+      {onToggleMute && (
+        <button type="button" onClick={onToggleMute}>
+          {muted ? "Unmute notifications" : "Mute notifications"}
+        </button>
+      )}
+    </header>
+  ),
 }));
 // `onOpenThread` is exercised rather than dropped: it is the only way into
 // <ThreadPanel>, and chat-009 is entirely about what that panel is handed.
@@ -171,9 +196,26 @@ vi.mock("@/components/chat/thread-panel", () => ({
   // finding is precisely that this island computed `readOnly` for the timeline
   // and forwarded nothing to the panel, so a stub that drops the prop cannot
   // tell the fix from the bug.
-  ThreadPanel: ({ open, readOnly }: { open: boolean; readOnly?: boolean }) =>
+  //
+  // chat-011: and so is whether a ROOT came with it. The panel used to be
+  // rendered only once the thread had loaded, so the pending state this island's
+  // own comment described was unreachable; a stub that ignored `root` would see
+  // no difference between opening on a spinner and not opening at all.
+  ThreadPanel: ({
+    open,
+    readOnly,
+    root,
+  }: {
+    open: boolean;
+    readOnly?: boolean;
+    root?: { id: string } | null;
+  }) =>
     open ? (
-      <div role="dialog" data-read-only={readOnly === undefined ? "absent" : String(readOnly)}>
+      <div
+        role="dialog"
+        data-read-only={readOnly === undefined ? "absent" : String(readOnly)}
+        data-pending={root ? "false" : "true"}
+      >
         Thread
       </div>
     ) : null,
@@ -198,6 +240,9 @@ function channel(overrides: Partial<ChannelDetail> = {}): ChannelDetail {
     archivedAt: null,
     members: [{ id: "u_creator", name: "Ayesha Raza" }],
     myChannelRole: null,
+    // chat-012. The server's answer to "have I silenced this one", off by
+    // default like every real `ChannelMember` row starts.
+    muted: false,
     ...overrides,
   };
 }
@@ -232,11 +277,19 @@ beforeEach(() => {
   toastMock.error.mockReset();
   chatActions.pollChannelActivityAction.mockReset();
   chatActions.addChannelMembersAction.mockReset();
+  chatActions.setChannelMuteAction.mockReset();
   chatActions.pollChannelActivityAction.mockResolvedValue({
     success: true,
     data: { lastMessageAt: LAST },
   });
   chatActions.addChannelMembersAction.mockResolvedValue({ success: true, data: { added: 1 } });
+  chatActions.setChannelMuteAction.mockImplementation(
+    async (input: { channelId: string; muted: boolean }) => ({
+      success: true,
+      data: { muted: input.muted },
+    })
+  );
+  toastMock.success.mockReset();
   sessionMock.data = null;
   sessionMock.status = "loading";
 });
@@ -671,6 +724,97 @@ describe("ChatClient — the way to start a direct message is always there", () 
   });
 });
 
+/* ═════════ chat-012 — the mute lever is WIRED, not just drawn ══════════════
+ *
+ * `ChannelMember.mutedAt` was honoured by both notification fan-outs and set by
+ * nothing: no action, no route, no control, in the whole repo. The suppression
+ * was complete, tested and unreachable — this codebase's signature defect — so
+ * what matters here is not that a button renders but that pressing it reaches
+ * the server.
+ *
+ * The stub above renders the control the island hands the header, so these
+ * assertions follow the real click path through this island's own callback into
+ * `setChannelMuteAction`. The control itself (its name, its promise, the muted
+ * marker) is pinned against the REAL <ChannelHeader> in
+ * tests/components/channel-header.test.tsx, and
+ * tests/lib/actions/reachability.test.ts fails outright on a `"use server"`
+ * export with no caller.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+describe("ChatClient — muting a channel (chat-012)", () => {
+  it("reaches the server when a member mutes the conversation", async () => {
+    renderClient(channel({ kind: "public", isMember: true }));
+
+    await userEvent.click(screen.getByRole("button", { name: /mute notifications/i }));
+
+    await waitFor(() => expect(chatActions.setChannelMuteAction).toHaveBeenCalledTimes(1));
+    expect(chatActions.setChannelMuteAction.mock.calls[0][0]).toEqual({
+      channelId: "ch_growth",
+      muted: true,
+    });
+  });
+
+  it("reaches it the other way round for a channel that is already muted", async () => {
+    // Both directions, because a one-way lever is how you end up with a
+    // permanently silent channel and no way back.
+    renderClient(channel({ kind: "public", isMember: true, muted: true }));
+
+    await userEvent.click(screen.getByRole("button", { name: /unmute notifications/i }));
+
+    await waitFor(() => expect(chatActions.setChannelMuteAction).toHaveBeenCalledTimes(1));
+    expect(chatActions.setChannelMuteAction.mock.calls[0][0]).toEqual({
+      channelId: "ch_growth",
+      muted: false,
+    });
+  });
+
+  it("forwards the server's answer, so the control flips on a real write", async () => {
+    renderClient(channel({ kind: "public", isMember: true }));
+    expect(screen.getByRole("banner")).toHaveAttribute("data-muted", "false");
+
+    await userEvent.click(screen.getByRole("button", { name: /mute notifications/i }));
+
+    await waitFor(() => expect(screen.getByRole("banner")).toHaveAttribute("data-muted", "true"));
+  });
+
+  it("tells the reader what mute did and did NOT do", async () => {
+    // A muted channel stays in the rail and keeps counting unreads
+    // (`unreadChatTotal` counts muted channels deliberately). Somebody who
+    // muted it to make it go away needs to hear that now, not discover it.
+    renderClient(channel({ kind: "public", isMember: true }));
+
+    await userEvent.click(screen.getByRole("button", { name: /mute notifications/i }));
+
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
+    expect(String(toastMock.success.mock.calls[0][0])).toMatch(/unread/i);
+  });
+
+  it("does not pretend it worked when the server refused", async () => {
+    chatActions.setChannelMuteAction.mockResolvedValue({
+      success: false,
+      error: "Only members of this conversation can mute it",
+    });
+    renderClient(channel({ kind: "public", isMember: true }));
+
+    await userEvent.click(screen.getByRole("button", { name: /mute notifications/i }));
+
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith("Only members of this conversation can mute it")
+    );
+    expect(screen.getByRole("banner")).toHaveAttribute("data-muted", "false");
+  });
+
+  it("offers nothing to a non-member, who has no membership row to carry the flag", () => {
+    // `mutedAt` lives on `ChannelMember`, and reading a public channel does not
+    // create one — markChannelReadAction refuses to join people by stealth for
+    // the same reason. A control whose only possible outcome is a refusal is
+    // worse than no control; what a non-member being @-mentioned in a public
+    // channel can still do is the workspace-wide notification preferences.
+    renderClient(channel({ kind: "public", isMember: false }));
+
+    expect(screen.queryByRole("button", { name: /mute/i })).not.toBeInTheDocument();
+  });
+});
+
 /* ══ chat-008 — the composer has to know what it is talking to ═══════════════ */
 describe("ChatClient — the conversation's kind reaches the composer", () => {
   it("forwards a room's kind", () => {
@@ -748,6 +892,70 @@ describe("ChatClient — the thread panel inherits read-only (chat-009)", () => 
     renderClient(channel({ kind: "public", isMember: true }));
 
     expect(await openThread()).toHaveAttribute("data-read-only", "false");
+  });
+});
+
+/* ═════════ chat-011 — "N replies" answers the click at once ════════════════
+ *
+ * THE COMMENT THIS ISLAND CARRIED, since the panel was built: "`threadRootId`
+ * is set the moment a reply indicator is clicked so the panel can open on a
+ * spinner instead of waiting for the round-trip before reacting." It did not.
+ * The panel was rendered `{thread && …}`, gated on the LOADED conversation, so
+ * the window between the click and the response rendered nothing at all — on a
+ * slow connection the click looks ignored and the reader presses it again.
+ *
+ * HOW THIS IS TESTED WITHOUT A FLAKY TIMER. `loadThreadAction` is handed a
+ * promise this test resolves BY HAND, so "before the round trip finished" is an
+ * exact point in time rather than a race with a real clock. No fake timers, no
+ * spinner animation to wait on.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+describe("ChatClient — the thread panel opens on the click (chat-011)", () => {
+  beforeEach(() => {
+    pageActions.loadThreadAction.mockReset();
+  });
+
+  it("shows the panel before the thread has come back", async () => {
+    let release: (value: unknown) => void = () => {};
+    pageActions.loadThreadAction.mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      })
+    );
+    renderClient(channel({ isMember: true }));
+
+    await userEvent.click(screen.getByRole("button", { name: /open thread/i }));
+
+    const dialog = await screen.findByRole("dialog");
+    // Open, and honest about having nothing in it yet.
+    expect(dialog).toHaveAttribute("data-pending", "true");
+
+    // Settle the request so nothing is left in flight when the test ends.
+    release({
+      success: true,
+      data: {
+        root: { id: "m_root", channelId: "ch_growth", reactions: [], segments: [] },
+        replies: [],
+      },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("dialog")).toHaveAttribute("data-pending", "false")
+    );
+  });
+
+  it("takes the panel away again when the thread cannot be loaded", async () => {
+    // A pending panel that never resolves is worse than no panel: the reader is
+    // left looking at a spinner with no explanation. The refusal is a toast and
+    // the panel closes.
+    pageActions.loadThreadAction.mockResolvedValue({
+      success: false,
+      error: "Thread not found",
+    });
+    renderClient(channel({ isMember: true }));
+
+    await userEvent.click(screen.getByRole("button", { name: /open thread/i }));
+
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith("Thread not found"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
 
@@ -849,9 +1057,13 @@ describe("ChatClient — the ?message= deep link (chat-010)", () => {
   });
 
   it("points the reader at the control that would reach an older root", async () => {
-    // Not silence. A link that lands somewhere and explains nothing is the bug
-    // being closed, and "Load earlier messages" is a button that already exists
-    // three lines up the page.
+    // THE FALLBACK, not the ordinary old-message path any more: the RSC above
+    // now serves the window CONTAINING the anchor
+    // (tests/app/chat/message-anchor-page.test.tsx), so reaching this toast
+    // means the server render and this lookup disagreed. It is still a toast
+    // and not silence, because a link that lands somewhere and explains nothing
+    // is the bug this finding is about, and "Load earlier messages" is a button
+    // that exists three lines up the page.
     nav.params = new URLSearchParams("message=m_old");
     pageActions.locateMessageAction.mockResolvedValue({ success: true, data: { rootId: null } });
 
@@ -862,9 +1074,56 @@ describe("ChatClient — the ?message= deep link (chat-010)", () => {
 
     await waitFor(() => expect(toastMock).toHaveBeenCalled());
     expect(String(toastMock.mock.calls[0][0])).toMatch(/load earlier messages/i);
-    // It does NOT fetch on the reader's behalf. That was tried, and it is recorded
-    // as scoped-out rather than left in half-working.
+    // The ISLAND still fetches nothing on the reader's behalf. A client-side
+    // paging loop was tried, hung this test file, and was removed; the fetch
+    // that replaced it happens once, on the server, before this component
+    // exists.
     expect(pageActions.loadOlderMessagesAction).not.toHaveBeenCalled();
+  });
+
+  /* ── THE WAY BACK OUT OF A HISTORY WINDOW ────────────────────────────────
+   *
+   * An anchored window around a month-old mention does not contain the newest
+   * message, and the room genuinely stops updating in that state: the activity
+   * poll refreshes an anchored page into the same anchored page. So the fix for
+   * "the link never showed me the message" must not strand the reader in the
+   * backlog with no sign that newer messages exist — that would be trading one
+   * dead end for another.
+   * ───────────────────────────────────────────────────────────────────────── */
+  it("offers a way back to the live edge while a history window is open", async () => {
+    nav.params = new URLSearchParams("message=m1");
+    renderClient(channel({ isMember: true }), {
+      initialMessages: timeline,
+      viewingHistory: true,
+    });
+
+    const back = screen.getByRole("button", { name: /jump to latest/i });
+    await userEvent.click(back);
+
+    // Pushed WITHOUT the anchor: the page keys the island on the anchor, so
+    // dropping it remounts at the live edge with a fresh cursor rather than
+    // carrying this window's into it.
+    expect(router.push).toHaveBeenCalledWith("/chat/growth");
+  });
+
+  it("says the reader is in history, not just that they can leave it", async () => {
+    nav.params = new URLSearchParams("message=m1");
+    renderClient(channel({ isMember: true }), {
+      initialMessages: timeline,
+      viewingHistory: true,
+    });
+
+    // A bare "jump to latest" button does not explain why the room looks quiet.
+    expect(screen.getByText(/reading earlier messages/i)).toBeInTheDocument();
+  });
+
+  it("claims nothing of the kind on an ordinary channel open", async () => {
+    // Guards the guard: a strip drawn unconditionally would tell every reader
+    // at the live edge that they were looking at the past.
+    renderClient(channel({ isMember: true }), { initialMessages: timeline });
+
+    expect(screen.queryByRole("button", { name: /jump to latest/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/reading earlier messages/i)).not.toBeInTheDocument();
   });
 
   it("tells the reader when the message cannot be found at all", async () => {

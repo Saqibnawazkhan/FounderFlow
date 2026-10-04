@@ -145,10 +145,39 @@ import { sendMessageAction } from "@/lib/actions/chat";
  * Mahwish is the population `User.handle` was added for: "مہوش زیدی" slugifies
  * to `"-"`, which is not a typable mention token, so her handle is the only
  * address she has. Ali has both.
+ *
+ * EVERY ROW CARRIES A `role`, AND THE TARGET BELOW NAMES ITS OWNERS, because of
+ * tasks-and-comments-016: the action now pings a mentioned person only if they
+ * can OPEN the thread. So a fixture has to say WHY each of these two is
+ * reachable, and they are reachable by the two different routes on purpose —
+ *
+ *   Ali      a cofounder, so `canSeeAllProjects` lets him read any task thread
+ *            and `canSeeFinances` lets him read a ledger one. He is the only
+ *            one of the three who can be mentioned on a TRANSACTION.
+ *   Mahwish  a plain member who is neither assignee nor creator of the target
+ *            task, and reachable only because she SUPERVISES its project. She
+ *            is therefore the case that exercises the project lookup, and the
+ *            one that would go silent if the probe stopped being monotone.
+ *
+ * Before 016 these rows had no `role` and the target task had no owners, which
+ * described a world where nobody could read the thread at all. The cases below
+ * passed anyway, because nothing asked.
  */
-const MAHWISH = { id: "u_mahwish", name: "مہوش زیدی", handle: "mahwish", avatar: null };
-const ALI = { id: "u_ali", name: "Ali Khan", handle: "ali", avatar: null };
-const AUTHOR = { id: "u_author", name: "Ayesha Raza", handle: "ayesha", avatar: null };
+const MAHWISH = {
+  id: "u_mahwish",
+  name: "مہوش زیدی",
+  handle: "mahwish",
+  avatar: null,
+  role: "member",
+};
+const ALI = { id: "u_ali", name: "Ali Khan", handle: "ali", avatar: null, role: "cofounder" };
+const AUTHOR = {
+  id: "u_author",
+  name: "Ayesha Raza",
+  handle: "ayesha",
+  avatar: null,
+  role: "admin",
+};
 
 function callsTo(delegate: string, method?: string): RecordedCall[] {
   return prisma.calls.filter((c) => c.delegate === delegate && (!method || c.method === method));
@@ -171,7 +200,17 @@ beforeEach(() => {
 
   // The author profile, the comment target, and the row the create returns.
   prisma.answers.set("user.findUnique", { ...AUTHOR });
-  prisma.answers.set("task.findUnique", { companyId: "c_nimbus" });
+  // The target task names its owners and its project since 016 — see the roster
+  // note above. Ayesha filed it and Ali is working it.
+  prisma.answers.set("task.findUnique", {
+    companyId: "c_nimbus",
+    deletedAt: null,
+    projectId: "p_1",
+    assignedTo: "u_ali",
+    assignedBy: "u_author",
+  });
+  // Supervised by Mahwish, which is the only reason she can read this thread.
+  prisma.answers.set("project.findFirst", { supervisorId: "u_mahwish" });
   prisma.answers.set("comment.create", { id: "cm_1", taskId: "t_1" });
 });
 

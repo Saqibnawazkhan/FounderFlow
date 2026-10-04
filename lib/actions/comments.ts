@@ -15,9 +15,14 @@
  *
  * @mentions: parsed server-side against the company user list (never trust
  * the client). Each unique mentioned user (minus the author) gets a single
- * Notification with a deep link back to the target. The notification fan-out
- * runs OUTSIDE the comment's transaction — a slow / failing notification
- * write shouldn't poison the comment.
+ * Notification with a deep link back to the target — PROVIDED they can open
+ * that thread. Being named in the text and being able to read it are two
+ * different questions, and since tasks-and-comments-016 this action asks both:
+ * a member mentioned on a teammate's task, or anyone without `canSeeFinances`
+ * mentioned on a ledger row, is not pinged into a page that would refuse them,
+ * and the author is told who was left out instead of reading the chip as
+ * delivery. The notification fan-out runs OUTSIDE the comment's transaction — a
+ * slow / failing notification write shouldn't poison the comment.
  */
 
 import { revalidatePath } from "next/cache";
@@ -66,8 +71,14 @@ export async function createCommentAction(input: unknown): Promise<
      *  "we tried to ping these people." */
     mentionedUserIds: string[];
     /** IDs the createMany ACTUALLY notified. Differs from mentionedUserIds
-     *  when the fan-out throws — the UI uses this for the honest toast. */
+     *  when the fan-out throws — the UI uses this for the honest toast. It is
+     *  also short of `mentionedUserIds` whenever somebody named cannot open this
+     *  thread; `unreachableNames` is who. */
     notifiedCount: number;
+    /** Display names the parser resolved but who may NOT read this thread, so
+     *  no notification was sent to them (tasks-and-comments-016). The composer
+     *  says so rather than letting the author read the chip as delivery. */
+    unreachableNames: string[];
   }>
 > {
   const session = await auth();
@@ -94,6 +105,23 @@ export async function createCommentAction(input: unknown): Promise<
   // Which ledger page this comment's row is shown on. Read off the row below;
   // the default only ever survives for a task comment, which never uses it.
   let ledgerPath = "/expenses";
+
+  /* THE FAN-OUT NEEDS THE SAME FACTS THE WRITE GATE DID (tasks-and-comments-016).
+   *
+   * The gate below asks "may the AUTHOR open this thread". The fan-out further
+   * down has to ask the same question about each MENTIONED person, against the
+   * same task row and the same project — so those facts are hoisted here instead
+   * of being read twice.
+   *
+   * `threadProjectLoaded` is separate from `threadProject !== null` on purpose:
+   * a project that genuinely does not resolve (deleted, or another workspace's)
+   * is a legitimate `null`, and conflating the two would re-issue the query once
+   * per mentioned member on exactly the boards where it misses.
+   */
+  let threadTask: { assignedTo: string; assignedBy: string } | null = null;
+  let threadProjectId: string | null = null;
+  let threadProject: { supervisorId: string } | null = null;
+  let threadProjectLoaded = false;
 
   try {
     // Verify the target belongs to this company. Prevents cross-company
@@ -140,14 +168,18 @@ export async function createCommentAction(input: unknown): Promise<
        * another workspace gets — so it confirms nothing about what exists. The
        * read side returns an empty thread for the same reason.
        */
+      threadTask = { assignedTo: task.assignedTo, assignedBy: task.assignedBy };
+      threadProjectId = task.projectId;
+
       const reader = { userId, role: session.user.role as Role };
       let mayAccess = mayAccessTaskThread({ reader, task, project: null });
       if (!mayAccess) {
-        const project = await db.project.findFirst({
+        threadProject = await db.project.findFirst({
           where: { id: task.projectId, companyId, deletedAt: null },
           select: { supervisorId: true },
         });
-        mayAccess = mayAccessTaskThread({ reader, task, project });
+        threadProjectLoaded = true;
+        mayAccess = mayAccessTaskThread({ reader, task, project: threadProject });
       }
       if (!mayAccess) return { success: false, error: "Target not found" };
     } else if (transactionId) {
@@ -203,14 +235,104 @@ export async function createCommentAction(input: unknown): Promise<
       // module header of lib/comments/mentions.ts says the only thing that
       // catches a missing `handle` is a grep — and a grep nobody runs is not a
       // guard.
+      //
+      // `role: true` is the second load-bearing column, and it is newer
+      // (tasks-and-comments-016). The fan-out below asks whether each mentioned
+      // person may READ this thread, and `mayAccessTaskThread` /
+      // `canSeeFinances` both take a role. Without it every mentioned member
+      // reads as role `undefined`, which those predicates refuse — so a missing
+      // `role` here does not leak, it silently stops pinging everybody who is
+      // not the assignee. Pinned by tests/lib/comments/mention-audience.ts.
       db.user.findMany({
         where: { companyId, deletedAt: null },
-        select: { id: true, name: true, handle: true },
+        select: { id: true, name: true, handle: true, role: true },
       }),
     ]);
     if (!author) return { success: false, error: "User no longer exists" };
 
     const mentionedUserIds = extractMentions(body, roster, userId);
+
+    /**
+     * The task's project, read at most once across the whole fan-out.
+     *
+     * A `const` arrow and not a `function` declaration: tsconfig.json sets `lib`
+     * but no `target`, so it defaults to ES5, where a function declaration
+     * inside a block is TS1252 — an error `npm run typecheck` reports and vitest
+     * does not. Same family as the Set-spread and `matchAll` traps.
+     */
+    const threadProjectFor = async (): Promise<{ supervisorId: string } | null> => {
+      if (threadProjectLoaded || threadProjectId === null) return threadProject;
+      threadProject = await db.project.findFirst({
+        where: { id: threadProjectId, companyId, deletedAt: null },
+        select: { supervisorId: true },
+      });
+      threadProjectLoaded = true;
+      return threadProject;
+    };
+
+    /* ── A PING NOBODY CAN FOLLOW IS NOT A PING (tasks-and-comments-016) ─────
+     *
+     * `extractMentions` answers "whose name is in this text". It says nothing
+     * about whether those people can OPEN the thread the text is in — and the
+     * two layers that decide that both refuse a plain member a teammate's task
+     * thread (`mayReadTarget` in lib/queries/comments.ts) and refuse a member
+     * any transaction thread (`canSeeFinances`, the gate at the top of this
+     * action). So a member @-mentioned on a teammate's task was sent a
+     * notification, clicked it, and arrived on a board that provably does not
+     * contain the task — `getTasks` filters their board to `assignedTo` — with
+     * `listCommentsForTarget` ready to answer their thread read with `[]`.
+     *
+     * The same predicate, asked once per mentioned person. `mayAccessTaskThread`
+     * is monotone in `project`, so the `null` probe runs first and only a member
+     * who is neither assignee nor creator costs the project read — which
+     * `threadProjectFor` then shares with everyone else in the loop.
+     *
+     * `roster.find` rather than a Map keyed by id: both arrays are a workspace's
+     * worth of rows at most, and `new Map(roster.map(...))` needs a tuple
+     * assertion to typecheck under this tsconfig's ES5 default. Not worth it.
+     *
+     * UNREACHABLE PEOPLE ARE REPORTED, NOT DROPPED. A silent filter is the same
+     * defect as the silent fan-out that tasks-and-comments-001 was about, in the
+     * opposite direction: the author would see the green chip, no warning, and
+     * no ping would land. The names go back in `unreachableNames` and the
+     * composer says so in the same toast that reports the successes.
+     *
+     * THE CHIP IS DELIBERATELY LEFT ALONE, and so is `Comment.mentions` below.
+     * A chip answers "whose name is this token?" — a fact about the TEXT, true
+     * for every later reader of the thread — while delivery is a fact about one
+     * send, to one author, at one moment. Folding delivery into the chip would
+     * mean storing it on the row and would then make the same comment read
+     * differently to a colleague who has no stake in whether a ping landed last
+     * week. `mentions` therefore keeps the PARSED list, which is also what
+     * `mentionsCurrentUser` highlighting wants.
+     */
+    const reachableUserIds: string[] = [];
+    const unreachableNames: string[] = [];
+    for (const mentionedId of mentionedUserIds) {
+      const person = roster.find((u) => u.id === mentionedId);
+      // Unreachable in practice — `extractMentions` resolved against this very
+      // roster — but an absent row must fail closed rather than become a grant.
+      if (!person) continue;
+      const theirRole = person.role as Role;
+      let mayRead: boolean;
+      if (threadTask) {
+        const asReader = { userId: mentionedId, role: theirRole };
+        mayRead = mayAccessTaskThread({ reader: asReader, task: threadTask, project: null });
+        if (!mayRead) {
+          mayRead = mayAccessTaskThread({
+            reader: asReader,
+            task: threadTask,
+            project: await threadProjectFor(),
+          });
+        }
+      } else {
+        // A transaction thread: the same single predicate both existing gates
+        // apply to this reader's own request.
+        mayRead = canSeeFinances(theirRole);
+      }
+      if (mayRead) reachableUserIds.push(mentionedId);
+      else unreachableNames.push(person.name);
+    }
 
     const created = await db.comment.create({
       data: {
@@ -232,7 +354,7 @@ export async function createCommentAction(input: unknown): Promise<
     // honestly (previously it reported the parsed mention count even
     // when the createMany threw — silent overstatement).
     let notifiedCount = 0;
-    if (mentionedUserIds.length > 0) {
+    if (reachableUserIds.length > 0) {
       /* THE TARGET COMES FIRST IN THE LINK (finding tasks-and-comments-003).
        *
        * This used to be `/tasks?comment=<commentId>` alone, and NOTHING in the
@@ -243,14 +365,19 @@ export async function createCommentAction(input: unknown): Promise<
        * filters their board to `assignedTo: userId`, so a mention on a
        * teammate's task landed them on a list that provably did not contain it.
        *
-       * `taskId=` / `transactionId=` FIRST because that is the param the product
-       * already honours: tasks-client scrolls the card into view and flashes it,
-       * and so does expenses-client. `comment=` is kept, and kept SECOND, for two
-       * reasons — a client that learns to read it can open the thread without this
-       * link changing again, and `deleteCommentAction` below sweeps by that
-       * substring. Ordering also matters to `deleteTaskAction`, which sweeps
-       * `link contains "taskId=<id>"`: deleting a task now also clears the mention
-       * pings that pointed into it, which is the behaviour audit row X10 asks for.
+       * `taskId=` / `transactionId=` FIRST because that is the param that locates
+       * the ROW: tasks-client scrolls the card into view and flashes it, and so
+       * does expenses-client. `comment=` is SECOND and names the conversation.
+       * All four surfaces read it now — /tasks, /expenses, /revenue and
+       * /investments, through `useCommentDeepLink` in
+       * components/comments/comment-deep-link.ts — and open that row's thread
+       * scrolled to this comment. The target HAS to come first because the
+       * comment id is not resolvable on the client: the thread is opened by the
+       * target the link already names. `deleteCommentAction` below also sweeps by
+       * the `comment=<id>` substring. Ordering matters to `deleteTaskAction` too,
+       * which sweeps `link contains "taskId=<id>"`: deleting a task now also
+       * clears the mention pings that pointed into it, which is the behaviour
+       * audit row X10 asks for.
        *
        * THE LEDGER IS THE ROW'S OWN (transactions-ledger-016). This was a
        * hard-coded `/expenses`, which was right only while /expenses was the one
@@ -258,11 +385,13 @@ export async function createCommentAction(input: unknown): Promise<
        * mention goes to /revenue and a cheque's to /investments — the page that
        * actually lists that row.
        *
-       * STILL OPEN, and smaller than it was: only expenses-client reads
-       * `?transactionId=`, so on /revenue and /investments the reader lands on
-       * the right ledger and finds the row themselves rather than being scrolled
-       * to it. Nothing reads `?comment=` anywhere yet, so no link opens the
-       * thread it names.
+       * STILL OPEN, and now small: only /tasks and /expenses SCROLL the row or
+       * card into view and flash it. /revenue and /investments use
+       * `?transactionId=` to find the row and open its thread, which lands on top
+       * of the page titled with that row's description and amount, but they do
+       * not scroll the ledger underneath — that needs the dual-layout ref
+       * machinery those two pages do not have, and it buys little once the
+       * conversation is open. See the comments in revenue-client.tsx.
        */
       const link = taskId
         ? `/tasks?taskId=${taskId}&comment=${created.id}`
@@ -273,7 +402,7 @@ export async function createCommentAction(input: unknown): Promise<
       try {
         const { notified } = await notifyUsers({
           event: "mention",
-          userIds: mentionedUserIds,
+          userIds: reachableUserIds,
           companyId,
           title: `${author.name} mentioned you`,
           message: truncated,
@@ -286,7 +415,7 @@ export async function createCommentAction(input: unknown): Promise<
           action: "createCommentAction.fanout",
           companyId,
           userId,
-          extra: { commentId: created.id, attempted: mentionedUserIds.length },
+          extra: { commentId: created.id, attempted: reachableUserIds.length },
         });
       }
     }
@@ -298,7 +427,7 @@ export async function createCommentAction(input: unknown): Promise<
 
     return {
       success: true,
-      data: { id: created.id, mentionedUserIds, notifiedCount },
+      data: { id: created.id, mentionedUserIds, notifiedCount, unreachableNames },
     };
   } catch (e) {
     captureServerError(e, { action: "createCommentAction" });

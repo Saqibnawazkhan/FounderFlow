@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 
 const { buildCspHeader } = require("./lib/security/csp");
+const { buildStrictTransportSecurity } = require("./lib/security/hsts");
 
 const isProd = process.env.NODE_ENV === "production";
 
@@ -13,15 +14,21 @@ const isProd = process.env.NODE_ENV === "production";
 // static rendering app-wide. Read the comment there before changing it.
 const cspHeader = buildCspHeader({ isProd });
 
+// HSTS. Same arrangement as the CSP, and for a second reason on top of
+// testability: this is the one security header a browser REMEMBERS, so its
+// value is a commitment rather than a setting. lib/security/hsts.js holds the
+// value, the ramp it is partway up (prodready-023) and what has to be verified
+// before the next rung. `null` there means "send no header at all", which is
+// what every `next dev` gets.
+const hstsHeader = buildStrictTransportSecurity({ isProd });
+
 const securityHeaders = [
   { key: "Content-Security-Policy", value: cspHeader },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-  ...(isProd
-    ? [{ key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" }]
-    : []),
+  ...(hstsHeader === null ? [] : [{ key: "Strict-Transport-Security", value: hstsHeader }]),
 ];
 
 const nextConfig = {

@@ -57,6 +57,8 @@ const thread = vi.hoisted(() => ({
     title: string;
     description?: string;
     companyUsers: { id: string; name: string }[];
+    /** The `?comment=` half of a mention deep link (tasks-and-comments-003). */
+    highlightCommentId?: string | null;
   }[],
 }));
 
@@ -67,6 +69,7 @@ vi.mock("@/components/comments/comment-thread-modal", () => ({
     title: string;
     description?: string;
     companyUsers: { id: string; name: string }[];
+    highlightCommentId?: string | null;
   }) => {
     thread.opened.push(props);
     return null;
@@ -242,6 +245,9 @@ const LEDGERS: Ledger[] = [
 beforeEach(() => {
   thread.opened.length = 0;
   nav.router.refresh.mockClear();
+  // The deep-link cases below put ?transactionId= / ?comment= here. Replaced
+  // rather than mutated: the mock reads `nav.params` at call time.
+  nav.params = new URLSearchParams();
 });
 
 /* ═══════════════════════ the affordance exists ════════════════════════ */
@@ -331,6 +337,92 @@ describe("the Server Components supply the roster their islands now need", () =>
       const code = source(rel);
       expect(code.indexOf("getCompanyUsers") !== -1, `${rel} fetches no roster`).toBe(true);
       expect(/users=\{/.test(code), `${rel} does not pass the roster down`).toBe(true);
+    });
+  });
+});
+
+/* ═══════ a mention on a ledger row opens its thread ══════════════════════ */
+
+/**
+ * tasks-and-comments-003, the finance half.
+ *
+ * `createCommentAction` picks the ledger from the row's own `type`
+ * (transactions-ledger-016), so a comment on a sale sends its "<name> mentioned
+ * you" to `/revenue?transactionId=<id>&comment=<id>` and a cheque's goes to
+ * /investments. NOT ONE of the three ledgers read `comment=`, and two of them
+ * read no search param at all — a repo-wide `grep -l 'get("comment")'` matched
+ * only app/(app)/tasks/tasks-client.tsx. So the reader was told somebody was
+ * discussing one of their rows and then shown all of them, with the
+ * conversation closed: the finding's literal claim, still true on the finance
+ * side after the /tasks half was fixed.
+ *
+ * ALL THREE ARE DRIVEN THROUGH THE SAME TABLE, deliberately. The decision is one
+ * shared hook (components/comments/comment-deep-link.ts) precisely so the three
+ * pages cannot drift, and a per-ledger loop is what proves all three actually
+ * call it — /revenue and /investments had no `useSearchParams` import before
+ * this, which is the kind of gap a single-page test leaves open.
+ *
+ * Covered by the pure cases in tests/components/comments/comment-deep-link.test.ts
+ * and not re-litigated here: every reason a link should open NOTHING. What this
+ * file adds is that each ledger is wired to the hook at all, and hands the
+ * modal both the row and the comment id.
+ */
+describe("a mention deep link opens the row's thread on every ledger (003)", () => {
+  LEDGERS.forEach((ledger) => {
+    describe(ledger.label, () => {
+      it("opens the thread for the row the link names", () => {
+        nav.params = new URLSearchParams({
+          transactionId: ledger.talked.id,
+          comment: "cm_42",
+        });
+
+        ledger.render();
+
+        const open = thread.opened.filter((p) => p.open);
+        expect(open.length, `${ledger.label} never opened a thread`).toBeGreaterThan(0);
+        expect(open[open.length - 1].target).toEqual({ transactionId: ledger.talked.id });
+      });
+
+      it("tells the thread which comment to scroll to", () => {
+        nav.params = new URLSearchParams({
+          transactionId: ledger.talked.id,
+          comment: "cm_42",
+        });
+
+        ledger.render();
+
+        const open = thread.opened.filter((p) => p.open);
+        expect(
+          open[open.length - 1].highlightCommentId,
+          `${ledger.label} opened the thread but not the comment`
+        ).toBe("cm_42");
+      });
+
+      it("opens nothing for a row notification that names no comment", () => {
+        // GUARDS THE GUARD. Both cases above would pass just as happily against
+        // a ledger that opened a thread for every `?transactionId=` link — and
+        // every transaction notification carries one, so that would raise a
+        // modal nobody asked for across the whole product.
+        nav.params = new URLSearchParams({ transactionId: ledger.talked.id });
+
+        ledger.render();
+
+        expect(thread.opened.filter((p) => p.open)).toHaveLength(0);
+      });
+
+      it("opens nothing when the named row is not on this page", () => {
+        nav.params = new URLSearchParams({ transactionId: "tx_elsewhere", comment: "cm_42" });
+
+        ledger.render();
+
+        expect(thread.opened.filter((p) => p.open)).toHaveLength(0);
+      });
+
+      it("opens nothing at all without a deep link", () => {
+        ledger.render();
+
+        expect(thread.opened.filter((p) => p.open)).toHaveLength(0);
+      });
     });
   });
 });

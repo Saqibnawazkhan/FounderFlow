@@ -178,3 +178,78 @@ describe("ThreadPanel — a read-only conversation (chat-009)", () => {
     expect(screen.getByRole("button", { name: /add reaction/i })).toBeInTheDocument();
   });
 });
+
+/* ═════ chat-011 — "N replies" has to answer the click ══════════════════════
+ *
+ * <ChatClient> has said this in a comment since the panel was built:
+ * "`threadRootId` is set the moment a reply indicator is clicked so the panel
+ * can open on a spinner instead of waiting for the round-trip before reacting."
+ * It did not. The panel was rendered `{thread && …}` — gated on the LOADED
+ * conversation — and `root` was a required `MessageClient`, so the spinner the
+ * comment described could not exist. On a slow connection the click looked
+ * ignored, and the reader clicked again.
+ *
+ * A false comment about a state that cannot happen is the part worth fixing
+ * even at P3: it is how the next person to touch this file is misled.
+ *
+ * THE PENDING STATE IS A NULL ROOT, not a flag. There is exactly one fact —
+ * "has the thread arrived?" — and `root === null` already carries it; a
+ * separate `loading` prop would be a second source of truth for it, able to
+ * disagree. No timers, no animation anything has to wait on: these cases are
+ * synchronous renders.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+describe("ThreadPanel — the moment between the click and the thread (chat-011)", () => {
+  it("is on screen before the thread has arrived", async () => {
+    renderPanel({ root: null });
+
+    // A dialog, with the focus trap and the Escape that <Modal> brings, so the
+    // click is visibly acknowledged and the reader can back out of it.
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("says it is loading rather than claiming an empty thread", async () => {
+    // "No replies yet — be the first." is what the loaded-but-empty branch
+    // says. Showing that while the request is still in flight would be a
+    // statement about the conversation, and a wrong one.
+    renderPanel({ root: null });
+
+    // A sentence, not only a skeleton: three grey rectangles say nothing to a
+    // screen reader. Matched specifically because the dialog's own description
+    // says "Loading…" too, and /loading/i alone finds both.
+    expect(await screen.findByText(/loading this thread/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no replies yet/i)).not.toBeInTheDocument();
+  });
+
+  it("offers nothing to type into until there is a thread to reply to", async () => {
+    // The composer needs the root's id for `parentId` — a reply typed before
+    // the root lands has nowhere to go, and a box that accepts a reply and
+    // drops it is worse than no box.
+    renderPanel({ root: null });
+
+    await screen.findByRole("dialog");
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(actions.sendMessageAction).not.toHaveBeenCalled();
+  });
+
+  it("still renders the thread once it is there", async () => {
+    // Guards the guard: a panel stuck on the pending branch would pass all
+    // three cases above and break every thread in the product.
+    renderPanel({
+      // `segments` as well as `body`: the panel renders the SEGMENTS (that is
+      // where mention chips come from), so a fixture that overrides only the
+      // body leaves the root's text on the reply.
+      replies: [
+        message({
+          id: "m_reply",
+          parentId: "m_root",
+          body: "on it",
+          segments: [{ type: "text", text: "on it" }],
+        }),
+      ],
+    });
+
+    expect(screen.getByText("shipping friday")).toBeInTheDocument();
+    expect(screen.getByText("on it")).toBeInTheDocument();
+    expect(screen.getByRole("combobox")).toBeInTheDocument();
+  });
+});

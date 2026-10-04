@@ -35,6 +35,10 @@ export default async function ReportsPage() {
     // stated the balance of the most recent 5,000 rows per type and silently
     // omitted the seed investment. Everything else on this page is scoped by
     // the client's period filter; this is the one all-time figure.
+    //
+    // RES-001: the SAME roll-up also carries the uncapped row count per type,
+    // which is what lets the client say "showing N of M" when the ceiling cut
+    // rows the selected period could contain. No extra query, one more prop.
     getTransactionTotals(),
   ]);
 
@@ -44,6 +48,11 @@ export default async function ReportsPage() {
       users={users}
       company={company}
       allTimeBalance={totals.balance}
+      ledgerCounts={{
+        expense: totals.byType.expense.count,
+        income: totals.byType.income.count,
+        investment: totals.byType.investment.count,
+      }}
     />
   );
 }

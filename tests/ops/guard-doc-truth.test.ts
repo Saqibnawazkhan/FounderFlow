@@ -106,6 +106,25 @@ function markdownSection(source: string, heading: string): string {
   return end === -1 ? rest : rest.slice(0, end);
 }
 
+/**
+ * The var names that have a markdown table ROW of their own in `section` — i.e.
+ * the first cell is nothing but a backticked NAME_LIKE_THIS.
+ *
+ * Needed because a substring search over the section is satisfied by a mention
+ * anywhere in the surrounding prose, and the prose is not what the section calls
+ * "the list". See the row assertion below.
+ */
+function tableRowVars(section: string): string[] {
+  const names: string[] = [];
+  const row = /^\|\s*`([A-Z][A-Z0-9_]*)`\s*\|/gm;
+  let m = row.exec(section);
+  while (m !== null) {
+    names.push(m[1]);
+    m = row.exec(section);
+  }
+  return names;
+}
+
 const BUILD_SECTION = markdownSection(CLAUDE_MD, "### Production migrations run at BUILD time");
 
 /* ══════════════════════════════════════════════════════════════════════════ */
@@ -136,6 +155,39 @@ describe("CLAUDE.md's build-time gate section matches scripts/vercel-build.mjs",
         BUILD_SECTION,
         `${REQUIRED_NAMES[i]} is in REQUIRED_PROD_ENV but CLAUDE.md's build-gate section ` +
           "never mentions it, so the table is no longer the list it claims to be"
+      ).toContain(REQUIRED_NAMES[i]);
+    }
+  });
+
+  /**
+   * The ROW, not just the name — and the reason this is a second assertion
+   * rather than a tightening of the one above.
+   *
+   * The test above is a substring search over the whole section, so a var that
+   * appears only in the surrounding prose satisfies it. That is not theoretical:
+   * when `AUTH_URL` was added on 2026-10-04 (prodready-023) it arrived as both a
+   * table row AND a sentence in the paragraph under the table, and deleting the
+   * ROW alone left this file green — the sentence carried the name. A reader
+   * provisioning Vercel copies the TABLE, so the table is what has to be
+   * complete; the prose explains it.
+   *
+   * Both assertions stay. This one is specific about where the name must be; the
+   * looser one still catches a var documented in some other shape (a bullet, a
+   * code fence) and says something useful about it.
+   */
+  it("gives every required var its own row in the Vercel-vars table", () => {
+    const documented = tableRowVars(BUILD_SECTION);
+    expect(
+      documented.length,
+      "no `VAR` table rows were found in CLAUDE.md's build-gate section at all — has the " +
+        "table been reformatted? Every assertion in this test would otherwise pass vacuously"
+    ).toBeGreaterThanOrEqual(REQUIRED_NAMES.length);
+    for (let i = 0; i < REQUIRED_NAMES.length; i++) {
+      expect(
+        documented,
+        `${REQUIRED_NAMES[i]} is in REQUIRED_PROD_ENV but has no row of its own in ` +
+          "CLAUDE.md's Vercel-vars table. A mention in the prose is not the list — the table " +
+          "is what gets copied into the dashboard, and an incomplete one reads as complete."
       ).toContain(REQUIRED_NAMES[i]);
     }
   });

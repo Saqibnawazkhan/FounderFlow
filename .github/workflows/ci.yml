@@ -12,9 +12,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Matched to `engines.node` in package.json, which is not a declaration
+      # about the deploy target but IS the deploy target: Vercel reads that field
+      # and it overrides the Node.js Version chosen in Project Settings. This was
+      # "20" until the 2026-10 go-live audit (prodready-017) — a line that left
+      # support on 2026-04-30 and that Vercel stopped deploying on 2026-10-01,
+      # while every local build and smoke run happened on Node 24. Every Node pin
+      # in the repo has to name the same major or CI proves nothing about the
+      # deployed artifact; tests/ops/node-runtime-pin.test.ts fails if one drifts.
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
 
       # `npm install` (not `npm ci`) tolerates the known npm bug where
@@ -91,7 +99,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
 
       - name: Install dependencies

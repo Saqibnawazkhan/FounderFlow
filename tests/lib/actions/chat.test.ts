@@ -144,6 +144,7 @@ import {
   addChannelMembersAction,
   markChannelReadAction,
   sendMessageAction,
+  setChannelMuteAction,
 } from "@/lib/actions/chat";
 
 /* ────────────────────────────── helpers ─────────────────────────────────── */
@@ -250,6 +251,193 @@ describe("markChannelReadAction (chat-007)", () => {
     expect(res.success).toBe(true);
     expect(callsTo("channelMember.update")).toHaveLength(0);
     expect(H.revalidated).toEqual([]);
+  });
+
+  /* ═══ chat-014 — the read receipt is not an app-wide cache eviction ════════
+   *
+   * This is the most frequent write in the product: the client fires it 750ms
+   * after every transition into the at-bottom state, so a reader flicking up
+   * and down a long channel sends a stream of them. Each one ran a membership
+   * read, a newest-message read, a two-column UPDATE and TWO `revalidatePath`
+   * calls on a shared cache tag — for a watermark that, nine times out of ten,
+   * was already exactly where it was being moved to.
+   *
+   * WHAT IS DELIBERATELY NOT DONE: the limiter the finding asked for. The
+   * exemption in this action's own header is right and stays — a rejected
+   * receipt spends the budget the reader's next MESSAGE needs, and
+   * `limiters.read` is already carrying the five-second liveness poll, which
+   * fails silently by design. The fix is to stop doing pointless work, not to
+   * price it.
+   *
+   * `moved` is the other half: the client only tells the sidebar's Chat badge
+   * to refetch when something actually changed. The non-member branch above
+   * returned a bare success, so the badge re-read the whole count on every
+   * message in a public channel nobody had joined (audit row A54).
+   * ═════════════════════════════════════════════════════════════════════════ */
+  it("writes nothing, and evicts no cache, when the watermark is already there", async () => {
+    when("channel.findFirst", () =>
+      channelRow({ members: [{ role: "member", mutedAt: null, lastReadMessageId: "m_newest" }] })
+    );
+    when("message.findFirst", () => ({ id: "m_newest" }));
+
+    const res = await markChannelReadAction({ channelId: "ch_general" });
+
+    expect(res).toMatchObject({ success: true, data: { moved: false } });
+    expect(callsTo("channelMember.update")).toHaveLength(0);
+    expect(H.revalidated).toEqual([]);
+  });
+
+  it("writes, and evicts, when a newer message HAS arrived", async () => {
+    // Guards the guard: a short-circuit that fired unconditionally would leave
+    // every badge in the product permanently stale.
+    when("channel.findFirst", () =>
+      channelRow({ members: [{ role: "member", mutedAt: null, lastReadMessageId: "m_old" }] })
+    );
+    when("message.findFirst", () => ({ id: "m_newest" }));
+    when("channelMember.update", () => ({}));
+
+    const res = await markChannelReadAction({ channelId: "ch_general" });
+
+    expect(res).toMatchObject({ success: true, data: { moved: true } });
+    expect(callsTo("channelMember.update")).toHaveLength(1);
+    expect(H.revalidated).toContain("/chat/general");
+  });
+
+  it("says plainly that nothing moved for a non-member", async () => {
+    // Audit row A54: this returned a bare success, and the client reads success
+    // as "tell the sidebar to refetch its unread total" — so every message in a
+    // public channel the reader never joined cost a round trip to learn the
+    // count had not changed.
+    when("channel.findFirst", () => channelRow({ members: [] }));
+
+    const res = await markChannelReadAction({ channelId: "ch_general" });
+
+    expect(res).toMatchObject({ success: true, data: { moved: false } });
+  });
+
+  it("marks an empty channel read without writing anything", async () => {
+    // No messages at all: there is nothing unread, so there is nothing to
+    // record. `null === null` is the same "did not move" answer.
+    when("channel.findFirst", () =>
+      channelRow({ members: [{ role: "member", mutedAt: null, lastReadMessageId: null }] })
+    );
+    when("message.findFirst", () => null);
+
+    const res = await markChannelReadAction({ channelId: "ch_general" });
+
+    expect(res).toMatchObject({ success: true, data: { moved: false } });
+    expect(callsTo("channelMember.update")).toHaveLength(0);
+  });
+});
+
+/* ═══════════ chat-012 — the mute lever, server side ════════════════════════
+ *
+ * `ChannelMember.mutedAt` was read by both notification fan-outs in this file
+ * and written by NOTHING in the repo — no action, no route, no control. These
+ * cases are about the write that was missing and the three things it must not
+ * do: join a non-member by stealth, let somebody else decide whether your phone
+ * buzzes, or spend a cache eviction on a state the row already holds.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+describe("setChannelMuteAction (chat-012)", () => {
+  function member(over: Record<string, unknown> = {}): void {
+    when("channel.findFirst", () => channelRow(over));
+    when("channelMember.update", () => ({}));
+  }
+
+  it("writes a timestamp on MY membership row, and only mine", async () => {
+    member();
+
+    const res = await setChannelMuteAction({ channelId: "ch_general", muted: true });
+
+    expect(res).toMatchObject({ success: true, data: { muted: true } });
+    const updates = callsTo("channelMember.update");
+    expect(updates).toHaveLength(1);
+    expect(updates[0].where).toEqual({
+      channelId_userId: { channelId: "ch_general", userId: "u_me" },
+    });
+    expect((updates[0].data as Record<string, unknown>).mutedAt).toBeInstanceOf(Date);
+  });
+
+  it("clears the timestamp to unmute, rather than writing a second flag", async () => {
+    // The timestamp IS the mute. A boolean beside it would be a second source
+    // of truth for one fact, and the fan-out filters read `mutedAt`.
+    member({ members: [{ role: "member", mutedAt: new Date("2026-09-01T00:00:00.000Z") }] });
+
+    const res = await setChannelMuteAction({ channelId: "ch_general", muted: false });
+
+    expect(res).toMatchObject({ success: true, data: { muted: false } });
+    expect((callsTo("channelMember.update")[0].data as Record<string, unknown>).mutedAt).toBeNull();
+  });
+
+  it("refuses a non-member instead of creating a membership row for them", async () => {
+    // A public channel's reader can post and be mentioned without joining. An
+    // upsert here would silence them AND subscribe them to this channel's
+    // unread badge forever — the stealth join markChannelReadAction refuses
+    // above for the same reason.
+    when("channel.findFirst", () => channelRow({ members: [] }));
+
+    const res = await setChannelMuteAction({ channelId: "ch_general", muted: true });
+
+    expect(res.success).toBe(false);
+    expect(callsTo("channelMember.update")).toHaveLength(0);
+    expect(callsTo("channelMember.create")).toHaveLength(0);
+    expect(callsTo("channelMember.createMany")).toHaveLength(0);
+    expect(H.revalidated).toEqual([]);
+  });
+
+  it("writes nothing, and evicts nothing, when the row already says so", async () => {
+    // The payload is an absolute state, not a toggle, so this is success — and
+    // a second tab asking for the state the row holds should not cost two cache
+    // evictions on a shared tag.
+    member({ members: [{ role: "member", mutedAt: new Date("2026-09-01T00:00:00.000Z") }] });
+
+    const res = await setChannelMuteAction({ channelId: "ch_general", muted: true });
+
+    expect(res).toMatchObject({ success: true, data: { muted: true } });
+    expect(callsTo("channelMember.update")).toHaveLength(0);
+    expect(H.revalidated).toEqual([]);
+  });
+
+  it("revalidates the channel's OWN path as well as the index", async () => {
+    // The bell is rendered from getChannelBySlug inside /chat/[slug], so the
+    // cached render that has to go is the one the reader is looking at — the
+    // chat-007 lesson, applied to a new write rather than relearned later.
+    member();
+
+    await setChannelMuteAction({ channelId: "ch_general", muted: true });
+
+    expect(H.revalidated).toContain("/chat/general");
+    expect(H.revalidated).toContain("/chat");
+  });
+
+  it("will not mute a channel this caller cannot even see", async () => {
+    // A private channel they were never added to. One refusal for "not yours"
+    // and "does not exist", so this cannot be used to discover that
+    // #acquisition exists.
+    when("channel.findFirst", () => channelRow({ kind: "private", members: [] }));
+
+    const res = await setChannelMuteAction({ channelId: "ch_general", muted: true });
+
+    expect(res.success).toBe(false);
+    expect(callsTo("channelMember.update")).toHaveLength(0);
+  });
+
+  it("refuses a payload that does not say which way to go", async () => {
+    // `muted` is the desired state; a missing one is not "toggle".
+    member();
+
+    expect((await setChannelMuteAction({ channelId: "ch_general" })).success).toBe(false);
+    expect(callsTo("channelMember.update")).toHaveLength(0);
+  });
+
+  it("needs a session, like every other write here", async () => {
+    H.session.value = null;
+    member();
+
+    expect((await setChannelMuteAction({ channelId: "ch_general", muted: true })).success).toBe(
+      false
+    );
+    expect(callsTo("channelMember.update")).toHaveLength(0);
   });
 });
 

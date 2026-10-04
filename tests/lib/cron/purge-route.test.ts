@@ -12,9 +12,11 @@
  *
  * Findings: cron-002 (one stuck project must not stop the sweep), cron-005 (the
  * dry run must report the rows a live run would destroy), cron-006 (a
- * chat-heavy workspace must actually finish), cron-008 (a failed stage must
- * escalate), prodready-003 (a missing CRON_SECRET must be loud),
- * R1-money-013-cron (the hard delete must not strip money attribution).
+ * chat-heavy workspace must actually finish), prodready-012 (one that holds
+ * more chat than a single night can drain must still finish, over several),
+ * cron-008 (a failed stage must escalate), prodready-003 (a missing
+ * CRON_SECRET must be loud), R1-money-013-cron (the hard delete must not strip
+ * money attribution).
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +24,42 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const SECRET = "purge-secret-for-tests";
+
+/**
+ * The route's own source. Two things in this file are about the route's shape
+ * rather than its behaviour, and both read it from here instead of restating
+ * it: the drift guard at the bottom (which delegates each of two functions
+ * names) and the prodready-012 seeds below (one night's drain ceiling).
+ */
+const ROUTE = join(process.cwd(), "app", "api", "cron", "purge-soft-deleted", "route.ts");
+
+/**
+ * Read a numeric top-level `const` out of the route.
+ *
+ * `DRAIN_BATCH` and `MAX_DRAIN_BATCHES` are TUNING. Raising either is an
+ * improvement — it is the direction prodready-012's own suggested fix pushes —
+ * so a seed that restated tonight's figure would turn that improvement into red
+ * tests named "orphaning its children" and "failing for ever", and in this repo
+ * that is how a good change gets reverted. Deriving them means the seeds move
+ * with the route, and what these tests assert is the BEHAVIOUR at the ceiling,
+ * never the ceiling's value.
+ *
+ * Read rather than imported on purpose: Next.js generates a type guard per route
+ * module that whitelists its exports (the `checkFields<Diff<…, TEntry>>` in
+ * next/dist/build/webpack/plugins/next-types-plugin — GET/POST/…, `dynamic`,
+ * `runtime`, `maxDuration` and a few more), so exporting the two constants for a
+ * test to import would fail `next build` rather than hand us a helper.
+ */
+function routeNumber(name: string): number {
+  const hit = new RegExp("^const " + name + " = ([0-9_]+);", "m").exec(readFileSync(ROUTE, "utf8"));
+  if (!hit) {
+    throw new Error(
+      `${name} is gone from the purge route. The prodready-012 seeds are derived from it so the ` +
+        `drain ceiling stays tunable — re-point them at the new name, do not inline a number.`
+    );
+  }
+  return Number(hit[1].replace(/_/g, ""));
+}
 
 /** Rows the fake workspace holds, per Prisma delegate. */
 type Counts = Record<string, number>;
@@ -420,6 +458,119 @@ describe("cron-006 — a chat-heavy workspace must actually finish", () => {
   });
 });
 
+/* ── prodready-012 ─────────────────────────────────────────────────────── */
+
+/**
+ * The other half of cron-006: a workspace holding MORE chat than one night's
+ * drain ceiling (`DRAIN_BATCH` x `MAX_DRAIN_BATCHES`).
+ *
+ * cron-006 fixed the transaction budget and moved the unbounded tables out of
+ * the transaction, and the tests above pin both. What nothing pinned is what
+ * happens when the drain ceiling IS reached — and both ways of getting that
+ * wrong are silent at exactly the scale where it matters:
+ *
+ *   1. deleting the Company row anyway would leave live Message rows behind a
+ *      workspace that no longer exists: rows unreachable by the `companyId`
+ *      filters the drain itself uses, invisible to every scoped query, and
+ *      outside the restore runbook. That is the data-integrity-005 shape.
+ *   2. recording the ceiling as a FAILURE would answer 500 every night for
+ *      ever for the busiest customers — which is precisely the "fails on it
+ *      every night forever" that prodready-012 filed, just reached from the
+ *      other side, and it would blunt the 5xx cron-008 introduced.
+ *
+ * The contract is neither: remove the part that fits, keep the parent row, say
+ * `companiesDeferred`, and complete on a later night.
+ */
+describe("prodready-012 — more chat than one night can drain", () => {
+  beforeEach(() => {
+    process.env.PURGE_ENABLED = "true";
+  });
+
+  /**
+   * One night's drain ceiling, and a seed just past it.
+   *
+   * Both are DERIVED from the route (`DRAIN_BATCH` x `MAX_DRAIN_BATCHES`) — see
+   * `routeNumber` for why none of this may be a literal. The seed sits past one
+   * night's ceiling and short of two, which is the one thing these tests need of
+   * it: the deferral branch is reached, and a later night finishes the
+   * workspace. Tune the ceiling in either direction and the seed follows.
+   */
+  const DRAIN_BATCH = routeNumber("DRAIN_BATCH");
+  const NIGHTLY_CEILING = DRAIN_BATCH * routeNumber("MAX_DRAIN_BATCHES");
+  const OVER_CEILING = NIGHTLY_CEILING + DRAIN_BATCH;
+
+  it("defers the workspace instead of orphaning its children", async () => {
+    harness = buildHarness({
+      overdueCompanies: ["co-chatty"],
+      counts: { message: OVER_CEILING, user: 1 },
+    });
+    const { body } = await run();
+    expect(resultOf(body).companiesDeferred).toBe(1);
+    expect(resultOf(body).companiesPurged).toBe(0);
+    // The parent row has to outlive the children it is the only handle on.
+    expect(harness.ops.filter((o) => o.delegate === "company" && o.kind === "delete")).toEqual([]);
+    // And the relational core is untouched: no transaction is opened at all on
+    // a workspace this run has already decided it cannot finish.
+    expect(harness.txOptions).toEqual([]);
+    expect(harness.ops.some((o) => o.inTx)).toBe(false);
+  });
+
+  it("is a clean run, not a nightly 500", async () => {
+    harness = buildHarness({
+      overdueCompanies: ["co-chatty"],
+      counts: { message: OVER_CEILING, user: 1 },
+    });
+    const { status, body } = await run();
+    expect(status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.failures).toEqual([]);
+  });
+
+  it("still removes what it could, so every night makes progress", async () => {
+    harness = buildHarness({
+      overdueCompanies: ["co-chatty"],
+      counts: { message: OVER_CEILING, user: 1 },
+    });
+    const { body } = await run();
+    // Both bounds are the SEED, which is derived: the claim is that the night
+    // was neither a no-op nor a report that the workspace was finished. How many
+    // rows one night takes is tuning and is deliberately not asserted anywhere.
+    expect(resultOf(body).workspaceRowsDeleted).toBeGreaterThan(0);
+    expect(resultOf(body).workspaceRowsDeleted).toBeLessThan(OVER_CEILING);
+    expect(harness.counts.message).toBeGreaterThan(0);
+    expect(harness.counts.message).toBeLessThan(OVER_CEILING);
+  });
+
+  it("finishes on a later night rather than failing for ever", async () => {
+    harness = buildHarness({
+      overdueCompanies: ["co-chatty"],
+      counts: { message: OVER_CEILING, user: 1 },
+    });
+    const first = await run();
+    expect(resultOf(first.body).companiesDeferred).toBe(1);
+    expect(resultOf(first.body).companiesPurged).toBe(0);
+    // Same harness, so the rows a night drains really are gone and each further
+    // run is a further night. The contract is TERMINATION — the filed claim is
+    // "can never actually be deleted" — so this loops until the workspace goes
+    // instead of asserting it happens on night two: how many nights a given
+    // ceiling needs is tuning, that the count is finite is not. The bound is
+    // only here so a regression fails rather than hanging.
+    let last = first;
+    for (let night = 2; night <= 6 && resultOf(last.body).companiesPurged === 0; night += 1) {
+      last = await run();
+      expect(last.status).toBe(200);
+    }
+    expect(resultOf(last.body).companiesPurged).toBe(1);
+    expect(resultOf(last.body).companiesDeferred).toBe(0);
+    expect(last.body.failures).toEqual([]);
+    // Exactly once, on the night the children were all gone — which also says
+    // the first night did not delete it.
+    expect(harness.ops.filter((o) => o.delegate === "company" && o.kind === "delete")).toHaveLength(
+      1
+    );
+  });
+});
+
 /* ── cron-002 ──────────────────────────────────────────────────────────── */
 
 describe("cron-002 — one stuck project must not disable the whole stage", () => {
@@ -774,7 +925,7 @@ describe("the dry-run counter and the live purge must not drift apart", () => {
   // day in 2026-09-24 — so the mirror is checked, not remembered. A table added
   // to the delete and not to the count makes the dry run under-report by
   // however many rows it holds, which is the one number the canary reads.
-  const ROUTE = join(process.cwd(), "app", "api", "cron", "purge-soft-deleted", "route.ts");
+  // (`ROUTE` is the module-level path, shared with the derived drain ceiling.)
 
   /** One top-level `async function` body, up to its column-zero closing brace. */
   function functionBody(name: string): string {

@@ -15,7 +15,10 @@
  * `app/page.tsx`, `lib/email/verification.ts`, `lib/notify/email.ts` and
  * `lib/lemonsqueezy/config.ts`. `app/layout.tsx` is the root layout, so the
  * module — and therefore the parse below and the production assertion at the
- * bottom — now evaluates on every route rather than on two static files.
+ * bottom — now evaluates on every route rather than on two static files. Read
+ * that sentence as history, not as a census: more importers have arrived since,
+ * and the current set is the enforced IMPORTERS block beside the production
+ * assertion at the bottom of this file.
  *
  * That widening is deliberate and costs nothing in practice: `robots.ts` and
  * `sitemap.ts` are statically generated, so this module already evaluated during
@@ -69,9 +72,12 @@ const envSchema = z.object({
   // one-liner at a time. If you genuinely need the raw value, add the file here
   // so the next reader is not misled.
   //
-  // Everything else now goes through `appOrigin()`: app/layout.tsx (metadataBase),
-  // app/page.tsx (JSON-LD), app/robots.ts, app/sitemap.ts,
-  // lib/email/verification.ts, lib/notify/email.ts and lib/lemonsqueezy/config.ts.
+  // Everything else now goes through `appOrigin()`. That list is NOT repeated
+  // here: every module importing this one imports it for `appOrigin`, so the
+  // enforced IMPORTERS block beside the production assertion at the bottom of
+  // this file already is the list, derived from the import graph rather than
+  // typed out. A second hand-written copy is how this very comment came to omit
+  // lib/email/templates/security-notice.ts (prodready-016).
   NEXT_PUBLIC_APP_URL: z.string().url().default(LOCAL_DEV_ORIGIN),
 
   DATABASE_URL: z.string().optional(),
@@ -255,13 +261,36 @@ if (verificationFlagProblem) {
 // Production-only. `robots.ts` and `sitemap.ts` are statically generated, so on
 // a production Vercel build this throw happens during `next build` and fails
 // the deploy — which is the outcome we want, and the reason it is safe to be
-// this blunt. NOTE the runtime blast radius changed with prodready-004: nine
+// this blunt. NOTE the runtime blast radius changed with prodready-004: eleven
 // modules now import this one, including app/layout.tsx (the root layout), so a
 // runtime throw here takes EVERY route rather than just /robots.txt and
 // /sitemap.xml. That is still the outcome we want — a production deploy with no
 // canonical origin emits broken links in every email — but it is no longer the
 // small, contained failure this comment used to promise.
 // A localhost sitemap is also why the marketing site would be unindexable.
+//
+// That sentence said "nine" until 2026-10-04 (prodready-016), by which time two
+// more modules had started importing this one. An under-count here is an
+// under-statement of how much of the product a throw in this file takes down,
+// which is the one thing this paragraph exists to tell the next reader. It is
+// therefore no longer remembered: the list below is compared against the real
+// import graph, and the number in the sentence above against its length, so an
+// importer cannot be added without this paragraph being corrected in the same
+// edit. Every entry imports this module for `appOrigin`, so this is also the
+// complete list of `appOrigin()` call sites.
+//
+// IMPORTERS (derived and enforced by tests/lib/env/self-description.test.ts):
+//   app/layout.tsx
+//   app/page.tsx
+//   app/robots.ts
+//   app/sitemap.ts
+//   lib/actions/email-change.ts
+//   lib/actions/password-reset.ts
+//   lib/actions/team.ts
+//   lib/email/templates/security-notice.ts
+//   lib/email/verification.ts
+//   lib/lemonsqueezy/config.ts
+//   lib/notify/email.ts
 if (IS_PRODUCTION_DEPLOY) {
   const problem = productionAppUrlProblem(process.env.NEXT_PUBLIC_APP_URL);
   if (problem) {

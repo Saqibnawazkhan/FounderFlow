@@ -292,7 +292,12 @@ describe("the New recurring rule form (app/(app)/recurring/recurring-client.tsx)
   it("asks for the amount in the workspace currency", async () => {
     workspaceCurrency("GBP");
     const user = userEvent.setup();
-    render(<RecurringClient rules={[]} currentUserId="u-1" currentUserRole="admin" />);
+    // `projects` is the money-005 picker's option list; empty is a legal state
+    // (a workspace with no projects renders no picker) and nothing here is about
+    // the tag — tests/app/recurring/new-rule-project-tag.test.tsx owns that.
+    render(
+      <RecurringClient rules={[]} currentUserId="u-1" currentUserRole="admin" projects={[]} />
+    );
 
     await user.click(screen.getByRole("button", { name: /^New rule$/i }));
 

@@ -1,0 +1,11 @@
+{
+  "Rules": [
+    {
+      "ID": "founderflow-nightly-dumps-expire-after-180d-2x-the-90d-soft-delete-window",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "nightly/" },
+      "Expiration": { "Days": 180 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    }
+  ]
+}

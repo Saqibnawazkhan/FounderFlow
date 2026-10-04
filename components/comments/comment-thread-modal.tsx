@@ -36,6 +36,16 @@ type Props = {
   currentUserRole: "admin" | "cofounder" | "member";
   companyUsers: MentionUser[];
   onChanged?: () => void;
+  /**
+   * One comment in this thread to scroll to and flash — the `?comment=` half of
+   * a mention deep link (tasks-and-comments-003). Null when the thread was
+   * opened by hand, which is every other way it opens.
+   *
+   * Passed straight through to `<CommentThread>`: the modal owns the fetch, the
+   * thread owns the DOM. An id that is not in the loaded page is handled there,
+   * because only the thread knows what came back.
+   */
+  highlightCommentId?: string | null;
 };
 
 export function CommentThreadModal({
@@ -48,6 +58,7 @@ export function CommentThreadModal({
   currentUserRole,
   companyUsers,
   onChanged,
+  highlightCommentId = null,
 }: Props) {
   const [comments, setComments] = useState<CommentClient[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +108,7 @@ export function CommentThreadModal({
           currentUserRole={currentUserRole}
           companyUsers={companyUsers}
           onChanged={refresh}
+          highlightCommentId={highlightCommentId}
         />
       )}
     </Modal>

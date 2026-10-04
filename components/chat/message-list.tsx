@@ -21,8 +21,12 @@
  * by the time a prepend lands it describes the DOM as it was a moment ago.
  * The restore is `newScrollHeight - oldScrollHeight + oldScrollTop`.
  *
- * Read receipts fire only while the reader is parked at the bottom, and are
- * debounced — otherwise a flick through ten channels writes ten rows.
+ * Read receipts fire only while the reader is parked at the bottom, are
+ * debounced — otherwise a flick through ten channels writes ten rows — and are
+ * sent at most ONCE PER WATERMARK (chat-014): the effect has to depend on
+ * `atBottom`, so without that guard every scroll back to the bottom re-sent a
+ * receipt for a message the reader had already read, and each one cost two
+ * `revalidatePath` calls on a shared cache tag.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -202,23 +206,62 @@ export function MessageList({
     prevMetrics.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
   }, [messages, currentUserId]);
 
+  /**
+   * The watermark this list has already told the server about (chat-014).
+   *
+   * THE EFFECT BELOW DEPENDS ON `atBottom`, and it has to: the receipt may only
+   * be sent while the reader is parked at the live edge, and that is a piece of
+   * state. The consequence was that every transition INTO the at-bottom state
+   * sent another receipt — so a reader flicking up and down a long channel
+   * generated a stream of them, and each one cost the server a membership read,
+   * a newest-message read, an UPDATE and `revalidatePath("/chat")` +
+   * `revalidatePath("/chat/<slug>")` on a shared cache tag, to move a watermark
+   * that had not moved.
+   *
+   * A ref, not state: it must not itself trigger a render, and the effect reads
+   * it at the moment the timer fires rather than at the moment it was scheduled.
+   *
+   * SET ON SUCCESS ONLY. A refused receipt moved nothing, so the badge is still
+   * wrong and the next opportunity has to take it — latching on the attempt
+   * would make a single network blip permanent until the next message arrived.
+   *
+   * This is NOT the whole guard: `markChannelReadAction` makes the same
+   * judgement server-side for every other caller (a second tab, a direct POST),
+   * where it is the revalidation rather than the round trip that is being saved.
+   */
+  const sentWatermark = useRef<string | null>(null);
+
   // Read receipt: only while parked at the bottom, and only when the newest
   // message changes — re-running on every scroll tick would hammer the DB.
   const newestId = messages.length > 0 ? messages[messages.length - 1].id : null;
   useEffect(() => {
     if (!atBottom || !newestId) return;
     const timer = setTimeout(() => {
+      // Already told the server about this exact message. Nothing newer has
+      // been said, so there is nothing newer to have read.
+      if (sentWatermark.current === newestId) return;
       // Wrapped in Promise.resolve so a mocked action that returns undefined
       // doesn't blow up on .catch.
       Promise.resolve(markChannelReadAction({ channelId }))
         .then((res) => {
+          if (!res || !res.success) return;
+          sentWatermark.current = newestId;
           // Tell the sidebar its Chat total just shrank. Only on a real
           // success: `res` is undefined under the test mocks this Promise.resolve
           // exists for, and firing on those would have the badge refetch after a
           // write that never happened. The sidebar re-reads the count from the
           // server rather than trusting a number from here, so a spurious event
           // is harmless but a missed one leaves a stale badge for 30s.
-          if (res && res.success && typeof window !== "undefined") {
+          //
+          // AND ONLY WHEN THE WATERMARK ACTUALLY MOVED (chat-014). The action
+          // now says so: `moved: false` covers a public channel the reader
+          // never joined (so there is no watermark at all — audit row A54) and
+          // a receipt for a message they had already read. `!== false` rather
+          // than `=== true` because the data is optional in the test mocks this
+          // guard already accommodates, and the costly mistake is the missed
+          // event, not the spare one.
+          if (res.data?.moved === false) return;
+          if (typeof window !== "undefined") {
             window.dispatchEvent(new CustomEvent("ff-chat-read"));
           }
         })

@@ -49,6 +49,19 @@ import { foldReactions, type ReactionRow } from "@/lib/chat/reactions";
 /** How many root messages one page of a channel timeline carries. */
 const MESSAGE_PAGE_SIZE = 50;
 
+/**
+ * How many of an ANCHORED window's rows sit NEWER than the anchor (chat-010).
+ *
+ * The window is one ordinary page in total; this is only how it is split. A
+ * mention is usually a question, and the answer is the message after it, so a
+ * window that ENDED at the anchor would show the reader the one row they
+ * already knew about and nothing that followed. The split is deliberately
+ * lopsided towards history because that is the direction the reader can keep
+ * going in — "Load earlier messages" continues from the top of the window,
+ * while the way back to the live edge is a single jump rather than a page walk.
+ */
+const ANCHOR_WINDOW_NEWER = 15;
+
 export interface ChannelListItem {
   id: string;
   slug: string;
@@ -67,6 +80,21 @@ export interface ChannelDetail extends ChannelListItem {
   members: { id: string; name: string; handle?: string | null }[];
   /** "owner" | "member", or null when the viewer has no membership row. */
   myChannelRole: string | null;
+  /**
+   * Has the VIEWER silenced this conversation's notifications? (chat-012)
+   *
+   * `ChannelMember.mutedAt != null`, as a boolean, because the surface only
+   * ever asks the yes/no question and the instant is nobody's business but the
+   * row's. False for a non-member: `mutedAt` lives on a membership row, so
+   * somebody without one has not muted anything and has nothing to unmute.
+   *
+   * NOT on `ChannelListItem`, deliberately. The rail would have to pay a join
+   * per row for a glyph, and a muted channel is supposed to look ordinary
+   * there: it keeps its place and keeps counting unreads
+   * (`unreadChatTotal` counts muted channels on purpose), because mute means
+   * "stop interrupting me", not "hide this from me".
+   */
+  muted: boolean;
 }
 
 export interface MessageReactionClient {
@@ -149,6 +177,27 @@ export interface MessageClient {
 export interface MessagePage {
   messages: MessageClient[];
   nextCursor: string | null;
+}
+
+/**
+ * One page of a channel's timeline, positioned on a message somebody linked to
+ * rather than on the live edge (chat-010).
+ *
+ * `hasNewer` is the field the surface cannot do without: a window built around
+ * a month-old mention does NOT contain the newest message, so the room would
+ * sit there looking live and frozen unless something says otherwise and offers
+ * the way back.
+ */
+export interface AnchoredMessagePage extends MessagePage {
+  /**
+   * The ROOT the window was built around — the anchor itself, or, when the
+   * anchor is a thread reply, the root that reply hangs off. Never null: a
+   * window with no root to centre on is returned as `null` by the whole
+   * function instead.
+   */
+  anchorRootId: string;
+  /** Do roots NEWER than this window exist? i.e. is the live edge missing? */
+  hasNewer: boolean;
 }
 
 /** The row shape the message selects produce — shared by the mappers below. */
@@ -602,6 +651,11 @@ export async function getChannelBySlug(slug: string): Promise<ChannelDetail | nu
       userId: true,
       role: true,
       lastReadAt: true,
+      // chat-012: the viewer's own mute flag rides along on the roster read
+      // that is already happening, so the channel page costs no extra query
+      // for it. Every member's `mutedAt` is selected because the roster is one
+      // query; only the viewer's is exported, below.
+      mutedAt: true,
       // handle: feeds the composer's mention autocomplete, which prefers a
       // handle and falls back to a name slug — so without it a teammate whose
       // display name has no ASCII letters cannot be picked from the list.
@@ -661,6 +715,9 @@ export async function getChannelBySlug(slug: string): Promise<ChannelDetail | nu
     archivedAt: channel.archivedAt?.toISOString() ?? null,
     members: memberList,
     myChannelRole: mine?.role ?? null,
+    // The instant is dropped here on purpose — see the field's own note. A
+    // non-member has no row, so `mine` is null and this is false.
+    muted: mine?.mutedAt != null,
   };
 }
 
@@ -723,6 +780,125 @@ export async function getMessagesPage(channelId: string, cursor?: string): Promi
 }
 
 /**
+ * The page CONTAINING a given message, instead of the newest page (chat-010).
+ *
+ * WHAT THIS CLOSES. `?message=<id>` is written into every mention notification,
+ * every DM notification and every chat hit in the command palette. The surface
+ * honoured it only for a message that happened to be in the newest page: a root
+ * older than that — Friday's mention opened on Monday, in a channel that has
+ * had four hundred messages since — was not on the page at all, and the reader
+ * got a truthful but useless "that message is further back, load earlier
+ * messages" instead of the message. This is the query that puts it on the page.
+ *
+ * ONE PAGE, TWO BOUNDED READS, NO LOOP. Both reads are the same `cursor` +
+ * `take` shape `getMessagesPage` above already uses, anchored on the root
+ * rather than on the newest row: one walks DESCENDING from it for history
+ * (`cursor` with no `skip`, so the root itself is the first row back), one
+ * walks ASCENDING past it for the context after it. Nothing counts the rows in
+ * between the anchor and the live edge, and nothing pages repeatedly — a
+ * client-side paging loop was written for this once, hung
+ * tests/components/chat-client.test.tsx, and was removed on purpose (see
+ * lib/chat/anchor.ts).
+ *
+ * A REPLY IS ANCHORED ON ITS ROOT. `getMessagesPage` filters `parentId: null`,
+ * so a reply is not in the timeline at ANY depth and no window can contain it.
+ * The panel is where it renders (`locateMessageAction` → `openThread`); what
+ * this does is put the TIMELINE underneath that panel at the conversation the
+ * reply belongs to, rather than at the live edge a screen away.
+ *
+ * NULL, NOT A FALLBACK, when the id names nothing this reader may reach. The
+ * caller then loads the ordinary newest page and the client's
+ * `locateMessageAction` tells the reader the truth. Returning the newest page
+ * from in here would make "that message is gone" indistinguishable from "here
+ * is your message", which is the dead end this whole finding is about.
+ */
+export async function getMessagesPageAnchoredAt(
+  channelId: string,
+  messageId: string
+): Promise<AnchoredMessagePage | null> {
+  // Same as getMessagesPage: the role is the SERVER's answer to "who is
+  // asking", never a caller argument, because `toMessageClient` redacts a
+  // Runway card's figures by it.
+  const { userId, companyId, role } = await requireScopedSession();
+
+  const channel = await db.channel.findFirst({
+    where: { id: channelId, ...visibleChannelWhere(userId, companyId) },
+    select: { id: true },
+  });
+  if (!channel) return null;
+
+  // `companyId` as well as `channelId`: the id came out of the address bar, and
+  // this is the re-verification step. Tombstones are deliberately still
+  // anchorable — `getMessagesPage` returns them, so a notification that
+  // outlived its message lands on "This message was deleted." rather than on a
+  // "couldn't find it" that reads like a bug.
+  const target = await db.message.findFirst({
+    where: { id: messageId, channelId, companyId },
+    select: { id: true, parentId: true },
+  });
+  if (!target) return null;
+
+  let rootId = target.id;
+  if (target.parentId !== null) {
+    // The root is re-read rather than trusted, for one blunt reason: it is
+    // about to be used as a Prisma `cursor`, and a cursor row that does not
+    // satisfy the query's own `where` is a THROW, not an empty page. A
+    // half-written reply whose root is gone would 500 the channel page.
+    const root = await db.message.findFirst({
+      where: { id: target.parentId, channelId, companyId, parentId: null },
+      select: { id: true },
+    });
+    if (!root) return null;
+    rootId = root.id;
+  }
+
+  const olderTake = MESSAGE_PAGE_SIZE - ANCHOR_WINDOW_NEWER;
+  const [olderRows, newerRows, roster] = await Promise.all([
+    db.message.findMany({
+      where: { channelId, parentId: null },
+      select: MESSAGE_SELECT,
+      // Descending + id tiebreaker, exactly as getMessagesPage pages backwards.
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      // No `skip`: the cursor row IS the anchor, and the anchor belongs in the
+      // window. The extra row reveals whether older pages exist.
+      cursor: { id: rootId },
+      take: olderTake + 1,
+    }),
+    db.message.findMany({
+      where: { channelId, parentId: null },
+      select: MESSAGE_SELECT,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      // `skip: 1` here, because the anchor is already in the half above and a
+      // row delivered twice would render twice.
+      cursor: { id: rootId },
+      skip: 1,
+      take: ANCHOR_WINDOW_NEWER + 1,
+    }),
+    loadRoster(companyId),
+  ]);
+
+  const hasOlder = olderRows.length > olderTake;
+  const olderSlice = hasOlder ? olderRows.slice(0, olderTake) : olderRows;
+  const hasNewer = newerRows.length > ANCHOR_WINDOW_NEWER;
+  const newerSlice = hasNewer ? newerRows.slice(0, ANCHOR_WINDOW_NEWER) : newerRows;
+
+  // The oldest row in the window is the cursor for the page before it. Read off
+  // the descending slice BEFORE reversing, where it is simply the last.
+  const nextCursor = hasOlder ? (olderSlice[olderSlice.length - 1]?.id ?? null) : null;
+
+  // Ascending — oldest first, newest LAST — the one order every caller of this
+  // file expects, and the order the list renders top to bottom.
+  const window = olderSlice.reverse().concat(newerSlice);
+
+  return {
+    messages: window.map((row) => toMessageClient(row, roster, userId, role)),
+    nextCursor,
+    anchorRootId: rootId,
+    hasNewer,
+  };
+}
+
+/**
  * Where does one message live? (chat-010)
  *
  * `null` when the id names nothing this reader may reach — a message from
@@ -734,11 +910,17 @@ export async function getMessagesPage(channelId: string, cursor?: string): Promi
  * WHY A QUERY OF ITS OWN RATHER THAN A WIDER `getMessagesPage`. The caller has an
  * id and needs one fact about it: is this a root the timeline could show, or a
  * reply that only the thread panel can? `getMessagesPage` filters `parentId:
- * null`, so it can never answer the second half, and an "anchored page" mode
- * would have to count every newer row in the channel to decide how far to reach
- * back — an unbounded `take` on a table that grows for years. Two indexed reads
- * and a bounded walk backwards is the cheaper shape, and it degrades into a
- * truthful "further back than this loads" instead of a slow query.
+ * null`, so it can never answer the second half.
+ *
+ * THIS PARAGRAPH USED TO END by ruling out an "anchored page" mode on the ground
+ * that it "would have to count every newer row in the channel to decide how far
+ * to reach back — an unbounded `take` on a table that grows for years". That is
+ * true of ONE shape of anchored page (anchor → live edge) and false of the
+ * bounded WINDOW around the anchor that `getMessagesPageAnchoredAt` above now
+ * returns: two `cursor`+`take` reads of at most 51 rows each, the same shape
+ * this file already pages with. The window is what shows the reader their
+ * message; this function stays because the window cannot contain a reply, and
+ * because the client asks "where is it?" before it asks for anything at all.
  *
  * `rootId` collapses the one-level thread rule the write path enforces
  * (`sendMessageAction` attaches a reply-to-a-reply to the same root), so a caller

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import { FileSpreadsheet, FileText } from "lucide-react";
+import { FileSpreadsheet, FileText, Info } from "lucide-react";
 import toast from "react-hot-toast";
 import { Avatar } from "@/components/ui/avatar";
 import { PillBadge } from "@/components/landing/pill-badge";
@@ -21,7 +21,6 @@ import type { Company, Transaction, User } from "@/lib/types";
 // subMonths, all LOCAL) is gone entirely; see lib/date-range.ts and money-007.
 import { format } from "date-fns";
 import { startOfUtcMonth } from "@/lib/date-range";
-import { spreadsheetSafeRows } from "@/lib/reports/spreadsheet-safe";
 
 // Inlined palette — must NOT import named constants from reports-charts.tsx
 // at top level, that pulls recharts into the initial chunk and defeats the
@@ -410,7 +409,8 @@ export function summaryFigures(args: {
    *
    * Only this row can come from an aggregate: every other figure here is scoped
    * by the client-side period picker, so it would need a per-window server round
-   * trip. This one does not depend on the window at all.
+   * trip. This one does not depend on the window at all. What the windowed rows
+   * get instead is a disclosure — see `reportTruncation` below (RES-001).
    *
    * Optional ONLY so it could land ahead of the page.tsx change that supplies it;
    * tests/app/reports/reports-period.test.ts fails while /reports does not pass
@@ -431,6 +431,141 @@ export function summaryFigures(args: {
       amount: allTimeBalance ?? netOf(all),
     },
   ];
+}
+
+/**
+ * Rows the LEDGER holds, per type — `getTransactionTotals().byType[*].count`,
+ * the uncapped aggregate that app/(app)/reports/page.tsx already fetches for the
+ * all-time balance row. Not the ceiling constant, and not a flag: the comparison
+ * below is between two numbers the page really has, so it stays correct if
+ * `MAX_TRANSACTIONS_PER_TYPE` ever moves and it is silent for every workspace
+ * under it (which today is all of them).
+ */
+export interface LedgerCounts {
+  expense: number;
+  income: number;
+  investment: number;
+}
+
+export interface ReportTruncation {
+  /** Ledger rows this page received, all three types. */
+  shown: number;
+  /** Ledger rows the workspace holds, all three types. */
+  total: number;
+  /** `total − shown` — the oldest rows, which this page never read. */
+  hidden: number;
+}
+
+/** The three ledger types, as `Transaction.type` stores them and as
+ *  `LedgerCounts` keys them. */
+const LEDGER_TYPES: Transaction["type"][] = ["expense", "income", "investment"];
+
+/**
+ * Whether the read ceiling has cut rows that the SELECTED PERIOD could contain
+ * — and if so, by how much (RES-001). `null` means "say nothing".
+ *
+ * WHY THIS PAGE NEEDS ITS OWN. `transactions` is `getTransactions()`, a LIST
+ * window of at most `MAX_TRANSACTIONS_PER_TYPE` rows PER TYPE whose docstring
+ * ends "DO NOT SUM THE RESULT" — and every figure here does exactly that:
+ * `summaryFigures`' four in-period rows, `categoryData`, `contributorRows`,
+ * `monthBuckets`, and both exporters mapping over all of them. Only the all-time
+ * balance escaped, via `allTimeBalance` (money-008). The six sibling consumers
+ * were moved onto unbounded roll-ups by transactions-ledger-001; these cannot
+ * be, because the window is chosen in the BROWSER and an aggregate per window is
+ * a server round trip per click. So the honest landing is that the page says so
+ * — on screen and in both downloads — until that query exists. A page that
+ * admits its window is short is correct; a page that understates a total a
+ * customer emails to an investor is not, and this is the surface where a wrong
+ * number travels furthest from anyone who could notice it.
+ *
+ * NOT `LedgerTruncationNotice` (components/transactions/ledger-truncation-notice.tsx):
+ * that component ends "every figure above counts all N", which is true on the
+ * three ledger clients, whose figures come from roll-ups, and FALSE here. A
+ * false reassurance printed on this page is the finding, not the fix.
+ *
+ * WHY "COULD CONTAIN" RATHER THAN "IS SHORT". A ceiling drops the OLDEST rows,
+ * so every dropped row of a type is dated on or before the oldest row of that
+ * type the page DID receive. A period that opens after that day therefore cannot
+ * be missing any of them, and announcing a shortfall there would be the
+ * furniture the rep-009 clamp notice is careful to avoid (`requestedStart` is
+ * set only when a span was really narrowed). Per type, because the ceiling is
+ * per type: a full income window is not excused by an expense window with room
+ * to spare.
+ *
+ * `shown` / `total` are all three types together, because the sentence they
+ * feed describes THIS PAGE's coverage of the ledger. It does not claim to say
+ * which of the period's figures is short, and deliberately: the page cannot
+ * know that without the aggregate it does not have.
+ */
+export function reportTruncation(args: {
+  transactions: Transaction[];
+  counts?: LedgerCounts;
+  window: ReportWindow;
+}): ReportTruncation | null {
+  const { transactions, counts, window: w } = args;
+  // The prop is optional so the page renders before (and without) the roll-up.
+  // A notice that guessed at a denominator would be worse than none.
+  if (!counts) return null;
+
+  let shown = 0;
+  let total = 0;
+  let reaches = false;
+  LEDGER_TYPES.forEach((type) => {
+    const rows = transactions.filter((t) => t.type === type);
+    shown += rows.length;
+    total += counts[type];
+    if (counts[type] - rows.length <= 0) return;
+    // `reduce` rather than a loop assigning an outer `let`: TypeScript narrows a
+    // `number | null` initialised to `null` and does not track assignments made
+    // inside a callback, so the comparison afterwards fails typecheck.
+    const oldest = rows.reduce<number | null>((min, t) => {
+      const at = new Date(t.date).getTime();
+      // An unparseable stored date tells us nothing about where the dropped rows
+      // sit, so it is skipped rather than treated as the oldest.
+      if (Number.isNaN(at)) return min;
+      return min === null || at < min ? at : min;
+    }, null);
+    // No rows of a type whose count is non-zero means the whole type was cut, so
+    // there is no oldest row to reason from and every dropped row is a candidate.
+    if (oldest === null || w.start.getTime() <= oldest) reaches = true;
+  });
+
+  const hidden = total - shown;
+  // A roll-up read microseconds before a delete can come back SMALLER than the
+  // row window, and "−3 oldest rows are missing" is a bug report, not a
+  // disclosure. Same reasoning as `ledgerTruncation`.
+  if (hidden <= 0 || !reaches) return null;
+  return { shown, total, hidden };
+}
+
+/**
+ * The one sentence that disclosure is made of, for the screen, the PDF and the
+ * .xlsx — defined once for the reason `summaryFigures` is: money-010 existed
+ * because the same figures were written in two exporters, so the mislabelled row
+ * had to be fixed twice.
+ *
+ * It does not say the figures ARE wrong, because that is not known, and it does
+ * not say they are fine, because that is the false reassurance this replaces.
+ * It names the IN-PERIOD figures specifically: the "Cash balance (all time)"
+ * row beside them is `allTimeBalance`, an unbounded aggregate (money-008), and
+ * sweeping it in would understate what the reader can still trust. The last
+ * sentence is the actionable part — the three ledger pages' totals come from
+ * roll-ups with no ceiling and do count every row.
+ *
+ * `format` is passed in because number formatting is bound to the active locale
+ * by `useNumberFormat`, which is a hook.
+ */
+export function truncationNote(
+  truncation: ReportTruncation | null,
+  format: (value: number) => string
+): string | null {
+  if (!truncation) return null;
+  return (
+    `Showing ${format(truncation.shown)} of this workspace's ${format(truncation.total)} transactions. ` +
+    `The ${format(truncation.hidden)} oldest were not read, so every in-period figure, chart and ` +
+    `export on this page can understate the selected period. The all-time cash balance, and the ` +
+    `totals on Expenses, Revenue and Investments, count every row.`
+  );
 }
 
 export interface ContributorRow {
@@ -585,34 +720,34 @@ export function pdfTransactionRows(
  * The same ledger for the Transactions sheet. Amounts stay NUMBERS (signed, so
  * the column can be summed in Excel) and the date is the sheet's day format.
  *
- * The free text is the one thing that is NOT simply `pdfTransactionRows`'
- * string: `spreadsheetSafeRows` guards it (transactions-ledger-009), because a
- * `description` that arrived from a vendor's CSV, or an `addedByName` someone
- * chose for themselves, may begin with `=`, `+`, `-` or `@`, and this is the
- * boundary where that text becomes spreadsheet content. Numbers are not touched.
+ * The free text is carried through verbatim, exactly as `pdfTransactionRows`
+ * carries it, so the two download buttons describe the same ledger (rep-006).
  *
- * Note what that means for the PDF beside it, because it is NOT only payloads:
- * `-` and `+` lead ordinary expense wording, so "-50% vendor credit" is written
- * here as "'-50% vendor credit" while `pdfTransactionRows` prints it clean. The
- * strict-equality case in tests/app/reports/reports-export-fidelity.test.ts
- * still holds, but only because none of its fixtures leads with one of those
- * characters — not because ordinary descriptions are universally unaffected.
- * tests/app/reports/export-formula-injection.test.ts pins both halves: the
- * divergence as "the Excel cell ends with the PDF cell, and is at most one
- * character longer", and the prose cost as cases of its own. The trade is
- * written up in full in lib/reports/spreadsheet-safe.ts.
+ * This used to route every string through `spreadsheetSafeRows` to
+ * apostrophe-prefix anything leading with `=`, `+`, `-`, `@`, TAB or CR
+ * (transactions-ledger-009). A59 removed that, because the premise was never
+ * executed: `XLSX.utils.aoa_to_sheet` types such a cell `t: "s"` with no `f`,
+ * and the bytes it writes carry no `<f>` element, so Excel has nothing to
+ * evaluate and displays the text. The marker therefore prevented nothing, while
+ * mangling ordinary accounting prose — `-` and `+` lead real descriptions, so
+ * "-50% vendor credit" reached the spreadsheet as "'-50% vendor credit" and the
+ * PDF printed it clean.
+ *
+ * tests/app/reports/export-formula-injection.test.ts now pins the measurement
+ * itself, through a real write/read round trip and against the emitted XML, so
+ * the suite goes red if a SheetJS upgrade or a change of export format ever
+ * makes these cells live. `spreadsheetSafeRows` is kept, uncalled, as the guard
+ * to wire in at that point and as the sanitiser a genuine CSV export will need.
  */
 export function excelTransactionRows(txns: Transaction[]): (string | number)[][] {
-  return spreadsheetSafeRows(
-    txns.map((t) => [
-      formatUtcDay(t.date),
-      t.type,
-      t.category,
-      t.description,
-      t.addedByName,
-      t.type === "expense" ? -t.amount : t.amount,
-    ])
-  );
+  return txns.map((t) => [
+    formatUtcDay(t.date),
+    t.type,
+    t.category,
+    t.description,
+    t.addedByName,
+    t.type === "expense" ? -t.amount : t.amount,
+  ]);
 }
 
 /**
@@ -632,9 +767,19 @@ type Props = {
    *  ceiling. See `summaryFigures` for why the row needs it and why it is the
    *  only figure on this page that can come from an aggregate. */
   allTimeBalance?: number;
+  /** `getTransactionTotals().byType[*].count` — the uncapped row count per type,
+   *  so the page can tell the reader when the ledger holds rows it never read
+   *  (RES-001). From the same roll-up as `allTimeBalance`: no extra query. */
+  ledgerCounts?: LedgerCounts;
 };
 
-export function ReportsClient({ transactions, users, company, allTimeBalance }: Props) {
+export function ReportsClient({
+  transactions,
+  users,
+  company,
+  allTimeBalance,
+  ledgerCounts,
+}: Props) {
   // rep-011: the currency comes from the `company` row the Server Component
   // already fetched, NOT from the store. `useMoney()` with no argument reads
   // `currentCompany.currency`, which is filled by a two-hop async chain
@@ -719,6 +864,19 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
     [rangedTxns, transactions, allTimeBalance]
   );
 
+  // RES-001. Everything above this line — the summary, the charts, the category
+  // mix, the founder breakdown — is reduced from `transactions`, which is a
+  // per-type LIST WINDOW and not the ledger. When the rows it dropped could fall
+  // inside the selected period, the page has to say so; see `reportTruncation`
+  // for why that is per type and why it is not simply "always".
+  const truncation = useMemo(
+    () => reportTruncation({ transactions, counts: ledgerCounts, window: range }),
+    [transactions, ledgerCounts, range]
+  );
+  /** One sentence for the screen AND both exports — the download is where an
+   *  understated figure travels furthest from anyone who could notice it. */
+  const coverageNote = truncationNote(truncation, n.number);
+
   const totalExpenses = rangedTxns
     .filter((t) => t.type === "expense")
     .reduce((s, t) => s + t.amount, 0);
@@ -756,6 +914,10 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
           // it used to sit below them, so a reader met four unqualified amounts
           // before learning they covered only six months.
           ["Date range", rangeText],
+          // RES-001, for the same reason and in the same place: the reader of
+          // this document is not the person who generated it, so a notice left
+          // on the screen never reaches them.
+          ...(coverageNote ? [["Ledger coverage", coverageNote]] : []),
           ...summary.map((f) => [f.label, money(f.amount)]),
           ["Number of Transactions", rangedTxns.length.toString()],
           ["Team Members", users.length.toString()],
@@ -834,6 +996,8 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
         [],
         ["Financial Summary"],
         ["Date range", `${formatUtcDay(range.start)} to ${formatUtcDay(rangeEndLabel)}`],
+        // RES-001 — the same disclosure as the PDF, from the same sentence.
+        ...(coverageNote ? [["Ledger coverage", coverageNote]] : []),
         ...summary.map((f) => [f.label, f.amount]),
         ["Transactions", rangedTxns.length],
       ];
@@ -846,48 +1010,40 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
       // rep-004: `breakdown`, so the Team sheet's Investments column sums to the
       // Summary sheet's "Investments (in period)". It did not when a contributor
       // had been deactivated.
-      const founderSheet = XLSX.utils.aoa_to_sheet(
-        spreadsheetSafeRows([
-          ["Name", "Email", "Role", "Status", "Investments", "Expenses Logged", "% of capital"],
-          ...breakdown.map((r) => [
-            r.name,
-            r.email,
-            r.role,
-            r.former ? "former" : "active",
-            r.investments,
-            r.expenses,
-            r.capitalRatio,
-          ]),
-        ])
-      );
+      const founderSheet = XLSX.utils.aoa_to_sheet([
+        ["Name", "Email", "Role", "Status", "Investments", "Expenses Logged", "% of capital"],
+        ...breakdown.map((r) => [
+          r.name,
+          r.email,
+          r.role,
+          r.former ? "former" : "active",
+          r.investments,
+          r.expenses,
+          r.capitalRatio,
+        ]),
+      ]);
 
-      const monthlySheet = XLSX.utils.aoa_to_sheet(
-        spreadsheetSafeRows([
-          ["Month", "Investments", "Revenue", "Expenses", "Net Flow"],
-          ...monthlyData.map((m) => [m.month, m.investments, m.revenue, m.expenses, m.netFlow]),
-        ])
-      );
+      const monthlySheet = XLSX.utils.aoa_to_sheet([
+        ["Month", "Investments", "Revenue", "Expenses", "Net Flow"],
+        ...monthlyData.map((m) => [m.month, m.investments, m.revenue, m.expenses, m.netFlow]),
+      ]);
 
-      // transactions-ledger-009: nothing reaches `aoa_to_sheet` unguarded. That
-      // is stated as a rule over the four sheets rather than as a list of
-      // fields, because the fields that carry the hazard are spread across three
-      // of them — `company.name` here, a contributor's name and email in Team,
-      // `description` and `addedByName` in Transactions — and a fifth sheet
-      // added later would otherwise have to remember. `spreadsheetSafeRows` is
-      // idempotent, so wrapping `txnData` again (its rows already came guarded
-      // out of `excelTransactionRows`) changes nothing and keeps the rule
-      // uniform and checkable.
+      // A59: customer text goes into these four sheets verbatim, including
+      // `company.name` here, a contributor's name and email in Team, and
+      // `description` / `addedByName` in Transactions. None of it is marked or
+      // escaped, because `aoa_to_sheet` writes a JS string as an inline string —
+      // `t: "s"`, no `f`, no `<f>` element in the bytes — so none of it is
+      // evaluated when the workbook is opened. That is MEASURED, not assumed:
+      // tests/app/reports/export-formula-injection.test.ts round-trips the
+      // payload class through a real write and read, and also pins the two
+      // things that measurement depends on — that the file written below stays a
+      // `.xlsx` (SheetJS picks its writer from the extension, and a `.csv` IS
+      // evaluated), and that every sheet is built with `aoa_to_sheet`. If either
+      // changes, wire `spreadsheetSafeRows` from lib/reports/spreadsheet-safe.ts
+      // in here; it exists and is tested for exactly that day.
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(
-        wb,
-        XLSX.utils.aoa_to_sheet(spreadsheetSafeRows(summarySheet)),
-        "Summary"
-      );
-      XLSX.utils.book_append_sheet(
-        wb,
-        XLSX.utils.aoa_to_sheet(spreadsheetSafeRows(txnData)),
-        "Transactions"
-      );
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summarySheet), "Summary");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(txnData), "Transactions");
       XLSX.utils.book_append_sheet(wb, founderSheet, "Team");
       XLSX.utils.book_append_sheet(wb, monthlySheet, "Monthly");
 
@@ -1002,6 +1158,22 @@ export function ReportsClient({ transactions, users, company, allTimeBalance }: 
           That range covers more than {MAX_REPORT_MONTHS / 12} years, which this report cannot
           chart. Showing the most recent {MAX_REPORT_MONTHS} months instead:{" "}
           <span className="font-mono">{rangeText}</span>.
+        </p>
+      )}
+
+      {/* RES-001. The read ceiling is the other thing this page can silently
+          narrow, and the one that reaches an investor: every figure below is
+          reduced from a per-type LIST WINDOW, and the rows it drops are the
+          oldest. Rendered from the same sentence both exporters write, and
+          present only when the dropped rows could fall inside the selected
+          period — see `reportTruncation`. */}
+      {coverageNote && (
+        <p
+          role="status"
+          className="flex items-start gap-2.5 rounded-xl border border-warning/40 bg-warning/[0.08] px-4 py-3 text-xs text-fg-muted"
+        >
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+          <span>{coverageNote}</span>
         </p>
       )}
 

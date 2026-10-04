@@ -362,6 +362,111 @@ describe("MessageList (the conversation scrollport)", () => {
     }
   });
 
+  /* ═══ chat-014 — a read receipt is not a scroll event ═════════════════════
+   *
+   * THE EFFECT'S DEPENDENCIES INCLUDE `atBottom`, so every transition INTO the
+   * at-bottom state fires another receipt — and each one, server side, is a
+   * membership read, a newest-message read, a two-column UPDATE and
+   * `revalidatePath("/chat")` + `revalidatePath("/chat/<slug>")`. A reader
+   * flicking up and down a long channel therefore generated a stream of
+   * app-wide cache invalidations for a watermark that had not moved an inch.
+   *
+   * WHAT IS NOT DONE ABOUT IT, deliberately: a rate limiter. The exemption in
+   * `markChannelReadAction`'s own header is correct and stays — a rejected read
+   * receipt would spend the budget that the reader's next MESSAGE needs, and
+   * `limiters.read` is already carrying the 5-second liveness poll, which fails
+   * silently by design. Bounding a wasted revalidation by occasionally breaking
+   * liveness is a worse trade than the one being fixed.
+   *
+   * What is done is cheaper and exact: the receipt is sent once per watermark.
+   * Scrolling is free again, and the server has its own "did it actually move"
+   * guard behind this for every other caller (tests/lib/actions/chat.test.ts).
+   * ═══════════════════════════════════════════════════════════════════════════ */
+  it("sends ONE receipt per watermark, however much the reader scrolls", async () => {
+    const { scroller } = renderList([msg({ id: "m1" })]);
+    await waitFor(() => expect(markChannelReadAction).toHaveBeenCalledTimes(1));
+
+    const layout = stubLayout(scroller, { scrollHeight: 1000, clientHeight: 400, scrollTop: 100 });
+    fireEvent.scroll(scroller); // scrolled up — not at the bottom any more
+    layout.setScrollTop(600); // 1000 - 600 - 400 = 0 px from the end
+    fireEvent.scroll(scroller); // and back at the bottom
+
+    await new Promise((r) => setTimeout(r, 10));
+    // Nothing new has been said, so there is nothing new to have read.
+    expect(markChannelReadAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("DOES send a second receipt once something new arrives", async () => {
+    // Guards the guard: a once-per-mount latch would pass the case above and
+    // leave the badge claiming unread messages the reader is looking at.
+    const first = [msg({ id: "m1" })];
+    const { rerender } = renderList(first);
+    await waitFor(() => expect(markChannelReadAction).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <MessageList
+        channelId="chan-1"
+        currentUserId={ME}
+        messages={[...first, msg({ id: "m2", createdAt: new Date(BASE + 1000).toISOString() })]}
+        hasMore={false}
+        loadingOlder={false}
+        onLoadOlder={vi.fn()}
+        readDebounceMs={0}
+      />
+    );
+
+    await waitFor(() => expect(markChannelReadAction).toHaveBeenCalledTimes(2));
+  });
+
+  it("retries after a refusal instead of latching on a write that never landed", async () => {
+    // The guard remembers what it SENT successfully, not what it tried. A
+    // failed receipt moved no watermark, so the badge is still wrong and the
+    // next opportunity has to take it.
+    markChannelReadAction.mockResolvedValue({ success: false, error: "nope" });
+    const { scroller } = renderList([msg({ id: "m1" })]);
+    await waitFor(() => expect(markChannelReadAction).toHaveBeenCalledTimes(1));
+
+    markChannelReadAction.mockResolvedValue({ success: true });
+    const layout = stubLayout(scroller, { scrollHeight: 1000, clientHeight: 400, scrollTop: 100 });
+    fireEvent.scroll(scroller);
+    layout.setScrollTop(600);
+    fireEvent.scroll(scroller);
+
+    await waitFor(() => expect(markChannelReadAction).toHaveBeenCalledTimes(2));
+  });
+
+  it("stays quiet when the server says the watermark did not move", async () => {
+    // The sidebar badge refetches on `ff-chat-read`. The server now reports
+    // whether anything changed — a public channel the reader never joined has
+    // no watermark at all — and announcing a write that did not happen spends a
+    // round trip to learn nothing (audit row A54).
+    markChannelReadAction.mockResolvedValue({ success: true, data: { moved: false } });
+    const seen: string[] = [];
+    const onRead = () => seen.push("ff-chat-read");
+    window.addEventListener("ff-chat-read", onRead);
+    try {
+      renderList([msg({ id: "m1" })]);
+      await waitFor(() => expect(markChannelReadAction).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 10));
+      expect(seen).toEqual([]);
+    } finally {
+      window.removeEventListener("ff-chat-read", onRead);
+    }
+  });
+
+  it("still announces a read that DID move the watermark", async () => {
+    markChannelReadAction.mockResolvedValue({ success: true, data: { moved: true } });
+    const seen: string[] = [];
+    const onRead = () => seen.push("ff-chat-read");
+    window.addEventListener("ff-chat-read", onRead);
+    try {
+      renderList([msg({ id: "m1" })]);
+      await waitFor(() => expect(seen).toContain("ff-chat-read"));
+    } finally {
+      window.removeEventListener("ff-chat-read", onRead);
+    }
+  });
+
   it("does not mark the channel read while the reader is scrolled up", async () => {
     // Scrolled-up reading is not "I've seen the newest message".
     const { scroller } = renderList([msg({ id: "m1" })]);

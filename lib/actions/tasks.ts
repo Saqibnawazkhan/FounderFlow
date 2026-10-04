@@ -74,6 +74,7 @@ import {
   BulkTaskStatusSchema,
   BulkTaskDeleteSchema,
   ReorderTaskSchema,
+  MAX_BULK_TASK_IDS,
 } from "@/lib/schemas/task";
 import { limiters } from "@/lib/rate-limit";
 import { canManageProject } from "@/lib/auth/project-permissions";
@@ -128,32 +129,28 @@ const PRIORITY_LABEL: Record<TaskPriority, string> = {
  *     to move into lib/notify/email.ts first.)
  */
 /**
- * The bulk-selection ceiling, mirrored from `TaskIdList` in lib/schemas/task.ts.
- *
- * MIRRORED, not imported, because the schema keeps the number inline and does
- * not export it. Two constants that must agree in two files is real drift risk
- * — a message promising 200 while the parser rejects at 150 — so
- * tests/lib/actions/bulk-task-selection-limit.test.ts DISCOVERS the schema's
- * actual ceiling by binary probe and asserts the sentence below names that
- * number. If lib/schemas/task.ts ever exports its cap, import it here and delete
- * this constant.
- *
- * Not exported: an export from a `"use server"` module is a public HTTP endpoint
- * (tests/lib/actions/use-server-exports.test.ts).
- */
-const MAX_BULK_TASK_IDS = 200;
-
-/**
  * A human sentence for an over-sized selection, or null if the payload is fine
  * (tasks-and-comments-010).
  *
- * `toggleSelectAll` (app/(app)/tasks/tasks-client.tsx:381) selects every
+ * `toggleSelectAll` in app/(app)/tasks/tasks-client.tsx used to select every
  * FILTERED id with no ceiling, and both bulk actions surfaced zod's own words
  * verbatim through `parsed.error.issues[0]?.message`. So a 201-task select-all
  * answered with "Array must contain at most 200 element(s)" — a sentence about a
  * JavaScript array, in English, shown in a product that ships Urdu, to a founder
  * who pressed a checkbox. The headline bulk feature became an error message with
  * no user-facing meaning and no hint at what to do instead.
+ *
+ * THE CHECKBOX IS CLAMPED NOW, so the UI can no longer produce an illegal
+ * selection — but this stays, and is not redundant: both actions are exported
+ * `"use server"` endpoints, reachable with any body, and the clamp is a
+ * convenience for the one caller that happens to be ours.
+ *
+ * `MAX_BULK_TASK_IDS` is IMPORTED from lib/schemas/task.ts, not mirrored here.
+ * It used to be a second local constant, which is exactly the drift that
+ * produces a message promising 200 while the parser rejects at 150 — and
+ * tests/lib/actions/bulk-task-selection-limit.test.ts still discovers the
+ * schema's real ceiling by probe and asserts the sentence names that number, so
+ * the agreement is checked and not merely arranged.
  *
  * Checked BEFORE the schema so the count in the message is the real selection
  * size; zod reports the ceiling but not what was sent.

@@ -1,60 +1,49 @@
 /**
- * transactions-ledger-009 — a description a vendor controls must not become
- * executable content in a report a colleague downloads.
+ * transactions-ledger-009, CORRECTED by A59 — the .xlsx needs no formula
+ * marker, and adding one mangled ordinary accounting prose for every customer.
  *
- * WHAT WENT WRONG. `parseCSV` (lib/transactions/csv.ts) does no content
- * inspection, and nothing downstream of it does either: the importer validates
- * amount, date and category, and `ImportTransactionRowSchema` bounds the
- * description to 500 characters with no character policy. So `=cmd|' /c calc'!A1`
- * is stored verbatim in `Transaction.description` and handed verbatim to
- * `XLSX.utils.aoa_to_sheet` for the Transactions sheet of the .xlsx that
- * /reports hands an admin to circulate as a financial report.
+ * THE HISTORY, because it is the lesson. transactions-ledger-009 observed that a
+ * `Transaction.description` can arrive from a vendor's CSV (`parseCSV` in
+ * lib/transactions/csv.ts reads fields, it does not judge them), is bounded only
+ * to 500 characters by `ImportTransactionRowSchema`, and reaches the .xlsx that
+ * /reports hands an admin to circulate as a financial report. All true, and
+ * worth closing. The fix apostrophe-prefixed every string cell leading with `=`,
+ * `+`, `-`, `@`, TAB or CR. Its independent tester raised the cost as a major;
+ * the remediation documented the carve-out rather than removing it.
  *
- * It was never only the imported description. `Transaction.addedByName`,
- * `Company.name` and a contributor's name and email all land in the same
- * workbook, and all four are free text with no character policy at all
- * (lib/schemas/profile.ts, lib/schemas/company.ts) — so the Team and Summary
- * sheets carry the same payload class as the Transactions sheet. The guard is
- * therefore stated against the SHEET boundary rather than against one field.
+ * All three reasoned about SheetJS's cell typing from the finding's prose about
+ * it. None of the three executed it.
  *
- * WHY IT IS AN OUTPUT RULE, NOT AN INPUT RULE. The ledger's job is to say what
- * the vendor's file said. Prefixing on the way in would store a character the
- * customer never typed and show it on /expenses forever, so the last case below
- * pins that the import schema still ACCEPTS a formula-looking description
- * untouched. Neutralising happens where the text becomes spreadsheet content.
+ * THE MEASUREMENT, which inverts the conclusion, and which this file now pins.
+ * `XLSX.utils.aoa_to_sheet([["=1+1"]])` produces `{ t: "s", v: "=1+1" }` — a
+ * string cell with NO `f` attribute — and that survives a real `XLSX.write` to
+ * `XLSX.read` round trip unchanged. The bytes SheetJS emits for it are
+ * `<c r="A1" t="str"><v>=1+1</v></c>`, with no `<f>` element anywhere in the
+ * sheet, and an OOXML cell without an `<f>` child is not a formula: Excel has
+ * nothing to evaluate and displays the text. So the .xlsx was ALREADY inert, the
+ * marker prevented nothing, and it was paid for with a visible character on
+ * every "-50% vendor credit" and "+1 seat add-on" in every customer's ledger —
+ * while re-opening rep-006, which exists because two files from two adjacent
+ * buttons disagreeing about the same row is what an auditor notices.
  *
- * WHAT THE GUARD COSTS, STATED PLAINLY. The protection it buys is LATENT, not
- * present: an .xlsx carries this text as an inline/shared string, which Excel
- * displays and never evaluates, so against today's writer the guard changes no
- * outcome an attacker cares about. What it defends is the next edit — a `.csv`
- * extension handed to `XLSX.writeFile` (SheetJS picks the format from the name),
- * a different export library, or a cell-typing option.
+ * WHAT THIS FILE IS NOW. The marker is gone from the .xlsx path, and these three
+ * properties replace it:
  *
- * The cost, by contrast, is paid TODAY and by innocent rows. `-` and `+` lead
- * ordinary accounting prose, not just payloads: "-50% vendor credit" and
- * "+1 seat add-on" are routine descriptions, and they now appear in the
- * spreadsheet with a literal leading apostrophe while the PDF prints them clean.
- * The apostrophe really is visible — it goes into the cell VALUE, and this
- * SheetJS build only ever PARSES Excel's `quotePrefix` style flag
- * (node_modules/xlsx/xlsx.js:10398, `parse_cellXfs`), with no write path for it,
- * so there is no way to mark a cell "this is text" without spending a character.
- * The "ordinary prose pays this too" block below pins that cost deliberately,
- * so it is a named fact here rather than a surprise in a customer's download.
+ *   1. The MEASURED safety property, pinned through a real write/read round trip
+ *      AND against the bytes SheetJS emits — so the suite goes red if an upgrade
+ *      ever starts typing these cells as formulas.
+ *   2. The FORMAT that measurement covers. SheetJS picks its writer from the
+ *      filename, and a `.csv` written from the same workbook IS evaluated by
+ *      Excel — so the export must keep writing `.xlsx`, and must keep building
+ *      sheets with the one entry point case 1 measures.
+ *   3. rep-006 restored exactly: the .xlsx and the PDF print the same
+ *      description for every row, prose and payload alike.
  *
- * WHY THE PDF IS DELIBERATELY NOT GUARDED, and what that does to rep-006.
- * jsPDF draws glyphs; a PDF has no evaluator, so a marker there would alter the
- * customer's text in the artefact this product sells as investor-ready for no
- * benefit at all.
- *
- * That does leave the two download buttons disagreeing by one character for
- * formula-leading AND prose-leading values, which narrows rep-006's invariant.
- * rep-006's own strict-equality case in reports-export-fidelity.test.ts still
- * passes untouched, because an ordinary `=`-free, `-`-free description comes back
- * byte for byte — and that file now carries a pointer here so a reader of it
- * knows the carve-out exists. For the class of value where the two files differ,
- * the relationship is pinned below instead: the spreadsheet cell must still END
- * WITH the PDF cell, and may be at most one character longer — so a truncation
- * cannot return on either side under cover of this guard.
+ * If 1 or 2 ever goes red, the guard to wire in already exists and is already
+ * tested — `spreadsheetSafeRows` in lib/reports/spreadsheet-safe.ts, with
+ * tests/lib/reports/spreadsheet-safe.test.ts. That is why it was kept rather
+ * than deleted: it is correct, and it is what a genuine CSV export will need on
+ * the day one is built. It has no caller today, deliberately.
  *
  * Run as: npx cross-env TZ=America/Bogota npx vitest run tests/app/reports/export-formula-injection.test.ts
  */
@@ -62,6 +51,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import * as XLSX from "xlsx";
 import {
   TXN_DESCRIPTION_COL,
   excelTransactionRows,
@@ -73,20 +63,15 @@ import type { Transaction } from "@/lib/types";
 const money = (amount: number) => `PKR ${amount.toFixed(2)}`;
 
 /**
- * The contract's own copy of the dangerous set, written out here rather than
- * imported from the code under test: a test that borrows the implementation's
- * regex agrees with it by construction and proves nothing.
+ * Text a spreadsheet COULD treat as the start of an expression, if it were
+ * written into a format that evaluates one. `=` is a formula everywhere; `+`,
+ * `-` and `@` are the Lotus-compatibility prefixes Excel still honours; TAB and
+ * CR are the two characters that start a new cell or row in a delimited format.
  *
- * `=` is a formula in every spreadsheet; `+`, `-` and `@` are the Lotus-compat
- * prefixes Excel still honours; TAB and CR are the two characters that let a
- * payload start a new cell or row in a delimited context. Those last two cannot
- * lead a STORED description today — every write path runs `z.string().trim()`
- * first — so their cases below guard the output boundary rather than a reachable
- * payload, which is the point: the boundary should not depend on an input rule
- * enforced three modules away.
+ * These are the inputs case 1 measures. They are not a threat to the .xlsx — the
+ * measurement is that SheetJS writes them inert — they are the inputs whose
+ * INERTNESS is the property being pinned.
  */
-const FORMULA_LEAD = /^[=+\-@\t\r]/;
-
 const PAYLOADS = [
   "=cmd|' /c calc'!A1",
   "=1+1",
@@ -96,6 +81,14 @@ const PAYLOADS = [
   '\t=HYPERLINK("http://evil.example","Invoice")',
   "\r=1+1",
 ];
+
+/**
+ * Ordinary accounting wording that the removed guard mangled. Every one of these
+ * is something a finance team types, none is dangerous in any format, and each
+ * reached the spreadsheet one character longer than the customer wrote it until
+ * A59. This is the list whose cleanliness is the regression pin.
+ */
+const PROSE = ["-50% vendor credit", "+1 seat add-on", "-200 PKR goodwill adjustment"];
 
 function txn(over: Partial<Transaction> = {}): Transaction {
   return {
@@ -113,110 +106,72 @@ function txn(over: Partial<Transaction> = {}): Transaction {
   } as Transaction;
 }
 
-describe("the Transactions sheet neutralises formula-leading text", () => {
-  PAYLOADS.forEach((payload) => {
-    it(`does not start the description cell with the lead of ${JSON.stringify(payload)}`, () => {
-      const [row] = excelTransactionRows([txn({ description: payload })]);
-      expect(typeof row[TXN_DESCRIPTION_COL]).toBe("string");
-      expect(row[TXN_DESCRIPTION_COL] as string).not.toMatch(FORMULA_LEAD);
-    });
-  });
-
-  it("neutralises the denormalised author name too, which has no character policy", () => {
-    // lib/schemas/profile.ts bounds `name` to 80 characters and nothing else, so
-    // a member can name themselves a formula and appear in every export.
-    const [row] = excelTransactionRows([txn({ addedByName: "=1+1" })]);
-    expect(row[4] as string).not.toMatch(FORMULA_LEAD);
-  });
-
-  it("keeps the whole text — the guard is a prefix, never a truncation", () => {
-    const payload = "=1+1";
-    const [row] = excelTransactionRows([txn({ description: payload })]);
-    expect(row[TXN_DESCRIPTION_COL] as string).toContain(payload);
-  });
-
-  it("leaves an ordinary description byte-for-byte alone", () => {
-    const plain = "Cloud hosting renewal for the analytics stack";
-    const [row] = excelTransactionRows([txn({ description: plain })]);
-    expect(row[TXN_DESCRIPTION_COL]).toBe(plain);
-  });
-
-  it("leaves the amount a signed NUMBER, so the guard cannot break the sum", () => {
-    const rows = excelTransactionRows([
-      txn({ type: "expense", amount: 40, description: "=1+1" }),
-      txn({ type: "income", amount: 40, description: "-1" }),
-    ]);
-    expect(rows[0][5]).toBe(-40);
-    expect(rows[1][5]).toBe(40);
-  });
-});
-
 /**
- * ORDINARY PROSE PAYS THIS TOO — the part the first report of this fix did not
- * put on the table, and the reason its summary ("no behaviour visible to a
- * customer changes today") was wrong.
+ * One sheet of text, written to real .xlsx bytes by the same library and the
+ * same entry point the app uses, then read back. Nothing is stubbed: if a
+ * SheetJS upgrade changes how it types these cells, this changes with it.
  *
- * A leading `-` or `+` is normal in expense wording. Every one of these
- * descriptions is something a finance team actually types, and every one of them
- * now reaches the spreadsheet one character longer than the customer wrote it.
- * None of them is dangerous in any format.
- *
- * These cases are a deliberate, pinned record of the trade rather than an
- * endorsement of it. THIS IS THE BLOCK THAT FLIPS if the owner decides the two
- * downloads must stay byte-identical: route `pdfTransactionRows` through
- * `spreadsheetSafeRows` as well and both expectations below become the same
- * string, or narrow `FORMULA_LEAD` to `=`/`@`/TAB/CR and the marker stops
- * appearing on prose at all.
+ * `type: "array"` rather than `"buffer"` so the round trip needs no Node
+ * `Buffer` and runs under this suite's jsdom environment unchanged.
  */
-describe("ordinary accounting prose pays for the guard as well", () => {
-  const PROSE = ["-50% vendor credit", "+1 seat add-on", "-200 PKR goodwill adjustment"];
+function roundTrip(rows: (string | number)[][]) {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), "Transactions");
+  const bytes = new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }));
+  return {
+    bytes,
+    sheet: XLSX.read(bytes, { type: "array" }).Sheets.Transactions,
+  };
+}
 
-  PROSE.forEach((prose) => {
-    it(`spends a visible apostrophe on ${JSON.stringify(prose)} in the spreadsheet`, () => {
-      const [row] = excelTransactionRows([txn({ description: prose })]);
-      // Asserted as the exact string, not merely "is marked": the apostrophe is
-      // part of the cell's value and therefore renders in Excel. If a future
-      // SheetJS build grows a `quotePrefix` write path, this is the assertion
-      // that should be rewritten to check the style flag instead.
-      expect(row[TXN_DESCRIPTION_COL]).toBe(`'${prose}`);
-    });
+/** The sheet XML SheetJS actually emitted, straight out of the written bytes. */
+function sheetXml(bytes: Uint8Array): string {
+  const cfb = XLSX.CFB.read(bytes, { type: "array" });
+  const index = cfb.FullPaths.findIndex((p: string) => p.endsWith("xl/worksheets/sheet1.xml"));
+  expect(index).toBeGreaterThanOrEqual(0);
+  const content = cfb.FileIndex[index].content as Uint8Array;
+  return new TextDecoder().decode(new Uint8Array(content));
+}
 
-    it(`prints ${JSON.stringify(prose)} clean in the PDF, so the two files differ`, () => {
-      const [row] = pdfTransactionRows([txn({ description: prose })], money);
-      expect(row[TXN_DESCRIPTION_COL]).toBe(prose);
+describe("1. SheetJS writes app text inert, which is why the .xlsx needs no marker", () => {
+  PAYLOADS.forEach((payload) => {
+    it(`types ${JSON.stringify(payload)} as a string with no formula, through a real write/read`, () => {
+      // Before the write: the in-memory cell the app hands the writer.
+      const authored = XLSX.utils.aoa_to_sheet([[payload]]).A1;
+      expect(authored.t).toBe("s");
+      expect(authored.f).toBeUndefined();
+      expect(authored.v).toBe(payload);
+
+      // After a real round trip: the cell a spreadsheet would open.
+      const cell = roundTrip([[payload]]).sheet.A1;
+      expect(cell.t).toBe("s");
+      expect(cell.f).toBeUndefined();
+      expect(cell.v).toBe(payload);
     });
+  });
+
+  it("emits no <f> element anywhere in the sheet, which is what makes a cell a formula", () => {
+    // The parsed-cell assertions above go through SheetJS's own reader. This one
+    // reads the bytes, because the question is what EXCEL will do with them: an
+    // OOXML cell with no `<f>` child has no expression to evaluate, whatever its
+    // `t` attribute says.
+    const { bytes } = roundTrip(PAYLOADS.map((p) => [p]));
+    const xml = sheetXml(bytes);
+    expect(xml).toContain("<sheetData>");
+    expect(xml).not.toMatch(/<f[ >/]/);
+    // And the payload really is in there — otherwise the assertion above would
+    // pass just as happily against an empty sheet.
+    expect(xml).toContain("=1+1");
+  });
+
+  it("keeps a number a number, so the Amount column stays summable", () => {
+    const cell = roundTrip([[-40]]).sheet.A1;
+    expect(cell.t).toBe("n");
+    expect(cell.v).toBe(-40);
   });
 });
 
-describe("the PDF still prints what the customer typed (rep-006 held exactly)", () => {
-  it("does not add a marker character to the inert artefact", () => {
-    const payload = "=1+1";
-    const [row] = pdfTransactionRows([txn({ description: payload })], money);
-    expect(row[TXN_DESCRIPTION_COL]).toBe(payload);
-  });
-
-  it("differs from the spreadsheet by at most the one guard character", () => {
-    const txns = PAYLOADS.map((d, i) => txn({ id: `t${i}`, description: d })).concat([
-      txn({ id: "plain", description: "Office rent" }),
-      txn({ id: "long", description: "x".repeat(500) }),
-    ]);
-    const pdf = pdfTransactionRows(txns, money);
-    const xls = excelTransactionRows(txns);
-    expect(pdf.length).toBe(xls.length);
-    pdf.forEach((row, i) => {
-      const pdfCell = row[TXN_DESCRIPTION_COL];
-      const xlsCell = xls[i][TXN_DESCRIPTION_COL] as string;
-      // Ends with, not equals: this is what stops a truncation returning on
-      // either side while the formula guard is used as the excuse. It is also
-      // the assertion that returns to strict equality if the owner chooses
-      // byte-identical artefacts — see the prose block above.
-      expect(xlsCell.endsWith(pdfCell)).toBe(true);
-      expect(xlsCell.length - pdfCell.length).toBeLessThanOrEqual(1);
-    });
-  });
-});
-
-describe("no sheet in the workbook is built from unguarded rows", () => {
+describe("2. the export stays inside the format and entry point that measurement covers", () => {
   const SOURCE = readFileSync(
     join(process.cwd(), "app", "(app)", "reports", "reports-client.tsx"),
     "utf8"
@@ -240,49 +195,109 @@ describe("no sheet in the workbook is built from unguarded rows", () => {
   /**
    * Keyed on the `XLSX.utils.` namespace rather than the bare function name, and
    * that is load-bearing: this file binds the library once, locally, as
-   * `const XLSX = await import("xlsx")` (reports-client.tsx:819). There is no
-   * top-level or destructured import, so a real call site CANNOT spell a builder
-   * without the namespace, while prose always does.
+   * `const XLSX = await import("xlsx")`. There is no top-level or destructured
+   * import, so a real call site CANNOT spell a builder without the namespace,
+   * while prose always does.
    */
   const BUILDER = (name: string) => new RegExp(`XLSX\\.utils\\.${name}\\(\\s*`, "g");
 
-  it("routes every aoa_to_sheet argument through the guard", () => {
-    // The Summary, Team and Monthly sheets are built inline inside `exportExcel`
-    // from `company.name`, a contributor's name and their email, none of which
-    // is reachable from a unit test without extracting three more functions — so
-    // this is asserted statically. Counting rather than matching one shape,
-    // because two of the four call sites pass an array literal and two pass a
-    // named variable; a fifth sheet added later in either style, without the
-    // guard, moves the two numbers apart.
+  it("writes a .xlsx, never a delimited format Excel would evaluate", () => {
+    // THE hazard, and the one transactions-ledger-009 should have been narrowed
+    // to. SheetJS picks its writer from the filename, so changing this template
+    // to a `.csv` turns every payload above into live formula execution on a
+    // finance team's machines, with no other edit anywhere. If that is ever
+    // wanted, `spreadsheetSafeRows` (lib/reports/spreadsheet-safe.ts) is the
+    // guard to wire in at that point.
+    const writes = CODE.match(/XLSX\.writeFile\(/g) ?? [];
+    expect(writes.length).toBe(1);
+    expect(CODE).toMatch(/XLSX\.writeFile\([\s\S]{0,400}?\.xlsx`/);
+    expect(CODE).not.toMatch(/\.(csv|txt|prn|slk|dif|eth|html)`/);
+    // `bookType` overrides the extension, so its absence is part of the claim
+    // that the extension decides the format.
+    expect(CODE).not.toContain("bookType");
+  });
+
+  it("builds every sheet with aoa_to_sheet, the entry point case 1 measures", () => {
     const calls = CODE.match(BUILDER("aoa_to_sheet")) ?? [];
-    const guarded = CODE.match(/XLSX\.utils\.aoa_to_sheet\(\s*spreadsheetSafeRows\(/g) ?? [];
     expect(calls.length).toBeGreaterThanOrEqual(4);
-    expect(guarded.length).toBe(calls.length);
   });
 
   /**
-   * The other door. `aoa_to_sheet` is one of five SheetJS entry points that can
-   * put app text into a worksheet, and guarding only the spelling this file
-   * happens to use today left the rest wide open: a sheet added with
-   * `json_to_sheet` reaches the same workbook completely unguarded and the case
-   * above cannot see it.
-   *
-   * Stated as "none of these appears at all" rather than "each is guarded"
-   * because `spreadsheetSafeRows` takes rows and does not fit the object and
-   * in-place forms — so if one of these is genuinely wanted later, the guard
-   * needs a matching variant, and the author should be made to write it rather
-   * than inherit a pass from this file. The failure names the helper.
+   * The other doors. `aoa_to_sheet` is one of five SheetJS entry points that can
+   * put app text into a worksheet, and case 1 measures only that one. Stated as
+   * "none of these appears at all" so that if one is genuinely wanted later, its
+   * author has to extend the measurement to cover it rather than inherit a pass
+   * from this file. The failure names the helper.
    */
   it.each(["json_to_sheet", "sheet_add_aoa", "sheet_add_json", "table_to_sheet"])(
-    "builds no sheet with XLSX.utils.%s, which the guard cannot cover",
+    "builds no sheet with XLSX.utils.%s, which case 1 does not measure",
     (name) => {
       expect(CODE.match(BUILDER(name)) ?? []).toEqual([]);
     }
   );
 });
 
+describe("3. the .xlsx and the PDF print the same description (rep-006, restored)", () => {
+  PROSE.forEach((prose) => {
+    it(`writes ${JSON.stringify(prose)} into the spreadsheet exactly as typed`, () => {
+      // THE A59 REGRESSION PIN. Each of these read `'${prose}` until the marker
+      // was taken off the .xlsx path.
+      const [row] = excelTransactionRows([txn({ description: prose })]);
+      expect(row[TXN_DESCRIPTION_COL]).toBe(prose);
+    });
+
+    it(`prints ${JSON.stringify(prose)} identically in both files`, () => {
+      const [pdfRow] = pdfTransactionRows([txn({ description: prose })], money);
+      const [xlsRow] = excelTransactionRows([txn({ description: prose })]);
+      expect(xlsRow[TXN_DESCRIPTION_COL]).toBe(pdfRow[TXN_DESCRIPTION_COL]);
+    });
+  });
+
+  it("adds no character to a payload either — the cell is inert, not rewritten", () => {
+    PAYLOADS.forEach((payload) => {
+      const [row] = excelTransactionRows([txn({ description: payload })]);
+      expect(row[TXN_DESCRIPTION_COL]).toBe(payload);
+    });
+  });
+
+  it("leaves the denormalised author name as the member chose it", () => {
+    // lib/schemas/profile.ts bounds `name` to 80 characters and nothing else, so
+    // a member really can name themselves "=1+1" and appear in every export.
+    // That is inert in the .xlsx per case 1, so it is printed, not marked.
+    const [row] = excelTransactionRows([txn({ addedByName: "=1+1" })]);
+    expect(row[4]).toBe("=1+1");
+  });
+
+  it("agrees cell for cell across prose, payloads and the length bound", () => {
+    // Strict equality, restored. The carve-out this case used to carry — "the
+    // spreadsheet cell ends with the PDF cell and is at most one character
+    // longer" — existed only to accommodate the marker, and a loosened equality
+    // is exactly where a truncation can return unnoticed.
+    const txns = [...PAYLOADS, ...PROSE, "Office rent", "x".repeat(500)].map((d, i) =>
+      txn({ id: `t${i}`, description: d })
+    );
+    const pdf = pdfTransactionRows(txns, money);
+    const xls = excelTransactionRows(txns);
+    expect(pdf.length).toBe(xls.length);
+    pdf.forEach((row, i) => {
+      expect(xls[i][TXN_DESCRIPTION_COL]).toBe(row[TXN_DESCRIPTION_COL]);
+    });
+  });
+
+  it("keeps the Excel amount a signed NUMBER", () => {
+    const rows = excelTransactionRows([
+      txn({ type: "expense", amount: 40, description: "=1+1" }),
+      txn({ type: "income", amount: 40, description: "-1" }),
+    ]);
+    expect(rows[0][5]).toBe(-40);
+    expect(rows[1][5]).toBe(40);
+  });
+});
+
 describe("the ledger still stores what the vendor's file said", () => {
   it("accepts a formula-looking description on import, unchanged", () => {
+    // Unaffected by A59 and still the right behaviour: the ledger's job is to
+    // say what the vendor's file said, and /expenses has to keep showing it.
     const parsed = ImportTransactionRowSchema.safeParse({
       amount: 1200,
       category: "Software",

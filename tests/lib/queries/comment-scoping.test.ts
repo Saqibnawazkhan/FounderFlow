@@ -313,6 +313,44 @@ describe("listCommentsForTarget — a task thread the reader may actually see", 
     expect(commentReads()).toHaveLength(0);
   });
 
+  /**
+   * THE CASE THE REST OF THIS FILE COULD NOT SEE, and the reason it is here.
+   *
+   * `mayReadTarget` ends in `canManageProject(...)`, and its own comment says it
+   * used to end in `getProjectForUser(...) !== null` — "any member who can open
+   * the project may read any thread in it" — a projects-017 leftover that kept
+   * the comment endpoint leaking after the project BOARD stopped.
+   *
+   * Nothing pinned the difference. The "nothing to do with the project" case
+   * above stubs `project.findFirst` to null, so the task is not even found and
+   * BOTH predicates refuse; the supervisor case below is granted by both. Put
+   * `return true` where `canManageProject` is and this file stayed 14/14 green —
+   * i.e. the defence was deletable. Verified by mutation on 2026-10-04.
+   *
+   * So this case is the one that separates them: the project EXISTS, the member
+   * can open it (they hold a task in it, which is what `getProjectForUser`
+   * answers "yes" to), and the task whose thread they are asking for belongs to
+   * somebody else. A member in that position sees the teammate's card on no
+   * surface — not the global board, not the command palette, and not the project
+   * board since projects-017 — so the thread must be closed to them too.
+   */
+  it("does not read a teammate's thread for a member who merely holds a task in that project", async () => {
+    // The task being asked about is a teammate's. `project.findFirst` keeps
+    // answering, which is what makes the member able to OPEN the project (the
+    // same stub serves `getProjectForUser`'s "do they hold a task here" probe),
+    // and its supervisor is somebody else.
+    prisma.answers.set("task.findFirst", taskRow({ assignedTo: "u_someone_else" }));
+    prisma.answers.set("project.findFirst", projectRow({ supervisorId: SUPERVISOR_ID }));
+    asRole("member", MEMBER_ID);
+
+    const rows = await listCommentsForTarget({ taskId: "t_theirs" });
+
+    expect(rows, "a member read the comment thread of a teammate's task").toEqual([]);
+    // And the stronger property, as everywhere else in this file: the question
+    // was never asked, so no post-filter bug could put the bodies back.
+    expect(commentReads()).toHaveLength(0);
+  });
+
   it("reads the thread of a task assigned to the member", async () => {
     prisma.answers.set("task.findFirst", taskRow({ assignedTo: MEMBER_ID }));
     asRole("member", MEMBER_ID);

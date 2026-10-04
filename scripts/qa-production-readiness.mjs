@@ -516,9 +516,12 @@ async function main() {
     // against an empty scope would pass whatever the gate did.
     const validProdScope = {};
     for (const name of requiredProd) validProdScope[name] = "set-for-this-probe";
-    // The two vars that are value-checked as well as presence-checked, given
-    // values the gate must accept.
+    // The three vars that are value-checked as well as presence-checked, given
+    // values the gate must accept. AUTH_URL and NEXT_PUBLIC_APP_URL must share
+    // one ORIGIN: prodready-023 refuses a scope with two canonical domains, so
+    // a placeholder that merely parses is not enough for this one.
     validProdScope.NEXT_PUBLIC_APP_URL = "https://app.founderflow.example";
+    validProdScope.AUTH_URL = "https://app.founderflow.example";
     validProdScope.DIRECT_URL = "postgresql://u:p@db.example.com:5432/postgres";
     const scopeBaseline = productionEnvProblems(validProdScope);
     if (scopeBaseline.length === 0) {
@@ -541,6 +544,7 @@ async function main() {
       ["PASSWORD_RESET_RESPONSE_FLOOR_MS", "0", "the uniform-latency floor on /forgot-password; 0 reopens the address-enumeration oracle on the clock, silently"],
       ["NEXT_PUBLIC_APP_URL", "http://localhost:3000", "prodready-004's value half — the .env.local.example origin passes a presence check and mails every customer a link to their own machine"],
       ["SENTRY_DSN", "https://abc@o1.ingest.sentry.io/2", "prodready-006 — half a Sentry configuration reports server errors, drops every browser crash, and still tells the customer \"The team has been notified\""],
+      ["AUTH_URL", "https://founderflow-git-main.vercel.app", "prodready-023 — an auth origin that disagrees with NEXT_PUBLIC_APP_URL gives the deploy two canonical domains: e-mail links land on one host while the session cookie, the sign-in redirect and callbackUrl validation belong to the other"],
     ];
     for (const [name, value, why] of REFUSALS) {
       if (introducedBy({ [name]: value }).length > 0) {

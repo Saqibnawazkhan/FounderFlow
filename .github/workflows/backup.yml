@@ -58,9 +58,66 @@
 ##                         it, noticing the ping stopped, can.
 ##
 ## ── RETENTION ──────────────────────────────────────────────────────────────
-## Adjust the bucket's lifecycle policy at the bucket side, not here. Note the
-## keys are now timestamped (see below), so a lifecycle rule keyed on the object
-## name rather than its age needs updating.
+## The policy is now IN THIS REPO: `.github/backup-bucket-lifecycle.json`.
+## Until 2026-10-04 this section said "adjust it at the bucket side, not here",
+## which was prodready-008's last open limb: retention was delegated entirely to
+## a setting that lived nowhere a reader could see, so whether a 90-day-old
+## snapshot still existed was unanswerable without opening the provider's
+## console — and a lifecycle rule is the only part of this system that DELETES
+## backups.
+##
+## Apply it (one line, needs a bucket-admin credential — see WHY NOT AUTOMATIC):
+##
+##   aws s3api put-bucket-lifecycle-configuration \
+##     --bucket "$BACKUP_S3_BUCKET" \
+##     --lifecycle-configuration file://.github/backup-bucket-lifecycle.json
+##     # …plus --endpoint-url "$BACKUP_S3_ENDPOINT" on R2 / B2 / non-AWS.
+##
+## WHAT IT SAYS, and why these numbers:
+##   • Scoped to the `nightly/` prefix. An expiry rule with no prefix applies to
+##     the whole bucket and deletes anything anyone ever puts there — a retention
+##     policy that is itself a data-loss event.
+##   • Expiration 180 days = 2 × the 90-day soft-delete window. Where that 90
+##     actually lives, because this line named the wrong file until 2026-10-04
+##     and a pointer to the wrong file is how a number drifts unnoticed: it is
+##     `RETENTION_DAYS` in app/api/cron/purge-soft-deleted/route.ts,
+##     `SECURITY_NOTICE_RETENTION_DAYS` in
+##     lib/email/templates/security-notice.ts, and the "recoverable copy for 90
+##     days" that customers are shown in five lib/i18n/strings.ts strings. It is
+##     NOT in CLAUDE.md, which this line used to cite and which contains no 90
+##     anywhere. tests/ops/backup-workflow.test.ts now checks every file this
+##     paragraph names against the figure. The binding constraint is NOT
+##     the storage bill: rows tombstoned today are HARD-deleted by the purge
+##     cron after 90 days, so the last dump that still contains them is from the
+##     day before that. Expire at 90 and a recovery request arriving at the end
+##     of the window has no snapshot left to recover from; the doubling leaves
+##     the same length of window again for a slow discovery. The cost of being
+##     generous here is nil — 180 gzipped dumps of this database is tens of MB,
+##     which is why there is deliberately no tiering (no "weekly forever",
+##     no Glacier transitions): tiers would add provider-specific complexity to
+##     save nothing, and R2 does not have the storage classes anyway.
+##   • AbortIncompleteMultipartUpload after 7 days. A killed upload leaves parts
+##     that are billed and invisible in `aws s3 ls`; this is the only way they
+##     ever go away.
+##   • Nothing keyed on the object NAME. The keys are timestamped (see below),
+##     and a rule that matched a date-shaped name would have silently stopped
+##     matching on 2026-09-28 when the format changed. Age is the only thing
+##     worth filtering on.
+##   • No `NoncurrentVersionExpiration`: the bucket is not versioned, and the
+##     field is not portable across every S3-compatible provider. If versioning
+##     is ever turned on, add it — unbounded noncurrent versions are the next
+##     invisible bill.
+##
+## WHY NOT APPLIED AUTOMATICALLY FROM THIS WORKFLOW. It would need
+## `s3:PutLifecycleConfiguration` on the credential in `BACKUP_S3_ACCESS_KEY`,
+## which is a bucket-admin permission: a workflow that can set a lifecycle rule
+## can set a one-day expiry and erase every backup this project has, which is a
+## strictly larger blast radius than the thing it would automate. The upload
+## credential stays object-scoped. What the workflow does instead is READ the
+## live configuration in the `freshness` job and warn when it disagrees with the
+## file above — a much smaller permission, and it answers the question the
+## missing file left unanswerable. It warns rather than fails on purpose; see
+## that step.
 ##
 ## ── RESTORING ──────────────────────────────────────────────────────────────
 ##   gunzip -c founderflow-YYYY-MM-DDTHHMMSSZ.sql.gz | psql "$RESTORE_DATABASE_URL"
@@ -71,20 +128,43 @@
 ## migrations to it. Run 36356799147 (2026-09-27, dump founderflow-2026-09-27):
 ## 0 psql errors, 14 `public` tables, all core tables present, 29 users and 5
 ## companies restored, 19 → 25 migrations applied, the add_user_handle backfill
-## clean (0 null handles, 0 per-company duplicates). Re-run it from the Actions
-## tab after any change to the dump command here.
+## clean (0 null handles, 0 per-company duplicates).
 ##
-## Two things that verification does NOT prove, so do not read it as more than
-## it is. (a) The dump is not `--schema`-scoped, so it still carries Supabase's
-## managed `auth` / `storage` / `realtime` / `vault` objects; restoring into a
-## REAL Supabase project will therefore collide with the managed objects already
-## there. It restores cleanly into a vanilla Postgres, which is what was tested.
-## (b) No recovery TIME has been measured against a production-sized target, so
-## the RTO is still unknown.
+## THAT RUN PREDATES THE `--schema=public` CHANGE of 2026-10-04 and restored an
+## unscoped dump; it is still the only recorded restore. The drill now runs
+## weekly, so the first scheduled run after this reaches `main` re-establishes
+## the evidence against the dump the workflow actually takes today. Until then,
+## treat the figures above as evidence about the old artefact. Re-run it from
+## the Actions tab after any change to the dump command here — that is not
+## optional advice, it is the only thing that keeps this paragraph true.
 ##
-## There is still no workflow that restores into anything a customer could be
-## using — the verify job's target is a hardcoded localhost service container,
-## and that is deliberate.
+## What that verification proves, and what it still does not — do not read it
+## as more than it is.
+##
+##   (a) SCOPING — fixed 2026-10-04, and this entry is kept because the history
+##       is the point. Until that date the dump command carried no `--schema`
+##       flag, so it dumped Supabase's managed `auth` / `storage` / `realtime` /
+##       `vault` / `extensions` / `graphql` / `supabase_migrations` objects
+##       alongside `public`. This header then said, correctly, that the restore
+##       below "will collide with the managed objects already there" on a REAL
+##       Supabase target, and that the clean restore the drill had proven was a
+##       restore into a vanilla Postgres — a target nobody would ever restore
+##       to. The dump is now `--schema=public`, which is every schema this app
+##       owns (see the dump step for why `public` alone is the whole list), the
+##       content gate refuses to upload anything that reaches outside it, and
+##       the drill asserts post-restore that no managed schema came along. The
+##       documented `gunzip … | psql` restore into a fresh Supabase project now
+##       has nothing to collide with.
+##   (b) RECOVERY TIME — still not a production RTO. The drill now prints the
+##       seconds its own restore took (`::notice title=Restore time`), so the
+##       number is at least recorded and trends across runs, but it is measured
+##       against a loopback postgres:17 container on a GitHub runner. A real
+##       recovery also pays for provisioning a Supabase project and for network
+##       transfer, neither of which that number contains. Treat it as a lower
+##       bound, not an RTO.
+##   (c) The drill has NEVER restored into anything a customer could be using,
+##       and cannot: the verify job's target is a hardcoded localhost service
+##       container. That is deliberate and should stay that way.
 ##
 
 name: Nightly database backup
@@ -214,6 +294,37 @@ jobs:
             | sed -E "s|://postgres\\.${PROJECT_REF}:|://postgres:|" \
             | sed -E 's|:5432/postgres([?].*)?$|:6543/postgres|')?options=reference%3D${PROJECT_REF}"
 
+          # --schema=public is the fix for the headline half of prodready-009,
+          # and it is load-bearing, not tidiness. Added 2026-10-04; until then
+          # there was no --schema flag at all and this header said so.
+          #
+          # Without it pg_dump dumps every schema the role can read, and on
+          # Supabase that is `auth`, `storage`, `realtime`, `vault`,
+          # `extensions`, `graphql`, `graphql_public`, `pgsodium` and
+          # `supabase_migrations` alongside `public`. A real recovery target is
+          # a Supabase project, which ships all of those ALREADY POPULATED — so
+          # the documented `gunzip -c … | psql` restore collided with objects
+          # that already existed, and what the restore drill proved (a clean
+          # restore into a vanilla postgres:17 container, where none of them
+          # exist) was restorability against a target nobody would ever restore
+          # to. Scoped, the dump contains only objects a fresh Supabase project
+          # does not have, so the restore has nothing to collide with.
+          #
+          # Nothing of ours is lost by scoping, which is why `public` alone is
+          # right here rather than a longer list: this app holds no Supabase
+          # managed state. Auth is next-auth against our own `User` table with
+          # bcrypt hashes — there is no @supabase/* package in the dependency
+          # tree and no Storage, Realtime or Vault use anywhere — and Prisma
+          # declares no multiSchema and no `@@schema`, so every table, index,
+          # sequence and the `searchVector` generated column live in `public`.
+          # Nor does `public` depend on anything outside itself: no migration
+          # creates an extension or calls an extension-provided function
+          # (`to_tsvector` and the GIN opclasses are built in), so a scoped
+          # restore needs nothing pre-installed in the target. The gate below
+          # fails the run if an object outside `public` ever appears again, and
+          # tests/ops/backup-workflow.test.ts fails if prisma/schema.prisma
+          # starts putting models elsewhere while this list stays [public].
+          #
           # --no-owner / --no-privileges keep the dump portable across
           # Supabase projects, so a restore into a fresh project (staging,
           # dev) isn't blocked by permission grants. $PG_DUMP is exported
@@ -229,6 +340,7 @@ jobs:
           # the raw .sql lets us assert the dump actually contains data.
           RAW="${KEY}.raw.sql"
           "$PG_DUMP" "$PGDUMP_URL" \
+            --schema=public \
             --no-owner \
             --no-privileges \
             --format=plain \
@@ -266,15 +378,44 @@ jobs:
             fi
           done
 
-          # Scoped to `public.` — this is the fix for the half of prodready-009
-          # the restore verification does not cover. The dump is not
-          # --schema-scoped, so it carries Supabase's managed `auth`, `storage`,
-          # `realtime` and `vault` schemas: an unscoped `CREATE TABLE` count of
-          # 12 was satisfied by those ALONE, with not one application table in
-          # the file.
+          # Counted with the `public.` qualifier, and that qualifier is the
+          # point. When this gate was written the dump was NOT --schema-scoped,
+          # so it carried Supabase's managed `auth`, `storage`, `realtime` and
+          # `vault` schemas and an unscoped `CREATE TABLE` count of 12 was
+          # satisfied by those ALONE, with not one application table in the
+          # file. The dump is scoped now (see --schema=public above), so the
+          # qualifier is belt and braces rather than the only defence — keep it:
+          # it is what makes this count mean "our tables" in a file whose
+          # scoping is one deletable token away from being gone.
           table_count=$(grep -cE '^CREATE TABLE public\.' "$RAW" || true)
           if [ "${table_count:-0}" -lt 12 ]; then
             echo "::error title=Broken dump::Dump has only ${table_count} CREATE TABLE statements in the public schema, expected >= 12 app tables. Refusing to upload." >&2
+            exit 1
+          fi
+
+          # …and the inverse, which is the gate that notices --schema=public
+          # going missing. A dump that reaches outside `public` is a dump that
+          # collides with the managed objects of any real Supabase recovery
+          # target, and the symptom of losing the flag would otherwise appear
+          # for the first time during a restore. pg_dump fully qualifies every
+          # object in plain format (it emits `SELECT
+          # pg_catalog.set_config('search_path', '', false)` and then writes
+          # `CREATE TABLE public."User"`), so an unqualified or
+          # differently-qualified CREATE TABLE line means the scoping is gone.
+          STRAY_TABLES=$(grep -E '^CREATE TABLE ' "$RAW" | grep -cvE '^CREATE TABLE public\.' || true)
+          if [ "${STRAY_TABLES:-0}" -ne 0 ]; then
+            echo "::error title=Dump is not schema-scoped::${STRAY_TABLES} CREATE TABLE statement(s) are outside the public schema. --schema=public is missing or widened, and this dump cannot be restored into a Supabase project without colliding with its managed objects. Refusing to upload." >&2
+            grep -E '^CREATE TABLE ' "$RAW" | grep -vE '^CREATE TABLE public\.' | head -5 >&2 || true
+            exit 1
+          fi
+          # `CREATE SCHEMA public` is not emitted for a scoped dump — pg_dump
+          # writes "*not* creating schema, since initdb creates it" instead —
+          # but tolerate it rather than fail the only backup over a pg_dump
+          # version that decides otherwise. Anything else is a managed schema.
+          STRAY_SCHEMAS=$(grep -E '^CREATE SCHEMA ' "$RAW" | grep -vE '^CREATE SCHEMA (IF NOT EXISTS )?"?public"?;' || true)
+          if [ -n "${STRAY_SCHEMAS:-}" ]; then
+            echo "::error title=Dump is not schema-scoped::The dump creates schemas other than public, so it carries Supabase-managed objects that already exist in any recovery target. Refusing to upload." >&2
+            printf '%s\n' "$STRAY_SCHEMAS" | head -5 >&2
             exit 1
           fi
 
@@ -305,9 +446,19 @@ jobs:
           # Final belt. Raised from 512 bytes, which was ~180x below a real
           # dump and could not have failed on anything the checks above let
           # through.
+          #
+          # WORTH WATCHING after the 2026-10-04 scoping change: 4096 was
+          # calibrated against an UNSCOPED dump, which carried Supabase's
+          # managed schemas and was therefore considerably bulkier than this
+          # app's own data. The margin is now smaller than it was. The run log
+          # prints the real figure on the line below, so compare it against this
+          # floor on the first scoped run rather than assuming. If this ever
+          # trips, check whether the FLOOR is miscalibrated before concluding
+          # the dump is broken — every content assertion above has already
+          # passed by this point, so the data is there.
           file_size=$(stat -c%s "$KEY")
           if [ "$file_size" -lt 4096 ]; then
-            echo "::error title=Tiny dump::Gzipped dump is only ${file_size} bytes — refusing to upload." >&2
+            echo "::error title=Tiny dump::Gzipped dump is only ${file_size} bytes — refusing to upload. Note every content check above PASSED, so if this is the first run since the dump was scoped to --schema=public, suspect this 4096-byte floor (calibrated against the bulkier unscoped dump) before suspecting the data." >&2
             exit 1
           fi
           ls -lh "$KEY"
@@ -447,6 +598,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Needed only by the lifecycle drift check at the end, which compares the
+      # live bucket configuration against the policy committed in this repo.
+      - uses: actions/checkout@v4
+
       - name: Warn before GitHub disables this schedule
         # prodready-008. GitHub switches `schedule:` workflows off after 60 days
         # with no repository activity, and the first symptom is an empty bucket
@@ -524,6 +679,15 @@ jobs:
           # tight enough that ONE skipped night trips it: at 13:45 the newest
           # object is ~9.5h old normally and ~33.5h old after a missed night.
           MAX_AGE_HOURS=30
+          # The same floor the dump job applies before uploading, and it
+          # carries the same caveat: it was calibrated against the pre-2026-10-04
+          # UNSCOPED dump, which hauled Supabase's managed schemas along and was
+          # bulkier than this app's own data. NO SCOPED DUMP HAS BEEN MEASURED
+          # YET, so nothing here states what a dump of this database weighs —
+          # this message used to assert "well into five figures compressed",
+          # which was a number nobody had. Keep the two floors in step, and set
+          # them from the `Gzip size:` line the dump job prints rather than from
+          # an estimate.
           MIN_BYTES=4096
 
           if [ -z "${BACKUP_S3_BUCKET:-}" ]; then
@@ -558,10 +722,153 @@ jobs:
             exit 1
           fi
           if [ "$BYTES" -lt "$MIN_BYTES" ]; then
-            echo "::error title=Backup is suspiciously small::${NAME} is only ${BYTES} bytes. A real dump of this database is tens of KB compressed." >&2
+            echo "::error title=Backup is suspiciously small::${NAME} is only ${BYTES} bytes, under the ${MIN_BYTES}-byte floor. Before concluding the object is truncated, read the size the dump job logged on its 'Content check passed … Gzip size:' line: that floor was calibrated against the bulkier UNSCOPED dump, the dump was scoped to --schema=public on 2026-10-04, and no scoped dump's size has been measured — so the floor is as likely to be wrong as the object. Every content assertion in the dump job (12+ public tables, six CREATE TABLE+COPY pairs, a non-empty User block) runs before the upload and has already passed for this object." >&2
             exit 1
           fi
           echo "::notice title=Backup is current::${NAME} is ${AGE_HOURS}h old and ${BYTES} bytes."
+
+      - name: Is the bucket still keeping snapshots as long as the repo says?
+        # prodready-008's retention limb. The policy is committed at
+        # `.github/backup-bucket-lifecycle.json`; this step is what stops it
+        # being a file that was never applied, or was applied once and then
+        # changed in the provider's console. Both of those look identical to a
+        # policy that is in force, which is the state the finding described.
+        #
+        # IT WARNS AND NEVER FAILS, deliberately and in two places at once:
+        #   • `s3:GetLifecycleConfiguration` is a BUCKET-level permission that
+        #     an object-scoped upload credential may simply not have. A check
+        #     that then goes red every single night would get this whole job
+        #     muted — and this job is also the alarm that means "there is no
+        #     recent backup", which is a far more serious signal to lose.
+        #   • Retention drift is not the same severity as a missing backup. Too
+        #     SHORT a retention loses old snapshots slowly; no retention at all
+        #     loses money slowly. Neither is "the data is gone tonight".
+        # So every failure path exits 0 and the finding is a `::warning`.
+        #
+        # HOW THAT IS ACHIEVED, and the trap this comment used to set. It used
+        # to say "`set -uo pipefail` WITHOUT `-e`, every failure path exits 0".
+        # That is false, and it made this step fail every night. GitHub runs a
+        # `run:` block as `bash -e {0}` — errexit comes from the SHELL
+        # INVOCATION, so leaving `-e` out of `set` below does not disable it.
+        # `LIVE=$(aws s3api …)` is an assignment whose exit status is the
+        # command substitution's, so on `NoSuchLifecycleConfiguration` (the
+        # state before the policy is first applied, i.e. exactly what this step
+        # exists to detect) the step died at that line, before its own warning.
+        # Measured: `bash -e -c 'set -uo pipefail; LIVE=$(false); echo hi'`
+        # exits 1 and prints nothing; add `set +e` and it exits 0 and prints.
+        # That mattered far more than one red step: a failed `freshness` job
+        # opens the "could not find a recent dump" issue below and pings
+        # $BACKUP_HEARTBEAT_URL/fail, so it turned the one alarm meaning "there
+        # is no off-platform copy of customer data" into a nightly false alarm.
+        # `set +e` is therefore load-bearing: clear errexit EXPLICITLY, and keep
+        # it that way if you add anything fallible here.
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.BACKUP_S3_REGION }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+        run: |
+          set -uo pipefail
+          # Load-bearing, not tidiness: see the HOW THAT IS ACHIEVED note above.
+          # GitHub invokes this as `bash -e {0}`, so errexit is already on and
+          # has to be cleared here or the first failing command kills the step.
+          set +e
+          POLICY=".github/backup-bucket-lifecycle.json"
+
+          if [ -z "${BACKUP_S3_BUCKET:-}" ]; then
+            echo "no bucket configured; the step above has already said so"
+            exit 0
+          fi
+          ENDPOINT_ARGS=()
+          if [ -n "${BACKUP_S3_ENDPOINT:-}" ]; then
+            ENDPOINT_ARGS=(--endpoint-url "$BACKUP_S3_ENDPOINT")
+          fi
+
+          # ONE jq program, applied to BOTH the committed file and the live
+          # bucket. The two sides answering different questions is how this
+          # check produced false reassurance in three separate ways:
+          #
+          #   PREFIX. The live side had no prefix predicate at all, while the
+          #   committed rule is deliberately scoped to `nightly/`. So a bucket
+          #   with a 180-day rule on some OTHER prefix, and nothing whatsoever
+          #   on nightly/, read back as 180 and printed "Retention as
+          #   documented": the one mechanism that answers "was the committed
+          #   policy ever applied?" answering YES when it was not. The
+          #   predicate below keeps a rule when its prefix and `nightly/` are
+          #   prefixes of one another in either direction, because both
+          #   directions can delete dumps: an empty prefix is the whole bucket,
+          #   and `nightly/2026…` is part of it. `startswith("")` is true in
+          #   jq, which is what makes the whole-bucket case fall out for free.
+          #
+          #   Expiration.Date. `select(.Expiration.Days)` DISCARDED any rule
+          #   expressed as an absolute date, so a live rule that erases every
+          #   snapshot at once on a fixed day read back as "none" and printed
+          #   "Dumps are being kept forever" — an actively wrong statement
+          #   about the only component in this system that deletes backups.
+          #   Dates are collected separately now and warned about by name. They
+          #   are not a retention window and must never be compared with one.
+          #
+          #   STATUS. The committed side had no `Status == "Enabled"` filter
+          #   while the live side did, so a Disabled rule in the file would have
+          #   been read as the repo's intent. Same program, same answer.
+          #
+          # `$p` survives the double quotes at the call sites: bash expands a
+          # variable's value, it does not re-expand what is inside it.
+          ENABLED_NIGHTLY_RULES='[(.Rules // [])[]
+            | select((.Status // "") == "Enabled")
+            | select((.Filter.And.Prefix // .Filter.Prefix // .Prefix // "") as $p
+                     | ("nightly/" | startswith($p)) or ($p | startswith("nightly/")))]'
+          # `(.Rules // [])` above rather than `.Rules[]`: a provider that
+          # answers without a Rules key would make jq exit on "cannot iterate
+          # over null" and leave the comparison reading an empty string, which
+          # is a drift warning about nothing. `min // "none"` because min of an
+          # empty array is null — and because 0 is truthy in jq, a (mad) 0-day
+          # rule still reports as 0 rather than being swallowed.
+          SHORTEST_DAYS='[.[] | select(.Expiration.Days) | .Expiration.Days] | min // "none"'
+          ABSOLUTE_DATES='[.[] | select(.Expiration.Date) | "\(.ID // "<unnamed>") on \(.Expiration.Date)"] | join("; ")'
+
+          WANT=$(jq -c "$ENABLED_NIGHTLY_RULES" "$POLICY")
+          WANT_DAYS=$(printf '%s' "$WANT" | jq -r "$SHORTEST_DAYS")
+          echo "committed policy ($POLICY): nightly/ objects expire after ${WANT_DAYS} day(s)"
+          if [ "$WANT_DAYS" = "none" ]; then
+            echo "::warning title=Retention unverified::$POLICY declares no enabled, age-based expiration rule covering the nightly/ prefix, so there is nothing to hold the live bucket against. Fix the file; it is the intended source of truth."
+            exit 0
+          fi
+
+          LIVE=$(aws s3api get-bucket-lifecycle-configuration --bucket "$BACKUP_S3_BUCKET" \
+            "${ENDPOINT_ARGS[@]}" 2>/dev/null)
+          if [ -z "${LIVE:-}" ]; then
+            echo "::warning title=Retention unverified::Could not read the lifecycle configuration of $BACKUP_S3_BUCKET. Either no policy has been applied — in which case nightly dumps are kept forever, which is safe but is not the documented ${WANT_DAYS}-day policy — or this credential lacks s3:GetLifecycleConfiguration. Apply $POLICY with: aws s3api put-bucket-lifecycle-configuration --bucket \$BACKUP_S3_BUCKET --lifecycle-configuration file://$POLICY"
+            exit 0
+          fi
+
+          HAVE=$(printf '%s' "$LIVE" | jq -c "$ENABLED_NIGHTLY_RULES")
+          if [ -z "${HAVE:-}" ]; then
+            echo "::warning title=Retention unverified::$BACKUP_S3_BUCKET answered, but its lifecycle configuration could not be read as JSON rules, so retention could not be compared with $POLICY. This used to be reported as \"no enabled expiration rule\", i.e. as a fact about the bucket rather than as a failure to find out."
+            exit 0
+          fi
+          HAVE_DAYS=$(printf '%s' "$HAVE" | jq -r "$SHORTEST_DAYS")
+          HAVE_DATES=$(printf '%s' "$HAVE" | jq -r "$ABSOLUTE_DATES")
+          MATCHING=$(printf '%s' "$HAVE" | jq -r 'length')
+          echo "live bucket policy: ${MATCHING} enabled rule(s) can delete objects under nightly/; shortest age-based expiration ${HAVE_DAYS} day(s)"
+
+          # The SHORTEST enabled expiration is the one that matters: with
+          # overlapping rules the most aggressive one is what actually deletes.
+          # A fixed date is reported first and separately, because a bucket can
+          # carry both and the date is the more serious of the two.
+          if [ -n "${HAVE_DATES:-}" ]; then
+            echo "::warning title=Retention drift::$BACKUP_S3_BUCKET has an enabled lifecycle rule that deletes nightly/ objects on a FIXED DATE (${HAVE_DATES}), not after an age. On that date every snapshot in the bucket is erased at once however new it is, and the ${WANT_DAYS}-day window $POLICY declares stops existing. Replace it with an Expiration.Days rule."
+          fi
+
+          if [ "$HAVE_DAYS" = "none" ]; then
+            echo "::warning title=Retention drift::No enabled lifecycle rule in $BACKUP_S3_BUCKET expires objects under the nightly/ prefix by age, while $POLICY declares ${WANT_DAYS} days. Either no policy was ever applied, or what was applied is scoped to a different prefix and leaves the dumps untouched. Keeping them forever is safe, but it is not what the repo says — and it is indistinguishable from a working policy until someone reads this line."
+          elif [ "$HAVE_DAYS" != "$WANT_DAYS" ]; then
+            echo "::warning title=Retention drift::$BACKUP_S3_BUCKET expires objects under nightly/ after ${HAVE_DAYS} day(s); $POLICY declares ${WANT_DAYS}. If the live number is the smaller one, snapshots are being aged out sooner than the 90-day recovery this product promises customers. Reconcile the two — the file is the intended source of truth."
+          elif [ -z "${HAVE_DATES:-}" ]; then
+            echo "::notice title=Retention as documented::$BACKUP_S3_BUCKET expires nightly dumps after ${HAVE_DAYS} days, matching $POLICY. No rule deletes them on a fixed date."
+          fi
+          exit 0
 
       - name: Open an issue if the audit failed
         if: failure()

@@ -4,9 +4,19 @@
  * "Showing the 5,000 most recent of N" — the one thing a read ceiling owes the
  * customer (transactions-ledger-001).
  *
- * WHY THIS EXISTS AFTER THE TOTALS WERE FIXED. Every money figure on every
- * finance surface now comes from an unbounded SQL roll-up, so nothing is short
- * any more. The ROW LIST still is: `getTransactions()` reads at most
+ * WHY THIS EXISTS AFTER THE TOTALS WERE FIXED. Every money figure on the three
+ * LEDGER pages, /dashboard, /team and the chat runway card now comes from an
+ * unbounded SQL roll-up, so none of those is short any more.
+ *
+ * /reports IS THE EXCEPTION, and this paragraph used to deny it. Its in-period
+ * figures, charts and both exports still reduce the capped array, so RES-001
+ * landed a DISCLOSURE there rather than a roll-up — see `reportTruncation` in
+ * app/(app)/reports/reports-client.tsx. The deciding reason is worth keeping:
+ * the PDF's and .xlsx's "Transaction History" tables ARE that capped array, so
+ * even a perfect per-window aggregate would leave a correct summary above an
+ * incomplete list and would still have to say so.
+ *
+ * The ROW LIST is short on every surface: `getTransactions()` reads at most
  * `MAX_TRANSACTIONS_PER_TYPE` rows per type (lib/queries/transactions.ts), and
  * the rows a ceiling drops are the OLDEST. None of the three ledger clients has
  * pagination of any kind — no loadMore, no page param — so those rows are not on

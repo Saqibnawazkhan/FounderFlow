@@ -94,6 +94,23 @@ describe("the workspace-delete confirmation mentions the subscription (acct-002)
     ).toMatch(/subscription/i);
     expect(ur.settings.deleteWorkspaceConfirmDesc).toContain("سبسکرپشن");
   });
+
+  it("says it in the solo-founder dialog too, which cancels the same subscription", () => {
+    // `deleteAccountAction`'s sole-user branch calls the IDENTICAL
+    // `cancelWorkspaceSubscription` before the identical cascade
+    // (lib/actions/account.ts), so this is the last screen that customer ever
+    // sees about their billing — and a solo founder on the Team plan is the
+    // shape acct-002 costs real money on most often. The sentence was in both
+    // locales with nothing pinning it: only the workspace dialog's copy was
+    // asserted above, so this one could be dropped in a reword and the test
+    // suite would have stayed green.
+    expect(
+      en.settings.deleteAccountWorkspaceConfirmDesc,
+      "the sole-founder dialog cancels a live Team subscription and then tombstones " +
+        "the only user who could reach Manage billing — it has to say so"
+    ).toMatch(/subscription/i);
+    expect(ur.settings.deleteAccountWorkspaceConfirmDesc).toContain("سبسکرپشن");
+  });
 });
 
 describe("the solo founder is told they are deleting a workspace (acct-013)", () => {

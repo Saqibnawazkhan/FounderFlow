@@ -132,6 +132,27 @@ export const MarkChannelReadSchema = z.object({
 });
 export type MarkChannelReadInput = z.infer<typeof MarkChannelReadSchema>;
 
+/**
+ * Silence one conversation's notifications, or let them back in (chat-012).
+ *
+ * `muted` is the DESIRED STATE, not a "toggle" verb, and that is the whole
+ * design of this payload. A toggle is read against whatever the row happens to
+ * say when the request lands, so two clicks racing — a double tap, or the same
+ * channel open in two tabs — can end up with the opposite of what the reader
+ * last pressed and no way to tell. An absolute value is idempotent: the last
+ * write wins and it is the one the reader asked for.
+ *
+ * No `mutedAt` timestamp from the client. WHEN someone muted a channel is the
+ * server's to record, and a client-supplied one would be a clock to disagree
+ * with (`mutedAt` is also the only evidence of the mute, so a backdated value
+ * would be indistinguishable from a real one).
+ */
+export const SetChannelMuteSchema = z.object({
+  channelId: ChannelIdField,
+  muted: z.boolean({ required_error: "Say whether to mute or unmute" }),
+});
+export type SetChannelMuteInput = z.infer<typeof SetChannelMuteSchema>;
+
 export const DeleteMessageSchema = z.object({
   messageId: MessageIdField,
 });

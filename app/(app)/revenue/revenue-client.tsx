@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowUp,
   Calculator,
@@ -27,6 +27,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { DashboardStat } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
+import { useCommentDeepLink } from "@/components/comments/comment-deep-link";
 import { REVENUE_CATEGORIES, type Transaction, type User } from "@/lib/types";
 // TYPE-ONLY, so lib/queries' server graph (db, Sentry, the scoped-session read)
 // stays out of the client bundle.
@@ -181,6 +182,44 @@ export function RevenueClient({
   // nowhere to live on the page that shows the sale.
   const [commentingTxn, setCommentingTxn] = useState<TransactionWithCount | null>(null);
   const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
+
+  /* ── A MENTION ON A SALE OPENS ITS THREAD (tasks-and-comments-003) ─────────
+   *
+   * `createCommentAction` picks the ledger from the row's own `type`
+   * (transactions-ledger-016), so a comment on an income row sends its
+   * "<name> mentioned you" to `/revenue?transactionId=<id>&comment=<id>`. This
+   * island read NO search param at all, so that link resolved to a bare
+   * /revenue: the reader was told someone was discussing one of their sales and
+   * then shown all of them, with the conversation closed. /expenses had the row
+   * half; nobody had the comment half anywhere until /tasks got it.
+   *
+   * THE THREAD, NOT THE ROW, and that is the deliberate scope. Scrolling to and
+   * flashing the ROW needs the dual-layout ref machinery /expenses carries (a
+   * desktop table and a phone card list render together and CSS hides one, so
+   * `scrollIntoView` on the wrong node silently does nothing) — and it buys very
+   * little once the thread is already open on top of the page, titled with the
+   * row's description and amount. So `?transactionId=` still only locates the
+   * row for this purpose; the un-scrolled ledger row remains the smaller
+   * remainder recorded in lib/actions/comments.ts.
+   */
+  const searchParams = useSearchParams();
+  const highlightIdParam = searchParams.get("transactionId");
+  const commentIdParam = searchParams.get("comment");
+  /** The one comment to scroll to inside the opened thread. Null when a reader
+   *  opened the thread from the row's own button. */
+  const [commentDeepLinkId, setCommentDeepLinkId] = useState<string | null>(null);
+  useCommentDeepLink({
+    commentId: commentIdParam,
+    targetId: highlightIdParam,
+    // `revenue`, not `filtered`: a reader following the bell from this very page
+    // still has their search text applied, and the thread they were sent to must
+    // not depend on it.
+    rows: revenue,
+    onOpen: (t) => {
+      setCommentingTxn(t);
+      setCommentDeepLinkId(commentIdParam);
+    },
+  });
 
   function refresh() {
     startTransition(() => router.refresh());
@@ -627,7 +666,11 @@ export function RevenueClient({
       {commentingTxn && (
         <CommentThreadModal
           open={Boolean(commentingTxn)}
-          onClose={() => setCommentingTxn(null)}
+          onClose={() => {
+            setCommentingTxn(null);
+            setCommentDeepLinkId(null);
+          }}
+          highlightCommentId={commentDeepLinkId}
           target={{ transactionId: commentingTxn.id }}
           title={`Comments · ${commentingTxn.description}`}
           description={`${money(commentingTxn.amount)} — ${commentingTxn.category}`}

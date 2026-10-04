@@ -165,6 +165,7 @@ and prodready-005):
 | `DATABASE_URL` | Pooler URL, port 6543 (`?pgbouncer=true`) | Runtime queries | every query fails |
 | `DIRECT_URL` | Session pooler / direct connection, port 5432 | `prisma migrate deploy` at build | build failed (this one was already guarded) |
 | `AUTH_SECRET` | Session/JWT signing key | `lib/auth.ts`, all three token modules | nobody can sign in |
+| `AUTH_URL` | The canonical origin, same origin as `NEXT_PUBLIC_APP_URL` | Auth.js's own origin — session cookie, sign-in redirect, `callbackUrl` | **added 2026-10-04 (prodready-023)**: with it unset, `trustHost: true` in `auth.config.ts` let next-auth take its origin from the request's `Host`/`X-Forwarded-Host`, so every hostname serving the deploy minted and accepted its own sessions |
 | `CRON_SECRET` | Shared secret for the cron routes | all three `app/api/cron/*` | **all three nightly jobs 500 forever, silently** |
 | `NEXT_PUBLIC_APP_URL` | Public origin, e.g. `https://…vercel.app` | invite + password-reset links | every emailed link points at localhost |
 | `GMAIL_USER` | Sending address | `lib/email/send.ts` | reset emails silently never send |
@@ -173,7 +174,34 @@ and prodready-005):
 `NEXT_PUBLIC_APP_URL` is additionally value-checked: a loopback host
 (`localhost`, `127.x`, `0.0.0.0`, `[::1]`) is rejected on a production build,
 because a syntactically present but wrong value produced the same broken emails
-as a missing one.
+as a missing one. `AUTH_URL` is value-checked the same way, plus `https` only
+(@auth/core decides `useSecureCookies` from that protocol), plus a cross-check
+that its **origin equals `NEXT_PUBLIC_APP_URL`'s** — two canonical domains in
+one deploy means a reset link lands on a host that cannot complete the sign-in
+it was sent for. Only the ORIGIN is compared, because next-auth reads
+`AUTH_URL`'s path as its `basePath` — and since this app's handler lives at
+`app/api/auth/[...nextauth]`, the only path that works here is `/api/auth`. That
+constraint is **checked, not just written down** (added 2026-10-04 after review):
+the gate accepts the bare origin and `/api/auth` (trailing slash either way) and
+refuses every other path, because `https://…/app` passes a presence check, sets
+`basePath=/app`, and 404s sign-in, the callback and the session endpoint alike.
+Prefer the bare origin and let the default apply.
+
+**Owner action, before the next production build:** set `AUTH_URL` in the Vercel
+Production scope to the same origin as `NEXT_PUBLIC_APP_URL`. It became required
+on 2026-10-04, so until it is there the next production build fails by design —
+which is the intended behaviour, not a regression.
+
+**What a pinned `AUTH_URL` does NOT close.** Auth.js sets the session cookie with
+no `Domain` attribute, so the cookie is host-only on whatever hostname actually
+served the response. A sign-in driven directly at an alias — a preview URL *or* a
+production deployment's own `*.vercel.app` alias — therefore still stores a valid
+session cookie on that alias. The pin stops the flow *settling* there (next-auth
+rewrites the request's origin, so the post-sign-in redirect lands on the
+canonical domain, where the visitor is anonymous and the alias cookie is
+orphaned), but reducing the set of origins that can hold a live session to
+exactly one needs a redirect from non-canonical hosts to the canonical one in
+middleware. Not implemented — it is the remaining half of prodready-023.
 
 Two vars are the inverse — a production build **refuses to proceed if either is
 set**. `FORBIDDEN_PROD_ENV` in `scripts/vercel-build.mjs` is the list, and it is
@@ -212,7 +240,7 @@ outcomes, not two:
   **and** all three are present, and that wrapper is what bundles the SDK at all
   — so this state reports *nothing*, rather than merely losing readable stack
   traces. That is today's state in production.
-- **some but not all three** → `next.config.js:107` **throws**, so `next build`
+- **some but not all three** → `next.config.js:106` **throws**, so `next build`
   fails outright. Not a warning.
 - **all three plus `SENTRY_DSN`** → source maps upload and the SDK is bundled.
 
@@ -323,6 +351,42 @@ for a one-off inspection.
   `bumpSessionVersion` is the standalone lever, kept for a future "log out all
   devices" control. Legacy tokens with no version field
   default to 0 and stay valid. Smoke: `scripts/smoke-session-invalidation.mjs`.
+
+### Liveness: `/api/health` — landed 2026-10-04
+
+`app/api/health/route.ts` is the only endpoint in this app that answers without
+a session, a `CRON_SECRET` bearer or a provider HMAC. Until it existed there was
+nothing an uptime monitor could poll, and the outages this app is most exposed
+to — a half-applied migration, a Supabase pooler with no free connections, a
+database password rotated in Supabase but not in Vercel — all leave the app
+SERVING while every data-bearing page throws. Detection was "a paying customer
+notices" (prodready-018).
+
+- It runs one `SELECT 1` and answers `{ ok, db, commit, ms, checkedAt }`:
+  **200** on a successful round-trip, **503** on failure or on its own 2.5s
+  timeout. The timeout is the point — the usual failure is a HANG, not a throw.
+- **No error detail, ever.** Prisma's P1001 quotes the host and port it could
+  not reach, so echoing it from an unauthenticated route would publish the
+  production database hostname. The commit SHA (`VERCEL_GIT_COMMIT_SHA`) is the
+  one build detail that goes out.
+- It is memoised for 5s and deduplicated while in flight, so however hard the
+  URL is hit it costs at most one round-trip per window per instance. That is
+  instead of a rate limiter: every limiter in `lib/rate-limit.ts` is keyed per
+  IP, and a 429 at a monitor is recorded as an outage.
+- Reachability is **two layers**, per the convention below: `pathname ===
+  "/api/health"` is in `authorized()`'s public list in `auth.config.ts`. Without
+  that line the middleware matcher answers a 302 to `/login`, which a monitor
+  records as "up" — a health endpoint that is accidentally private is worse than
+  none. Pinned by `tests/app/health/health-route.test.ts`, which drives the real
+  allow-list and reads the matcher out of `middleware.ts`.
+- `robots.txt` already disallows `/api/`, which covers it; the response also
+  carries `X-Robots-Tag: noindex`.
+
+**Left for a human, and NOT done:** nothing polls this URL. The route makes
+detection possible, it does not perform it — point an external uptime monitor
+(or Vercel's own check) at `https://<prod-origin>/api/health`, alert on a
+non-200, and the repo side needs no further edit. Until that is configured the
+mean time to detection is unchanged.
 
 ## Repo conventions
 

@@ -2,7 +2,7 @@
 
 /**
  * Chat server actions: send, create channel, open a DM, react, delete, mark
- * read, post a Runway card.
+ * read, mute, post a Runway card.
  *
  * Every access decision defers to lib/auth/channel-permissions.ts. There is
  * deliberately no `if (role === "admin")` anywhere in this file — that module
@@ -45,6 +45,7 @@ import {
   RUNWAY_CARD_VERSION,
   RunwayPayloadSchema,
   SendMessageSchema,
+  SetChannelMuteSchema,
   ToggleReactionSchema,
   MarkChannelReadSchema,
   DeleteMessageSchema,
@@ -111,6 +112,16 @@ type ChannelContext = {
   channelRole: string | null;
   muted: boolean;
   /**
+   * The caller's own read watermark, as a message id (chat-014).
+   *
+   * Carried so `markChannelReadAction` can tell "the reader has seen the newest
+   * message" from "the reader has just caught up", and skip the UPDATE plus two
+   * `revalidatePath` calls in the first case. It rides along on the membership
+   * row this function already selects, so it costs no round trip. Null for a
+   * non-member, and for a member who has never read anything here.
+   */
+  lastReadMessageId: string | null;
+  /**
    * The denormalized recency `sendMessageAction` maintains. Carried here so
    * `pollChannelActivityAction` is ONE query — the liveness probe runs every
    * few seconds per open tab, and a second round trip to fetch a single
@@ -148,7 +159,10 @@ async function loadChannelContext(
       kind: true,
       archivedAt: true,
       lastMessageAt: true,
-      members: { where: { userId }, select: { role: true, mutedAt: true } },
+      members: {
+        where: { userId },
+        select: { role: true, mutedAt: true, lastReadMessageId: true },
+      },
     },
   });
   if (!channel) return null;
@@ -162,6 +176,11 @@ async function loadChannelContext(
     isMember: mine !== null,
     channelRole: mine?.role ?? null,
     muted: mine?.mutedAt != null,
+    // `?? null` rather than passing `undefined` through: this value is compared
+    // against "the newest message id, or null for an empty channel", and
+    // `undefined === null` is false — an absent column would read as "the
+    // watermark moved" every single time.
+    lastReadMessageId: mine?.lastReadMessageId ?? null,
     lastMessageAt: channel.lastMessageAt,
   };
 }
@@ -972,8 +991,36 @@ export async function unreadChatCountAction(): Promise<ActionResult<{ count: num
  * worth protecting at the cost of that failure mode. The generic abuse
  * protection is still upstream: a session is required, and the row must
  * already exist.
+ *
+ * ── chat-014: AND IT IS BOUNDED BY DOING LESS, NOT BY BEING PRICED ────────
+ *
+ * The finding asked for `limiters.read` instead of nothing. That would have
+ * been the wrong budget as well as the wrong shape: `limiters.read` is
+ * 120/min/user and is ALREADY carrying `pollChannelActivityAction` (a tick
+ * every five seconds per open tab) and the command palette. Exhausting it does
+ * not fail loudly — the liveness probe swallows its own errors on purpose, so
+ * the symptom would be "chat stops updating sometimes", which is the exact
+ * class of undiagnosable bug the paragraph above is written to avoid.
+ *
+ * So the cost is removed rather than rationed, in two places:
+ *   • HERE: if the watermark would not move — the caller is not a member, or
+ *     `lastReadMessageId` is already the newest message — nothing is written
+ *     and NEITHER path is revalidated. That is the whole of the amplification
+ *     the finding is about: two `revalidatePath` calls on a shared tag per
+ *     scroll-to-bottom.
+ *   • IN THE CLIENT: <MessageList> sends one receipt per watermark rather than
+ *     one per transition into the at-bottom state, so the repeat calls mostly
+ *     never happen at all. The guard here is for every OTHER caller — a second
+ *     tab, an older client, anything that posts the endpoint directly.
+ *
+ * `moved` is returned for the client's sake and is not a courtesy: the
+ * `ff-chat-read` event makes the sidebar's Chat badge refetch its total, and
+ * firing it after a no-op spent a round trip to learn nothing (audit row A54,
+ * where the non-member branch reported a bare success).
  */
-export async function markChannelReadAction(input: unknown): Promise<ActionResult> {
+export async function markChannelReadAction(
+  input: unknown
+): Promise<ActionResult<{ moved: boolean }>> {
   const session = await auth();
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
@@ -996,7 +1043,12 @@ export async function markChannelReadAction(input: unknown): Promise<ActionResul
     // badge on, and auto-joining on open would subscribe people to every room
     // they ever glanced at. An upsert here would look harmless and do exactly
     // that.
-    if (!channel.isMember) return { success: true, data: undefined };
+    //
+    // `moved: false` rather than a bare success (chat-014 / audit A54): the
+    // client reads a plain success as "tell the sidebar its total changed", so
+    // this branch had the unread badge refetching on every message in a public
+    // channel nobody had joined.
+    if (!channel.isMember) return { success: true, data: { moved: false } };
 
     // Record WHICH message was read as well as when. lastReadAt is the
     // authoritative comparison for the badge (see the schema comment); the id
@@ -1008,9 +1060,18 @@ export async function markChannelReadAction(input: unknown): Promise<ActionResul
       select: { id: true },
     });
 
+    // chat-014: ALREADY CAUGHT UP. The two columns are written together, so
+    // `lastReadAt` is never behind the message `lastReadMessageId` names — if
+    // that is still the newest message, this UPDATE would write the same
+    // watermark again and the two revalidations would evict a shared cache tag
+    // for nothing. An empty channel lands here too (`null === null`), which is
+    // correct: there is nothing to have read.
+    const newestId = newest?.id ?? null;
+    if (newestId === channel.lastReadMessageId) return { success: true, data: { moved: false } };
+
     await db.channelMember.update({
       where: { channelId_userId: { channelId, userId } },
-      data: { lastReadAt: new Date(), lastReadMessageId: newest?.id ?? null },
+      data: { lastReadAt: new Date(), lastReadMessageId: newestId },
     });
 
     // BOTH paths, matching every other write in this file (chat-007). The
@@ -1023,10 +1084,106 @@ export async function markChannelReadAction(input: unknown): Promise<ActionResul
     // signal the rail exists to carry.
     revalidatePath("/chat");
     revalidatePath(`/chat/${channel.slug}`);
-    return { success: true, data: undefined };
+    return { success: true, data: { moved: true } };
   } catch (e) {
     captureServerError(e, { action: "markChannelReadAction" });
     return { success: false, error: "Couldn't update your read position right now." };
+  }
+}
+
+/**
+ * Silence one conversation's notifications, or let them back in (chat-012).
+ *
+ * WHY THIS HAD TO EXIST. `ChannelMember.mutedAt` has been in the schema since
+ * the chat migration, documented as "Muted = still a member, still sees the
+ * channel, just no notification fan-out", and BOTH fan-outs in this file
+ * already honour it — `sendMessageAction` drops `mutedAt: { not: null }`
+ * members from the mention recipients, and `postRunwayCardAction` does the
+ * same. A repo-wide grep for a WRITE to that column found nothing: no action,
+ * no route, no control. So the suppression was complete, correct, tested and
+ * unreachable, and a member of a noisy channel had exactly one way to stop its
+ * pings — the workspace-wide notification preferences, which turn mentions off
+ * everywhere. That shape (finished server path, no entry point) is this repo's
+ * signature defect, and the lever is the whole of the fix.
+ *
+ * NO ROLE GATE, and that is not an oversight. This touches one column on ONE
+ * row: the caller's own membership. There is no version of "may I decide
+ * whether my phone buzzes" that an admin should be answering, and
+ * `canManageChannel` is about renaming and archiving a room for everyone.
+ * `canSeeChannel` still applies, because a channel the caller cannot see must
+ * not even confirm it exists.
+ *
+ * MEMBERSHIP IS REQUIRED, and this is the one real limitation. `mutedAt` is a
+ * column on `ChannelMember`, so there is nothing to write for somebody who has
+ * no membership row — which in a PUBLIC channel is a real reader: they can post
+ * and be @-mentioned without ever joining, and the mention fan-out skips the
+ * membership filter for public channels precisely so that works. Upserting a
+ * row here would silence them, and would ALSO subscribe them to that channel's
+ * unread badge forever, which is the exact stealth-join `markChannelReadAction`
+ * refuses above for the same reason. So they are refused in words instead, and
+ * the honest answer for them remains the workspace notification preferences.
+ *
+ * ARCHIVED CHANNELS ARE ALLOWED. Muting one is pointless rather than harmful
+ * (nothing can be posted, so nothing can fan out), but a reader tidying up
+ * after an archive should not be told no by a control that is sitting there.
+ *
+ * `limiters.write`, like every other write in this file: a human pressing a
+ * bell is nowhere near 60/min, and it is a real database write.
+ */
+export async function setChannelMuteAction(
+  input: unknown
+): Promise<ActionResult<{ muted: boolean }>> {
+  const session = await auth();
+  if (!session?.user?.companyId || !session.user.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
+  const parsed = SetChannelMuteSchema.safeParse(input);
+  if (!parsed.success) return { success: false, error: "Invalid request" };
+  const { channelId, muted } = parsed.data;
+  const { id: userId, companyId } = session.user;
+
+  try {
+    const channel = await loadChannelContext(channelId, companyId, userId);
+    if (!channel) return { success: false, error: "Channel not found" };
+    if (!canSeeChannel(channel)) {
+      return { success: false, error: "You do not have access to this channel" };
+    }
+    if (!channel.isMember) {
+      return { success: false, error: "Only members of this conversation can mute it" };
+    }
+
+    // ALREADY THERE: nothing to write, so nothing to invalidate either. The
+    // payload is an absolute state rather than a toggle (see the schema), which
+    // is what makes this safe to short-circuit — a double tap or a second tab
+    // asking for the state the row already holds is success, not a second write
+    // and two cache evictions. This is also `ChannelContext.muted`'s first
+    // reader: it was computed by `loadChannelContext` and used by nothing.
+    if (channel.muted === muted) return { success: true, data: { muted } };
+
+    await db.channelMember.update({
+      where: { channelId_userId: { channelId, userId } },
+      // The timestamp is the mute: there is no separate boolean to disagree
+      // with it. `new Date()` here and never from the payload — see the
+      // schema's note.
+      data: { mutedAt: muted ? new Date() : null },
+    });
+
+    // BOTH paths, matching every other write in this file (chat-007). The
+    // header's bell is rendered from `getChannelBySlug` inside
+    // app/(app)/chat/[slug]/page.tsx, so the cached render that has to go is
+    // the one for the channel the reader is looking at; "/chat" goes too
+    // because the index renders from the same query family.
+    revalidatePath("/chat");
+    revalidatePath(`/chat/${channel.slug}`);
+    // The state that was actually written, echoed back rather than assumed, so
+    // the control flips on the server's answer and not on the click.
+    return { success: true, data: { muted } };
+  } catch (e) {
+    captureServerError(e, { action: "setChannelMuteAction" });
+    return { success: false, error: "Couldn't change your notifications right now." };
   }
 }
 

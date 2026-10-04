@@ -49,6 +49,12 @@ import {
   reorderTaskAction,
   updateTaskStatusAction,
 } from "@/lib/actions/tasks";
+import { MAX_BULK_TASK_IDS } from "@/lib/schemas/task";
+import {
+  nextSelectAllIds,
+  selectableTaskCount,
+  selectionWasClamped,
+} from "@/components/tasks/bulk-selection";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { TaskForm } from "@/components/tasks/task-form";
@@ -56,6 +62,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { CommentThreadModal } from "@/components/comments/comment-thread-modal";
+import { useCommentDeepLink } from "@/components/comments/comment-deep-link";
 import { TaskDetailModal } from "@/components/tasks/task-detail-modal";
 import { TaskCalendar } from "@/components/tasks/task-calendar";
 import { cn } from "@/lib/utils";
@@ -215,6 +222,11 @@ export function TasksClient({
       setHighlightId(null);
       const url = new URL(window.location.href);
       url.searchParams.delete("taskId");
+      // `comment` goes with it, the way expenses-client already drops both: a
+      // refresh must not re-flash the card OR re-open the thread. The modal is
+      // already held in React state by then, so clearing the param cannot close
+      // one that is open (tasks-and-comments-003).
+      url.searchParams.delete("comment");
       window.history.replaceState({}, "", url.toString());
     }, 2500);
     return () => {
@@ -236,6 +248,13 @@ export function TasksClient({
   // Active task whose comment thread is open. Null = drawer closed. Stays
   // a reference to the original row so the modal title can show the title.
   const [commentingTask, setCommentingTask] = useState<TaskWithCount | null>(null);
+  /**
+   * The one comment inside that thread the reader was sent to, or null when the
+   * thread was opened by hand from the "💬 N" button (tasks-and-comments-003).
+   * Only set by the deep-link hook below; cleared with the thread, so reopening
+   * the same task from the board does not re-scroll to an old mention.
+   */
+  const [commentDeepLinkId, setCommentDeepLinkId] = useState<string | null>(null);
   // Active task whose full detail modal is open. Separate from the comment
   // drawer so a card click gives the whole picture (metadata + description +
   // comments inline), while the comment icon still jumps straight to the
@@ -480,6 +499,33 @@ export function TasksClient({
     setDeepLinkWidened(true);
   }, [highlightIdParam, tasks, filtered]);
 
+  /* ── AND THE MENTION LINK OPENS THE THREAD IT NAMES (tasks-and-comments-003) ─
+   *
+   * `createCommentAction` sends "<name> mentioned you" to
+   * `/tasks?taskId=<taskId>&comment=<commentId>`. The `taskId=` half has been
+   * honoured here for a while — the card scrolls and flashes — but nothing read
+   * `comment=`, so the one call to action an @mention has still ended on a board
+   * with the conversation closed.
+   *
+   * The decision lives in components/comments/comment-deep-link.ts, shared with
+   * all three ledgers, which answer a mention the same way. Its header explains
+   * why the comment id cannot resolve itself, why an unresolvable pair must open
+   * nothing, and why it is once-per-id.
+   *
+   * `commentDeepLinkId` is also handed to the modal, which scrolls to that one
+   * comment inside the thread.
+   */
+  const commentIdParam = searchParams.get("comment");
+  useCommentDeepLink({
+    commentId: commentIdParam,
+    targetId: highlightIdParam,
+    rows: tasks,
+    onOpen: (t) => {
+      setCommentingTask(t);
+      setCommentDeepLinkId(commentIdParam);
+    },
+  });
+
   // Bulk selection (list view). `selected` holds task ids; we prune any that
   // fall out of the filtered set so the action bar count never lies after a
   // filter switch or an RSC refresh removes rows.
@@ -506,9 +552,37 @@ export function TasksClient({
       return next;
     });
   }
+  /* ── SELECT ALL MEANS "AS MANY AS CAN LEGALLY GO IN ONE REQUEST" ──────────
+   *
+   * Second half of tasks-and-comments-010. This used to be
+   * `new Set(filtered.map((t) => t.id))` with no ceiling, while both bulk
+   * actions cap `ids` at `MAX_BULK_TASK_IDS` — so on a board bigger than the cap
+   * the checkbox could only ever build a selection the server was certain to
+   * refuse. The default board window is `TASK_PAGE_SIZE` = 300
+   * (lib/queries/tasks.ts), which is ABOVE the 200 cap on purpose, so this is
+   * not a hypothetical big-customer case: one page of a busy workspace reaches
+   * it. The action's refusal is at least a sentence now rather than zod's
+   * "Array must contain at most 200 element(s)", but a primary control whose
+   * only outcome is an error message is still broken.
+   *
+   * The three decisions live in components/tasks/bulk-selection.ts, pure, for
+   * the reason its header gives: the behaviour only differs above 200 rows, and
+   * 200 board rows in jsdom is minutes per click. They also keep the 200 itself
+   * in ONE place — lib/schemas/task.ts, which the parser and the action's
+   * message read too.
+   */
+  const selectableCount = selectableTaskCount(filtered.length);
+  /** True when select-all handed back fewer ids than the filter matched. */
+  const selectionCapped = selectionWasClamped(filtered.length, selected.size);
   function toggleSelectAll() {
-    setSelected((prev) =>
-      prev.size === filtered.length ? new Set() : new Set(filtered.map((t) => t.id))
+    setSelected(
+      (prev) =>
+        new Set(
+          nextSelectAllIds(
+            filtered.map((t) => t.id),
+            prev.size
+          )
+        )
     );
   }
   function clearSelection() {
@@ -893,10 +967,13 @@ export function TasksClient({
                     <input
                       id="select-all-tasks"
                       type="checkbox"
-                      checked={filtered.length > 0 && selected.size === filtered.length}
+                      // Against `selectableCount`, not `filtered.length`: on a
+                      // board above MAX_BULK_TASK_IDS the latter makes "checked"
+                      // unreachable and leaves the box stuck indeterminate.
+                      checked={selectableCount > 0 && selected.size === selectableCount}
                       ref={(el) => {
                         if (el)
-                          el.indeterminate = selected.size > 0 && selected.size < filtered.length;
+                          el.indeterminate = selected.size > 0 && selected.size < selectableCount;
                       }}
                       onChange={toggleSelectAll}
                       className="h-4 w-4 cursor-pointer accent-primary"
@@ -1104,6 +1181,16 @@ export function TasksClient({
         <div className="pointer-events-none fixed inset-x-0 bottom-4 z-sticky flex justify-center px-4">
           <div className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-surface/95 p-2 ps-4 shadow-card-hover backdrop-blur-xl">
             <span className="text-sm font-semibold text-fg">{selected.size} selected</span>
+            {/* The "first N" affordance (tasks-and-comments-010). Select-all
+                clamps to MAX_BULK_TASK_IDS, so on a bigger board the count
+                above is not the whole filter — say so, rather than letting the
+                reader believe they are about to move all 300. */}
+            {selectionCapped && (
+              <span className="text-xs text-fg-muted">
+                first {selected.size} of {filtered.length} — {MAX_BULK_TASK_IDS} is the most that
+                can change at once
+              </span>
+            )}
             <span className="mx-1 hidden h-4 w-px bg-border sm:block" />
             <label className="sr-only" htmlFor="bulk-status">
               Set status for selected tasks
@@ -1168,7 +1255,11 @@ export function TasksClient({
       {commentingTask && (
         <CommentThreadModal
           open={Boolean(commentingTask)}
-          onClose={() => setCommentingTask(null)}
+          onClose={() => {
+            setCommentingTask(null);
+            setCommentDeepLinkId(null);
+          }}
+          highlightCommentId={commentDeepLinkId}
           target={{ taskId: commentingTask.id }}
           title={`Comments · ${commentingTask.title}`}
           description={`@-mention a teammate to notify them`}

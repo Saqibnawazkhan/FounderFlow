@@ -5,15 +5,21 @@
  * builds the mention notification's link for a comment on an EXPENSE as
  * `/expenses?transactionId=<id>&comment=<id>` and has done since the tasks half
  * was fixed. (Since transactions-ledger-016 it reads the row's `type` and sends
- * an income row's mention to /revenue and a capital row's to /investments —
- * neither of those islands honours the param yet, which is why this file still
- * only covers /expenses.) `/tasks?taskId=` is honoured —
- * tasks-client.tsx scrolls the card into view and flashes it — but
- * expenses-client.tsx contained no `useSearchParams` at all, so the finance
- * mention resolved to a bare /expenses: no scroll, no highlight, nothing on
- * screen to say which of a workspace's rows the conversation was about. The
- * finding was recorded as closed after the tasks half landed. It was half
- * closed.
+ * an income row's mention to /revenue and a capital row's to /investments.)
+ * `/tasks?taskId=` is honoured — tasks-client.tsx scrolls the card into view and
+ * flashes it — but expenses-client.tsx contained no `useSearchParams` at all, so
+ * the finance mention resolved to a bare /expenses: no scroll, no highlight,
+ * nothing on screen to say which of a workspace's rows the conversation was
+ * about. The finding was recorded as closed after the tasks half landed. It was
+ * half closed.
+ *
+ * WHAT THIS FILE IS STILL THE ONLY HOME FOR, now that the rest of 003 has
+ * landed: the SCROLL AND HIGHLIGHT of the ledger row, which /expenses is the
+ * one ledger to do (/revenue and /investments resolve the row and open its
+ * thread without scrolling the list underneath — see revenue-client.tsx). The
+ * `?comment=` half — opening that row's thread, on all three ledgers — is
+ * tests/app/finance/ledger-comment-threads.test.tsx, and the decision both
+ * halves share is tests/components/comments/comment-deep-link.test.ts.
  *
  * WHY THE FILTER CASE IS IN HERE. The notification bell is rendered on
  * /expenses too, so the common way to follow one of these links is a CLIENT-SIDE

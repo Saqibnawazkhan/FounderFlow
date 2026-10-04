@@ -170,7 +170,7 @@ function Inner({ children }: { children: React.ReactNode }) {
         // typed into devtools — and the store's `role` is what the sidebar's
         // finance-nav filter reads (components/layout/sidebar.tsx:215). Those
         // three fallbacks were unreachable in practice, because
-        // `auth.config.ts:55` already defaults the session's role/id/companyId
+        // `auth.config.ts:84` already defaults the session's role/id/companyId
         // (`?? "member"` / `?? ""`) so the left operand is never nullish. That
         // made the rule true by coincidence of another file: delete that `??`
         // and a member could promote their own chrome by editing localStorage.
