@@ -32,20 +32,56 @@ type Props = {
 
 // Maps the color slug stored on the project to a Tailwind class trio
 // (stripe / accent text / chip background). Stored here so adding a palette
-// entry is a one-file change. Exported so tests/lib/brand.test.ts can assert
-// every PROJECT_COLORS slug has a swatch — a colour added to the tuple
-// without an entry here would silently render the fallback.
+// entry is a one-file change, and read by all four swatch surfaces: this card,
+// the project detail header, and both pickers — neither of which keeps its own
+// copy any more. Exported so tests/lib/brand.test.ts and
+// tests/lib/colors/categorical-palette.test.ts can assert every PROJECT_COLORS
+// slug has a swatch; a colour added to the tuple without an entry here would
+// silently render the fallback.
+//
+// WHY THE CLASS STRINGS ARE SPELLED OUT rather than generated from the palette
+// module: Tailwind's content scanner only emits utilities whose class string
+// exists as a LITERAL in a scanned file. A `bg-cat-${n}` built at runtime
+// compiles to no CSS at all and the stripe renders transparent. This file is
+// inside the content globs; lib/ is not.
+//
+// `cat-1 … cat-10` are the CATEGORICAL tokens (--cat-N in globals.css, light
+// AND dark values), the same ten the charts draw with. `*-strong` is the
+// text-safe variant, used for the accent glyph that sits beside the title.
+const CATEGORICAL_CLASSES = {
+  "cat-1": { stripe: "bg-cat-1", text: "text-cat-1-strong", chipBg: "bg-cat-1/10" },
+  "cat-2": { stripe: "bg-cat-2", text: "text-cat-2-strong", chipBg: "bg-cat-2/10" },
+  "cat-3": { stripe: "bg-cat-3", text: "text-cat-3-strong", chipBg: "bg-cat-3/10" },
+  "cat-4": { stripe: "bg-cat-4", text: "text-cat-4-strong", chipBg: "bg-cat-4/10" },
+  "cat-5": { stripe: "bg-cat-5", text: "text-cat-5-strong", chipBg: "bg-cat-5/10" },
+  "cat-6": { stripe: "bg-cat-6", text: "text-cat-6-strong", chipBg: "bg-cat-6/10" },
+  "cat-7": { stripe: "bg-cat-7", text: "text-cat-7-strong", chipBg: "bg-cat-7/10" },
+  "cat-8": { stripe: "bg-cat-8", text: "text-cat-8-strong", chipBg: "bg-cat-8/10" },
+  "cat-9": { stripe: "bg-cat-9", text: "text-cat-9-strong", chipBg: "bg-cat-9/10" },
+  "cat-10": { stripe: "bg-cat-10", text: "text-cat-10-strong", chipBg: "bg-cat-10/10" },
+};
+
+// The pre-2026-10 slugs, UNCHANGED. These are in the database today, so an
+// existing project keeps painting exactly what it painted yesterday — the
+// widening is additive, not a remap, and there is deliberately no migration.
 //
 // "emerald" deliberately reuses the `primary` tokens rather than getting its
 // own Tailwind colour: emerald IS the primary brand green, so a parallel
-// token would be a second source of truth free to drift from --primary.
-// The slug stays "emerald" because that is the palette name users pick.
-export const COLOR_CLASSES: Record<string, { stripe: string; text: string; chipBg: string }> = {
+// token would be a second source of truth free to drift from --primary. It is
+// NOT repointed at `cat-1` for that reason, even though cat-1 is the same
+// emerald on light — `--primary` does not re-light on dark and `--cat-1` does,
+// so repointing would quietly change a live project's dark-mode stripe.
+const LEGACY_CLASSES = {
   emerald: { stripe: "bg-primary", text: "text-primary-strong", chipBg: "bg-primary/10" },
   forest: { stripe: "bg-forest", text: "text-forest-strong", chipBg: "bg-forest/10" },
   mint: { stripe: "bg-mint", text: "text-mint-strong", chipBg: "bg-mint/10" },
   slate: { stripe: "bg-slate", text: "text-slate-strong", chipBg: "bg-slate/10" },
   warning: { stripe: "bg-warning", text: "text-warning", chipBg: "bg-warning/10" },
+};
+
+export const COLOR_CLASSES: Record<string, { stripe: string; text: string; chipBg: string }> = {
+  ...CATEGORICAL_CLASSES,
+  ...LEGACY_CLASSES,
 };
 
 const STATUS_CLASSES: Record<string, string> = {

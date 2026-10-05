@@ -27,19 +27,38 @@ import { NOTIFY_EVENTS, type ChannelSet, type NotifyEvent } from "./events";
  *     thing you asked for is done; an email as well is one channel too many
  *     for something that needs no response.
  *
- * `dm` sits at the far end of that same scale from `transaction_logged`, and
- * the contrast is the rule itself: a DM is one person deliberately addressing
- * one person and waiting on an answer, so it ships on all three channels —
- * the `mention` tier — while `transaction_logged` is a side effect of someone
- * doing their own job that merely gets broadcast at you. The volume argument
- * splits the same way: a DM arrives because somebody chose to write to you,
- * not once per row somebody happened to save.
+ *   • `chat_mention` and `dm` email are OFF — the whole of the chat-volume
+ *     fix the owner asked for on 2026-10-05, stated as a default. A chat
+ *     mention and a DM are both one person addressing one person, which is why
+ *     they still push and why a mention still keeps its in-app row. What they
+ *     are not is occasional: chat arrives at typing speed, so an email per
+ *     message is hundreds of them for anyone in a busy channel, and the shared
+ *     `DAILY_NOTIFICATION_EMAIL_BUDGET` would be gone before a budget alert
+ *     could claim it. `mention` — the SAME gesture in a task or money comment —
+ *     keeps its email, which is exactly why the two are separate events.
+ *
+ *     These two `false`s are belt and braces rather than the mechanism:
+ *     `EVENT_DELIVERABLE_CHANNELS` leaves email out for both events and
+ *     `notifyUsers` enforces it, so email cannot be delivered for them however
+ *     this row reads. The default still says `false` so that a preference row
+ *     written from it, and the matrix built from it, state the same thing the
+ *     delivery path does.
  *
  * Everything else is directed at one person and worth interrupting for.
+ *
+ * NOTE ON `dm.inApp`: it reads `true` and no in-app row is ever written for a
+ * direct message — both DM fan-outs pass `skipInApp`, and
+ * `EVENT_DELIVERABLE_CHANNELS` leaves `inApp` out of the row. The default is
+ * not the thing deciding that, and the settings page never renders the cell.
+ * Kept `true` rather than flipped so that "the default for every event is to
+ * keep a durable record" stays a rule with no exceptions to remember (the
+ * test in tests/lib/notify/preferences.test.ts asserts exactly that), and so
+ * the value is already right if DMs ever get their row back.
  */
 export const DEFAULT_CHANNELS: Record<NotifyEvent, ChannelSet> = {
   mention: { inApp: true, email: true, push: true },
-  dm: { inApp: true, email: true, push: true },
+  chat_mention: { inApp: true, email: false, push: true },
+  dm: { inApp: true, email: false, push: true },
   task_assigned: { inApp: true, email: true, push: true },
   task_completed: { inApp: true, email: false, push: true },
   project_supervisor: { inApp: true, email: true, push: true },

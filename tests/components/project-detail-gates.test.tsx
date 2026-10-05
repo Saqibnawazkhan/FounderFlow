@@ -21,12 +21,14 @@
  *                 here fills in five fields and gets a red toast.
  *
  *   projects-004  The header stripe and the grid card must paint the same
- *                 colour. The card reads COLOR_CLASSES (five slugs, matching
+ *                 colour. The card reads COLOR_CLASSES (every slug in
  *                 PROJECT_COLORS); the header had its own map keyed on the
  *                 slugs the 20260923000000_rebrand_project_colors migration
  *                 retired, with no `slate` entry at all. The loop below asserts
  *                 agreement for every slug rather than a hand-copied class, so
- *                 a sixth palette entry cannot be added to one map only.
+ *                 an eleventh palette entry cannot be added to one map only —
+ *                 which is what let the palette widen from 5 to 15 slugs
+ *                 (10 offered + 5 legacy) in one file.
  *
  *   projects-012  A destructive header button must not fire twice on a
  *                 double-click. The two clicks below are dispatched
@@ -48,7 +50,7 @@ import type React from "react";
 import type { ProjectOverview } from "@/lib/queries/projects";
 import type { Role } from "@/lib/auth/role-gates";
 import type { User } from "@/lib/types";
-import { PROJECT_COLORS } from "@/lib/schemas/project";
+import { LEGACY_PROJECT_COLORS, PROJECT_COLORS, PROJECT_SWATCHES } from "@/lib/schemas/project";
 import { COLOR_CLASSES } from "@/components/projects/project-card";
 import { ProjectDetailClient } from "@/app/(app)/projects/[id]/project-detail-client";
 
@@ -64,6 +66,15 @@ vi.mock("@/lib/actions/tasks", () => ({
   updateTaskStatusAction: vi.fn(),
   deleteTaskAction: vi.fn(),
   addTaskAction: vi.fn(),
+}));
+// The Budgets section's controls call lib/actions/budgets
+// (finance-planning-010), which imports lib/auth for the same reason the
+// comments module below does. tests/components/project-detail-budget-controls
+// owns those controls; nothing here clicks one.
+vi.mock("@/lib/actions/budgets", () => ({
+  createBudgetAction: vi.fn(),
+  updateBudgetAction: vi.fn(),
+  deleteBudgetAction: vi.fn(),
 }));
 // The task detail modal pulls in lib/actions/comments, which imports lib/auth —
 // next-auth's server entry does not resolve under vitest. Never opened here.
@@ -227,8 +238,20 @@ describe("projects-007 — New task is offered only to whoever addTaskAction acc
 describe("projects-004 — the header stripe paints what the card painted", () => {
   // Guard the guard: an empty or truncated palette would make the loop below
   // vacuous, which is how this repo's structural tests have failed before.
+  //
+  // CHANGED 2026-10-05: the number was 5. The palette widened to the ten-hue
+  // CATEGORICAL ramp the charts also draw with, PLUS the five pre-existing
+  // slugs, which stay valid because they are in a live `Project.color` column
+  // and there is deliberately no migration. 15 = 10 offered + 5 legacy.
+  //
+  // The count is derived from the two tiers rather than hardcoded, so widening
+  // the palette again does not need an edit here — but the TOTAL is still
+  // asserted against a literal, because a tier that silently emptied would
+  // otherwise make the whole loop below vacuous, which is exactly what this
+  // assertion exists to prevent.
   it("checks every slug the schema allows", () => {
-    expect(PROJECT_COLORS.length).toBe(5);
+    expect(PROJECT_COLORS.length).toBe(PROJECT_SWATCHES.length + LEGACY_PROJECT_COLORS.length);
+    expect(PROJECT_COLORS.length).toBe(15);
     for (const slug of PROJECT_COLORS) {
       expect(COLOR_CLASSES[slug], `no card swatch for "${slug}"`).toBeTruthy();
     }

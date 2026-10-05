@@ -8,7 +8,10 @@
  * Authoritative invariants:
  *   • Reads + writes scoped to session.user.companyId
  *   • Only the rule's creator OR an admin can pause/delete (mirrors the
- *     delete-transaction permission model)
+ *     delete-transaction permission model) — plus the one orphan case in
+ *     `lib/recurring/manage-gate.ts`: once the creator has been deactivated,
+ *     nobody the gate names can ever act again, so any finance-capable user
+ *     may stop the charge (finance-planning-013)
  *   • Creating a rule ALSO creates a seed transaction for today so the user
  *     sees immediate effect — otherwise a rule for "rent on the 15th"
  *     created on the 16th would look broken until next month
@@ -27,6 +30,7 @@ import { checkBudgetThresholdAfterExpense } from "@/lib/budgets/check";
 import { seedStampFor } from "@/lib/recurring/materialize";
 import { captureServerError } from "@/lib/sentry-server";
 import { canSeeFinances, type Role } from "@/lib/auth/role-gates";
+import { canManageRecurringRule } from "@/lib/recurring/manage-gate";
 // money-001, persisted half: the activity `message` below is written once and
 // read by every member of the workspace forever, so its figure cannot come from
 // `toLocaleString()` — that resolves to the HOST's default locale and to a
@@ -59,6 +63,28 @@ import type { ActionResult } from "@/lib/actions/types";
 const RuleProjectTagSchema = z.object({
   projectId: z.string().trim().min(1).nullish(),
 });
+
+/**
+ * The manage gate, applied to the row the two writers below load.
+ *
+ * Deliberately NOT exported: this module is `"use server"`, so an export is a
+ * public endpoint (tests/lib/actions/use-server-exports.test.ts). The decision
+ * itself lives in `lib/recurring/manage-gate.ts` so the /recurring card can
+ * import the same one rather than mirror it.
+ *
+ * Takes the loaded `user` relation, not a second query: the liveness of the
+ * author has to be read in the same statement as the rule it gates.
+ */
+function canManageRule(
+  rule: { addedBy: string; user: { deletedAt: Date | null } },
+  viewerId: string,
+  viewerRole: string
+): boolean {
+  return canManageRecurringRule(
+    { addedBy: rule.addedBy, authorRemoved: rule.user.deletedAt !== null },
+    { id: viewerId, role: viewerRole as Role }
+  );
+}
 
 /**
  * Create a recurring rule, post its first occurrence immediately, and — if that
@@ -260,17 +286,29 @@ export async function toggleRecurringRuleAction(input: unknown): Promise<ActionR
     return { success: false, error: "Not authorized" };
   }
 
+  // finance-planning-014. Same bucket and same position as
+  // `createRecurringRuleAction` above — after the role gate, before the parse
+  // and the row lookup, so a refused call costs no query. Pause/Resume is the
+  // cheapest write on this surface to repeat, and it was the one with no
+  // ceiling at all.
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
   const parsed = ToggleRecurringRuleSchema.safeParse(input);
   if (!parsed.success) return { success: false, error: "Invalid request" };
   const { ruleId, active } = parsed.data;
 
   try {
-    const rule = await db.recurringRule.findUnique({ where: { id: ruleId } });
+    const rule = await db.recurringRule.findUnique({
+      where: { id: ruleId },
+      // The author's tombstone, for the orphaned-rule case below.
+      include: { user: { select: { deletedAt: true } } },
+    });
     if (!rule) return { success: false, error: "Rule not found" };
     if (rule.companyId !== session.user.companyId) {
       return { success: false, error: "Not authorized" };
     }
-    if (rule.addedBy !== session.user.id && session.user.role !== "admin") {
+    if (!canManageRule(rule, session.user.id, session.user.role)) {
       return { success: false, error: "Only the rule's creator or an admin can change it" };
     }
 
@@ -292,15 +330,25 @@ export async function deleteRecurringRuleAction(ruleId: string): Promise<ActionR
     return { success: false, error: "Not authorized" };
   }
 
+  // finance-planning-014 — see toggleRecurringRuleAction. This one really is a
+  // hard `delete` (onDelete: SetNull keeps the materialized transactions), so
+  // it is the one write of the four with no tombstone behind it.
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
   if (!ruleId) return { success: false, error: "Missing rule id" };
 
   try {
-    const rule = await db.recurringRule.findUnique({ where: { id: ruleId } });
+    const rule = await db.recurringRule.findUnique({
+      where: { id: ruleId },
+      // The author's tombstone, for the orphaned-rule case in `canManageRule`.
+      include: { user: { select: { deletedAt: true } } },
+    });
     if (!rule) return { success: false, error: "Rule not found" };
     if (rule.companyId !== session.user.companyId) {
       return { success: false, error: "Not authorized" };
     }
-    if (rule.addedBy !== session.user.id && session.user.role !== "admin") {
+    if (!canManageRule(rule, session.user.id, session.user.role)) {
       return { success: false, error: "Only the rule's creator or an admin can delete it" };
     }
 

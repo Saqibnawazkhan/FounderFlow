@@ -177,7 +177,11 @@ export function TeamClient({
     const ok = await confirm({
       title: `Deactivate ${name}?`,
       description:
-        "They lose access immediately, but their tasks, expenses, and activity stay in the records. You can reactivate them later.",
+        // The recurring sentence is finance-planning-013: deactivation now stops
+        // the standing charges this person set up, and that is a money decision
+        // the admin is making here. Discovering it a month later on /recurring,
+        // or in the books, is too late to be a choice.
+        "They lose access immediately, and any recurring expenses or investments they set up stop posting. Their tasks, expenses, and activity stay in the records, and you can reactivate them later.",
       confirmLabel: "Deactivate",
       tone: "danger",
     });

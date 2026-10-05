@@ -192,6 +192,10 @@ beforeEach(() => {
       lastMaterializedAt: null,
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
       _count: { transactions: 3 },
+      // The author's tombstone, which the reader now includes so /recurring can
+      // say a rule has stopped posting (finance-planning-013). Present here
+      // because the admin/cofounder cases below call the reader for real.
+      user: { deletedAt: null },
     },
   ]);
   H.results.set("budget.findMany", [

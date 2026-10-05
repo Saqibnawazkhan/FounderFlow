@@ -666,9 +666,17 @@ model Budget {
   project Project @relation(fields: [projectId], references: [id], onDelete: Restrict)
   user    User    @relation(fields: [createdBy], references: [id], onDelete: Cascade)
 
-  // One active budget per category per project (paused budgets are excluded
-  // via partial-unique-emulation in the action layer; SQL unique can't be
-  // conditional on `active` in Postgres without an expression index).
+  // One active budget per category per project. Emulated in the action layer,
+  // in BOTH directions since finance-planning-011: `createBudgetAction` refuses
+  // a second active cap, and `updateBudgetAction` refuses a resume that would
+  // produce one. Paused and tombstoned rows are excluded from both probes.
+  //
+  // This used to say a SQL unique "can't be conditional on `active` in
+  // Postgres", which blames the wrong layer: Postgres expresses it exactly, as
+  // a PARTIAL unique index (`... ON "Budget"("projectId", category) WHERE
+  // active AND "deletedAt" IS NULL`) — it is Prisma's schema language that
+  // cannot declare one, so it would take a hand-written migration. Worth doing:
+  // it is the only thing that would catch rows that predate the resume guard.
   @@index([companyId, active])
   @@index([companyId, category])
   @@index([projectId, active])

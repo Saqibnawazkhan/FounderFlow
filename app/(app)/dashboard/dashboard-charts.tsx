@@ -21,21 +21,29 @@ import {
 } from "recharts";
 import { useMoney } from "@/lib/hooks/useMoney";
 import { useNumberFormat } from "@/lib/i18n/use-t";
+import {
+  CHART_AXIS,
+  CHART_SERIES,
+  CHART_TOOLTIP_STYLE,
+  categoricalAt,
+} from "@/lib/colors/categorical";
 
-const C_PRIMARY = "#10B981";
-const C_FOREST = "#047857";
-const C_MINT = "#6EE7B7";
-const C_DEEP = "#065F46";
-const C_SLATE = "#94a3b8";
-const CATEGORY_PALETTE = [C_PRIMARY, C_FOREST, C_MINT, C_DEEP, "#34D399", "#64748B"];
-
-const TOOLTIP_STYLE = {
-  borderRadius: 12,
-  border: "1px solid rgb(var(--border))",
-  background: "rgb(var(--card))",
-  color: "rgb(var(--fg))",
-  boxShadow: "0 10px 30px rgb(0 0 0 / 0.18)",
-};
+/**
+ * Colours come from lib/colors/categorical.ts and resolve to
+ * `rgb(var(--cat-N))`, never to a hex literal. Two defects closed by that one
+ * change:
+ *
+ *   • The pie's palette was SIX colours for TEN `EXPENSE_CATEGORIES`, so four
+ *     categories were drawn in a colour another category in the same pie was
+ *     already using — two slices, identical fill, nothing to tell them apart.
+ *   • A hex does not respond to the theme. The old emerald ramp (emerald-500,
+ *     emerald-700, emerald-300, emerald-800) was also one hue at four
+ *     lightnesses: one band under deuteranopia, four greys in greyscale, and
+ *     the emerald-700 slice stayed a dark forest green on a charcoal card.
+ *
+ * A bare six-digit hex literal anywhere in this file is now a test failure —
+ * see tests/lib/colors/categorical-palette.test.ts. Reach for a token.
+ */
 
 export function CashFlowChart({
   data,
@@ -53,27 +61,33 @@ export function CashFlowChart({
       >
         <defs>
           <linearGradient id="g-invest" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor={C_PRIMARY} stopOpacity={0.5} />
-            <stop offset="95%" stopColor={C_PRIMARY} stopOpacity={0} />
+            <stop offset="5%" stopColor={CHART_SERIES.investments} stopOpacity={0.5} />
+            <stop offset="95%" stopColor={CHART_SERIES.investments} stopOpacity={0} />
           </linearGradient>
           <linearGradient id="g-revenue" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor={C_FOREST} stopOpacity={0.45} />
-            <stop offset="95%" stopColor={C_FOREST} stopOpacity={0} />
+            <stop offset="5%" stopColor={CHART_SERIES.revenue} stopOpacity={0.45} />
+            <stop offset="95%" stopColor={CHART_SERIES.revenue} stopOpacity={0} />
           </linearGradient>
           <linearGradient id="g-expense" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor={C_MINT} stopOpacity={0.4} />
-            <stop offset="95%" stopColor={C_MINT} stopOpacity={0} />
+            <stop offset="5%" stopColor={CHART_SERIES.expenses} stopOpacity={0.4} />
+            <stop offset="95%" stopColor={CHART_SERIES.expenses} stopOpacity={0} />
           </linearGradient>
         </defs>
         <CartesianGrid
           strokeDasharray="3 3"
-          stroke={C_SLATE}
+          stroke={CHART_AXIS}
           strokeOpacity={0.18}
           vertical={false}
         />
-        <XAxis dataKey="month" stroke={C_SLATE} fontSize={11} tickLine={false} axisLine={false} />
+        <XAxis
+          dataKey="month"
+          stroke={CHART_AXIS}
+          fontSize={11}
+          tickLine={false}
+          axisLine={false}
+        />
         <YAxis
-          stroke={C_SLATE}
+          stroke={CHART_AXIS}
           fontSize={11}
           tickLine={false}
           axisLine={false}
@@ -89,25 +103,25 @@ export function CashFlowChart({
           // saves Urdu an unreadable axis. See lib/format.ts's adopter caveat.
           width={76}
         />
-        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={CHART_TOOLTIP_STYLE} />
         <Area
           type="monotone"
           dataKey="investments"
-          stroke={C_PRIMARY}
+          stroke={CHART_SERIES.investments}
           strokeWidth={2}
           fill="url(#g-invest)"
         />
         <Area
           type="monotone"
           dataKey="revenue"
-          stroke={C_FOREST}
+          stroke={CHART_SERIES.revenue}
           strokeWidth={2}
           fill="url(#g-revenue)"
         />
         <Area
           type="monotone"
           dataKey="expenses"
-          stroke={C_MINT}
+          stroke={CHART_SERIES.expenses}
           strokeWidth={2}
           fill="url(#g-expense)"
         />
@@ -137,10 +151,10 @@ export function CategoryPieChart({ data }: { data: Array<{ name: string; value: 
             .join(", ")}`}
         >
           {data.map((_, i) => (
-            <Cell key={i} fill={CATEGORY_PALETTE[i % CATEGORY_PALETTE.length]} />
+            <Cell key={i} fill={categoricalAt(i)} />
           ))}
         </Pie>
-        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={CHART_TOOLTIP_STYLE} />
       </PieChart>
     </ResponsiveContainer>
   );

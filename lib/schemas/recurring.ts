@@ -79,6 +79,41 @@ const recurringProjectIdField = z
   .transform((v) => (v && v.length > 0 ? v : undefined));
 
 /**
+ * The two day fields (finance-planning-016).
+ *
+ * EXPORTED for the same reason as `recurringAmountField`: the flat mirror in
+ * app/(app)/recurring/recurring-client.tsx is the resolver a founder's
+ * keystrokes actually meet, and its restated copy of `dayOfMonth` carried no
+ * `invalid_type_error`. The input is `register("dayOfMonth", { valueAsNumber:
+ * true })`, so an empty box arrives as `NaN`; ZodNumber refuses `NaN` as an
+ * invalid type, and the field rendered Zod's own "Expected number, received
+ * nan" under the label — two keystrokes from a pre-filled field, on the create
+ * path of the feature. The object-level refinement that would have said "Pick a
+ * day for the chosen frequency" never ran, because a refinement is skipped once
+ * the inner object fails.
+ *
+ * `invalid_type_error` also covers a FRACTIONAL day: Zod's `.int()` check raises
+ * an `invalid_type` issue (expected "integer", received "float"), so 1.5 gets
+ * this same message rather than "Expected integer, received float". Reachable by
+ * typing — the <form> is `noValidate`, so the input's `min`/`max`/step never
+ * run.
+ *
+ * The mirror imports these and adds `.optional()`, because react-hook-form keeps
+ * both day fields registered at once.
+ */
+export const recurringDayOfMonthField = z
+  .number({ invalid_type_error: "Pick a day of the month" })
+  .int()
+  .min(1, "Day of month must be 1–31")
+  .max(31, "Day of month must be 1–31");
+
+export const recurringDayOfWeekField = z
+  .number({ invalid_type_error: "Pick a day of the week" })
+  .int()
+  .min(0, "Day of week must be 0 (Sun) – 6 (Sat)")
+  .max(6, "Day of week must be 0 (Sun) – 6 (Sat)");
+
+/**
  * Discriminated on `frequency` so the matching day-field is required while
  * the other stays absent — keeps the form simpler (one field at a time) and
  * the materializer doesn't have to handle "monthly with dayOfWeek set" noise.
@@ -92,11 +127,7 @@ const MonthlyRule = z.object({
   description: z.string().trim().max(500, "Description must be 500 chars or less"),
   projectId: recurringProjectIdField,
   frequency: z.literal("monthly"),
-  dayOfMonth: z
-    .number({ invalid_type_error: "Pick a day of the month" })
-    .int()
-    .min(1, "Day of month must be 1–31")
-    .max(31, "Day of month must be 1–31"),
+  dayOfMonth: recurringDayOfMonthField,
 });
 
 const WeeklyRule = z.object({
@@ -108,11 +139,7 @@ const WeeklyRule = z.object({
   description: z.string().trim().max(500, "Description must be 500 chars or less"),
   projectId: recurringProjectIdField,
   frequency: z.literal("weekly"),
-  dayOfWeek: z
-    .number({ invalid_type_error: "Pick a day of the week" })
-    .int()
-    .min(0, "Day of week must be 0 (Sun) – 6 (Sat)")
-    .max(6, "Day of week must be 0 (Sun) – 6 (Sat)"),
+  dayOfWeek: recurringDayOfWeekField,
 });
 
 export const NewRecurringRuleSchema = z.discriminatedUnion("frequency", [MonthlyRule, WeeklyRule]);

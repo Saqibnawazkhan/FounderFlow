@@ -27,11 +27,11 @@
  *     But if they then genuinely cross 100%, that is news, and under the old
  *     behaviour it was silence.
  *
- * WHAT IS DELIBERATELY NOT DONE: re-arming from a budget-limit edit. There is no
- * action that changes `monthlyLimit` yet — that is finance-planning-006, a
- * separate open finding — so there is no call site to hook. When it lands, the
- * re-arm below runs on the next expense anyway, because it is driven by the
- * PERCENTAGE rather than by the event.
+ * WHAT IS DELIBERATELY NOT DONE: re-arming from a budget-limit edit. The cap is
+ * editable as of finance-planning-006 (the Edit-cap control on /budgets posts
+ * `monthlyLimit` to `updateBudgetAction`), and that path still does not clear a
+ * sentinel: the re-arm below runs on the next expense anyway, because it is
+ * driven by the PERCENTAGE rather than by the event that changed it.
  *
  * `decideRearm` is pure, so these walk the whole state space without a database.
  * The wiring half — that a transaction DELETE reaches this at all, which is the

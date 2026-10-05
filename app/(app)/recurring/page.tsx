@@ -36,6 +36,12 @@ export default async function RecurringPage() {
       currentUserId={session.userId}
       currentUserRole={session.role}
       projects={projects.map((p) => ({ id: p.id, name: p.name }))}
+      /* The server's instant, for each card's next-due date
+         (finance-planning-020). Taken here rather than in the client component
+         so the server render and the first client render agree — see the
+         `serverNowMs` prop, and time-011 for the mismatch a `useMemo(() => new
+         Date())` produced. */
+      serverNowMs={Date.now()}
     />
   );
 }

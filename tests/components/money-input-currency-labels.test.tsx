@@ -296,7 +296,15 @@ describe("the New recurring rule form (app/(app)/recurring/recurring-client.tsx)
     // (a workspace with no projects renders no picker) and nothing here is about
     // the tag — tests/app/recurring/new-rule-project-tag.test.tsx owns that.
     render(
-      <RecurringClient rules={[]} currentUserId="u-1" currentUserRole="admin" projects={[]} />
+      // `serverNowMs`: the clock the cards' next-due dates come from
+      // (finance-planning-020). No rules here, so any fixed instant does.
+      <RecurringClient
+        rules={[]}
+        currentUserId="u-1"
+        currentUserRole="admin"
+        projects={[]}
+        serverNowMs={Date.UTC(2026, 9, 3)}
+      />
     );
 
     await user.click(screen.getByRole("button", { name: /^New rule$/i }));

@@ -8,18 +8,32 @@
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useMoney } from "@/lib/hooks/useMoney";
 import { useNumberFormat } from "@/lib/i18n/use-t";
+import { CHART_AXIS, CHART_TOOLTIP_STYLE, categoricalAt } from "@/lib/colors/categorical";
 
-const C_MINT = "#6EE7B7";
-const C_AMBER = "#f59e0b";
-const C_SLATE = "#94a3b8";
-
-const TOOLTIP_STYLE = {
-  borderRadius: 12,
-  border: "1px solid rgb(var(--border))",
-  background: "rgb(var(--card))",
-  color: "rgb(var(--fg))",
-  boxShadow: "0 10px 30px rgb(0 0 0 / 0.18)",
-};
+/**
+ * THIS FILE IS WHERE ui-016 LIVED. Its bar used a mint -> amber gradient while
+ * /dashboard and /reports used the emerald ramp, so the same workspace's spend
+ * was a different colour on two screens a customer clicks between — and all
+ * three sets were private hex literals, so none of them responded to the theme
+ * toggle either.
+ *
+ * Both halves are fixed by reading lib/colors/categorical.ts: one palette,
+ * shared with the other two chart files, resolving to `rgb(var(--cat-N))` so a
+ * `.dark` flip re-paints the bars.
+ *
+ * Amber specifically had to go. This is a SINGLE-SERIES chart — one bar per
+ * category, all the same quantity — so a two-hue gradient was never encoding
+ * anything, and the hue it reached for is the semantic over-budget amber. A bar
+ * that is amber because it is a bar, next to budget pills that are amber
+ * because the budget is blown, is a colour that means two things on one screen.
+ * It is now the first categorical hue, emerald, fading on its own OPACITY: the
+ * brand colour leads, and nothing in the fill pretends to carry a second
+ * dimension.
+ *
+ * A bare six-digit hex literal anywhere in this file is now a test failure —
+ * see tests/lib/colors/categorical-palette.test.ts.
+ */
+const C_BAR = categoricalAt(0);
 
 export function CategoryBreakdownBar({
   data,
@@ -45,19 +59,19 @@ export function CategoryBreakdownBar({
       >
         <defs>
           <linearGradient id="expenseGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={C_MINT} />
-            <stop offset="100%" stopColor={C_AMBER} stopOpacity={0.6} />
+            <stop offset="0%" stopColor={C_BAR} stopOpacity={0.95} />
+            <stop offset="100%" stopColor={C_BAR} stopOpacity={0.35} />
           </linearGradient>
         </defs>
         <CartesianGrid
           strokeDasharray="3 3"
-          stroke={C_SLATE}
+          stroke={CHART_AXIS}
           strokeOpacity={0.18}
           vertical={false}
         />
         <XAxis
           dataKey="category"
-          stroke={C_SLATE}
+          stroke={CHART_AXIS}
           fontSize={11}
           tickLine={false}
           axisLine={false}
@@ -66,7 +80,7 @@ export function CategoryBreakdownBar({
           height={60}
         />
         <YAxis
-          stroke={C_SLATE}
+          stroke={CHART_AXIS}
           fontSize={11}
           tickLine={false}
           axisLine={false}
@@ -77,7 +91,7 @@ export function CategoryBreakdownBar({
           tickFormatter={(v: number) => n.compact(v)}
           width={76}
         />
-        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={CHART_TOOLTIP_STYLE} />
         <Bar dataKey="amount" fill="url(#expenseGrad)" radius={[8, 8, 0, 0]} />
       </BarChart>
     </ResponsiveContainer>

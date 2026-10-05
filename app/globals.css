@@ -80,6 +80,58 @@
   --danger-strong: 185 28 28; /* red-700 */
   --info-strong: 29 78 216; /* blue-700 */
 
+  /* =========================================================================
+   * CATEGORICAL — ten hues for CATEGORICAL DATA (charts, project swatches).
+   *
+   * A THIRD family, separate from the brand ramp above and from the semantic
+   * tokens, and the separation is the point:
+   *
+   *  • The brand ramp is deliberately NARROW (emerald + a neutral — see the
+   *    `rebrand_project_colors` migration). That is right for brand surfaces
+   *    and wrong for categorical data, where four shades of one green means
+   *    two pie slices nobody can tell apart, and nothing at all under
+   *    deuteranopia or in greyscale.
+   *  • The semantic tokens carry MEANING (amber = over budget, red =
+   *    destructive). `--cat-3` happening to look amber means nothing, which is
+   *    exactly why it is not spelled `--warning`.
+   *
+   * ORDER IS LOAD-BEARING: emerald leads so the brand colour starts every
+   * chart, and each neighbour then differs in hue AND lightness. Do not
+   * reorder. The documented ramp, the slug mapping and the consumers all live
+   * in lib/colors/categorical.ts; every value below is parsed back out of this
+   * file by tests/lib/colors/categorical-palette.test.ts, so the two cannot
+   * drift.
+   * =========================================================================
+   */
+  --cat-1: 16 185 129; /* #10b981 emerald — emerald-500 */
+  --cat-2: 59 130 246; /* #3b82f6 blue — blue-500 */
+  --cat-3: 245 158 11; /* #f59e0b amber — amber-500 */
+  --cat-4: 139 92 246; /* #8b5cf6 violet — violet-500 */
+  --cat-5: 239 68 68; /* #ef4444 red — red-500 */
+  --cat-6: 6 182 212; /* #06b6d4 cyan — cyan-500 */
+  --cat-7: 236 72 153; /* #ec4899 pink — pink-500 */
+  --cat-8: 132 204 22; /* #84cc16 lime — lime-500 */
+  --cat-9: 249 115 22; /* #f97316 orange — orange-500 */
+  --cat-10: 100 116 139; /* #64748b slate — slate-500 */
+
+  /* Text-safe categorical foregrounds — the same TEXT-ONLY rule as every other
+     `-strong` here. A chart FILL does not need 4.5:1; the project card's accent
+     glyph beside its label does, and so does any label drawn over a fill.
+     Uniformly the Tailwind 700 step; the number is the worst ratio across
+     #ffffff, --bg and --surface-hover. Five of these are values this file
+     already ships for --primary-strong / --info-strong / --warning-strong /
+     --danger-strong / --slate-strong, which is a coincidence worth keeping. */
+  --cat-1-strong: 4 120 87; /* #047857 emerald-700 — 5.07:1 */
+  --cat-2-strong: 29 78 216; /* #1d4ed8 blue-700 — 6.19:1 */
+  --cat-3-strong: 180 83 9; /* #b45309 amber-700 — 4.64:1 */
+  --cat-4-strong: 109 40 217; /* #6d28d9 violet-700 — 6.57:1 */
+  --cat-5-strong: 185 28 28; /* #b91c1c red-700 — 5.98:1 */
+  --cat-6-strong: 14 116 144; /* #0e7490 cyan-700 — 4.95:1 */
+  --cat-7-strong: 190 24 93; /* #be185d pink-700 — 5.58:1 */
+  --cat-8-strong: 77 124 15; /* #4d7c0f lime-700 — 4.61:1 */
+  --cat-9-strong: 194 65 12; /* #c2410c orange-700 — 4.79:1 */
+  --cat-10-strong: 51 65 85; /* #334155 slate-700 — 9.57:1 */
+
   /* Radius (Stitch scale) */
   --radius-sm: 0.5rem;
   --radius: 1rem;
@@ -144,6 +196,44 @@
      emerald-300). Checked by tests/lib/a11y/contrast.test.ts. */
   --danger-strong: 252 165 165;
   --info-strong: 96 165 250; /* blue-400 */
+
+  /* Categorical fills, re-lit for charcoal — the whole reason the charts now
+     read a token instead of a hex. Same hue, same position in the ramp, one
+     Tailwind step lighter (500 -> 400), exactly as --forest goes #047857 ->
+     #34D399 above. A hardcoded #047857 stayed a dark forest green on a #1f2933
+     card; `rgb(var(--cat-1))` picks these up on the theme toggle with no JS. */
+  --cat-1: 52 211 153; /* #34d399 emerald — emerald-400 */
+  --cat-2: 96 165 250; /* #60a5fa blue — blue-400 */
+  --cat-3: 251 191 36; /* #fbbf24 amber — amber-400 */
+  --cat-4: 167 139 250; /* #a78bfa violet — violet-400 */
+  --cat-5: 248 113 113; /* #f87171 red — red-400 */
+  --cat-6: 34 211 238; /* #22d3ee cyan — cyan-400 */
+  --cat-7: 244 114 182; /* #f472b6 pink — pink-400 */
+  --cat-8: 163 230 53; /* #a3e635 lime — lime-400 */
+  --cat-9: 251 146 60; /* #fb923c orange — orange-400 */
+  --cat-10: 148 163 184; /* #94a3b8 slate — slate-400 */
+
+  /* Text-safe categorical foregrounds — the Tailwind 300 step, uniformly, and
+     the step is set by the WORST case rather than per hue: at 400, six of the
+     ten fail AA against --surface-hover (#374552) — blue 3.87, violet 3.61,
+     red 3.55, pink 3.71, orange 4.34, slate 3.84 — and a card or a modal is
+     where these labels actually render. That is the same measurement that
+     forced --danger-strong down from red-400 to red-300 (see its note above),
+     so this ramp follows the precedent instead of re-litigating it. Number is
+     the worst ratio across --bg, --card and --surface-hover.
+     NOTE --cat-1-strong is emerald-300, one step lighter than
+     --primary-strong's emerald-400: the ramp is kept uniform rather than
+     matched to the brand token, since a categorical colour is not the brand. */
+  --cat-1-strong: 110 231 183; /* #6ee7b7 emerald-300 — 6.45:1 */
+  --cat-2-strong: 147 197 253; /* #93c5fd blue-300 — 5.45:1 */
+  --cat-3-strong: 252 211 77; /* #fcd34d amber-300 — 6.82:1 */
+  --cat-4-strong: 196 181 253; /* #c4b5fd violet-300 — 5.33:1 */
+  --cat-5-strong: 252 165 165; /* #fca5a5 red-300 — 5.18:1 */
+  --cat-6-strong: 103 232 249; /* #67e8f9 cyan-300 — 6.78:1 */
+  --cat-7-strong: 249 168 212; /* #f9a8d4 pink-300 — 5.42:1 */
+  --cat-8-strong: 190 242 100; /* #bef264 lime-300 — 7.53:1 */
+  --cat-9-strong: 253 186 116; /* #fdba74 orange-300 — 5.83:1 */
+  --cat-10-strong: 203 213 225; /* #cbd5e1 slate-300 — 6.62:1 */
 }
 
 * {

@@ -48,6 +48,14 @@ vi.mock("@/lib/actions/tasks", () => ({
   deleteTaskAction: (id: string) => spies.deleteTaskAction(id),
   addTaskAction: vi.fn(),
 }));
+// The Budgets section's controls call lib/actions/budgets
+// (finance-planning-010), which imports lib/auth for the same reason the
+// comments module below does. Nothing here clicks one.
+vi.mock("@/lib/actions/budgets", () => ({
+  createBudgetAction: vi.fn(),
+  updateBudgetAction: vi.fn(),
+  deleteBudgetAction: vi.fn(),
+}));
 // The modal IS opened here, so the comment fetch has to answer. lib/actions/
 // comments imports lib/auth, whose next-auth server entry does not resolve
 // under vitest.

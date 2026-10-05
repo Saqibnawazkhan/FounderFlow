@@ -36,6 +36,18 @@ export interface RecurringRuleClient {
   createdAt: string;
   /** Count of Transaction rows already generated from this rule. */
   materializedCount: number;
+  /**
+   * True when the teammate who created this rule has been deactivated
+   * (finance-planning-013).
+   *
+   * The nightly materializer SUSPENDS such a rule — it posts nothing and writes
+   * nothing (app/api/cron/materialize-recurring/route.ts) — so without this flag
+   * the card would still read as an active monthly charge while the only place
+   * the change showed up was the customer's own books. It is also what lets
+   * `canManageRecurringRule` offer the controls to a co-founder: the one person
+   * the creator-or-admin rule names can never sign in again.
+   */
+  authorRemoved: boolean;
 }
 
 export async function getRecurringRules(): Promise<RecurringRuleClient[]> {
@@ -45,7 +57,12 @@ export async function getRecurringRules(): Promise<RecurringRuleClient[]> {
     // session in a soft-deleted workspace can't read its rules back.
     where: { companyId, company: { deletedAt: null } },
     orderBy: [{ active: "desc" }, { createdAt: "desc" }],
-    include: { _count: { select: { transactions: true } } },
+    include: {
+      _count: { select: { transactions: true } },
+      // The author's tombstone, in the same statement as the rule, for
+      // `authorRemoved` below.
+      user: { select: { deletedAt: true } },
+    },
   });
   return rows.map((r) => ({
     id: r.id,
@@ -65,5 +82,6 @@ export async function getRecurringRules(): Promise<RecurringRuleClient[]> {
     lastMaterializedAt: r.lastMaterializedAt ? r.lastMaterializedAt.toISOString() : null,
     createdAt: r.createdAt.toISOString(),
     materializedCount: r._count.transactions,
+    authorRemoved: r.user.deletedAt !== null,
   }));
 }

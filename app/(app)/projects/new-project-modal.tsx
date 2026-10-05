@@ -14,11 +14,13 @@ import { Save } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { createProjectAction } from "@/lib/actions/projects";
 import {
+  DEFAULT_PROJECT_COLOR,
   NewProjectSchema,
-  PROJECT_COLORS,
+  PROJECT_SWATCHES,
   type NewProjectInput,
-  type ProjectColor,
 } from "@/lib/schemas/project";
+import { CATEGORICAL_LABELS } from "@/lib/colors/categorical";
+import { COLOR_CLASSES } from "@/components/projects/project-card";
 import { useT } from "@/lib/i18n/use-t";
 import { cn } from "@/lib/utils";
 import type { User } from "@/lib/types";
@@ -31,15 +33,21 @@ type Props = {
   onCreated: (projectId: string) => void;
 };
 
-const SWATCH_CLASSES: Record<ProjectColor, string> = {
-  // "emerald" reuses the `primary` tokens — emerald IS the brand green, so a
-  // parallel token would be a second source of truth free to drift.
-  emerald: "bg-primary",
-  forest: "bg-forest",
-  mint: "bg-mint",
-  slate: "bg-slate",
-  warning: "bg-warning",
-};
+/**
+ * The swatches this picker OFFERS: the ten-hue categorical ramp, which is the
+ * same ten colours the charts draw with.
+ *
+ * There is no local `SWATCH_CLASSES` map any more. It was a fourth copy of the
+ * slug -> Tailwind-class table (card, detail header, this modal, the edit
+ * modal), and the detail header already shipped a bug from exactly that shape:
+ * its copy was keyed on slugs the rebrand migration had retired, so a project
+ * painted one colour on the grid and another in its own header (projects-004).
+ * This reads COLOR_CLASSES, the one table.
+ *
+ * A NEW project can only ever be given an offered colour, so the legacy slugs
+ * do not appear here. The edit modal is the one that has to show them, because
+ * a project may already hold one.
+ */
 
 export function NewProjectModal({ open, onClose, users, currentUserId, onCreated }: Props) {
   const t = useT();
@@ -62,7 +70,7 @@ export function NewProjectModal({ open, onClose, users, currentUserId, onCreated
       name: "",
       description: "",
       supervisorId: currentUserId, // default to self — fastest path for "I'm running this"
-      color: "emerald",
+      color: DEFAULT_PROJECT_COLOR,
     },
   });
 
@@ -73,7 +81,7 @@ export function NewProjectModal({ open, onClose, users, currentUserId, onCreated
       name: "",
       description: "",
       supervisorId: currentUserId,
-      color: "emerald",
+      color: DEFAULT_PROJECT_COLOR,
     });
     onClose();
   }
@@ -133,8 +141,12 @@ export function NewProjectModal({ open, onClose, users, currentUserId, onCreated
           >
             {t.projects.color}
           </p>
-          <div role="radiogroup" aria-labelledby={`${nameId}-color`} className="flex gap-2">
-            {PROJECT_COLORS.map((c) => {
+          <div
+            role="radiogroup"
+            aria-labelledby={`${nameId}-color`}
+            className="flex flex-wrap gap-2"
+          >
+            {PROJECT_SWATCHES.map((c) => {
               const active = selectedColor === c;
               return (
                 <button
@@ -142,11 +154,11 @@ export function NewProjectModal({ open, onClose, users, currentUserId, onCreated
                   type="button"
                   role="radio"
                   aria-checked={active}
-                  aria-label={c}
+                  aria-label={CATEGORICAL_LABELS[c] ?? c}
                   onClick={() => setValue("color", c, { shouldValidate: true })}
                   className={cn(
                     "h-9 w-9 rounded-xl border-2 transition-all",
-                    SWATCH_CLASSES[c],
+                    COLOR_CLASSES[c].stripe,
                     active ? "border-fg ring-2 ring-fg/40" : "border-transparent hover:border-fg/30"
                   )}
                 />

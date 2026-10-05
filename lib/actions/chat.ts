@@ -198,7 +198,10 @@ export async function sendMessageAction(input: unknown): Promise<
     /** Who the parser RESOLVED from the body — "we tried to ping these". */
     mentionedUserIds: string[];
     /**
-     * How many distinct people the fan-out SENT something to, by push or email.
+     * How many distinct people the fan-out SENT something to — in chat, that
+     * means an in-app row or a push, never an email: neither `chat_mention` nor
+     * `dm` is deliverable by email (lib/notify/events.ts), which is the
+     * chat-volume fix of 2026-10-05.
      * Dispatch, not delivery: a push to an unsubscribed device counts, because
      * nothing synchronous can know otherwise (see `dispatched` in
      * lib/notify/fan-out.ts). Lower than `mentionedUserIds` when someone muted the
@@ -413,7 +416,27 @@ export async function sendMessageAction(input: unknown): Promise<
       if (recipients.length > 0) {
         try {
           const { dispatched } = await notifyUsers({
-            event: "mention",
+            // `chat_mention`, NOT `mention`, and the distinction is the fix for
+            // the owner's report of 2026-10-05: "each chat message gets emailed
+            // too […] a user in a busy channel will receive 100s of emails just
+            // from chat."
+            //
+            // This site used to raise `mention`, which is deliverable on all
+            // three channels and defaults to email ON — correctly, for the
+            // OTHER site that raises it (`createCommentAction`, a mention in a
+            // comment on a task or a money row, where an email is the point of
+            // the feature). The two gestures are identical and their volumes
+            // are not: a comment mention is occasional, a chat mention arrives
+            // as fast as someone types. Dropping email from `mention` to fix
+            // chat would have silenced a teammate tagged in a task comment,
+            // which nobody asked for, so chat got its own event instead —
+            // deliverable on in-app and push only (lib/notify/events.ts), with
+            // email refused by `notifyUsers` rather than merely defaulted off.
+            //
+            // Keep this value and `createCommentAction`'s apart. The structural
+            // test tests/lib/notify/fan-out-sites.test.ts fails if chat raises
+            // `mention` again, or if comments raise `chat_mention`.
+            event: "chat_mention",
             // NO `skipInApp` here, deliberately, and this is the one place in
             // chat that still writes a notification row.
             //

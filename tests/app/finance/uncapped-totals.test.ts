@@ -57,6 +57,7 @@
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { normalizeEol } from "../../lib/harness/source-scan";
 import { describe, it, expect, vi } from "vitest";
 
 // These client components reach the transaction/comment/team server actions
@@ -104,7 +105,11 @@ const ROOT = process.cwd();
 
 /** One repo file, read by its repo-relative, "/"-separated path. */
 function read(relPath: string): string {
-  return readFileSync(join(ROOT, relPath), "utf8");
+  // normalizeEol, not a bare read: the assertions below match on `\n`
+  // boundaries, and with a CRLF working tree (core.autocrlf, no .gitattributes
+  // until 2026-10-05) they stopped seeing the file they police — green on
+  // Linux CI, red on a Windows checkout of the same commit.
+  return normalizeEol(readFileSync(join(ROOT, relPath), "utf8"));
 }
 
 /** A doc comment as one line: comment markers gone, whitespace collapsed. The
@@ -607,7 +612,8 @@ describe("the reason the category bars read the ledger (transactions-ledger-001)
  * Do not delete these to go green.
  */
 describe("the callers fetch the roll-ups and pass them down", () => {
-  const source = (...parts: string[]) => readFileSync(join(process.cwd(), ...parts), "utf8");
+  const source = (...parts: string[]) =>
+    normalizeEol(readFileSync(join(process.cwd(), ...parts), "utf8"));
 
   /** Booleans, not `expect(code).toContain(…)`: a failing match on a long source
    *  prints the whole file into the runner's output. */

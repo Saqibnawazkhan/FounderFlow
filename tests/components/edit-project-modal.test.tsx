@@ -30,6 +30,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ProjectClient } from "@/lib/queries/projects";
 import { EditProjectModal } from "@/app/(app)/projects/[id]/edit-project-modal";
+import { LEGACY_PROJECT_COLORS, PROJECT_SWATCHES } from "@/lib/schemas/project";
+import { CATEGORICAL_LABELS } from "@/lib/colors/categorical";
 
 const spies = vi.hoisted(() => ({ updateProjectAction: vi.fn() }));
 const updateProjectAction = spies.updateProjectAction;
@@ -238,5 +240,100 @@ describe("EditProjectModal — carries the concurrency token", () => {
     expect(toastError.mock.calls[0][0]).toMatch(/changed since you opened it/i);
     expect(onSaved, "the dialog closed as though the edit had landed").not.toHaveBeenCalled();
     expect(toastSuccess).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The swatch picker, and the one piece of behaviour the widening invented.
+ *
+ * The palette went from five slugs to ten `cat-N` ones, and the five old slugs
+ * stayed VALID because they are in a live `Project.color` column — there is
+ * deliberately no migration. The picker offers only the ten, so a project
+ * sitting on a legacy slug would otherwise open Edit showing ten swatches and
+ * NONE of them selected: the user cannot see their current colour, and once they
+ * have clicked around they cannot deliberately get back to it. The modal
+ * therefore appends the project's own slug when it is a legacy one.
+ *
+ * Asserted on the rendered radios rather than on the class table, because the
+ * class table is already pinned in
+ * tests/lib/colors/categorical-palette.test.ts and what can still go wrong here
+ * is the OFFERED SET.
+ */
+describe("EditProjectModal — the swatch picker", () => {
+  const swatches = () => screen.getByRole("radiogroup", { name: /colour|color/i });
+  const swatchButtons = () =>
+    Array.from(swatches().querySelectorAll('[role="radio"]')) as HTMLElement[];
+
+  it("offers the ten categorical swatches, labelled by hue", async () => {
+    const onCategorical: ProjectClient = { ...AT_PAGE_LOAD, color: "cat-4" };
+    const { set } = renderModal(onCategorical);
+    set(onCategorical, true);
+
+    await waitFor(() => expect(nameInput()).toBeTruthy());
+    const labels = swatchButtons().map((b) => b.getAttribute("aria-label"));
+
+    // Exactly ten, no legacy swatch appended: this project already holds an
+    // offered colour, so there is nothing extra to show.
+    expect(labels).toEqual(PROJECT_SWATCHES.map((s) => CATEGORICAL_LABELS[s]));
+    expect(labels[0], "emerald must lead, so the brand colour is first").toBe("emerald");
+
+    const checked = swatchButtons().filter((b) => b.getAttribute("aria-checked") === "true");
+    expect(checked.length).toBe(1);
+    expect(checked[0].getAttribute("aria-label")).toBe("violet");
+  });
+
+  it("appends the project's own swatch when it is a LEGACY colour, and selects it", async () => {
+    // "emerald" is one of the five slugs in the database today.
+    expect(LEGACY_PROJECT_COLORS as readonly string[]).toContain(AT_PAGE_LOAD.color);
+
+    const { set } = renderModal(AT_PAGE_LOAD);
+    set(AT_PAGE_LOAD, true);
+
+    await waitFor(() => expect(nameInput()).toBeTruthy());
+    const buttons = swatchButtons();
+
+    expect(
+      buttons.length,
+      "a project on a legacy colour must still be able to SEE and keep that colour"
+    ).toBe(PROJECT_SWATCHES.length + 1);
+    expect(buttons[buttons.length - 1].getAttribute("aria-label")).toBe("emerald");
+
+    const checked = buttons.filter((b) => b.getAttribute("aria-checked") === "true");
+    expect(checked.length, "no swatch is selected, so the user cannot tell what they have").toBe(1);
+    expect(checked[0]).toBe(buttons[buttons.length - 1]);
+  });
+
+  it("writes the new slug when a categorical swatch is picked", async () => {
+    const user = userEvent.setup();
+    const { set } = renderModal(AT_PAGE_LOAD);
+    set(AT_PAGE_LOAD, true);
+
+    await waitFor(() => expect(nameInput()).toBeTruthy());
+    await user.click(screen.getByRole("radio", { name: "pink" }));
+    await user.click(saveButton());
+
+    await waitFor(() => expect(updateProjectAction).toHaveBeenCalledTimes(1));
+    const payload = updateProjectAction.mock.calls[0][0] as Record<string, unknown>;
+    // cat-7 is pink. The slug is positional on purpose: a stored "pink" is a
+    // promise about a hue, and two of the ten hues are named after slugs the
+    // rebrand migration retired and still rewrites.
+    expect(payload.color).toBe("cat-7");
+  });
+
+  it("keeps the legacy slug when nothing is picked", async () => {
+    const user = userEvent.setup();
+    const { set } = renderModal(AT_PAGE_LOAD);
+    set(AT_PAGE_LOAD, true);
+
+    await waitFor(() => expect(nameInput()).toBeTruthy());
+    await user.click(saveButton());
+
+    await waitFor(() => expect(updateProjectAction).toHaveBeenCalledTimes(1));
+    const payload = updateProjectAction.mock.calls[0][0] as Record<string, unknown>;
+    expect(
+      payload.color,
+      "editing the name silently recoloured the project — the widening is additive, not a remap"
+    ).toBe("emerald");
+    expect(toastError).not.toHaveBeenCalled();
   });
 });

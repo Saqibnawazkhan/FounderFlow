@@ -1,23 +1,20 @@
 "use client";
 
-import { useId, useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { AlertTriangle, Pause, Play, Plus, Target, Trash2 } from "lucide-react";
+import { AlertTriangle, Pause, Pencil, Play, Plus, Target, Trash2 } from "lucide-react";
 import toast from "react-hot-toast";
-import { createBudgetAction, deleteBudgetAction, updateBudgetAction } from "@/lib/actions/budgets";
-import { NewBudgetSchema, type NewBudgetInput } from "@/lib/schemas/budget";
+import { deleteBudgetAction, updateBudgetAction } from "@/lib/actions/budgets";
 import { budgetPercentLabel } from "@/lib/budgets/threshold";
+import { EditBudgetLimitForm, NewBudgetForm } from "@/components/budgets/budget-forms";
 import { Modal } from "@/components/ui/modal";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { cn } from "@/lib/utils";
-import { EXPENSE_CATEGORIES } from "@/lib/types";
 import type { BudgetWithSpend } from "@/lib/queries/budgets";
-import { useCurrency, useMoney } from "@/lib/hooks/useMoney";
+import { useMoney } from "@/lib/hooks/useMoney";
 import { useNumberFormat } from "@/lib/i18n/use-t";
 
 type Props = {
@@ -31,6 +28,14 @@ export function BudgetsClient({ budgets, projects }: Props) {
   const [, startTransition] = useTransition();
   const [modalOpen, setModalOpen] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
+  // The cap being edited, or null (finance-planning-006). Held as the ROW
+  // rather than its id, and the dialog at the bottom of this component is
+  // mounted only while it is set, so the form is born with the numbers of the
+  // card that was clicked. A permanently-mounted dialog needs an explicit
+  // reseed-on-open instead — see the argument in EditProjectModal
+  // (projects-010), where react-hook-form state outlived every close and an
+  // ordinary edit started re-submitting page-load values.
+  const [editing, setEditing] = useState<BudgetWithSpend | null>(null);
 
   function refresh() {
     startTransition(() => router.refresh());
@@ -130,6 +135,7 @@ export function BudgetsClient({ budgets, projects }: Props) {
               key={b.id}
               budget={b}
               pending={pendingId === b.id}
+              onEdit={() => setEditing(b)}
               onToggle={() => handleToggle(b)}
               onDelete={() => handleDelete(b)}
             />
@@ -153,6 +159,27 @@ export function BudgetsClient({ budgets, projects }: Props) {
           }}
         />
       </Modal>
+
+      {/* Mounted only while a cap is being edited (see `editing` above), which is
+          the shape tasks-client.tsx uses for TaskDetailModal. */}
+      {editing && (
+        <Modal
+          open
+          onClose={() => setEditing(null)}
+          title={`Edit the ${editing.category} cap`}
+          description={`Monthly cap for ${editing.category} in ${editing.projectName}. This moves the line spending is measured against; no expense already recorded is touched.`}
+          size="sm"
+        >
+          <EditBudgetLimitForm
+            budget={editing}
+            onClose={() => setEditing(null)}
+            onSaved={() => {
+              refresh();
+              setEditing(null);
+            }}
+          />
+        </Modal>
+      )}
     </div>
   );
 }
@@ -160,11 +187,13 @@ export function BudgetsClient({ budgets, projects }: Props) {
 function BudgetCard({
   budget,
   pending,
+  onEdit,
   onToggle,
   onDelete,
 }: {
   budget: BudgetWithSpend;
   pending: boolean;
+  onEdit: () => void;
   onToggle: () => void;
   onDelete: () => void;
 }) {
@@ -311,13 +340,28 @@ function BudgetCard({
           <span>Set by {budget.createdByName.split(" ")[0]}</span>
         </div>
         <div className="flex items-center gap-1">
+          {/* The cap is the number most likely to change — a raise, a new
+              quarter, a renegotiated rent. Before finance-planning-006 the only
+              route to a different one was delete-and-recreate, which restarts
+              the authorship line just above this row and re-fires the alert
+              against the new cap, while `updateBudgetAction` had accepted
+              `monthlyLimit` all along with nothing in the UI sending it. */}
+          <button
+            onClick={onEdit}
+            disabled={pending}
+            className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg disabled:opacity-50"
+            aria-label={`Edit ${budget.category} budget cap in ${budget.projectName}`}
+          >
+            <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit cap
+          </button>
           <button
             onClick={onToggle}
             disabled={pending}
             className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg disabled:opacity-50"
-            // Both buttons name the (project, category) pair for the same reason
-            // the heading does: with two Salaries caps on screen, "Pause budget"
-            // twice tells a screen-reader user nothing about which one is which.
+            // All three controls in this row name the (project, category) pair for
+            // the same reason the heading does: with two Salaries caps on screen,
+            // "Pause budget" twice tells a screen-reader user nothing about which
+            // one is which.
             aria-label={
               budget.active
                 ? `Pause ${budget.category} budget in ${budget.projectName}`
@@ -345,263 +389,5 @@ function BudgetCard({
         </div>
       </div>
     </article>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────────────────── */
-/* NewBudgetForm                                                                */
-/* ─────────────────────────────────────────────────────────────────────────── */
-
-/** One active cap, as much of it as the category picker needs. */
-type ActiveCap = { projectId: string; category: string };
-
-/** The categories already capped inside ONE project — never the whole company. */
-function takenIn(caps: ActiveCap[], projectId: string): Set<string> {
-  return new Set(caps.filter((c) => c.projectId === projectId).map((c) => c.category));
-}
-
-/**
- * The first category still free inside ONE project, or `null` when that project
- * has capped every one of them.
- *
- * It used to fall back to `EXPENSE_CATEGORIES[0]`, which in exactly that case is
- * a category the project has already capped — so the form parked on a disabled
- * option and offered a submit `createBudgetAction` is guaranteed to refuse
- * ("already exists in this project"). Returning null forces the caller to say so
- * instead of pretending there is a choice left.
- */
-function firstFreeCategory(taken: Set<string>): string | null {
-  return EXPENSE_CATEGORIES.find((c) => !taken.has(c)) ?? null;
-}
-
-function NewBudgetForm({
-  activeCaps,
-  projects,
-  onClose,
-  onCreated,
-}: {
-  activeCaps: ActiveCap[];
-  projects: { id: string; name: string }[];
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const categoryId = useId();
-  const limitId = useId();
-  const projectFieldId = useId();
-
-  // money-011 — the cap is entered in the workspace's currency, so the label has
-  // to name it rather than a hardcoded "PKR". Same source as the `useMoney()` the
-  // cards above use to render the caps back, so the ask and the answer agree.
-  const currency = useCurrency();
-
-  const defaultProjectId = projects[0]?.id ?? "";
-  // Pick the first category not already capped IN THE PROJECT THE FORM OPENS ON,
-  // so the form opens in a valid state most of the time. Empty when that project
-  // has capped all of them — `everyCategoryTaken` below explains that and blocks
-  // the submit, rather than the field sitting on a disabled option.
-  const defaultCategory = firstFreeCategory(takenIn(activeCaps, defaultProjectId)) ?? "";
-
-  // Set only when the form MOVES the user off a category they picked, which can
-  // happen on a project change. Silence there was the second half of
-  // R3-money-018-cards: the choice was replaced without a word.
-  const [categoryNote, setCategoryNote] = useState<string | null>(null);
-
-  const {
-    register,
-    handleSubmit,
-    watch,
-    getValues,
-    setValue,
-    formState: { errors, isSubmitting },
-  } = useForm<NewBudgetInput>({
-    resolver: zodResolver(NewBudgetSchema),
-    mode: "onSubmit",
-    reValidateMode: "onChange",
-    defaultValues: {
-      category: defaultCategory,
-      monthlyLimit: undefined as unknown as number,
-      projectId: defaultProjectId,
-    },
-  });
-
-  // Which categories are unavailable depends on the project currently selected,
-  // so it is recomputed whenever that field changes rather than frozen at mount.
-  const selectedProjectId = watch("projectId");
-  const takenCategories = useMemo(
-    () => takenIn(activeCaps, selectedProjectId),
-    [activeCaps, selectedProjectId]
-  );
-  // Nothing left to file in this project. Every option is disabled, so the form
-  // has no valid submit to offer and says that plainly.
-  const everyCategoryTaken = useMemo(
-    () => EXPENSE_CATEGORIES.every((c) => takenCategories.has(c)),
-    [takenCategories]
-  );
-
-  /** The picked project as the user sees it named, for the messages below. */
-  function projectNameOf(projectId: string): string {
-    return projects.find((p) => p.id === projectId)?.name ?? "that project";
-  }
-
-  const projectField = register("projectId");
-  const categoryField = register("category");
-
-  async function onSubmit(data: NewBudgetInput) {
-    const res = await createBudgetAction(data);
-    if (res.success) {
-      toast.success(`Budget set for ${data.category}`);
-      onCreated();
-    } else {
-      toast.error(res.error);
-    }
-  }
-
-  function inputClass(hasError: boolean) {
-    return cn(
-      "w-full rounded-xl border bg-bg px-4 py-2.5 text-sm text-fg placeholder:text-fg-muted/60 transition-colors focus:bg-surface focus:outline-none",
-      hasError ? "border-danger/60 focus:border-danger" : "border-border focus:border-primary/50"
-    );
-  }
-
-  return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" noValidate>
-      <div>
-        <label
-          htmlFor={projectFieldId}
-          className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-        >
-          Project
-        </label>
-        <select
-          id={projectFieldId}
-          {...projectField}
-          onChange={(e) => {
-            projectField.onChange(e);
-            // The disabled set is per project, so the category already chosen may
-            // be capped in the project just picked. Move off it instead of leaving
-            // a disabled option selected and a submit the server will refuse —
-            // but SAY SO, because the category was the user's choice and this is
-            // taking it away from them.
-            const projectId = e.target.value;
-            const taken = takenIn(activeCaps, projectId);
-            const chosen = getValues("category");
-            if (!taken.has(chosen)) {
-              setCategoryNote(null);
-              return;
-            }
-            const free = firstFreeCategory(taken);
-            setValue("category", free ?? "");
-            // No free category left is the `everyCategoryTaken` message's job;
-            // two notes saying overlapping things would be worse than one.
-            setCategoryNote(
-              free
-                ? `${chosen} already has a cap in ${projectNameOf(projectId)}, so this switched to ${free}.`
-                : null
-            );
-          }}
-          className={inputClass(!!errors.projectId)}
-        >
-          {projects.length === 0 && <option value="">No projects available</option>}
-          {projects.map((p) => (
-            <option key={p.id} value={p.id} className="bg-bg">
-              {p.name}
-            </option>
-          ))}
-        </select>
-        {errors.projectId && (
-          <p className="mt-1.5 text-xs text-danger">{errors.projectId.message}</p>
-        )}
-      </div>
-
-      <div>
-        <label
-          htmlFor={categoryId}
-          className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-        >
-          Category
-        </label>
-        <select
-          id={categoryId}
-          {...categoryField}
-          onChange={(e) => {
-            categoryField.onChange(e);
-            // The user has just made the choice themselves; a note about an
-            // earlier automatic switch is stale from here on.
-            setCategoryNote(null);
-          }}
-          className={inputClass(!!errors.category)}
-        >
-          {EXPENSE_CATEGORIES.map((c) => (
-            <option key={c} value={c} disabled={takenCategories.has(c)} className="bg-bg">
-              {c}
-              {takenCategories.has(c) ? " (already set in this project)" : ""}
-            </option>
-          ))}
-        </select>
-        {errors.category && <p className="mt-1.5 text-xs text-danger">{errors.category.message}</p>}
-        {everyCategoryTaken ? (
-          <p
-            data-testid="no-category-left"
-            role="status"
-            className="mt-1.5 text-xs text-warning-strong"
-          >
-            Every expense category already has an active cap in {projectNameOf(selectedProjectId)}.
-            Pause or delete one to add another.
-          </p>
-        ) : (
-          categoryNote && (
-            <p
-              data-testid="category-switch-note"
-              role="status"
-              className="mt-1.5 text-xs text-fg-muted"
-            >
-              {categoryNote}
-            </p>
-          )
-        )}
-      </div>
-
-      <div>
-        <label
-          htmlFor={limitId}
-          className="mb-2 block font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-fg-muted"
-        >
-          Monthly cap ({currency})
-        </label>
-        <input
-          id={limitId}
-          type="number"
-          inputMode="decimal"
-          min="0"
-          step="100"
-          placeholder="50000"
-          {...register("monthlyLimit", { valueAsNumber: true })}
-          className={inputClass(!!errors.monthlyLimit)}
-        />
-        {errors.monthlyLimit && (
-          <p className="mt-1.5 text-xs text-danger">{errors.monthlyLimit.message}</p>
-        )}
-      </div>
-
-      <div className="flex gap-3 border-t border-border pt-4">
-        <button
-          type="button"
-          onClick={onClose}
-          className="flex-1 rounded-full border border-border bg-bg px-5 py-2.5 text-sm font-medium text-fg transition-colors hover:bg-surface-hover"
-        >
-          Cancel
-        </button>
-        <button
-          type="submit"
-          // Blocked while the chosen project has no free category: the only
-          // submit available there is one the server answers with "already
-          // exists in this project".
-          disabled={isSubmitting || everyCategoryTaken}
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-fg shadow-[0_0_30px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.01] active:scale-95 disabled:opacity-60 disabled:hover:scale-100"
-        >
-          {isSubmitting ? "Saving…" : "Create budget"}
-        </button>
-      </div>
-    </form>
   );
 }

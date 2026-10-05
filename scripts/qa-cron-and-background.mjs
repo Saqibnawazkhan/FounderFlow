@@ -25,9 +25,9 @@
  * outside my tenant RIGHT NOW:
  *
  *   • materialize-recurring → `foreignDueRules()` replicates the route's own
- *     `where` + the pure predicate in lib/recurring/materialize.ts for every
- *     company EXCEPT mine. Non-empty ⇒ the fire is SKIPPED and reported,
- *     never forced.
+ *     `where` (a deliberate superset of it — see the note on the function) +
+ *     the pure predicate in lib/recurring/materialize.ts for every company
+ *     EXCEPT mine. Non-empty ⇒ the fire is SKIPPED and reported, never forced.
  *   • sweep-time-entries   → `foreignStaleEntries()` replicates
  *     sweepAutoCloseEntries' `where` for every company EXCEPT mine.
  *     Non-empty ⇒ SKIPPED.
@@ -254,6 +254,12 @@ function sameUTCDay(a, b) {
  * route's own filter is `{ active: true, company: { deletedAt: null } }`;
  * anything this returns is a row in somebody else's workspace that a fire
  * would create a Transaction + Activity for.
+ *
+ * DELIBERATELY WIDER THAN THE ROUTE SINCE finance-planning-013: the route also
+ * skips a rule whose AUTHOR has been deactivated, and this does not ask. So
+ * this can over-report and cost a skipped fire, never under-report and let one
+ * through — which is the only direction a pre-flight may be wrong in. Do not
+ * "reconcile" it by adding the author filter here.
  */
 async function foreignDueRules() {
   const now = new Date();
@@ -265,8 +271,7 @@ async function foreignDueRules() {
     },
   });
   return rules.filter(
-    (r) =>
-      isRuleDueOn(r, now) && !(r.lastMaterializedAt && sameUTCDay(r.lastMaterializedAt, now))
+    (r) => isRuleDueOn(r, now) && !(r.lastMaterializedAt && sameUTCDay(r.lastMaterializedAt, now))
   );
 }
 
@@ -436,8 +441,7 @@ async function checkAuthSurface() {
   // naive `!==` leaks a timing signal on and the only case timingSafeEqual
   // actually covers (safeEqual compares length first, in NON-constant time).
   const realHeader = `Bearer ${CRON_SECRET}`;
-  const flipLast =
-    realHeader.slice(0, -1) + (realHeader.slice(-1) === "a" ? "b" : "a");
+  const flipLast = realHeader.slice(0, -1) + (realHeader.slice(-1) === "a" ? "b" : "a");
   const flipFirstSecretByte =
     `Bearer ` + (CRON_SECRET[0] === "a" ? "b" : "a") + CRON_SECRET.slice(1);
 
@@ -484,11 +488,11 @@ async function checkAuthSurface() {
   // technique tests/lib/db/script-safety.test.ts uses.
   for (const [key, path] of Object.entries(CRON_ROUTES)) {
     const src = readFileSync(join(ROOT, "app", path.replace(/^\/api/, "api"), "route.ts"), "utf8");
-    const guard = /const expected = process\.env\.CRON_SECRET;[\s\S]{0,200}?if \(!expected\)[\s\S]{0,200}?status: 500/.test(
-      src
-    );
-    const guardBeforeDb =
-      src.indexOf("CRON_SECRET") < src.indexOf("db.") || !src.includes("db.");
+    const guard =
+      /const expected = process\.env\.CRON_SECRET;[\s\S]{0,200}?if \(!expected\)[\s\S]{0,200}?status: 500/.test(
+        src
+      );
+    const guardBeforeDb = src.indexOf("CRON_SECRET") < src.indexOf("db.") || !src.includes("db.");
     if (guard && guardBeforeDb)
       ok(`${key}: fails CLOSED with 500 when CRON_SECRET is unset, before any DB access`);
     else
@@ -573,7 +577,10 @@ async function createRecurringRuleViaUi(page) {
     where: { companyId: TENANT.companyId, description: `qa-cron rule ${STAMP}` },
   });
   if (!rule) {
-    fail("recurring rule creation", "the rule never landed in my tenant; materializer checks cannot run");
+    fail(
+      "recurring rule creation",
+      "the rule never landed in my tenant; materializer checks cannot run"
+    );
     return null;
   }
   TENANT.ruleId = rule.id;
@@ -708,8 +715,7 @@ async function checkMissedDayIsNeverBackfilled() {
   const res = await fireIfSafe("materialize", foreignDueRules, "materializer: missed-day catch-up");
   if (!res) return;
   const after = await myRuleTxnCount();
-  if (after === before + 1)
-    ok("materializer backfilled a missed due-day for MY rule");
+  if (after === before + 1) ok("materializer backfilled a missed due-day for MY rule");
   else
     fail(
       "materializer missed-day catch-up",
@@ -783,7 +789,9 @@ async function checkSweep() {
     where: { companyId: TENANT.companyId, id: fresh.id },
   });
   if (stillOpen && stillOpen.clockOutAt === null)
-    ok(`sweep respected the ${(AUTO_CLOSE_MS / 3.6e6).toFixed(1)}h threshold (12h-idle entry left open)`);
+    ok(
+      `sweep respected the ${(AUTO_CLOSE_MS / 3.6e6).toFixed(1)}h threshold (12h-idle entry left open)`
+    );
   else
     fail(
       "sweep auto-close threshold",
@@ -811,11 +819,7 @@ async function checkSweepIgnoresTombstonedWorkspace() {
   });
   const entry = await makeOpenEntry(AUTO_CLOSE_MS + 60 * 60 * 1000, "tombstoned-ws");
 
-  const res = await fireIfSafe(
-    "sweep",
-    foreignStaleEntries,
-    "sweep: tombstoned-workspace filter"
-  );
+  const res = await fireIfSafe("sweep", foreignStaleEntries, "sweep: tombstoned-workspace filter");
   if (res) {
     const after = await db.timeEntry.findFirst({
       where: { companyId: TENANT.companyId, id: entry.id },
@@ -874,7 +878,7 @@ async function checkSweepIsNotAPublicAction() {
     fail(
       "sweepAutoCloseEntries is a public, unauthenticated Server Action",
       'lib/actions/time.ts starts with "use server" and exports sweepAutoCloseEntries. Next assigns a ' +
-        "Server Action id to every export of a \"use server\" module that is in the client graph " +
+        'Server Action id to every export of a "use server" module that is in the client graph ' +
         "(time-client.tsx, clock-widget.tsx, edit-entry-modal.tsx and manual-entry-modal.tsx all import " +
         "from it), so anyone holding that id can POST it with no session and close every open time entry " +
         "in EVERY workspace. This was fixed once by moving it to lib/time/sweep.ts; it has come back."
@@ -895,12 +899,12 @@ async function checkSweepIsNotAPublicAction() {
     );
   } else {
     ok(
-      "sweepAutoCloseEntries lives in lib/time/sweep.ts, a plain server module with no \"use server\" " +
+      'sweepAutoCloseEntries lives in lib/time/sweep.ts, a plain server module with no "use server" ' +
         "directive, so it has no Server Action id and no public endpoint"
     );
     skip(
       "unauthenticated invocation of sweepAutoCloseEntries",
-      "structurally impossible now — the function is not exported from any \"use server\" module, so " +
+      'structurally impossible now — the function is not exported from any "use server" module, so ' +
         "Next mints no action id for it and there is nothing to POST. The probe below is kept only for " +
         "the case where the structural assertion above fails."
     );
@@ -926,7 +930,9 @@ async function checkSweepIsNotAPublicAction() {
   }
   const timeModuleIds = [
     ...new Set(
-      [...manifest.matchAll(/"([0-9a-f]{40,64})":\s*\{[^}]*?actions\/time[^}]*?\}/g)].map((m) => m[1])
+      [...manifest.matchAll(/"([0-9a-f]{40,64})":\s*\{[^}]*?actions\/time[^}]*?\}/g)].map(
+        (m) => m[1]
+      )
     ),
   ];
   const ids = timeModuleIds.length
@@ -998,7 +1004,7 @@ async function checkPurgeGate() {
   if (PURGE_IS_LIVE) {
     skip(
       "every purge check",
-      "PURGE_ENABLED resolves to \"true\", so this route would HARD-DELETE every overdue workspace " +
+      'PURGE_ENABLED resolves to "true", so this route would HARD-DELETE every overdue workspace ' +
         "in the database, not just mine. Refusing to call it at all."
     );
     return false;
@@ -1009,15 +1015,14 @@ async function checkPurgeGate() {
   if (res.status === 200) ok("purge: authorized fire → 200");
   else fail("purge: authorized fire", `expected 200, got ${res.status} ${res.text.slice(0, 200)}`);
   if (res.json?.dryRun === true) ok("purge: dryRun is true by default — nothing is deleted");
-  else fail("purge dry-run default", `expected dryRun:true, got ${JSON.stringify(res.json?.dryRun)}`);
+  else
+    fail("purge dry-run default", `expected dryRun:true, got ${JSON.stringify(res.json?.dryRun)}`);
   if (res.json?.retentionDays === RETENTION_DAYS)
     ok(`purge: retention window is ${RETENTION_DAYS} days`);
-  else
-    fail("purge retentionDays", `expected ${RETENTION_DAYS}, got ${res.json?.retentionDays}`);
+  else fail("purge retentionDays", `expected ${RETENTION_DAYS}, got ${res.json?.retentionDays}`);
   if (Array.isArray(res.json?.excludedModels) && res.json.excludedModels.length === 0)
     ok("purge: excludedModels is empty (nothing knowingly left behind)");
-  else
-    note("purge excludedModels", `route reports ${JSON.stringify(res.json?.excludedModels)}`);
+  else note("purge excludedModels", `route reports ${JSON.stringify(res.json?.excludedModels)}`);
   return true;
 }
 
@@ -1051,7 +1056,10 @@ async function checkDryRunCannotSizeTheBlastRadius() {
   // Advisory: the route's counts are global, so my tenant can only ever be a
   // lower bound on them. The authoritative check is the scoped one below.
   const iAmOverdue = await db.company.count({
-    where: { id: TENANT.companyId, deletedAt: { not: null, lt: new Date(Date.now() - RETENTION_DAYS * 864e5) } },
+    where: {
+      id: TENANT.companyId,
+      deletedAt: { not: null, lt: new Date(Date.now() - RETENTION_DAYS * 864e5) },
+    },
   });
   if (iAmOverdue === 1) ok("my tombstoned workspace matches the route's own overdue filter");
   else fail("overdue filter", "my workspace was tombstoned past the cutoff but does not match");
@@ -1174,10 +1182,9 @@ async function checkScope2RestrictJam(page) {
       );
       btn?.click();
     });
-    await page.waitForFunction(
-      () => document.querySelector('[role="dialog"]') !== null,
-      { timeout: 8000 }
-    );
+    await page.waitForFunction(() => document.querySelector('[role="dialog"]') !== null, {
+      timeout: 8000,
+    });
     await page.evaluate(() => {
       const dialog = document.querySelector('[role="dialog"]');
       const btn = [...dialog.querySelectorAll("button")].find((b) =>
@@ -1247,9 +1254,7 @@ async function checkScope2RestrictJam(page) {
         `is wrong: Task.project and Budget.project are onDelete: Restrict (schema.prisma:344, 471).`
     );
   else
-    ok(
-      "purge scope 2's deleteMany survived a project holding a soft-deleted task (rolled back)"
-    );
+    ok("purge scope 2's deleteMany survived a project holding a soft-deleted task (rolled back)");
 
   // cron-008, now FIXED. This used to be a note() explaining that the failure
   // was silent: the route answered 206, which is a 2xx, and Vercel cron only
@@ -1345,7 +1350,8 @@ function checkSchedulesAndBackup() {
     "utf8"
   );
   const hasTxOptions =
-    /transactionOptions/.test(dbSrc) || /\$transaction\([\s\S]{0,4000}?\}\s*,\s*\{\s*timeout/.test(purgeSrc);
+    /transactionOptions/.test(dbSrc) ||
+    /\$transaction\([\s\S]{0,4000}?\}\s*,\s*\{\s*timeout/.test(purgeSrc);
   if (hasTxOptions) ok("purgeCompany's interactive transaction has an explicit timeout");
   else
     fail(
@@ -1380,7 +1386,8 @@ function checkSchedulesAndBackup() {
           "post-purge state, which is what the workflow header promises."
       );
   }
-  if (/set -euo pipefail/.test(backup)) ok("backup: pipefail set, so a pg_dump failure fails the step");
+  if (/set -euo pipefail/.test(backup))
+    ok("backup: pipefail set, so a pg_dump failure fails the step");
   else fail("backup: pipefail", "a failing pg_dump would still upload a near-empty gzip");
   if (/CREATE TABLE/.test(backup) && /COPY /.test(backup))
     ok("backup: validates DDL + a COPY data block before uploading");
@@ -1398,7 +1405,10 @@ function checkSchedulesAndBackup() {
         "dead-man's-switch that fails loudly when a dump is MISSING rather than broken."
     );
   if (/restore/i.test(backup))
-    note("backup: restore", "documented in prose only — no automated or periodic restore drill exists");
+    note(
+      "backup: restore",
+      "documented in prose only — no automated or periodic restore drill exists"
+    );
 }
 
 /* ────────────────────────────────────────────────────────────────────────

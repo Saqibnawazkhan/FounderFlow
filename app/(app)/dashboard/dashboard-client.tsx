@@ -52,6 +52,8 @@ import { Avatar } from "@/components/ui/avatar";
 import { DashboardStat, type DashboardStatProps } from "@/components/ui/dashboard-stat";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AnnouncementBanner } from "./announcement-banner";
+import { CHART_SERIES, categoricalAt } from "@/lib/colors/categorical";
 
 // Recharts is ~200KB. Lazy it so the dashboard's initial bundle stays lean;
 // the chart skeleton from Phase 2 doubles as the loading placeholder.
@@ -67,11 +69,20 @@ const CategoryPieChart = dynamic(
   { ssr: false, loading: () => <Skeleton className="h-full w-full rounded-xl" /> }
 );
 
-const C_PRIMARY = "#10B981";
-const C_FOREST = "#047857";
-const C_MINT = "#6EE7B7";
-const C_DEEP = "#065F46";
-const CATEGORY_PALETTE = [C_PRIMARY, C_FOREST, C_MINT, C_DEEP, "#34D399", "#64748B"];
+/**
+ * Chart colours — from lib/colors/categorical.ts, the SAME module
+ * dashboard-charts.tsx reads, so the legend dots below cannot disagree with the
+ * marks they label.
+ *
+ * They used to be a byte-for-byte copy of that file's palette, pasted here
+ * because importing a named constant out of dashboard-charts.tsx would pull
+ * recharts into the initial chunk and defeat the next/dynamic split above. The
+ * shared module has no recharts dependency, so the split survives and the copy
+ * is gone. Two live consequences of the copy: the legend's six colours could
+ * not cover ten `EXPENSE_CATEGORIES` (so the 7th category's dot repeated the
+ * 1st's), and being fixed hex, these dots stayed light-theme green on a
+ * charcoal card while nothing marked them as wrong.
+ */
 
 /* ─────────────────────────────────────────────────────────────────────────── *
  * The dashboard's money figures, as pure functions over EITHER an aggregate or
@@ -536,6 +547,13 @@ export function DashboardClient({
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-8">
+      {/* One-time product announcement. Renders nothing at all until hydration
+          has read this browser's dismissal flag, so it contributes nothing to
+          the server HTML — see ./announcement-banner.tsx for why that matters
+          here specifically. Above the header on purpose: it is the first thing
+          on the page or it is not an announcement. */}
+      <AnnouncementBanner />
+
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <PillBadge>Live workspace</PillBadge>
@@ -627,9 +645,9 @@ export function DashboardClient({
               <h3 className="mt-1 text-lg font-bold tracking-tight">Last 6 months</h3>
             </div>
             <div className="flex gap-4 text-xs">
-              <Legend dot={C_PRIMARY} label="Investments" />
-              <Legend dot={C_FOREST} label="Revenue" />
-              <Legend dot={C_MINT} label="Expenses" />
+              <Legend dot={CHART_SERIES.investments} label="Investments" />
+              <Legend dot={CHART_SERIES.revenue} label="Revenue" />
+              <Legend dot={CHART_SERIES.expenses} label="Expenses" />
             </div>
           </div>
           <div className="h-72">
@@ -675,7 +693,7 @@ export function DashboardClient({
                     <div className="flex min-w-0 items-center gap-2">
                       <span
                         className="h-2.5 w-2.5 shrink-0 rounded-full"
-                        style={{ backgroundColor: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length] }}
+                        style={{ backgroundColor: categoricalAt(i) }}
                       />
                       <span className="truncate text-fg-muted">{c.name}</span>
                     </div>

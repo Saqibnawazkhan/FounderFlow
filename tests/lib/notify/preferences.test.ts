@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { EVENT_COPY, NOTIFY_CHANNELS, NOTIFY_EVENTS } from "@/lib/notify/events";
+import {
+  EVENT_CHANNEL_NOTE,
+  EVENT_COPY,
+  EVENT_DELIVERABLE_CHANNELS,
+  NOTIFY_CHANNELS,
+  NOTIFY_EVENTS,
+} from "@/lib/notify/events";
 import {
   DEFAULT_CHANNELS,
   matrixFor,
@@ -59,6 +65,35 @@ describe("DEFAULT_CHANNELS", () => {
     // would be written nowhere and look like a bug.
     const silent = NOTIFY_EVENTS.filter((e) => !DEFAULT_CHANNELS[e].inApp);
     expect(silent, `Default to no in-app record: ${silent.join(", ")}`).toEqual([]);
+  });
+
+  it("keeps chat out of the inbox by default, on both of its events", () => {
+    // The owner's report of 2026-10-05: "each chat message gets emailed too,
+    // should only come as a push notification and an in-app notification, not
+    // an email notification — a user in a busy channel will receive 100s of
+    // emails just from chat." Chat arrives at typing speed; `mention` — the
+    // same gesture in a comment on a task or a money row — is occasional and
+    // keeps its email, which is the whole reason the two are separate events.
+    //
+    // The default is not the only thing holding this (email is left out of both
+    // rows in EVENT_DELIVERABLE_CHANNELS and `notifyUsers` enforces that), but a
+    // default that disagreed with the delivery path would write preference rows
+    // and render a matrix that both claim something untrue.
+    expect(DEFAULT_CHANNELS.chat_mention.email).toBe(false);
+    expect(DEFAULT_CHANNELS.dm.email).toBe(false);
+    expect(
+      DEFAULT_CHANNELS.mention.email,
+      "a comment mention still emails — the fix was a separation, not a deletion"
+    ).toBe(true);
+  });
+
+  it("still interrupts for a chat mention on the channels it kept", () => {
+    // Quietening chat must not mean silencing it. The person was named and is
+    // being waited on, so the durable row and the push both stay — a Chat badge
+    // reading "3 unread" cannot say that one of the three was addressed to them.
+    expect(DEFAULT_CHANNELS.chat_mention.inApp).toBe(true);
+    expect(DEFAULT_CHANNELS.chat_mention.push).toBe(true);
+    expect(DEFAULT_CHANNELS.dm.push, "push is the only channel a DM has left").toBe(true);
   });
 
   it("keeps money-logged out of the inbox by default", () => {
@@ -125,6 +160,60 @@ describe("EVENT_COPY", () => {
     for (const event of NOTIFY_EVENTS) {
       expect(EVENT_COPY[event]?.label, event).toBeTruthy();
       expect(EVENT_COPY[event]?.description, event).toBeTruthy();
+    }
+  });
+
+  it("gives the two mention events labels a person can tell apart", () => {
+    // They are adjacent rows in the matrix, they describe the same gesture, and
+    // they now behave differently — one emails, one does not. Two rows reading
+    // "Mentions" with different checkboxes is indistinguishable from a bug.
+    expect(EVENT_COPY.mention.label).not.toBe(EVENT_COPY.chat_mention.label);
+    expect(EVENT_COPY.mention.description).not.toBe(EVENT_COPY.chat_mention.description);
+  });
+});
+
+describe("EVENT_CHANNEL_NOTE (why a cell has no checkbox)", () => {
+  it("explains every channel the matrix refuses to offer", () => {
+    // components/settings/notification-matrix.tsx renders a dash in place of
+    // the checkbox for any channel missing from EVENT_DELIVERABLE_CHANNELS, with
+    // this note as its `title`. With no note the cell is a bare dash, which
+    // reads as a rendering fault — and the two rows that carry one now say
+    // different things ("the Chat badge has it" vs "chat is never emailed"), so
+    // a shared fallback sentence would not do.
+    const unexplained = NOTIFY_EVENTS.filter(
+      (event) =>
+        EVENT_DELIVERABLE_CHANNELS[event].length < NOTIFY_CHANNELS.length &&
+        !EVENT_CHANNEL_NOTE[event]
+    );
+    expect(
+      unexplained,
+      `These events hide a channel in the settings matrix with no explanation, ` +
+        `so the cell renders as an unexplained dash: ${unexplained.join(", ")}`
+    ).toEqual([]);
+  });
+
+  it("explains nothing that is fully available", () => {
+    // The mirror case: a note on a row with all three checkboxes is never
+    // rendered, so it is dead copy that reads as a live promise.
+    const pointless = NOTIFY_EVENTS.filter(
+      (event) =>
+        EVENT_DELIVERABLE_CHANNELS[event].length === NOTIFY_CHANNELS.length &&
+        EVENT_CHANNEL_NOTE[event]
+    );
+    expect(pointless, `Notes that can never be shown: ${pointless.join(", ")}`).toEqual([]);
+  });
+
+  it("names every channel it declares, with no duplicates or unknowns", () => {
+    // Guards the guard above: the length comparison it makes is only meaningful
+    // while each row is a subset of NOTIFY_CHANNELS. A typo'd or repeated
+    // channel name would make a row look complete, or look short, for a reason
+    // that has nothing to do with deliverability.
+    for (const event of NOTIFY_EVENTS) {
+      const declared = EVENT_DELIVERABLE_CHANNELS[event];
+      const unknown = declared.filter((c) => NOTIFY_CHANNELS.indexOf(c) === -1);
+      expect(unknown, `${event} declares unknown channel(s)`).toEqual([]);
+      expect(declared.length, `${event} repeats a channel`).toBe(new Set<string>(declared).size);
+      expect(declared.length, `${event} is deliverable on nothing at all`).toBeGreaterThan(0);
     }
   });
 });

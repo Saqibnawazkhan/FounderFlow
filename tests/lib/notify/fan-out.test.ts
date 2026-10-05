@@ -521,12 +521,24 @@ describe("skipInApp — the in-app row, and ONLY the in-app row", () => {
     ]);
   });
 
-  it("still emails", async () => {
+  it("still emails — the flag refuses the row, not the mail", async () => {
+    // THIS TEST USED TO RAISE `dm`, AND ASSERTED THE DEFECT the owner reported
+    // on 2026-10-05: "each chat message gets emailed too […] a user in a busy
+    // channel will receive 100s of emails just from chat." Email for chat is
+    // gone, so a DM can no longer demonstrate anything about this flag — it
+    // would pass for the wrong reason the day `skipInApp` started suppressing
+    // email too.
+    //
+    // The property is unchanged and still worth holding: `skipInApp` means
+    // "this surface owns its own unread signal", not "say nothing". So it is
+    // asserted on an event where email IS deliverable. Chat's silence comes
+    // from `EVENT_DELIVERABLE_CHANNELS`, one layer up, and is asserted in the
+    // describe block below.
     const { client } = fakeClient();
 
     await notifyUsers({
       ...base,
-      event: "dm",
+      event: "task_assigned",
       userIds: ["u1"],
       skipInApp: true,
       tx: client,
@@ -622,5 +634,95 @@ describe("skipInApp — the in-app row, and ONLY the in-app row", () => {
     expect(calls).toHaveLength(0);
     expect(pushForNotificationRows).not.toHaveBeenCalled();
     expect(fireNotificationEmails).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * EVENT_DELIVERABLE_CHANNELS is a rule, not a label on a checkbox.
+ *
+ * The owner's report of 2026-10-05 — "each chat message gets emailed too […] a
+ * user in a busy channel will receive 100s of emails just from chat" — was
+ * fixed by giving chat its own events and leaving `email` out of their rows in
+ * `EVENT_DELIVERABLE_CHANNELS`. That map had exactly one reader at the time:
+ * the settings page, which renders a dash instead of a checkbox. Nothing in the
+ * delivery path consulted it, so the map could only ever hide a control; it
+ * could not stop a send.
+ *
+ * That gap is reachable. `updateNotificationPreferenceAction` validates its
+ * payload against NOTIFY_EVENTS × NOTIFY_CHANNELS and upserts whatever it is
+ * given, so one hand-made request stores `email: true` for `chat_mention` — and
+ * so would any row left behind by a future change to this map. `splitByChannel`
+ * would then resolve that row and the emails would be back for that person,
+ * with the settings page still showing a dash and no way to turn it off.
+ *
+ * So the fan-out intersects every resolved list with the map. These are the
+ * cases that fail if that intersection is removed: a default cannot deliver on
+ * an undeliverable channel, and neither can an explicit stored row.
+ */
+describe("an undeliverable channel cannot be delivered on, by anyone", () => {
+  it("sends no email for a chat mention, though the event is otherwise live", async () => {
+    const { calls, client } = fakeClient();
+
+    const res = await notifyUsers({
+      ...base,
+      event: "chat_mention",
+      userIds: ["u1", "u2"],
+      tx: client,
+    });
+    await settlePush();
+
+    expect(fireNotificationEmails, "chat is not emailed").not.toHaveBeenCalled();
+    // And the event is not merely switched off: both other channels delivered.
+    expect(calls[0]!.data.map((d) => d.userId)).toEqual(["u1", "u2"]);
+    expect(pushForNotificationRows).toHaveBeenCalledTimes(1);
+    expect(res).toEqual({ notified: 2, dispatched: 2 });
+  });
+
+  it("sends no email for a chat mention even to someone whose row says email: true", async () => {
+    // The row the UI cannot produce and the action will happily store.
+    const stored: Stored[] = [
+      { userId: "u1", event: "chat_mention", inApp: true, email: true, push: true },
+    ];
+    const { client } = fakeClient(stored);
+
+    await notifyUsers({ ...base, event: "chat_mention", userIds: ["u1"], tx: client });
+
+    expect(
+      fireNotificationEmails,
+      "a stored preference must not re-open a channel the product refuses"
+    ).not.toHaveBeenCalled();
+  });
+
+  it("sends no email for a DM either, stored row or not", async () => {
+    const stored: Stored[] = [{ userId: "u1", event: "dm", inApp: true, email: true, push: true }];
+    const { calls, client } = fakeClient(stored);
+
+    const res = await notifyUsers({
+      ...base,
+      event: "dm",
+      userIds: ["u1"],
+      skipInApp: true,
+      tx: client,
+    });
+    await settlePush();
+
+    expect(fireNotificationEmails).not.toHaveBeenCalled();
+    expect(calls, "a DM's unread signal is the Chat badge").toHaveLength(0);
+    // Push is all a DM has left — which is why it must not be lost too.
+    expect(pushForNotificationRows).toHaveBeenCalledTimes(1);
+    expect(res.dispatched).toBe(1);
+  });
+
+  it("leaves an event whose row names all three channels completely alone", async () => {
+    // The intersection must be a no-op for every event but chat's two, or it is
+    // a silent delivery regression across the whole product.
+    const { calls, client } = fakeClient();
+
+    await notifyUsers({ ...base, event: "task_assigned", userIds: ["u1"], tx: client });
+    await settlePush();
+
+    expect(calls).toHaveLength(1);
+    expect(pushForNotificationRows).toHaveBeenCalledTimes(1);
+    expect(fireNotificationEmails).toHaveBeenCalledTimes(1);
   });
 });

@@ -6,15 +6,26 @@
  * addTransactionAction — adding a transaction is the only event that can
  * cross a threshold.
  *
- * Permissions: any company member can manage budgets (mirrors the
- * "anyone can create transactions" model). Tighten later if budgets
- * become an admin-only concept.
+ * Permissions: `canManageProject` on the budget's OWN project — admin,
+ * cofounder, or the member who supervises that project (the escape hatch in
+ * lib/auth/project-permissions.ts). All three actions below ask exactly that.
+ *
+ * This header used to say "any company member can manage budgets (mirrors the
+ * 'anyone can create transactions' model). Tighten later if budgets become an
+ * admin-only concept." It was accurate when it was written — budgets had no
+ * project then — and the "Introduce Projects" commit that added the
+ * `canManageProject` call to all three actions left the sentence behind. So it
+ * described the gate too LOOSELY, which is the dangerous direction for a
+ * comment about a permission: read literally it invites a UI that offers these
+ * controls to every member and then gets refused by the server. Corrected with
+ * finance-planning-010, which wired the supervisor's missing controls on
+ * /projects/[id] against the real predicate.
  *
  * Delete writes the Tier 3 `deletedAt` tombstone rather than hard-deleting, so
  * the documented 90-day recovery window is real for a single budget too. Every
- * budget lookup in this file therefore has to carry `deletedAt: null` — the
- * duplicate-category guard in particular, or a deleted budget blocks its own
- * replacement forever.
+ * budget lookup in this file therefore has to carry `deletedAt: null` — the two
+ * duplicate-category guards in particular (create, and resume), or a deleted
+ * budget blocks its own replacement forever.
  */
 
 import { revalidatePath } from "next/cache";
@@ -65,6 +76,11 @@ export async function createBudgetAction(input: unknown): Promise<ActionResult<{
     // Soft uniqueness: refuse a second ACTIVE budget for the same category
     // within the SAME project. Different projects can share a category.
     //
+    // HALF of the invariant. `updateBudgetAction` runs the same probe when a
+    // paused cap is resumed (finance-planning-011) — creation was never the
+    // only way to reach two active rows, and a guard that only covers the
+    // create path is one the ordinary replace-a-cap workflow walks around.
+    //
     // deletedAt:null is load-bearing now that deleteBudgetAction tombstones
     // instead of hard-deleting. A tombstoned row deliberately KEEPS
     // `active: true` (so a restore comes back in the state it left), so an
@@ -109,6 +125,12 @@ export async function updateBudgetAction(input: unknown): Promise<ActionResult> 
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
   }
+  // finance-planning-014. The same bucket `createBudgetAction` spends, in the
+  // same place: ahead of the parse and the row lookup, so a refused call costs
+  // no query. Editing and pausing a cap were the two unmetered writes on this
+  // surface, and pausing is a button a script can hold down.
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
 
   const parsed = UpdateBudgetSchema.safeParse(input);
   if (!parsed.success) return { success: false, error: "Invalid request" };
@@ -133,6 +155,47 @@ export async function updateBudgetAction(input: unknown): Promise<ActionResult> 
       })
     ) {
       return { success: false, error: "Not authorized" };
+    }
+
+    // THE OTHER HALF of createBudgetAction's uniqueness probe
+    // (finance-planning-011). "One active budget per category per project" is
+    // the invariant prisma/schema.prisma states, and it was checked only at
+    // create time — so three ordinary clicks broke it: pause Marketing/Alpha,
+    // which makes the category pickable again (the New-budget form's
+    // `takenCategories` counts ACTIVE caps only), create the replacement, then
+    // resume the first one. Two active Marketing caps on Alpha, and
+    // lib/budgets/check.ts evaluates exactly one of them — so the other cap
+    // could never fire a warning or an alert, with nothing on screen saying
+    // which one was live. Silent under-alerting on money.
+    //
+    // Only on the way TO active, and only from paused: an ordinary cap edit on
+    // a workspace that already holds two such rows must still be possible, or
+    // the guard strands the customer with precisely the rows they need to
+    // correct. Pausing is never refused.
+    //
+    // `deletedAt: null` for the same reason as the create-time probe — a
+    // tombstoned budget keeps `active: true`, and reading it as live would lock
+    // the category out of the project forever. `id: { not: budgetId }` is belt
+    // and braces: this row is still paused on disk here, so `active: true`
+    // already excludes it, but the probe stays correct if the transition gate
+    // above is ever relaxed.
+    if (active === true && !budget.active) {
+      const clash = await db.budget.findFirst({
+        where: {
+          projectId: budget.projectId,
+          category: budget.category,
+          active: true,
+          deletedAt: null,
+          id: { not: budgetId },
+        },
+        select: { id: true },
+      });
+      if (clash) {
+        return {
+          success: false,
+          error: `A budget for "${budget.category}" is already active in this project. Pause or delete that one first.`,
+        };
+      }
     }
 
     const data: { monthlyLimit?: number; active?: boolean } = {};
@@ -160,6 +223,14 @@ export async function deleteBudgetAction(budgetId: string): Promise<ActionResult
   if (!session?.user?.companyId || !session.user.id) {
     return { success: false, error: "Not authenticated" };
   }
+  // finance-planning-014 — see updateBudgetAction. Metered even though the
+  // delete is a tombstone and `revalidatePath` is idempotent: this is still
+  // write load from an authenticated session, and until this change the bucket
+  // was spent by one of the three actions in this file and not the other two,
+  // which is not a coverage rule anyone could reason about from the outside.
+  const gate = limiters.write.consume(session.user.id);
+  if (!gate.allowed) return { success: false, error: gate.error ?? "Too many requests" };
+
   if (!budgetId) return { success: false, error: "Missing budget id" };
 
   try {

@@ -1,0 +1,56 @@
+# Line endings, and why this file exists.
+#
+# THE DEFECT IT CLOSES. `core.autocrlf` is true on the maintainer's machine, so
+# every `git checkout` rewrote the working tree with CRLF. Thirty-plus tests in
+# this suite read their own source with `readFileSync(..., "utf8")` and then
+# match it with regexes anchored on `\n` — `/\\\n\s*/` to fold a shell
+# continuation, `^`/`$` in multiline mode, `split("\n")`. None of those match
+# `\r\n`, so those guards silently stop reading the file they guard.
+#
+# It cost a real incident on 2026-10-05: `tests/ops/backup-workflow.test.ts`
+# folds the `pg_dump` invocation across its backslash continuations to assert
+# `--schema=public` is passed. With CRLF the fold never happened, the helper
+# returned `"$PG_DUMP" "$PGDUMP_URL" \` with no flags, and the test reported
+# "the pg_dump call passes no --schema filter" about a file that carries it on
+# the very next line. The full suite had been green an hour earlier, on the
+# same commit, because the working tree still held LF from before a checkout.
+#
+# THAT IS THE WORST SHAPE A TEST CAN HAVE HERE: it passes on Linux CI and fails
+# on a Windows checkout of the identical commit, so the result depends on how
+# the file happened to be written rather than on what it says. The same class
+# took out `tests/app/finance/uncapped-totals.test.ts` at the same moment.
+#
+# `text=auto eol=lf` normalises every text file to LF IN THE WORKING TREE, not
+# just in the index, which is what the readers actually see. Binary files are
+# detected by `text=auto` and left alone. There are no .bat/.cmd/.ps1 files in
+# this repo, which are the usual reason to exempt something from this rule; if
+# one is ever added it needs an `eol=crlf` line of its own or Windows will not
+# run it.
+#
+# The tests were ALSO made line-ending-tolerant rather than relying on this
+# file alone, because a zip download or a clone with different settings is not
+# obliged to honour it. Two defences, deliberately — see
+# tests/lib/harness/source-scan.ts, which is tested against CRLF input
+# directly so that its guard cannot pass on the strength of this file.
+
+* text=auto eol=lf
+
+# Lockfiles are text and benefit from the same normalisation; called out so
+# nobody "fixes" a noisy diff by marking them binary.
+package-lock.json text eol=lf
+
+# Belt and braces for the assets `text=auto` should already detect. An image
+# that ever gets CRLF-mangled is corrupt, and the corruption is invisible until
+# something tries to decode it.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary
+*.zip binary

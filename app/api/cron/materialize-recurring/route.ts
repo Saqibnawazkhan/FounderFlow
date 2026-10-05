@@ -124,12 +124,60 @@ async function materializeRun(): Promise<NextResponse> {
     // `sweepAutoCloseEntries` had no filter at all. RecurringRule carries no
     // `deletedAt` of its own, so it takes the workspace-only scope.
     //
-    // The project's tombstone rides along for the reason below. It is an
-    // `include` rather than a second query so a rule and the liveness of its
-    // project are read in one statement and cannot disagree.
+    // The project's and the AUTHOR's tombstones ride along for the two reasons
+    // below. They are an `include` rather than a second query so a rule and the
+    // liveness of what it hangs off are read in one statement and cannot
+    // disagree — and, for the author, so the rules that get suspended can be
+    // NAMED in the response instead of simply never loading.
     const ruleRows = await db.recurringRule.findMany({
       where: { active: true, ...LIVE_WORKSPACE_SCOPE },
-      include: { project: { select: { deletedAt: true } } },
+      include: {
+        project: { select: { deletedAt: true } },
+        user: { select: { deletedAt: true } },
+      },
+    });
+
+    // A REMOVED TEAMMATE'S STANDING CHARGES MUST STOP (finance-planning-013).
+    //
+    // `removeUserAction` tombstones the User row and bumps `sessionVersion`
+    // (lib/actions/team.ts) and touches nothing else — it does not pause the
+    // rules that person set up, and nothing else does either. So this job kept
+    // posting an ex-employee's salary or subscription into the customer's books
+    // every month, stamped with the `addedByName` of somebody who had left. Per
+    // CLAUDE.md there is deliberately no individual-user purge, so that
+    // tombstone and those rules live for ever: the charge had no end date at all.
+    //
+    // lib/cron/live-scope.ts deliberately keeps `user: { deletedAt: null }` out
+    // of the SHARED rule, and says per-model exceptions belong at the call site
+    // with a reason. This is that exception, and this is the reason. Its argument
+    // for leaving the filter out is about the auto-close sweep — a deactivated
+    // person "cannot sign in to stop their own running timer", so an honest
+    // `autoClosed` stamp beats a timer that runs for ever. Here the asymmetry
+    // runs the other way: what the job would write is new MONEY, in the name of
+    // someone who has left, and nobody can stop it from the outside either.
+    //
+    // SUSPEND, DO NOT UNTAG — the opposite of the project case below, on
+    // purpose. There the money is still being paid and only the tag is dead, so
+    // the posting goes in without it. Here the AUTHORISATION is what died:
+    // nobody at the company is standing behind this charge any more.
+    //
+    // NOTHING IS WRITTEN: no claim, no stamp, no `active: false`. A suspended
+    // rule is left exactly as it was, so `reactivateUserAction` clearing that
+    // tombstone resumes it with the same bounded catch-up a resumed PAUSE gets
+    // (MAX_CATCHUP_LOOKBACK_DAYS in lib/recurring/materialize.ts). Stamping it
+    // forward instead would silently drop every month the person was away.
+    //
+    // Suspending in silence would be its own defect, so `rulesWithRemovedAuthor`
+    // names them in the response — and /recurring shows the same thing per rule,
+    // where a founder can act on it (lib/queries/recurring.ts `authorRemoved`).
+    const rulesWithRemovedAuthor: string[] = [];
+    const authoredByLiveUser = ruleRows.filter((row) => {
+      // No `user` key cannot happen against Prisma (`addedBy` is a required
+      // relation), so "no tombstone loaded" is treated as live rather than
+      // suspending every rule in the product.
+      if (!row.user || row.user.deletedAt === null) return true;
+      rulesWithRemovedAuthor.push(row.id);
+      return false;
     });
 
     // A DELETED PROJECT MUST NOT COLLECT NEW SPEND (R1-money-013-cron).
@@ -160,9 +208,11 @@ async function materializeRun(): Promise<NextResponse> {
     // `rulesWithDeletedProject` is built HERE, across every rule loaded, and not
     // across the rules `planRecurring` decides owe an occurrence tonight — so it
     // names rules that posted nothing as well. That is the useful set; see the
-    // response field for why.
+    // response field for why. It runs over the rules with a LIVE author, so a
+    // rule that is suspended anyway is reported once, under the reason that
+    // actually stopped it, rather than in both lists.
     const rulesWithDeletedProject: string[] = [];
-    const rules = ruleRows.map((row) => {
+    const rules = authoredByLiveUser.map((row) => {
       if (!row.projectId || !row.project || row.project.deletedAt === null) return row;
       rulesWithDeletedProject.push(row.id);
       return { ...row, projectId: null };
@@ -322,6 +372,9 @@ async function materializeRun(): Promise<NextResponse> {
       {
         ok: failed.length === 0,
         ranAt: now.toISOString(),
+        // Active rules in a live workspace that this run actually considered —
+        // so it EXCLUDES the ones suspended for a removed author, which
+        // `rulesWithRemovedAuthor` names instead.
         rulesChecked: rules.length,
         rulesWithWork: plans.length,
         transactionsCreated: created.length,
@@ -342,6 +395,14 @@ async function materializeRun(): Promise<NextResponse> {
         // until someone re-points or pauses the rule. Empty is the healthy
         // answer, and nothing else in the product mentions this at all.
         rulesWithDeletedProject,
+        // finance-planning-013. Active rules this run SUSPENDED because the
+        // teammate who created them has been deactivated: nothing was posted
+        // and nothing was written, so the same ids repeat every night until an
+        // admin deletes the rule, a finance-capable user re-creates it under
+        // their own name, or the person is reactivated. Empty is the healthy
+        // answer. /recurring carries the same signal per rule, which is where a
+        // founder can act on it.
+        rulesWithRemovedAuthor,
         // Rules a concurrent run had already claimed. Healthy in small numbers.
         rulesSkippedConcurrent: skippedConcurrent,
         budgetChecksRun: budgetChecks,

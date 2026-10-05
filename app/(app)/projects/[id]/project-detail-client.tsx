@@ -12,6 +12,10 @@
  *   - Change supervisor       → admin / cofounder
  *   - Delete project          → admin / cofounder / supervisor, blocked if
  *                               the project still has tasks/budgets
+ *   - Add a task              → admin / cofounder / supervisor (projects-007)
+ *   - Create / correct / pause / delete a BUDGET
+ *                             → admin / cofounder / supervisor
+ *                               (finance-planning-010)
  */
 
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
@@ -24,7 +28,9 @@ import {
   Check,
   ChevronDown,
   Clock,
+  Pause,
   Pencil,
+  Play,
   Plus,
   Trash2,
   UserCog,
@@ -39,6 +45,8 @@ import { Avatar } from "@/components/ui/avatar";
 import { PillBadge } from "@/components/landing/pill-badge";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { deleteProjectAction, updateProjectAction } from "@/lib/actions/projects";
+import { deleteBudgetAction, updateBudgetAction } from "@/lib/actions/budgets";
+import { EditBudgetLimitForm, NewBudgetForm } from "@/components/budgets/budget-forms";
 import { canManageProject, canReassignSupervisor } from "@/lib/auth/project-permissions";
 import { canDeleteTask, canEditTask } from "@/lib/tasks/task-permissions";
 import { COLOR_CLASSES, STATUS_LABEL_KEY } from "@/components/projects/project-card";
@@ -138,6 +146,16 @@ export function ProjectDetailClient({
   const [editOpen, setEditOpen] = useState(false);
   const [supOpen, setSupOpen] = useState(false);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
+  const [newBudgetOpen, setNewBudgetOpen] = useState(false);
+  /**
+   * The cap being corrected, or null — held as the ROW, and the dialog is
+   * mounted only while it is set, so the form is born with the numbers of the
+   * bar that was clicked. Same shape, and the same reason, as `editing` in
+   * app/(app)/budgets/budgets-client.tsx.
+   */
+  const [editingBudget, setEditingBudget] = useState<BudgetWithSpend | null>(null);
+  /** The cap whose pause/resume or delete is in flight, so its row can wait. */
+  const [budgetPendingId, setBudgetPendingId] = useState<string | null>(null);
   // Clicking any task row on this page opens the shared TaskDetailModal —
   // same component the /tasks page uses so the "read a task's full body"
   // affordance is identical everywhere.
@@ -148,6 +166,23 @@ export function ProjectDetailClient({
     if (fresh && fresh !== detailTask) setDetailTask(fresh);
   }, [tasks, detailTask]);
   const mentionUsers = useMemo(() => users.map((u) => ({ id: u.id, name: u.name })), [users]);
+
+  /**
+   * The categories this PROJECT has already capped, in the shape
+   * `NewBudgetForm` wants (finance-planning-010). `budgets` is already scoped
+   * to this project by the RSC, so a Salaries cap in another project cannot
+   * reach this list — which is the whole of money-018's rule, got for free
+   * rather than re-derived: `createBudgetAction` refuses a duplicate only
+   * within the same project, so disabling more than this would be the UI
+   * forbidding what the server permits.
+   */
+  const activeBudgetCaps = useMemo(
+    () =>
+      budgets
+        .filter((b) => b.active)
+        .map((b) => ({ projectId: b.projectId, category: b.category })),
+    [budgets]
+  );
 
   /**
    * Is one of the header's write paths already running? projects-012.
@@ -251,6 +286,46 @@ export function ProjectDetailClient({
       return;
     }
     toast.success("Task deleted");
+    refresh();
+  }
+
+  /**
+   * Pause or resume one cap (finance-planning-010).
+   *
+   * Deliberately NOT behind `claim()`: `busyRef` is the HEADER's single-writer
+   * guard, and sharing it would make pausing a budget disable Archive and
+   * Delete. The per-row `budgetPendingId` is the equivalent here, and it is the
+   * shape /budgets already uses for the same three controls.
+   */
+  async function handleBudgetToggle(b: BudgetWithSpend) {
+    setBudgetPendingId(b.id);
+    const res = await updateBudgetAction({ budgetId: b.id, active: !b.active });
+    setBudgetPendingId(null);
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    toast.success(b.active ? "Budget paused" : "Budget resumed");
+    refresh();
+  }
+
+  async function handleBudgetDelete(b: BudgetWithSpend) {
+    const ok = await confirm({
+      title: `Delete the ${b.category} budget?`,
+      description:
+        "Spending continues, you just won't get alerts anymore. Caps on the same category in other projects aren't touched.",
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setBudgetPendingId(b.id);
+    const res = await deleteBudgetAction(b.id);
+    setBudgetPendingId(null);
+    if (!res.success) {
+      toast.error(res.error);
+      return;
+    }
+    toast.success("Budget deleted");
     refresh();
   }
 
@@ -587,17 +662,34 @@ export function ProjectDetailClient({
             <h2 className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-fg-muted">
               {t.projects.budgets}
             </h2>
-            {/* projects-003 — see canSeeCompanyFinances. The section above is
-                gated per-project; this link is company-wide, so it is gated
-                company-wide. */}
-            {canSeeCompanyFinances && (
-              <Link
-                href="/budgets"
-                className="text-xs font-medium text-primary-strong hover:underline"
-              >
-                All company budgets →
-              </Link>
-            )}
+            <div className="flex items-center gap-3">
+              {/* finance-planning-010. `canManage` is `canManageProject`, the
+                  gate `createBudgetAction` itself enforces, so the member who
+                  supervises this project — the beneficiary of the escape hatch
+                  documented in lib/auth/project-permissions.ts — finally has
+                  somewhere to use it. The status check is that action's other
+                  refusal ("Can't add budgets to an archived project"), the same
+                  pair the New-task button above is gated on. */}
+              {canManage && project.status !== "archived" && (
+                <button
+                  onClick={() => setNewBudgetOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-bold text-primary-fg shadow-[0_0_20px_rgb(var(--primary)_/_var(--glow-shadow-opacity))] transition-transform hover:scale-[1.03] active:scale-95"
+                >
+                  <Plus className="h-3.5 w-3.5" aria-hidden="true" /> New budget
+                </button>
+              )}
+              {/* projects-003 — see canSeeCompanyFinances. The section above is
+                  gated per-project; this link is company-wide, so it is gated
+                  company-wide. */}
+              {canSeeCompanyFinances && (
+                <Link
+                  href="/budgets"
+                  className="text-xs font-medium text-primary-strong hover:underline"
+                >
+                  All company budgets →
+                </Link>
+              )}
+            </div>
           </header>
           {budgets.length === 0 ? (
             <p className="text-sm text-fg-muted">No budgets set for this project yet.</p>
@@ -609,11 +701,24 @@ export function ProjectDetailClient({
                 const pct = Math.min(1, b.percentUsed) * 100;
                 const over = b.percentUsed >= 1;
                 const warn = b.percentUsed >= 0.8 && !over;
+                const pending = budgetPendingId === b.id;
                 return (
                   <li key={b.id} className="rounded-xl border border-border bg-bg px-4 py-3">
-                    <div className="mb-1 flex items-center justify-between">
-                      <p className="text-sm font-semibold">{b.category}</p>
-                      <span className="font-mono text-xs text-fg-muted">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <p className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+                        <span className="truncate">{b.category}</span>
+                        {/* A paused cap rendered exactly like a live one. That
+                            was survivable while this list was read-only; it is
+                            not, now that the row carries a Resume button —
+                            `active: false` means no 80%/100% alert fires, and
+                            that is the whole difference between the two. */}
+                        {!b.active && (
+                          <span className="shrink-0 rounded-full bg-glass/[0.06] px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg-muted">
+                            Paused
+                          </span>
+                        )}
+                      </p>
+                      <span className="shrink-0 font-mono text-xs text-fg-muted">
                         {money(b.monthToDateSpend)} / {money(b.monthlyLimit)}
                       </span>
                     </div>
@@ -626,6 +731,55 @@ export function ProjectDetailClient({
                         style={{ width: `${pct}%` }}
                       />
                     </div>
+                    {/* finance-planning-010. `canManage` only — deliberately NOT
+                        also `status !== "archived"`, unlike the New-budget button
+                        above: `updateBudgetAction` and `deleteBudgetAction` ask
+                        `canManageProject` and nothing about the project's status,
+                        and CLAUDE.md's rule is that the two permission layers
+                        agree. Correcting or removing a stale cap on a finished
+                        project is exactly when someone would want to.
+
+                        Each control names the category, like /budgets' cards do,
+                        because "Pause" three times over tells a screen-reader
+                        user nothing about which cap. */}
+                    {canManage && (
+                      <div className="mt-2 flex flex-wrap items-center gap-1 text-xs">
+                        <button
+                          onClick={() => setEditingBudget(b)}
+                          disabled={pending}
+                          aria-label={`Edit ${b.category} budget cap`}
+                          className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg disabled:opacity-50"
+                        >
+                          <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit cap
+                        </button>
+                        <button
+                          onClick={() => handleBudgetToggle(b)}
+                          disabled={pending}
+                          aria-label={
+                            b.active ? `Pause ${b.category} budget` : `Resume ${b.category} budget`
+                          }
+                          className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-fg-muted transition-colors hover:bg-surface-hover hover:text-fg disabled:opacity-50"
+                        >
+                          {b.active ? (
+                            <>
+                              <Pause className="h-3.5 w-3.5" aria-hidden="true" /> Pause
+                            </>
+                          ) : (
+                            <>
+                              <Play className="h-3.5 w-3.5" aria-hidden="true" /> Resume
+                            </>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => handleBudgetDelete(b)}
+                          disabled={pending}
+                          aria-label={`Delete ${b.category} budget`}
+                          className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> Delete
+                        </button>
+                      </div>
+                    )}
                   </li>
                 );
               })}
@@ -688,6 +842,50 @@ export function ProjectDetailClient({
           }}
         />
       </Modal>
+
+      {/* Create a cap pre-scoped to this project — the shared form locks the
+          project field via forcedProjectId, exactly as TaskForm does above
+          (finance-planning-010). The form itself is
+          components/budgets/budget-forms.tsx, the same one /budgets renders, so
+          the cap rule in lib/schemas/budget.ts cannot be enforced differently
+          on the two screens. */}
+      <Modal
+        open={newBudgetOpen}
+        onClose={() => setNewBudgetOpen(false)}
+        title="New budget"
+        description={`Pick an expense category and the monthly cap for ${project.name}. You can pause or remove it later.`}
+      >
+        <NewBudgetForm
+          activeCaps={activeBudgetCaps}
+          projects={[{ id: project.id, name: project.name }]}
+          forcedProjectId={project.id}
+          onClose={() => setNewBudgetOpen(false)}
+          onCreated={() => {
+            setNewBudgetOpen(false);
+            refresh();
+          }}
+        />
+      </Modal>
+
+      {/* Mounted only while a cap is being corrected — see `editingBudget`. */}
+      {editingBudget && (
+        <Modal
+          open
+          onClose={() => setEditingBudget(null)}
+          title={`Edit the ${editingBudget.category} cap`}
+          description={`Monthly cap for ${editingBudget.category} in ${project.name}. This moves the line spending is measured against; no expense already recorded is touched.`}
+          size="sm"
+        >
+          <EditBudgetLimitForm
+            budget={editingBudget}
+            onClose={() => setEditingBudget(null)}
+            onSaved={() => {
+              setEditingBudget(null);
+              refresh();
+            }}
+          />
+        </Modal>
+      )}
 
       {/* sec-016. Both task affordances read lib/tasks/task-permissions.ts, the
           same module updateTaskStatusAction and deleteTaskAction call, because

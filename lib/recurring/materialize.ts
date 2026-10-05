@@ -31,6 +31,31 @@
 
 import type { RecurringRule } from "@prisma/client";
 
+/**
+ * The fields the calendar predicates actually read — the schedule, with none of
+ * the money or the ownership.
+ *
+ * Stated as its own interface rather than taking `RecurringRule` because
+ * /recurring now asks the same questions from the BROWSER (finance-planning-020),
+ * and what reaches the browser is `RecurringRuleClient`: `amount` is a `number`
+ * rather than a `Prisma.Decimal` and the dates are ISO strings, because a
+ * Decimal cannot cross the server/client boundary. A `RecurringRule` is
+ * structurally assignable to this, so every existing caller is unaffected.
+ */
+export interface RuleSchedule {
+  active: boolean;
+  /** `"monthly" | "weekly"`; anything else never fires. */
+  frequency: string;
+  dayOfMonth: number | null;
+  dayOfWeek: number | null;
+  startDate: Date;
+}
+
+/** A schedule plus how far through it the materializer has already got. */
+export interface RuleScheduleProgress extends RuleSchedule {
+  lastMaterializedAt: Date | null;
+}
+
 export interface MaterializedTransaction {
   ruleId: string;
   companyId: string;
@@ -98,6 +123,19 @@ export const MAX_CATCHUP_OCCURRENCES = 12;
 export const MAX_CATCHUP_LOOKBACK_DAYS = 400;
 
 /**
+ * How far FORWARD `nextDueDateFor` will look before giving up and saying
+ * nothing is scheduled.
+ *
+ * The longest gap between two consecutive occurrences of either frequency is 31
+ * days (a monthly rule on the 1st, materialized on 1 December, next due 1
+ * January), so 45 answers every real schedule with a fortnight of margin. Its
+ * other job is to terminate the walk for a rule that can NEVER fire — a monthly
+ * row with a null `dayOfMonth`, an unknown frequency — which would otherwise
+ * walk to the end of time looking for a day that does not exist.
+ */
+export const NEXT_DUE_HORIZON_DAYS = 45;
+
+/**
  * Decide whether a single rule should fire on the given date.
  *
  * Monthly rule:
@@ -111,8 +149,11 @@ export const MAX_CATCHUP_LOOKBACK_DAYS = 400;
  * This is a pure per-day predicate: it knows nothing about whether the rule has
  * already fired. `dueDatesFor` owns that, and calls this once per candidate
  * day, which is what makes catch-up possible without a second calendar.
+ *
+ * Takes `RuleSchedule`, not `RecurringRule`, so the card can share this exact
+ * calendar rather than restate it — see that interface.
  */
-export function isRuleDueOn(rule: RecurringRule, when: Date): boolean {
+export function isRuleDueOn(rule: RuleSchedule, when: Date): boolean {
   if (!rule.active) return false;
   // Don't fire before the rule's start date (avoids backfilling history).
   if (when < startOfDayUTC(rule.startDate)) return false;
@@ -188,6 +229,56 @@ export function dueDatesFor(
     else deferred += 1;
   }
   return { dates, deferred, truncatedLookback };
+}
+
+/**
+ * The single date this rule will post next, or null if it will not post at all.
+ *
+ * finance-planning-020 — THE CARD HAD NO ANSWER TO THE ONLY QUESTION ASKED OF
+ * IT. /recurring promises that rules "post on their own", and showed Frequency,
+ * Created, Generated N txns and the raw `lastMaterializedAt` stamp. None of
+ * those says when the money leaves, so a rule that had missed a month, a rule
+ * suspended because its author left, and a rule that had just double-posted all
+ * rendered identically.
+ *
+ * It is `dueDatesFor`'s read-only twin and MUST stay the same calendar: same
+ * `(lastMaterializedAt, …]` window floored at `startDate`, same
+ * `MAX_CATCHUP_LOOKBACK_DAYS` floor, same `isRuleDueOn` (so the same
+ * short-month clamp). A card with its own date arithmetic would be a second
+ * calendar, and the first month the two disagreed the customer would be
+ * trusting a date nothing is going to honour.
+ * `tests/lib/recurring/next-due.test.ts` asserts the agreement directly.
+ *
+ * A DATE IN THE PAST IS A CORRECT ANSWER, and the reason this is worth
+ * rendering. If the job has not run since August, what it will post next is
+ * September's occurrence, so September is what this returns — on the card, a
+ * past date is the only visible evidence that the automation stopped. Skipping
+ * ahead to the next future occurrence would hide exactly that.
+ *
+ * It does not know about the two suspensions that live outside the schedule: a
+ * rule whose author was deactivated is left untouched by the cron (`active`
+ * stays true) and a rule in a soft-deleted workspace is never loaded. Callers
+ * own those, because neither fact is on the row this reads.
+ */
+export function nextDueDateFor(rule: RuleScheduleProgress, when: Date): Date | null {
+  const today = startOfDayUTC(when);
+  const startDay = startOfDayUTC(rule.startDate);
+  // Identical to `dueDatesFor`'s `walkFrom`, deliberately duplicated in shape
+  // rather than shared, because that function also builds the list and reports
+  // truncation and neither is wanted here.
+  const firstCandidate = rule.lastMaterializedAt
+    ? laterOf(addDaysUTC(startOfDayUTC(rule.lastMaterializedAt), 1), startDay)
+    : startDay;
+  const walkFrom = laterOf(firstCandidate, addDaysUTC(today, -MAX_CATCHUP_LOOKBACK_DAYS));
+  // Measured from whichever of the two is later: a rule whose first candidate
+  // is already in the future (a future `startDate`) needs the horizon ahead of
+  // THAT, not ahead of today.
+  const horizon = addDaysUTC(laterOf(walkFrom, today), NEXT_DUE_HORIZON_DAYS);
+
+  for (let day = walkFrom; day.getTime() <= horizon.getTime(); day = addDaysUTC(day, 1)) {
+    if (isRuleDueOn(rule, day)) return day;
+  }
+  return null;
 }
 
 /**

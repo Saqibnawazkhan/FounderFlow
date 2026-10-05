@@ -42,7 +42,10 @@ const config: Config = {
           // Use for any `text-*` utility; keep DEFAULT for fills/borders.
           strong: "rgb(var(--primary-strong) / <alpha-value>)",
         },
-        // Emerald ramp + neutral, replacing the retired cyan/pink accents.
+        // Emerald ramp + neutral — the BRAND accents, deliberately narrow (see
+        // the rebrand_project_colors migration). Categorical data does NOT use
+        // these; it uses the `cat-*` ramp below, which exists because four
+        // shades of one green cannot separate ten expense categories.
         // Same split as `primary`: DEFAULT for fills/borders/tints, `strong`
         // is the TEXT-ONLY variant that clears WCAG AA on its surface.
         forest: {
@@ -56,6 +59,59 @@ const config: Config = {
         slate: {
           DEFAULT: "rgb(var(--slate) / <alpha-value>)",
           strong: "rgb(var(--slate-strong) / <alpha-value>)",
+        },
+
+        // CATEGORICAL — ten hues for categorical DATA (chart marks, project
+        // swatches), driven by --cat-1 … --cat-10 in globals.css, which carry a
+        // light value AND a dark value. Spelled out one by one rather than
+        // generated in a loop: Tailwind's content scanner only sees class
+        // strings that exist as literals in the source, so a generated
+        // `bg-cat-${n}` at a call site would compile to nothing. The literals
+        // live in COLOR_CLASSES (components/projects/project-card.tsx), which
+        // is inside the content globs.
+        //
+        // Same DEFAULT/strong split as everything above: `bg-cat-3` for fills
+        // and tints (`bg-cat-3/10`), `text-cat-3-strong` for text. Not
+        // semantic: `cat-3` is the third categorical hue, not a warning.
+        "cat-1": {
+          DEFAULT: "rgb(var(--cat-1) / <alpha-value>)",
+          strong: "rgb(var(--cat-1-strong) / <alpha-value>)",
+        },
+        "cat-2": {
+          DEFAULT: "rgb(var(--cat-2) / <alpha-value>)",
+          strong: "rgb(var(--cat-2-strong) / <alpha-value>)",
+        },
+        "cat-3": {
+          DEFAULT: "rgb(var(--cat-3) / <alpha-value>)",
+          strong: "rgb(var(--cat-3-strong) / <alpha-value>)",
+        },
+        "cat-4": {
+          DEFAULT: "rgb(var(--cat-4) / <alpha-value>)",
+          strong: "rgb(var(--cat-4-strong) / <alpha-value>)",
+        },
+        "cat-5": {
+          DEFAULT: "rgb(var(--cat-5) / <alpha-value>)",
+          strong: "rgb(var(--cat-5-strong) / <alpha-value>)",
+        },
+        "cat-6": {
+          DEFAULT: "rgb(var(--cat-6) / <alpha-value>)",
+          strong: "rgb(var(--cat-6-strong) / <alpha-value>)",
+        },
+        "cat-7": {
+          DEFAULT: "rgb(var(--cat-7) / <alpha-value>)",
+          strong: "rgb(var(--cat-7-strong) / <alpha-value>)",
+        },
+        "cat-8": {
+          DEFAULT: "rgb(var(--cat-8) / <alpha-value>)",
+          strong: "rgb(var(--cat-8-strong) / <alpha-value>)",
+        },
+        "cat-9": {
+          DEFAULT: "rgb(var(--cat-9) / <alpha-value>)",
+          strong: "rgb(var(--cat-9-strong) / <alpha-value>)",
+        },
+        "cat-10": {
+          DEFAULT: "rgb(var(--cat-10) / <alpha-value>)",
+          strong: "rgb(var(--cat-10-strong) / <alpha-value>)",
         },
 
         // Semantic — DEFAULT for fills/borders/tints; `strong` is the text-safe

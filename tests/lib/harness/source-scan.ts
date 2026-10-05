@@ -81,6 +81,8 @@ const BACKSLASH = String.fromCharCode(92);
  * division-or-nothing (`font: 12px/1.5`, `calc(100% / 3)`, `grid-area: 1 / 2`).
  * Reading one of those as the start of a regex literal skips real text.
  */
+import { readFileSync } from "node:fs";
+
 export type Dialect = "ts" | "css";
 
 /** Identifier characters, for reading the word before a `/` back out. */
@@ -178,7 +180,48 @@ function skipRegex(src: string, at: number): number {
   return i;
 }
 
+/**
+ * CRLF -> LF, before anything looks at the text.
+ *
+ * `core.autocrlf` is true on at least one machine here, so a `git checkout`
+ * writes the working tree with CRLF while every guard in this suite is written
+ * against `\n` — a backslash-newline fold to join a shell continuation, `^`
+ * and `$` in multiline mode, `split` on a newline. A guard that reads CRLF
+ * therefore stops seeing the parts of the file it exists to police, and does
+ * it SILENTLY.
+ *
+ * (Those patterns are described rather than written out because a regex ending
+ * in a star and a slash closes this very comment — which is how this paragraph
+ * broke the build once already.)
+ *
+ * That is not hypothetical: on 2026-10-05 `tests/ops/backup-workflow.test.ts`
+ * reported "the pg_dump call passes no --schema filter" about a file that
+ * carries `--schema=public` on the line after the one it managed to read. The
+ * same commit had been green an hour before, because the working tree still
+ * held LF from before a checkout rewrote it.
+ *
+ * `.gitattributes` now pins the working tree to LF, which is the real fix. This
+ * is the second defence, and it is here rather than only there because a zip
+ * download, a clone with different settings or an editor that "helpfully"
+ * converts on save is not obliged to honour a .gitattributes file. The two are
+ * independent on purpose: tests/lib/harness/source-scan.test.ts feeds CRLF
+ * through these functions DIRECTLY, so this guard cannot pass on the strength
+ * of the checkout being clean.
+ */
+export function normalizeEol(src: string): string {
+  return src.replace(/\r\n?/g, "\n");
+}
+
+/**
+ * Read a source file the way every guard in this suite wants it: UTF-8, LF.
+ * Prefer this over a bare `readFileSync(p, "utf8")` in a structural test.
+ */
+export function readSource(path: string): string {
+  return normalizeEol(readFileSync(path, "utf8"));
+}
+
 function scan(src: string, keepStrings: boolean, dialect: Dialect): string {
+  src = normalizeEol(src);
   const out = src.split("");
   const n = src.length;
   const ts = dialect === "ts";

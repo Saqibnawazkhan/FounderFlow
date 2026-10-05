@@ -26,30 +26,30 @@ import {
 } from "recharts";
 import { useMoney } from "@/lib/hooks/useMoney";
 import { useNumberFormat } from "@/lib/i18n/use-t";
+import {
+  CHART_AXIS,
+  CHART_SERIES,
+  CHART_TOOLTIP_STYLE,
+  categoricalAt,
+} from "@/lib/colors/categorical";
 
-const C_PRIMARY = "#10B981";
-const C_FOREST = "#047857";
-const C_MINT = "#6EE7B7";
-const C_DEEP = "#065F46";
-const C_SLATE = "#94a3b8";
-export const PALETTE = [
-  C_PRIMARY,
-  C_FOREST,
-  C_MINT,
-  C_DEEP,
-  "#34D399",
-  "#64748B",
-  "#334155",
-  "#A7F3D0",
-];
-
-const TOOLTIP_STYLE = {
-  borderRadius: 12,
-  border: "1px solid rgb(var(--border))",
-  background: "rgb(var(--card))",
-  color: "rgb(var(--fg))",
-  boxShadow: "0 10px 30px rgb(0 0 0 / 0.18)",
-};
+/**
+ * Colours come from lib/colors/categorical.ts and resolve to
+ * `rgb(var(--cat-N))`, never to a hex literal.
+ *
+ * The `PALETTE` this replaces was eight entries, five of which were the emerald
+ * ramp at five lightnesses (emerald-500/700/300/800/400) plus two slates and a
+ * near-white mint. For `EXPENSE_CATEGORIES`, which is ten long, that meant two
+ * repeats outright AND a set that collapses to one band under deuteranopia and
+ * to a grey ramp in greyscale. It was also exported from this file while
+ * reports-client.tsx kept a byte-for-byte copy of it inline (importing from
+ * here would pull recharts into the initial chunk) — two private copies with no
+ * mechanism keeping them equal. Both now import the shared module, which has no
+ * recharts dependency, so the split survives and the copies are gone.
+ *
+ * A bare six-digit hex literal anywhere in this file is now a test failure —
+ * see tests/lib/colors/categorical-palette.test.ts.
+ */
 
 export function CashFlowBarChart({
   data,
@@ -69,13 +69,19 @@ export function CashFlowBarChart({
       >
         <CartesianGrid
           strokeDasharray="3 3"
-          stroke={C_SLATE}
+          stroke={CHART_AXIS}
           strokeOpacity={0.18}
           vertical={false}
         />
-        <XAxis dataKey="month" stroke={C_SLATE} fontSize={11} tickLine={false} axisLine={false} />
+        <XAxis
+          dataKey="month"
+          stroke={CHART_AXIS}
+          fontSize={11}
+          tickLine={false}
+          axisLine={false}
+        />
         <YAxis
-          stroke={C_SLATE}
+          stroke={CHART_AXIS}
           fontSize={11}
           tickLine={false}
           axisLine={false}
@@ -87,10 +93,10 @@ export function CashFlowBarChart({
           // 60px default gutter. See lib/format.ts's adopter caveat.
           width={76}
         />
-        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
-        <Bar dataKey="investments" fill={C_PRIMARY} radius={[8, 8, 0, 0]} />
-        <Bar dataKey="revenue" fill={C_FOREST} radius={[8, 8, 0, 0]} />
-        <Bar dataKey="expenses" fill={C_MINT} radius={[8, 8, 0, 0]} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={CHART_TOOLTIP_STYLE} />
+        <Bar dataKey="investments" fill={CHART_SERIES.investments} radius={[8, 8, 0, 0]} />
+        <Bar dataKey="revenue" fill={CHART_SERIES.revenue} radius={[8, 8, 0, 0]} />
+        <Bar dataKey="expenses" fill={CHART_SERIES.expenses} radius={[8, 8, 0, 0]} />
       </BarChart>
     </ResponsiveContainer>
   );
@@ -121,10 +127,10 @@ export function CategoriesPieChart({
           aria-label="Expense breakdown by category"
         >
           {data.map((_, i) => (
-            <Cell key={i} fill={PALETTE[i % PALETTE.length]} />
+            <Cell key={i} fill={categoricalAt(i)} />
           ))}
         </Pie>
-        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={CHART_TOOLTIP_STYLE} />
       </PieChart>
     </ResponsiveContainer>
   );
@@ -150,13 +156,13 @@ export function FoundersHorizontalBar({
       >
         <CartesianGrid
           strokeDasharray="3 3"
-          stroke={C_SLATE}
+          stroke={CHART_AXIS}
           strokeOpacity={0.18}
           horizontal={false}
         />
         <XAxis
           type="number"
-          stroke={C_SLATE}
+          stroke={CHART_AXIS}
           fontSize={11}
           tickLine={false}
           axisLine={false}
@@ -169,15 +175,15 @@ export function FoundersHorizontalBar({
         <YAxis
           type="category"
           dataKey="name"
-          stroke={C_SLATE}
+          stroke={CHART_AXIS}
           fontSize={11}
           tickLine={false}
           axisLine={false}
           width={70}
         />
-        <Tooltip formatter={(v: number) => money(v)} contentStyle={TOOLTIP_STYLE} />
-        <Bar dataKey="investments" fill={C_PRIMARY} radius={[0, 4, 4, 0]} />
-        <Bar dataKey="expenses" fill={C_MINT} radius={[0, 4, 4, 0]} />
+        <Tooltip formatter={(v: number) => money(v)} contentStyle={CHART_TOOLTIP_STYLE} />
+        <Bar dataKey="investments" fill={CHART_SERIES.investments} radius={[0, 4, 4, 0]} />
+        <Bar dataKey="expenses" fill={CHART_SERIES.expenses} radius={[0, 4, 4, 0]} />
       </BarChart>
     </ResponsiveContainer>
   );

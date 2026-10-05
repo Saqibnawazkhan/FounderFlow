@@ -20,7 +20,7 @@
  * the customer and that.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 /*
  * THE THREE CHARTS ARE STUBBED, and this is a FLAKE FIX, not a convenience.
@@ -89,6 +89,52 @@ function thisMonthIso(): string {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 15)).toISOString();
 }
 
+/*
+ * THE CLOCK IS FROZEN, and that is not tidiness.
+ *
+ * `thisMonthIso()` below reads `new Date()`, so every fixture in this file was
+ * dated relative to whenever the suite happened to run. The audit recorded this
+ * exact shape as A55 and counted twelve files carrying it: "green all day and
+ * red in one window". On 2026-10-05 this file failed once in a full-suite run
+ * and passed on the next, with no code change between them.
+ *
+ * A fixed instant removes the window. Mid-month on purpose: the 15th is far
+ * from both month boundaries, so a UTC-vs-local day difference (the suite pins
+ * TZ=America/Bogota, five hours behind UTC) cannot move a fixture into or out
+ * of the period being asserted.
+ */
+const FROZEN_NOW = new Date("2026-06-15T12:00:00.000Z");
+
+/**
+ * The CLAMP notices on screen, by their own copy — not every `role="status"`.
+ *
+ * `/reports` renders TWO polite live regions now: the range-clamp notice this
+ * file is about (reports-client.tsx:1155, gated on `range.requestedStart`) and
+ * the ledger-coverage notice RES-001 added afterwards (:1170, gated on
+ * `coverageNote`). `queryByRole("status")` could not tell them apart, so this
+ * test asserted "no status region anywhere" and would have failed the day any
+ * unrelated live region appeared on the page — blaming the clamp for it.
+ *
+ * Matching the clamp's own wording is what makes the assertion mean what its
+ * name says. The sibling test above pins that wording from the other side, so
+ * the two cannot drift apart silently.
+ */
+function clampNotices(): string[] {
+  return screen
+    .queryAllByRole("status")
+    .map((el) => el.textContent ?? "")
+    .filter((t) => /cannot chart|most recent/i.test(t));
+}
+
+beforeAll(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(FROZEN_NOW);
+});
+
+afterAll(() => {
+  vi.useRealTimers();
+});
+
 describe("rep-009 — the narrowed range explains itself on screen", () => {
   it("says so when a millennium-old row would open an absurd window", async () => {
     const user = userEvent.setup();
@@ -104,6 +150,11 @@ describe("rep-009 — the narrowed range explains itself on screen", () => {
     await user.click(screen.getByRole("button", { name: "All time" }));
     const notice = screen.getByRole("status");
     expect(notice.textContent ?? "").toMatch(/cannot chart|most recent/i);
+    // And the same helper the silence test relies on must SEE it here. Without
+    // this line `clampNotices()` could return [] for any reason — a renamed
+    // role, a reworded notice — and the silence assertion below would pass
+    // while asserting nothing at all.
+    expect(clampNotices(), "clampNotices() is blind to the notice it filters for").toHaveLength(1);
   });
 
   it("stays silent for an ordinary ledger, so the notice means something", async () => {
@@ -113,8 +164,8 @@ describe("rep-009 — the narrowed range explains itself on screen", () => {
     const user = userEvent.setup();
     render(<ReportsClient transactions={[txn(thisMonthIso())]} users={users} company={company} />);
     await user.click(screen.getByRole("button", { name: "All time" }));
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(clampNotices(), "the clamp notice fired on an ordinary ledger").toEqual([]);
     await user.click(screen.getByRole("button", { name: "1 year" }));
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(clampNotices(), "the clamp notice fired on an ordinary ledger").toEqual([]);
   });
 });

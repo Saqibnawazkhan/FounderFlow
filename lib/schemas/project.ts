@@ -5,20 +5,87 @@
  */
 
 import { z } from "zod";
+import { CATEGORICAL_SLUGS } from "@/lib/colors/categorical";
 
-// Fixed palette aligned with the design tokens in app/globals.css. Add to
-// this list when a new accent color is wired into Tailwind — keeping the
-// allowed set narrow means the project card visuals stay legible across
-// dark/light themes.
-//
-// Rebrand note: the old decorative accents ("cyan", "pink") and the generic
-// "primary"/"info" slugs were retired in favour of the emerald ramp plus a
-// neutral. Existing rows were rewritten by the
-// `rebrand_project_colors` migration, so no persisted slug outside this
-// tuple should survive. "emerald" is the brand green (it renders with the
-// `primary` tokens — see COLOR_CLASSES in components/projects/project-card.tsx).
-export const PROJECT_COLORS = ["emerald", "forest", "mint", "slate", "warning"] as const;
+/**
+ * The project swatch palette, in two tiers.
+ *
+ * ── TIER 1: what the picker OFFERS ──
+ *
+ * `PROJECT_SWATCHES` is the ten-hue categorical ramp from
+ * lib/colors/categorical.ts — the same ten colours the charts draw with, so the
+ * product has ONE categorical palette rather than one per surface. It widened
+ * from five because five shades of the same emerald ramp cannot tell ten
+ * projects apart, which is the same defect the charts had with ten expense
+ * categories.
+ *
+ * ── TIER 2: what the schema still ACCEPTS ──
+ *
+ * `LEGACY_PROJECT_COLORS` is the previous palette. These five slugs are sitting
+ * in the `Project.color` TEXT column of a live database right now, so dropping
+ * them from the zod enum would not be a palette change — it would make every
+ * existing project fail validation the next time someone edited its name.
+ * `UpdateProjectSchema` re-parses the row's own colour on every save.
+ *
+ * So `PROJECT_COLORS` — the accepted set, and the only thing the enum is built
+ * from — is tier 1 plus tier 2. The split is what lets the picker move forward
+ * while the column stays readable. NO MIGRATION: the column is TEXT, the change
+ * is purely additive, and every legacy slug keeps the exact rendering it has
+ * today (see COLOR_CLASSES in components/projects/project-card.tsx). An existing
+ * customer's projects look identical after this ships; they move onto the new
+ * ramp one at a time, when somebody deliberately picks a new colour.
+ *
+ * ── WHY THE NEW SLUGS ARE `cat-N` AND NOT HUE NAMES ──
+ *
+ * Two reasons, and the second is the binding one:
+ *
+ *  • A stored "pink" is a promise about a hue. `rebrand_project_colors` exists
+ *    because the previous palette made that promise and then had to rewrite
+ *    live rows to get out of it. "cat-7" only claims to be the seventh
+ *    categorical colour, which survives any retune.
+ *  • Two of the ten hues are NAMED cyan and pink — the two slugs that migration
+ *    retired, with `UPDATE "Project" SET "color" = 'emerald' WHERE "color" IN
+ *    ('primary', 'cyan')` documented as "idempotent and safe to re-run". Making
+ *    `cyan` writable again would quietly falsify that and arm a re-run to
+ *    recolour live projects. `cat-N` cannot match those WHERE clauses, so the
+ *    migration stays exactly as safe as it says it is and prisma/ needs no
+ *    edit. The hue NAMES still exist, in `CATEGORICAL_LABELS`, where the picker
+ *    reads them for `aria-label`.
+ */
+export const PROJECT_SWATCHES = CATEGORICAL_SLUGS;
+
+/**
+ * The pre-2026-10 palette. Persisted, still rendered, no longer offered.
+ *
+ * `emerald` is the brand green and renders with the `primary` tokens; `forest`,
+ * `mint` and `slate` are the brand ramp; `warning` is the semantic amber. None
+ * of them is removed or remapped — a row holding one keeps painting what it
+ * painted yesterday.
+ */
+export const LEGACY_PROJECT_COLORS = ["emerald", "forest", "mint", "slate", "warning"] as const;
+
+/** Every slug the column may hold: the ten offered plus the five legacy. */
+export const PROJECT_COLORS = [...PROJECT_SWATCHES, ...LEGACY_PROJECT_COLORS] as const;
 export type ProjectColor = (typeof PROJECT_COLORS)[number];
+
+/** True for a slug that is still valid but no longer in the picker. */
+export function isLegacyProjectColor(slug: string): boolean {
+  return (LEGACY_PROJECT_COLORS as readonly string[]).indexOf(slug) !== -1;
+}
+
+/**
+ * The colour a NEW project starts on. The first offered swatch, i.e. the brand
+ * emerald — so the default is the same colour it has always been.
+ *
+ * It must be an OFFERED slug, and that is not a detail. The new-project modal
+ * hardcoded `"emerald"`, which is now a LEGACY slug its picker no longer shows:
+ * the dialog opened with ten swatches and none of them highlighted, and anyone
+ * who did not touch the picker created a project on a slug the palette has
+ * retired — so the legacy tier would have kept growing instead of draining.
+ * Found after the widening was otherwise finished, by reading the default back.
+ * `tests/lib/colors/categorical-palette.test.ts` now refuses a legacy default.
+ */
+export const DEFAULT_PROJECT_COLOR: ProjectColor = PROJECT_SWATCHES[0];
 
 // Lifecycle. Drives the default filter on /projects (archived hidden by
 // default) and shifts the card visual tone (on_hold dims; completed adds

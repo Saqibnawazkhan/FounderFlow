@@ -138,9 +138,23 @@ describe("notification fan-out (the single write path)", () => {
  *
  * So it is not trusted. This derives the answer from the call sites themselves:
  * an event whose EVERY site passes `skipInApp: true` cannot deliver in-app, and
- * one with even a single site that does not, can. `mention` is the case that
- * makes the distinction matter — chat skips it, `createCommentAction` does not,
- * so the switch stays honest and must stay offered.
+ * one with even a single site that does not, can.
+ *
+ * `dm` is the only event in the first group. The two mention events are the case
+ * that makes the distinction worth deriving rather than declaring: they look
+ * exactly like `dm` from the outside — same surface for `chat_mention`, same
+ * gesture, same conversational volume — and their rows are written all the same,
+ * because a badge saying "3 unread" cannot say that one of the three named you.
+ * (This paragraph used to claim chat's mention site passed `skipInApp` and
+ * `createCommentAction`'s did not. It never has: the "NOTHING else" case below
+ * has always asserted the opposite, and the two have disagreed in print since
+ * the suppression was narrowed back to DMs.)
+ *
+ * EMAIL IS NOT DERIVED THE SAME WAY, and cannot be: there is no per-call
+ * `skipEmail`, by choice. Email availability is a standing property of an event
+ * — chat's volume, not one caller's situation — so it is declared in
+ * `EVENT_DELIVERABLE_CHANNELS` and enforced by `notifyUsers`, and what is
+ * asserted below is that the declaration and the call sites' EVENTS agree.
  *
  * Comments are blanked before scanning. This very file, and the fan-out's own
  * doc comment, contain the literal text `skipInApp: true` in prose; without
@@ -249,13 +263,94 @@ describe("the preferences matrix cannot offer a switch nothing honours", () => {
     ).toBeGreaterThan(1);
   });
 
-  it("keeps the in-app switch on `mention`, in chat as well as in comments", () => {
-    const mention = callSites().filter((s) => s.event === "mention");
+  it("keeps the in-app switch on BOTH kinds of @mention, in chat and in comments", () => {
+    // Was one event over two call sites; it is two events over one site each
+    // since the chat-email fix. The property is unchanged and still has to hold
+    // for both: being named is the one thing the Chat badge cannot report, so
+    // whichever surface it happens on, the durable row is what carries it.
+    const mention = callSites().filter((s) => s.event === "mention" || s.event === "chat_mention");
     expect(mention.length, "expected a chat site and a comments site").toBeGreaterThan(1);
     expect(
       mention.every((s) => !s.skipsInApp),
       "an @mention names a person and must stay in the durable list"
     ).toBe(true);
     expect(EVENT_DELIVERABLE_CHANNELS.mention.indexOf("inApp")).not.toBe(-1);
+    expect(EVENT_DELIVERABLE_CHANNELS.chat_mention.indexOf("inApp")).not.toBe(-1);
+  });
+
+  /**
+   * The chat-volume fix, pinned at the only place it can silently come undone.
+   *
+   * The owner's report (2026-10-05): "each chat message gets emailed too, should
+   * only come as a push notification and an in-app notification, not an email
+   * notification — a user in a busy channel will receive 100s of emails just
+   * from chat."
+   *
+   * The fix is a SEPARATION, not a deletion: `chat_mention` and `dm` lose
+   * email, `mention` — the identical gesture in a comment on a task or a money
+   * row — keeps it. Which means the fix is one string literal in each of two
+   * files, and the regression is a copy-paste between them. Both directions are
+   * asserted, because each one is a different silent defect: chat raising
+   * `mention` puts the emails back, and comments raising `chat_mention` silences
+   * a teammate tagged in a task comment without a single error anywhere.
+   */
+  it("raises chat_mention from chat and mention from comments, never the other way round", () => {
+    const sites = callSites();
+    const CHAT = "lib/actions/chat.ts";
+    const COMMENTS = "lib/actions/comments.ts";
+
+    const chatSites = sites.filter((s) => s.file === CHAT);
+    expect(chatSites.length, `no notifyUsers call sites found in ${CHAT}`).toBeGreaterThan(0);
+    expect(
+      Array.from(new Set(chatSites.map((s) => s.event))).sort(),
+      `${CHAT} may only raise the chat events — "mention" is the comment one, ` +
+        `deliverable by email, and raising it from here is the defect of 2026-10-05`
+    ).toEqual(["chat_mention", "dm"]);
+
+    const mentionSites = sites.filter((s) => s.event === "mention");
+    expect(
+      mentionSites.map((s) => s.file),
+      `"mention" is the comment event and ${COMMENTS} is the only place that may raise it`
+    ).toEqual([COMMENTS]);
+
+    const chatMentionSites = sites.filter((s) => s.event === "chat_mention");
+    expect(
+      chatMentionSites.map((s) => s.file),
+      `"chat_mention" is not deliverable by email; a comment raising it would ` +
+        `quietly stop emailing a teammate tagged on a task`
+    ).toEqual([CHAT]);
+  });
+
+  it("leaves email out of both chat events and keeps it on comment mentions", () => {
+    expect(
+      EVENT_DELIVERABLE_CHANNELS.chat_mention.indexOf("email"),
+      "chat mentions must not be emailable"
+    ).toBe(-1);
+    expect(
+      EVENT_DELIVERABLE_CHANNELS.dm.indexOf("email"),
+      "direct messages must not be emailable"
+    ).toBe(-1);
+    expect(
+      EVENT_DELIVERABLE_CHANNELS.mention.indexOf("email"),
+      "a comment mention still emails — the fix was a separation, not a deletion"
+    ).not.toBe(-1);
+  });
+
+  it("enforces the deliverable map where delivery happens, not only in the settings page", () => {
+    // EVENT_DELIVERABLE_CHANNELS spent its first life as a map the SETTINGS UI
+    // read and nothing else, which made it a description of behaviour rather
+    // than the behaviour: a stored NotificationPreference row saying
+    // `email: true` for an event whose email cell is never rendered was still
+    // honoured by the fan-out, and `updateNotificationPreferenceAction` accepts
+    // any (event, channel) pair in NOTIFY_EVENTS × NOTIFY_CHANNELS. If the
+    // intersection in notifyUsers is ever removed, chat email comes back for
+    // anyone holding such a row and the map goes quiet again — so the import is
+    // asserted here, and the behaviour itself in tests/lib/notify/fan-out.test.ts.
+    const src = stripComments(readFileSync(join(process.cwd(), "lib/notify/fan-out.ts"), "utf8"));
+    expect(
+      src.includes("EVENT_DELIVERABLE_CHANNELS"),
+      "lib/notify/fan-out.ts no longer consults EVENT_DELIVERABLE_CHANNELS, so the " +
+        "map is back to being decoration the settings page reads alone"
+    ).toBe(true);
   });
 });

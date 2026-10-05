@@ -24,7 +24,9 @@ import { isStorableMoneyScale } from "@/lib/format";
  * app/(app)/budgets/budgets-client.tsx, which uses `NewBudgetSchema` itself as
  * its resolver, so there is no mirror here to keep in step).
  *
- * ONE field for both schemas, so a correction cannot be the looser path. The
+ * ONE field for every path that accepts a cap — the create form, the update
+ * action and the edit-a-cap form's resolver below — so a correction cannot be
+ * the looser path. The
  * `v * 100` integer check the audit originally suggested was deliberately
  * declined on the transaction path because it loses precision and refuses large
  * legitimate amounts; `isStorableMoneyScale` (lib/format.ts, next to
@@ -54,3 +56,18 @@ export const UpdateBudgetSchema = z.object({
   monthlyLimit: monthlyLimitField.optional(),
   active: z.boolean().optional(),
 });
+
+/**
+ * The resolver for the edit-a-cap form on /budgets (finance-planning-006).
+ *
+ * `UpdateBudgetSchema` is the wire shape — a budget id plus whichever fields are
+ * being changed — which is not a form's shape: the form holds one required
+ * number and the id comes from the card, not from an input. So this is picked
+ * off `NewBudgetSchema` rather than redeclared, which is what guarantees the cap
+ * typed into the edit modal passes exactly the rule the create form and the
+ * action enforce. A redeclared `z.number().positive()` here would be a second
+ * copy of the money-002 rule and the obvious place for the two to drift.
+ */
+export const EditBudgetLimitSchema = NewBudgetSchema.pick({ monthlyLimit: true });
+
+export type EditBudgetLimitInput = z.infer<typeof EditBudgetLimitSchema>;

@@ -63,8 +63,28 @@ export async function checkBudgetThresholdAfterExpense({
   if (!projectId) return;
 
   try {
+    // ONE budget is evaluated, and the `orderBy` says which one
+    // (finance-planning-011). "One active budget per category per project" is
+    // the invariant the schema states and both halves of lib/actions/budgets.ts
+    // now enforce — but an action-layer guard cannot un-create the duplicate
+    // rows a customer's database may already hold (pause a cap, create the
+    // replacement, resume the first: three clicks, and nothing re-checked the
+    // invariant on the way back to active). A bare `findFirst` with no ordering
+    // evaluated whichever row Postgres happened to hand back, so which of two
+    // caps governed a project's alerting was arbitrary and the other one could
+    // never fire at all.
+    //
+    // STRICTEST CAP FIRST, deliberately. Where two rows disagree, one of them is
+    // going to be ignored and the only choice is which way to be wrong: the
+    // lowest cap crosses its thresholds first, so picking it can only notify
+    // EARLIER than the customer expects, while picking the highest is exactly
+    // the silent under-alerting this finding is about. Noise beats silence on
+    // money. Ties fall to the older row and then to the id, which makes the pick
+    // a total order — the figures in a Notification row are written once and
+    // read forever, so "reproducible" is part of being correct here.
     const budget = await db.budget.findFirst({
       where: { projectId, category, active: true, deletedAt: null },
+      orderBy: [{ monthlyLimit: "asc" }, { createdAt: "asc" }, { id: "asc" }],
     });
     if (!budget) return; // no budget for this category in this project
 
@@ -103,9 +123,12 @@ export async function checkBudgetThresholdAfterExpense({
     // threshold anyway — a sentinel only clears while its threshold is BELOW the
     // line, at which point `decideThreshold` would not have fired it.
     //
-    // The write pins the observed sentinel values, exactly like the claim further
-    // down: if a concurrent expense has just fired this threshold, this pass's
-    // snapshot is stale and it must not undo their claim.
+    // The write pins the observed sentinel values, on the same optimistic-
+    // concurrency principle as the claim further down: if a concurrent expense
+    // has just fired this threshold, this pass's snapshot is stale and it must
+    // not undo their claim. Both columns, here, because a re-arm is a correction
+    // to the state as a whole — the claim below pins only the sentinel its own
+    // decision read, and the comment there says why the two differ.
     let sentinels = {
       lastWarnedMonth: budget.lastWarnedMonth,
       lastAlertedMonth: budget.lastAlertedMonth,
@@ -191,26 +214,47 @@ export async function checkBudgetThresholdAfterExpense({
       // transaction" rule the whole sentinel scheme exists to enforce.
       //
       // The fix is optimistic concurrency, not a stronger isolation level:
-      // the WHERE pins the *exact* sentinel state this pass observed, so the
-      // second writer's update matches zero rows and it sends nothing. Under
-      // READ COMMITTED the loser blocks on the winner's row lock and then
-      // re-evaluates the predicate against the committed row, which is what
-      // makes one query sufficient. Both sentinels are pinned even on the
-      // warning path: if a concurrent pass just set lastAlertedMonth, our
-      // snapshot is stale and our decision was computed from it.
+      // the WHERE pins the sentinel state this pass's decision was computed
+      // from, so the second writer's update matches zero rows and it sends
+      // nothing. Under READ COMMITTED the loser blocks on the winner's row lock
+      // and then re-evaluates the predicate against the committed row, which is
+      // what makes one query sufficient.
+      //
+      // PIN WHAT THE DECISION READ, AND NOTHING ELSE (finance-planning-017).
+      // Pinning both columns on both paths looked safer and under-alerted: the
+      // alert branch of `decideThreshold` consults only `lastAlertedMonth`
+      // (threshold.ts), so an alert pass that also pinned `lastWarnedMonth` was
+      // displaced by a concurrent 80% warning pass, which legitimately sets that
+      // column. Two 850s on a 1,000 cap: the warning claims first, the alert's
+      // WHERE no longer matches, and the only thing the customer hears about a
+      // budget 70% over its cap is "at 85%" — with `lastAlertedMonth` still null,
+      // so nothing records that the alert is owed. The next expense on that
+      // budget does fire it, but if none lands that month it is never sent.
+      // Pinning only the one sentinel makes the race end where the equivalent
+      // serial sequence ends: 80% crossed, then 100% crossed, one message each.
+      //
+      // The WARNING path still pins both, and that is not symmetry for its own
+      // sake: its branch is bounded by `pct < ALERT_PCT`, so a concurrent pass
+      // that just set `lastAlertedMonth` makes "at 85%" stale news that must not
+      // be sent. Both paths still WRITE both columns on an alert, because an
+      // alert supersedes the 80% message for the rest of the month.
       //
       // It also has to happen FIRST. notifyUsers fires push and email as
       // un-rollback-able side effects, so claiming after the fan-out would
       // still let both writers mail before either lost.
+      //
+      // `sentinels`, not `budget.*`: the re-arm above may have just cleared one
+      // of these, and pinning the pre-re-arm values would make this claim match
+      // nothing and silently skip an alert we had decided to send.
+      const pinned =
+        decision.kind === "alert"
+          ? { lastAlertedMonth: sentinels.lastAlertedMonth }
+          : {
+              lastWarnedMonth: sentinels.lastWarnedMonth,
+              lastAlertedMonth: sentinels.lastAlertedMonth,
+            };
       const claimed = await tx.budget.updateMany({
-        where: {
-          id: budget.id,
-          // `sentinels`, not `budget.*`: the re-arm above may have just cleared
-          // one of these, and pinning the pre-re-arm values would make this claim
-          // match nothing and silently skip an alert we had decided to send.
-          lastWarnedMonth: sentinels.lastWarnedMonth,
-          lastAlertedMonth: sentinels.lastAlertedMonth,
-        },
+        where: { id: budget.id, ...pinned },
         data:
           decision.kind === "alert"
             ? { lastAlertedMonth: mk, lastWarnedMonth: mk }

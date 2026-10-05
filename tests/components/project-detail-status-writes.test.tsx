@@ -40,6 +40,15 @@ vi.mock("@/lib/actions/tasks", () => ({
   deleteTaskAction: vi.fn(),
 }));
 
+// Same reason as the comments stub below: the Budgets section's controls call
+// lib/actions/budgets (finance-planning-010), which imports lib/auth. Nothing
+// here clicks one.
+vi.mock("@/lib/actions/budgets", () => ({
+  createBudgetAction: vi.fn(),
+  updateBudgetAction: vi.fn(),
+  deleteBudgetAction: vi.fn(),
+}));
+
 // The task detail modal pulls in lib/actions/comments, which imports
 // lib/auth — next-auth's server entry point does not resolve under vitest.
 // The modal is never opened here, so a stub is enough.

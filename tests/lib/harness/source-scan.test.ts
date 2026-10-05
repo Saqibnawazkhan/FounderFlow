@@ -17,7 +17,7 @@
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import { codeOnly, dialectFor, stripComments } from "./source-scan";
+import { codeOnly, dialectFor, normalizeEol, stripComments } from "./source-scan";
 
 const ROOT = process.cwd();
 const TESTS_DIR = join(ROOT, "tests");
@@ -447,5 +447,68 @@ describe("no guard keeps a private source scanner (audit A40 + A49)", () => {
         /from "(?:\.\.\/)+(?:lib\/)?harness\/(?:source-scan|gate-graph)"/
       );
     });
+  });
+});
+
+/*
+ * CRLF, fed in DIRECTLY rather than read off disk.
+ *
+ * .gitattributes now pins the working tree to LF, which is the real fix for the
+ * 2026-10-05 incident: with CRLF, `tests/ops/backup-workflow.test.ts` tried to
+ * fold the pg_dump continuation on a backslash-newline, matched nothing, and
+ * reported that the dump passes no `--schema` filter about a file carrying
+ * `--schema=public` on the next line. Green on Linux CI, red on a Windows
+ * checkout of the same commit — the worst shape a guard can have, because the
+ * verdict depends on how the file was written rather than on what it says.
+ *
+ * These cases exist so that this scanner's own tolerance is tested INDEPENDENTLY
+ * of that file. Reading a fixture off disk would be normalised by .gitattributes
+ * before the scanner ever saw it, so the assertion would pass whether or not
+ * `normalizeEol` existed — a green test over an untested defence, which is this
+ * repo's single most recurrent defect. Building the CRLF in memory is the only
+ * way to discriminate between the two fixes.
+ */
+describe("the scanner tolerates CRLF, independently of .gitattributes", () => {
+  it("normalizeEol converts CRLF and lone CR, and leaves LF alone", () => {
+    expect(normalizeEol("a\r\nb")).toBe("a\nb");
+    expect(normalizeEol("a\rb")).toBe("a\nb");
+    expect(normalizeEol("a\nb")).toBe("a\nb");
+  });
+
+  it("blanks a line comment that ends in CRLF, rather than running past it", () => {
+    // Built in memory: with a \r before the newline, a scanner that ends a line
+    // comment on "\n" only would still terminate here — but one that MEASURES
+    // the line would carry the \r into the next token. The real failure this
+    // guards is the caller's: `stripComments` must hand back LF so the caller's
+    // own /\n/ anchors work.
+    const out = stripComments("const a = 1; // note\r\nconst b = 2;\r\n");
+    expect(out).toContain("const b = 2;");
+    expect(out, "stripComments handed back a \\r, so the caller's \\n anchors miss").not.toContain(
+      "\r"
+    );
+  });
+
+  it("folds a shell-style continuation after CRLF — the exact 2026-10-05 failure", () => {
+    // This is backup-workflow's `dumpInvocation` reduced to its essence: fold
+    // backslash-newline, then read the command. With CRLF and no normalisation
+    // the fold misses and the flags vanish.
+    const crlf = '"$PG_DUMP" "$URL" \\\r\n  --schema=public \\\r\n  --no-owner\r\n';
+    const folded = normalizeEol(crlf).replace(/\\\n\s*/g, " ");
+    expect(folded, "the continuation did not fold, so every flag is invisible").toContain(
+      "--schema=public"
+    );
+  });
+
+  it("codeOnly still blanks string contents when the source is CRLF", () => {
+    const out = codeOnly('const s = "secretName";\r\nfoo();\r\n');
+    expect(out).toContain("foo()");
+    expect(out, "a CRLF source slipped a string's contents past codeOnly").not.toContain(
+      "secretName"
+    );
+  });
+
+  it("dialectFor is unaffected by line endings, since it reads a path", () => {
+    expect(dialectFor("a/b.css")).toBe("css");
+    expect(dialectFor("a/b.tsx")).toBe("ts");
   });
 });

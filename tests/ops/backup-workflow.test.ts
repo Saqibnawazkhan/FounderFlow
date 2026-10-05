@@ -88,6 +88,7 @@ import { describe, expect, it } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
+import { normalizeEol } from "../lib/harness/source-scan";
 
 const ROOT = process.cwd();
 const BACKUP_PATH = ".github/workflows/backup.yml";
@@ -120,7 +121,15 @@ interface Workflow {
 }
 
 function source(): string {
-  return readFileSync(join(ROOT, BACKUP_PATH), "utf8");
+  // normalizeEol, not a bare read: `dumpInvocation` below folds the pg_dump
+  // call across its backslash continuations with /\\\n\s*/, which does not
+  // match `\ \r\n`. With a CRLF working tree (core.autocrlf, no .gitattributes
+  // until 2026-10-05) the fold silently did nothing, so the helper returned
+  // `"$PG_DUMP" "$PGDUMP_URL" \` with no flags and this file reported that the
+  // dump passes no --schema filter — about a file carrying --schema=public on
+  // the next line. Green on Linux CI, red on a Windows checkout of the same
+  // commit.
+  return normalizeEol(readFileSync(join(ROOT, BACKUP_PATH), "utf8"));
 }
 
 /** The restore drill. Same treatment: the parse is the only lint it gets. */

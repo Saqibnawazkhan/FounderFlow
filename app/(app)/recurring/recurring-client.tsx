@@ -12,7 +12,12 @@ import {
   toggleRecurringRuleAction,
 } from "@/lib/actions/recurring";
 import { z } from "zod";
-import { recurringAmountField, type NewRecurringRuleInput } from "@/lib/schemas/recurring";
+import {
+  recurringAmountField,
+  recurringDayOfMonthField,
+  recurringDayOfWeekField,
+  type NewRecurringRuleInput,
+} from "@/lib/schemas/recurring";
 
 /**
  * Form-level schema: a flat object that always has BOTH day fields, with
@@ -42,8 +47,14 @@ const FormSchema = z
     // <select> needs a string to hold.
     projectId: z.string().optional(),
     frequency: z.enum(["monthly", "weekly"]),
-    dayOfMonth: z.number().int().min(1).max(31).optional(),
-    dayOfWeek: z.number().int().min(0).max(6).optional(),
+    // Also IMPORTED, not restated (finance-planning-016). The restated copies
+    // carried no messages at all, so clearing the pre-filled "Day of month"
+    // input — which `valueAsNumber` turns into `NaN` — rendered Zod's own
+    // "Expected number, received nan" under the label, and the object
+    // refinement below never ran to say anything better (a refinement is
+    // skipped once the inner object fails).
+    dayOfMonth: recurringDayOfMonthField.optional(),
+    dayOfWeek: recurringDayOfWeekField.optional(),
   })
   .refine((d) => (d.frequency === "monthly" ? d.dayOfMonth != null : d.dayOfWeek != null), {
     message: "Pick a day for the chosen frequency",
@@ -56,9 +67,11 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Avatar } from "@/components/ui/avatar";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PillBadge } from "@/components/landing/pill-badge";
-import { cn } from "@/lib/utils";
+import { cn, formatUtcDate } from "@/lib/utils";
+import { nextDueDateFor } from "@/lib/recurring/materialize";
 import { EXPENSE_CATEGORIES, INVESTMENT_CATEGORIES } from "@/lib/types";
 import type { RecurringRuleClient } from "@/lib/queries/recurring";
+import { canManageRecurringRule } from "@/lib/recurring/manage-gate";
 import { useCurrency, useMoney } from "@/lib/hooks/useMoney";
 import { useNumberFormat } from "@/lib/i18n/use-t";
 
@@ -78,9 +91,31 @@ type Props = {
    * this prop exists to close.
    */
   projects: { id: string; name: string }[];
+  /**
+   * The SERVER's clock at render time, for the next-due date on each card
+   * (finance-planning-020).
+   *
+   * A prop rather than `useMemo(() => new Date())` for the reason time-011
+   * records: that memo runs once on the server and again at hydration — two
+   * different instants — so the two renders disagree whenever they fall either
+   * side of a UTC midnight and React logs a mismatch. Taking the instant from
+   * the RSC makes them identical by construction, and `router.refresh()` brings
+   * a fresh one, where a memo would have frozen "today" at first mount for ever.
+   *
+   * REQUIRED rather than defaulted, like `projects` above: a defaulted clock is
+   * one a page can silently forget to pass, and the fallback would reintroduce
+   * exactly the mismatch this closes.
+   */
+  serverNowMs: number;
 };
 
-export function RecurringClient({ rules, currentUserId, currentUserRole, projects }: Props) {
+export function RecurringClient({
+  rules,
+  currentUserId,
+  currentUserRole,
+  projects,
+  serverNowMs,
+}: Props) {
   const router = useRouter();
   const confirm = useConfirm();
   const [, startTransition] = useTransition();
@@ -168,6 +203,7 @@ export function RecurringClient({ rules, currentUserId, currentUserRole, project
               rule={rule}
               currentUserId={currentUserId}
               currentUserRole={currentUserRole}
+              serverNowMs={serverNowMs}
               pending={pendingId === rule.id}
               onToggle={() => handleToggle(rule)}
               onDelete={() => handleDelete(rule)}
@@ -200,6 +236,7 @@ function RuleCard({
   rule,
   currentUserId,
   currentUserRole,
+  serverNowMs,
   pending,
   onToggle,
   onDelete,
@@ -207,18 +244,97 @@ function RuleCard({
   rule: RecurringRuleClient;
   currentUserId: string;
   currentUserRole: "admin" | "cofounder" | "member";
+  serverNowMs: number;
   pending: boolean;
   onToggle: () => void;
   onDelete: () => void;
 }) {
   const money = useMoney();
   const n = useNumberFormat();
-  const canManage = rule.addedBy === currentUserId || currentUserRole === "admin";
+  // The same decision the two server actions make, imported rather than
+  // mirrored (finance-planning-013): once the creator has been deactivated, the
+  // creator-or-admin rule names somebody who can never sign in again, and a
+  // co-founder was left looking at a standing charge with no Pause and no
+  // Delete. CLAUDE.md asks the two layers to agree; a copied expression is how
+  // they stop agreeing.
+  const canManage = canManageRecurringRule(
+    { addedBy: rule.addedBy, authorRemoved: rule.authorRemoved },
+    { id: currentUserId, role: currentUserRole }
+  );
   const frequencyLabel =
     rule.frequency === "monthly"
       ? `Monthly · day ${rule.dayOfMonth}`
       : `Weekly · ${DAY_NAMES[rule.dayOfWeek ?? 0]}`;
-  const last = rule.lastMaterializedAt ? new Date(rule.lastMaterializedAt) : null;
+
+  /* ── When does this charge next? (finance-planning-020) ─────────────────── *
+   * The card used to answer nothing. `nextDueDateFor` is the materializer's own
+   * calendar — the same window, the same short-month clamp — so the date here
+   * is the date the nightly job will act on rather than a second calculation
+   * that can drift away from it.
+   *
+   * `authorRemoved` is the one state the schedule cannot see. The cron suspends
+   * such a rule and writes NOTHING (no stamp, no `active: false`), so the row
+   * still looks live; naming a next-due date here would contradict the notice
+   * a few lines below that says the rule has stopped posting. A paused rule
+   * needs no special case — `isRuleDueOn` already refuses to fire it, so the
+   * walk comes back null on its own.
+   */
+  const nextDue = useMemo(
+    () =>
+      rule.authorRemoved
+        ? null
+        : nextDueDateFor(
+            {
+              active: rule.active,
+              frequency: rule.frequency,
+              dayOfMonth: rule.dayOfMonth,
+              dayOfWeek: rule.dayOfWeek,
+              startDate: new Date(rule.startDate),
+              lastMaterializedAt: rule.lastMaterializedAt
+                ? new Date(rule.lastMaterializedAt)
+                : null,
+            },
+            new Date(serverNowMs)
+          ),
+    [rule, serverNowMs]
+  );
+  const todayUtcMs = useMemo(() => {
+    const now = new Date(serverNowMs);
+    return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  }, [serverNowMs]);
+
+  let scheduleLine: string;
+  let scheduleTone: string;
+  if (nextDue === null) {
+    // Paused is the founder's own decision, so it is named; the other way in
+    // here is the suspension above, which the red notice explains. There is a
+    // third, unreachable through the zod union today: an ACTIVE rule that can
+    // never fire — monthly with a null `dayOfMonth`, an unrecognised
+    // `frequency` — which would render in this same muted, deliberately-idle
+    // weight. If the frequency enum ever grows, that case needs a louder
+    // string of its own, because a broken rule must not read as a quiet one.
+    scheduleLine = rule.active ? "Nothing scheduled" : "Paused · nothing scheduled";
+    scheduleTone = "text-fg-muted";
+  } else if (nextDue.getTime() > todayUtcMs) {
+    scheduleLine = `Next due ${formatUtcDate(nextDue)}`;
+    scheduleTone = "font-bold text-fg";
+  } else {
+    // A due date at or before today means the job has not posted it yet, and a
+    // date that has already PASSED is the only visible evidence of a run that
+    // has been failing for a month. That one is red.
+    //
+    // Today is neutral, and the reason is not "the run has not happened yet":
+    // the materializer's slot is 00:05 UTC (`vercel.json`), so that window is
+    // five minutes, not a few hours. It is neutral because two ordinary states
+    // land here for the whole UTC day and neither is a fault — those five
+    // minutes, and a rule RESUMED today after being paused across its due day,
+    // which the cron skipped while it was inactive and will post at the next
+    // 00:05. Crying wolf at the second of those is worse than waiting a day:
+    // the line already says "not posted yet" out loud, and tomorrow it turns
+    // red on its own.
+    scheduleLine = `Due ${formatUtcDate(nextDue)} · not posted yet`;
+    scheduleTone = nextDue.getTime() < todayUtcMs ? "font-bold text-danger" : "font-bold text-fg";
+  }
 
   return (
     <article
@@ -251,6 +367,11 @@ function RuleCard({
             {!rule.active && (
               <span className="rounded-full bg-glass/[0.06] px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-fg-muted">
                 Paused
+              </span>
+            )}
+            {rule.authorRemoved && (
+              <span className="rounded-full border border-danger/30 bg-danger/10 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-danger">
+                Author removed
               </span>
             )}
           </div>
@@ -292,9 +413,37 @@ function RuleCard({
         </div>
       </div>
 
-      {last && (
-        <p className="mt-3 font-mono text-[10px] uppercase tracking-wider text-fg-muted">
-          Last fired {last.toLocaleDateString()}
+      {/* finance-planning-020. The schedule, in the two facts a founder needs:
+          when the money next leaves, and how far the job has already got.
+
+          "COVERED THROUGH", NOT "LAST FIRED" — the label was false. Since the
+          finance-planning-004 fix, `seedStampFor` stamps `lastMaterializedAt`
+          FORWARD past the current period's occurrence (the seed transaction has
+          already paid for it), so a day-15 rule created on the 3rd carries
+          `2026-10-15` while its only posted row is dated the 3rd: the card
+          printed a FUTURE date in the past tense. What the stamp actually means
+          is "the scheduler owes nothing up to and including this day", which is
+          also what explains the next-due date above it. The posting count lives
+          in `Generated` and never needed this line.
+
+          `formatUtcDate`, not `toLocaleDateString` (money-007): the stamp is a
+          UTC-midnight date-only value, so a viewer west of UTC was shown the day
+          before — `14/10/2026` for a stamp of `2026-10-15`. */}
+      <div className="mt-3 space-y-1 font-mono text-[10px] uppercase tracking-wider">
+        <p className={scheduleTone}>{scheduleLine}</p>
+        {rule.lastMaterializedAt && (
+          <p className="text-fg-muted">Covered through {formatUtcDate(rule.lastMaterializedAt)}</p>
+        )}
+      </div>
+
+      {/* finance-planning-013. The nightly job suspends this rule — it posts
+          nothing and changes nothing — so the card has to say so. Without this
+          line the only place the change shows up is the customer's own books,
+          a month later. */}
+      {rule.authorRemoved && (
+        <p className="mt-3 text-xs text-danger">
+          {rule.addedByName.split(" ")[0]} was deactivated, so this rule has stopped posting. Delete
+          it, or set the same charge up again under your own name.
         </p>
       )}
 

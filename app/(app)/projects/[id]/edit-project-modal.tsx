@@ -27,15 +27,17 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import toast from "react-hot-toast";
 import { Save } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
-import { STATUS_LABEL_KEY } from "@/components/projects/project-card";
+import { COLOR_CLASSES, STATUS_LABEL_KEY } from "@/components/projects/project-card";
 import { updateProjectAction } from "@/lib/actions/projects";
 import {
-  PROJECT_COLORS,
+  PROJECT_SWATCHES,
   PROJECT_STATUSES,
   UpdateProjectSchema,
+  isLegacyProjectColor,
   type UpdateProjectInput,
   type ProjectColor,
 } from "@/lib/schemas/project";
+import { CATEGORICAL_LABELS } from "@/lib/colors/categorical";
 import { useT } from "@/lib/i18n/use-t";
 import { cn } from "@/lib/utils";
 import type { ProjectClient } from "@/lib/queries/projects";
@@ -47,15 +49,31 @@ type Props = {
   onSaved: () => void;
 };
 
-const SWATCH_CLASSES: Record<ProjectColor, string> = {
-  // "emerald" reuses the `primary` tokens — emerald IS the brand green, so a
-  // parallel token would be a second source of truth free to drift.
-  emerald: "bg-primary",
-  forest: "bg-forest",
-  mint: "bg-mint",
-  slate: "bg-slate",
-  warning: "bg-warning",
-};
+/**
+ * The swatches to OFFER for a given project: the ten-hue categorical ramp,
+ * plus — only when the project still holds one — its own legacy colour.
+ *
+ * The append is the whole reason this is a function. `PROJECT_COLORS` keeps the
+ * five pre-2026-10 slugs valid because they are in the live database, so a
+ * `forest` project saves fine without ever touching this picker. But if the
+ * picker offered only the ten, opening Edit on that project would show TEN
+ * swatches and none of them selected — the user cannot see their current colour,
+ * and cannot deliberately keep it once they have clicked around. Appending it
+ * makes the current choice visible and re-selectable; the moment they pick one
+ * of the ten, the legacy slug is gone from that row for good.
+ *
+ * There is no local class table any more: COLOR_CLASSES (project-card.tsx) is
+ * the one map, and it covers both tiers. See the note there on why the legacy
+ * slugs are not repointed at the categorical tokens.
+ */
+function swatchesFor(color: string): readonly string[] {
+  return isLegacyProjectColor(color) ? [...PROJECT_SWATCHES, color] : PROJECT_SWATCHES;
+}
+
+/** Hue name for `aria-label`; a legacy slug is its own label. */
+function swatchLabel(slug: string): string {
+  return CATEGORICAL_LABELS[slug] ?? slug;
+}
 
 function toLocalDateInput(iso: string | null): string {
   if (!iso) return "";
@@ -210,8 +228,12 @@ export function EditProjectModal({ open, onClose, project, onSaved }: Props) {
           >
             {t.projects.color}
           </p>
-          <div role="radiogroup" aria-labelledby={`${nameId}-color`} className="flex gap-2">
-            {PROJECT_COLORS.map((c) => {
+          <div
+            role="radiogroup"
+            aria-labelledby={`${nameId}-color`}
+            className="flex flex-wrap gap-2"
+          >
+            {swatchesFor(project.color).map((c) => {
               const active = selectedColor === c;
               return (
                 <button
@@ -219,11 +241,11 @@ export function EditProjectModal({ open, onClose, project, onSaved }: Props) {
                   type="button"
                   role="radio"
                   aria-checked={active}
-                  aria-label={c}
-                  onClick={() => setValue("color", c, { shouldValidate: true })}
+                  aria-label={swatchLabel(c)}
+                  onClick={() => setValue("color", c as ProjectColor, { shouldValidate: true })}
                   className={cn(
                     "h-9 w-9 rounded-xl border-2 transition-all",
-                    SWATCH_CLASSES[c],
+                    (COLOR_CLASSES[c] ?? COLOR_CLASSES.emerald).stripe,
                     active ? "border-fg ring-2 ring-fg/40" : "border-transparent hover:border-fg/30"
                   )}
                 />

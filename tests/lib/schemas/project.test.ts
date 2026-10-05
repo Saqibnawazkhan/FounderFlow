@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   ChangeSupervisorSchema,
   DuplicateProjectSchema,
+  LEGACY_PROJECT_COLORS,
   MAX_DUPLICATED_TASKS,
   NewProjectSchema,
   PROJECT_COLORS,
   PROJECT_STATUSES,
+  PROJECT_SWATCHES,
   UpdateProjectSchema,
 } from "@/lib/schemas/project";
 
@@ -19,13 +21,65 @@ const MINIMAL_PROJECT = {
 };
 
 describe("PROJECT_COLORS", () => {
-  it("exposes the expected fixed palette", () => {
-    expect(PROJECT_COLORS).toEqual(["emerald", "forest", "mint", "slate", "warning"]);
+  /**
+   * CHANGED 2026-10-05, deliberately. This assertion used to read
+   *
+   *     expect(PROJECT_COLORS).toEqual(["emerald", "forest", "mint", "slate", "warning"]);
+   *
+   * and it was correct for the palette it was written against. The palette
+   * widened: five swatches cannot tell ten projects apart, which is the same
+   * counting defect the charts had with ten expense categories, so the picker
+   * moved onto the ten-hue CATEGORICAL ramp shared with the charts.
+   *
+   * It is restated as TWO TIERS rather than loosened to a length check, because
+   * the two tiers are the whole substance of the change:
+   *
+   *   • `PROJECT_SWATCHES` is what the picker OFFERS — the ten `cat-N` slugs.
+   *   • `LEGACY_PROJECT_COLORS` is what the COLUMN already holds. Those five
+   *     strings are in a live production database. Dropping one would not be a
+   *     palette change; `UpdateProjectSchema` re-parses a project's own colour
+   *     on every save, so it would make every project of that colour unsaveable
+   *     the next time anyone edited its name. They stay valid, they keep their
+   *     exact rendering, and there is deliberately NO migration.
+   *
+   * `PROJECT_COLORS` is the union, in that order, and nothing else.
+   */
+  it("exposes both tiers of the palette, in order", () => {
+    expect(PROJECT_COLORS).toEqual([
+      "cat-1",
+      "cat-2",
+      "cat-3",
+      "cat-4",
+      "cat-5",
+      "cat-6",
+      "cat-7",
+      "cat-8",
+      "cat-9",
+      "cat-10",
+      "emerald",
+      "forest",
+      "mint",
+      "slate",
+      "warning",
+    ]);
+    expect(PROJECT_SWATCHES.length).toBe(10);
+    expect(LEGACY_PROJECT_COLORS.slice()).toEqual([
+      "emerald",
+      "forest",
+      "mint",
+      "slate",
+      "warning",
+    ]);
   });
 
-  // The old decorative accents are persisted slugs, not just CSS. If one
-  // reappears here the rebrand migration's mapping is incomplete and rows
-  // written after it would carry a colour nothing can render.
+  // UNCHANGED, and it still passes — which is the point of naming the ten new
+  // slugs `cat-N` rather than after their hues. Two of the ten hues ARE cyan
+  // and pink: the slugs `20260923000000_rebrand_project_colors` retired, whose
+  // `UPDATE … WHERE "color" IN ('primary','cyan')` is documented as "idempotent
+  // and safe to re-run". Had the new swatches been called `cyan` and `pink`,
+  // re-running that migration would silently recolour live projects, and the
+  // migration file is not editable in this change. The hue names survive as
+  // labels (CATEGORICAL_LABELS), never as persisted values.
   it("rejects a retired colour slug", () => {
     for (const retired of ["cyan", "pink", "primary", "info"]) {
       expect(PROJECT_COLORS).not.toContain(retired);

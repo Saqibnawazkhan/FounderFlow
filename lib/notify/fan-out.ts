@@ -22,6 +22,7 @@
 import { db } from "@/lib/db";
 import { splitByChannel } from "@/lib/notify/preferences";
 import { fireNotificationEmails } from "@/lib/notify/email";
+import { EVENT_DELIVERABLE_CHANNELS } from "@/lib/notify/events";
 import type { NotifyCategory, NotifyEvent, NotifyTone } from "@/lib/notify/events";
 
 export { NOTIFY_EVENTS } from "@/lib/notify/events";
@@ -95,10 +96,16 @@ export type NotifyInput = {
    * lib/notify/events.ts records which events are affected so the preferences
    * matrix cannot go on offering a switch for a row that is never written.
    *
-   * Push and email deliberately survive it. "Don't put it in my notification
-   * list" and "don't tell me a teammate messaged me while I was away" are
-   * different requests, and the second one already has a control: mute the
-   * channel, or turn the event off in settings.
+   * Push and email deliberately survive THE FLAG. "Don't put it in my
+   * notification list" and "don't tell me a teammate messaged me while I was
+   * away" are different requests, and the second one already has a control:
+   * mute the channel, or turn the event off in settings.
+   *
+   * For a DM that now leaves push alone, because email stopped being
+   * deliverable for chat at all (the owner's volume report of 2026-10-05 —
+   * `EVENT_DELIVERABLE_CHANNELS`, one layer above this flag). The two
+   * suppressions are independent and happen to meet on `dm`: this one is per
+   * call, that one is per event, and neither implies the other.
    */
   skipInApp?: boolean;
 };
@@ -150,12 +157,44 @@ export async function notifyUsers(
   });
 
   const resolved = splitByChannel(input.event, recipients, stored);
-  // Applied HERE, before the reachability test below, so the suppression is
-  // expressed once and every later step agrees with it: someone whose only
-  // enabled channel is in-app now correctly counts as unreachable, the finance
-  // filter and the tombstone read are not spent on them, and `notified` comes
-  // out 0 because no row was written rather than because one was discarded.
-  const channels = input.skipInApp ? { ...resolved, inApp: [] } : resolved;
+
+  // THE DELIVERABLE-CHANNEL RULE, ENFORCED RATHER THAN DESCRIBED.
+  //
+  // `EVENT_DELIVERABLE_CHANNELS` says which channels an event can be delivered
+  // on at all — chat is not emailed, a DM writes no in-app row — and until the
+  // chat-email fix it was read by the SETTINGS PAGE AND NOTHING ELSE. That made
+  // it a comment with a type annotation: the matrix rendered a dash where the
+  // checkbox would be, and the fan-out went on honouring whatever
+  // `splitByChannel` resolved. A `NotificationPreference` row with `email: true`
+  // for `chat_mention` would still have emailed, and
+  // `updateNotificationPreferenceAction` accepts any (event, channel) pair in
+  // NOTIFY_EVENTS × NOTIFY_CHANNELS, so that row is one hand-made request away
+  // — as is a stale row left behind by any future change to this map.
+  //
+  // Intersecting here means the map is the single statement of the rule and
+  // delivery cannot disagree with the UI. It is a no-op for every event whose
+  // row is all three channels, which is every event but chat's two.
+  const deliverable = EVENT_DELIVERABLE_CHANNELS[input.event];
+  const offered = {
+    inApp: deliverable.indexOf("inApp") === -1 ? [] : resolved.inApp,
+    email: deliverable.indexOf("email") === -1 ? [] : resolved.email,
+    push: deliverable.indexOf("push") === -1 ? [] : resolved.push,
+  };
+
+  // `skipInApp` is applied HERE, before the reachability test below, so the
+  // suppression is expressed once and every later step agrees with it: someone
+  // whose only enabled channel is in-app now correctly counts as unreachable,
+  // the finance filter and the tombstone read are not spent on them, and
+  // `notified` comes out 0 because no row was written rather than because one
+  // was discarded.
+  //
+  // It stays a separate mechanism from the map above, and the two overlap on
+  // `dm` deliberately. The map is a standing property of the EVENT; `skipInApp`
+  // is a decision one CALL makes, and the structural test derives the map from
+  // those calls (tests/lib/notify/fan-out-sites.test.ts) — so dropping the flag
+  // because the map now covers the same case would delete the evidence the map
+  // is checked against.
+  const channels = input.skipInApp ? { ...offered, inApp: [] } : offered;
 
   // Everyone some channel would actually reach. Nothing is going anywhere when
   // this is empty, so don't spend a round trip — and don't ask the finance rule

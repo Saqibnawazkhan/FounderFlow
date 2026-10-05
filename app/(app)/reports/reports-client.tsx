@@ -21,20 +21,22 @@ import type { Company, Transaction, User } from "@/lib/types";
 // subMonths, all LOCAL) is gone entirely; see lib/date-range.ts and money-007.
 import { format } from "date-fns";
 import { startOfUtcMonth } from "@/lib/date-range";
+import { CHART_SERIES, categoricalAt } from "@/lib/colors/categorical";
 
-// Inlined palette — must NOT import named constants from reports-charts.tsx
-// at top level, that pulls recharts into the initial chunk and defeats the
-// dynamic split below.
-const PALETTE = [
-  "#10B981",
-  "#047857",
-  "#6EE7B7",
-  "#065F46",
-  "#34D399",
-  "#64748B",
-  "#334155",
-  "#A7F3D0",
-];
+/**
+ * Chart colours — from lib/colors/categorical.ts, the SAME module
+ * reports-charts.tsx reads, so the legend dots and category dots below cannot
+ * disagree with the marks they label.
+ *
+ * The constraint the old inline copy was built around still holds: this file
+ * must NOT import named constants from reports-charts.tsx at top level, because
+ * that pulls recharts into the initial chunk and defeats the dynamic split
+ * below. The shared module has no recharts dependency, so it satisfies the
+ * constraint WITHOUT a second copy of the palette — which is what the comment
+ * here used to call "inlined" and what actually made the dots drift free of the
+ * chart: eight hex colours for ten `EXPENSE_CATEGORIES`, and no response to the
+ * theme toggle.
+ */
 
 // Recharts is ~200KB. Lazy-load each chart so /reports' initial bundle stays
 // lean; the chart skeleton from Phase 2 fills the space during the fetch.
@@ -51,10 +53,6 @@ const FoundersHorizontalBar = dynamic(
   () => import("./reports-charts").then((m) => ({ default: m.FoundersHorizontalBar })),
   { ssr: false, loading: chartLoading }
 );
-
-const C_PRIMARY = "#10B981";
-const C_FOREST = "#047857";
-const C_MINT = "#6EE7B7";
 
 /* ─────────────────────────────────────────────────────────────────────────── *
  * The report's arithmetic, extracted as pure functions.
@@ -1186,9 +1184,9 @@ export function ReportsClient({
             <h3 className="mt-1 text-lg font-bold tracking-tight">Money in vs out</h3>
           </div>
           <div className="flex gap-4 text-xs">
-            <Legend dot={C_PRIMARY} label="Investments" />
-            <Legend dot={C_FOREST} label="Revenue" />
-            <Legend dot={C_MINT} label="Expenses" />
+            <Legend dot={CHART_SERIES.investments} label="Investments" />
+            <Legend dot={CHART_SERIES.revenue} label="Revenue" />
+            <Legend dot={CHART_SERIES.expenses} label="Expenses" />
           </div>
         </div>
         <div className="h-80">
@@ -1227,7 +1225,7 @@ export function ReportsClient({
                       <div className="flex min-w-0 items-center gap-2">
                         <span
                           className="h-2.5 w-2.5 shrink-0 rounded-full"
-                          style={{ backgroundColor: PALETTE[i % PALETTE.length] }}
+                          style={{ backgroundColor: categoricalAt(i) }}
                           aria-hidden="true"
                         />
                         <span className="truncate text-fg">{c.name}</span>

@@ -55,10 +55,15 @@ interface FakeDb {
 
 /**
  * A rule row as the ROUTE loads it: the rule, plus the tombstone of the project
- * its `projectId` names. The route has to ask for that relation — a rule row on
- * its own cannot say whether its project still exists (R1-money-013-cron).
+ * its `projectId` names and the tombstone of the USER who created it. The route
+ * has to ask for both relations — a rule row on its own cannot say whether its
+ * project still exists (R1-money-013-cron) or whether the person who set the
+ * charge up is still at the company (finance-planning-013).
  */
-type RuleRow = RecurringRule & { project?: { deletedAt: Date | null } | null };
+type RuleRow = RecurringRule & {
+  project?: { deletedAt: Date | null } | null;
+  user?: { deletedAt: Date | null } | null;
+};
 
 interface Harness {
   db: FakeDb;
@@ -206,6 +211,9 @@ function rule(overrides: Partial<RuleRow> = {}): RuleRow {
     lastMaterializedAt: new Date(Date.UTC(2026, 2, 14)),
     createdAt: new Date(Date.UTC(2026, 0, 1)),
     projectId: null,
+    // The default author is still at the company. Every test that does not say
+    // otherwise is about a rule somebody can still manage (finance-planning-013).
+    user: { deletedAt: null },
     ...overrides,
   };
 }
@@ -536,5 +544,101 @@ describe("R1-money-013-cron — the nightly job must not tag a deleted project",
       };
       expect(args?.include?.project?.select?.deletedAt).toBe(true);
     });
+  });
+});
+
+/* ── finance-planning-013 ───────────────────────────────────────── */
+
+/**
+ * A REMOVED TEAMMATE'S STANDING CHARGES MUST STOP.
+ *
+ * `removeUserAction` tombstones the User row and bumps `sessionVersion`
+ * (lib/actions/team.ts) and touches nothing else. It does not pause the
+ * recurring rules that person set up, and nothing else does either — so this
+ * job, which selects on `{ active: true, ...LIVE_WORKSPACE_SCOPE }`, kept
+ * posting an ex-employee's salary or subscription into the customer's books
+ * every month, stamped with the `addedByName` of somebody who had left. Per
+ * CLAUDE.md there is deliberately no individual-user purge, so that tombstone
+ * and those rules live for ever: the posting had no end date at all.
+ *
+ * The contract is the OPPOSITE of the deleted-project case above, and
+ * deliberately so. There, the money is still being paid and only the tag is
+ * dead, so the posting goes in untagged. Here the AUTHORISATION is what died:
+ * nobody at the company is standing behind this charge any more. So the rule is
+ * suspended — and named in the response, because a charge that stops silently
+ * is its own kind of wrong (the same reasoning as `rulesWithDeletedProject`).
+ *
+ * Nothing is written: no claim, no stamp, no `active: false`. A suspended rule
+ * is left exactly as it was, so `reactivateUserAction` clearing that tombstone
+ * resumes it with the same catch-up a resumed PAUSE gets — bounded by
+ * MAX_CATCHUP_LOOKBACK_DAYS, which is the behaviour this product already has
+ * for a rule somebody paused by hand.
+ */
+describe("finance-planning-013 — a removed teammate's recurring charges stop", () => {
+  it("posts nothing for a rule whose author is tombstoned, and names the rule", async () => {
+    harness = buildHarness([rule({ user: { deletedAt: new Date(Date.UTC(2026, 1, 2)) } })]);
+    const { status, body } = await run();
+
+    expect(status).toBe(200);
+    expect(harness.written).toEqual([]);
+    expect(body.transactionsCreated).toBe(0);
+    // Reported, not silent: the workspace has a standing charge nobody owns,
+    // and this is the only place that says so to an operator.
+    expect(body.rulesWithRemovedAuthor).toEqual(["rule-1"]);
+  });
+
+  it("leaves the suspended rule untouched, so a reactivated author resumes it", async () => {
+    // No claim and no stamp. If the job moved `lastMaterializedAt` forward while
+    // declining to post, reactivating the teammate would silently skip every
+    // month they were away — cron-004's scar in a new place.
+    const stamp = new Date(Date.UTC(2026, 2, 14));
+    harness = buildHarness([
+      rule({ lastMaterializedAt: stamp, user: { deletedAt: new Date(Date.UTC(2026, 1, 2)) } }),
+    ]);
+    await run();
+
+    expect(harness.rows.get("rule-1")?.lastMaterializedAt?.toISOString()).toBe(stamp.toISOString());
+    expect(harness.db.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("reports the suspended rule once — not also as a deleted-project rule", async () => {
+    // Both things can be true of one rule. It posts nothing either way, so
+    // listing it twice would only make the healthy-night signal noisier.
+    harness = buildHarness([
+      rule({
+        projectId: "proj-gone",
+        project: { deletedAt: new Date(Date.UTC(2026, 1, 20)) },
+        user: { deletedAt: new Date(Date.UTC(2026, 1, 2)) },
+      }),
+    ]);
+    const { body } = await run();
+
+    expect(body.rulesWithRemovedAuthor).toEqual(["rule-1"]);
+    expect(body.rulesWithDeletedProject).toEqual([]);
+    expect(harness.written).toEqual([]);
+  });
+
+  it("still posts for an author who is still at the company", async () => {
+    // The other direction, and the expensive one to get wrong: a filter that
+    // stopped every rule would take rent, salaries and subscriptions out of
+    // every customer's books overnight.
+    harness = buildHarness([rule()]);
+    const { body } = await run();
+
+    expect(body.transactionsCreated).toBe(1);
+    expect(body.rulesWithRemovedAuthor).toEqual([]);
+  });
+
+  it("asks the database for the author's tombstone at all — guard the guard", async () => {
+    // Without this, the assertions above pass vacuously the moment the route
+    // stops selecting the relation: the fake row simply has no `user` key, every
+    // author looks live, and the file goes green while checking nothing.
+    harness = buildHarness([rule()]);
+    await run();
+
+    const args = harness.db.recurringRule.findMany.mock.calls[0]?.[0] as {
+      include?: { user?: { select?: { deletedAt?: boolean } } };
+    };
+    expect(args?.include?.user?.select?.deletedAt).toBe(true);
   });
 });
